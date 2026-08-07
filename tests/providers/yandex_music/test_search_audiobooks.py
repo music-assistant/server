@@ -8,6 +8,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
+from tests.common import use_real_create_task
 
 
 def _fake_album(*, album_id: int, title: str, meta_type: str | None, type_: str | None) -> Mock:
@@ -59,6 +60,7 @@ def provider_mock() -> Mock:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
     return provider
 
 

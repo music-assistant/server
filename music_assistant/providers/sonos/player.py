@@ -14,12 +14,12 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from aiosonos.exceptions import CannotConnect, ConnectionFailed, FailedCommand
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -194,6 +194,24 @@ class SonosPlayer(Player):
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
         ]
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        for task_id in (
+            f"sonos_reconnect_{self.player_id}",
+            f"restore_airplay_group_{self.player_id}",
+        ):
+            # a timer that already fired lives on as a task under the same id,
+            # so both are needed to cover the pending and the running case
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
+        # unregister does not guard this call, and it runs before the provider's
+        # remaining players are unregistered: a raise here would strand them
+        try:
+            await self._disconnect()
+        except Exception:
+            self.logger.exception("Error disconnecting from Sonos player %s", self.name)
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -736,7 +754,7 @@ class SonosPlayer(Player):
             return
         try:
             await self.client.connect()
-        except (ConnectionFailed, ClientConnectorError) as err:
+        except (ConnectionFailed, CannotConnect, ClientError) as err:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
             if not retry_on_fail or not self.mass.players.get_player(self.player_id):
                 raise

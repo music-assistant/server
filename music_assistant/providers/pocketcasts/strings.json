@@ -1,11 +1,11 @@
 {
   "config_entries": {
     "username": {
-      "label": "Email",
+      "label": "[%key:common::config_entries::email::label%]",
       "description": "Your Pocket Casts email address"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Your Pocket Casts password"
     }
   }

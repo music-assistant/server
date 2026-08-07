@@ -45,12 +45,6 @@ def provider_mock() -> Mock:
     return provider
 
 
-@pytest.fixture
-def media_manager(provider_mock: Mock) -> TidalMediaManager:
-    """Return a TidalMediaManager instance."""
-    return TidalMediaManager(provider_mock)
-
-
 @patch("music_assistant.providers.tidal.media.parse_artist")
 @patch("music_assistant.providers.tidal.media.parse_album")
 @patch("music_assistant.providers.tidal.media.parse_track")

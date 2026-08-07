@@ -214,6 +214,8 @@ class SetupSession:
 
         The flow resumes when the external party (or a bounce page) hits this flow's
         ``callback_url``; GET query and POST body parameters are merged and returned.
+        As soon as the callback lands a generic progress step replaces the external one,
+        so the client stops asking the user for something they already did.
 
         :param url: The URL the user must open.
         :param step_id: Stable slug identifying this step (also the i18n key segment).
@@ -225,9 +227,11 @@ class SetupSession:
         self._callback_future = asyncio.get_running_loop().create_future()
         self._publish_step(step)
         try:
-            return await self._await_with_deadline(self._callback_future, expires_in)
+            params = await self._await_with_deadline(self._callback_future, expires_in)
         finally:
             self._callback_future = None
+        self.progress("working")
+        return params
 
     async def external_until(
         self,
@@ -381,6 +385,11 @@ class SetupSession:
         self.last_activity = time.monotonic()
         errors: dict[str, str] = {}
         parsed: dict[str, ConfigValueType] = {}
+        # gates resolve against the submitted values, so flipping one takes effect on the
+        # same submit regardless of where it sits on the form
+        submitted_entries = [
+            replace(entry, value=values.get(entry.key, entry.value)) for entry in step.entries
+        ]
         for entry in step.entries:
             if entry.type in UI_ONLY:
                 continue
@@ -388,7 +397,11 @@ class SetupSession:
             try:
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
-                parsed[entry.key] = entry.parse_value(raw_value, allow_none=False)
+                # an entry behind an unmet dependency renders disabled, so demanding a
+                # value the user has no way to supply would wedge the flow
+                parsed[entry.key] = entry.parse_value(
+                    raw_value, allow_none=not entry.dependency_met(submitted_entries)
+                )
             except TypeError, ValueError:
                 errors[entry.key] = "required" if raw_value in (None, "") else "invalid_value"
                 if not isinstance(raw_value, list):
@@ -431,6 +444,12 @@ class SetupSession:
             except Exception as err:
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
         if self._callback_future is not None and not self._callback_future.done():
+            # the values carry the authorization code/token, so only log the keys
+            LOGGER.debug(
+                "Setup flow %s resumed by callback with params: %s",
+                self.flow_id,
+                ", ".join(sorted(params)),
+            )
             # only a callback that resolves a pending external step counts as
             # activity: the route is unauthenticated, so bare requests must not
             # be able to keep the flow alive past the idle TTL
@@ -548,6 +567,7 @@ class SetupSession:
 
     def _publish_step(self, step: SetupFlowStep) -> None:
         """Store the step as current, mark activity and push it to subscribers."""
+        LOGGER.debug("Setup flow %s published %s step: %s", self.flow_id, step.type, step.step_id)
         self.current_step = step
         self.last_activity = time.monotonic()
         self._step_changed.set()

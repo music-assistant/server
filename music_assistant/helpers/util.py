@@ -41,6 +41,7 @@ from music_assistant.constants import (
     LIVE_INDICATORS,
     SOUNDTRACK_INDICATORS,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.helpers.process import check_output
 
@@ -924,8 +925,39 @@ def clean_stream_title(line: str) -> str:
 # cache for get_ip_addresses: enumerating the network adapters involves a thread hop,
 # socket probes and a full adapter walk, while the result rarely (if ever) changes
 IP_ADDRESSES_CACHE_TTL = 30
-_ip_addresses_cache: dict[bool, tuple[float, tuple[str, ...]]] = {}
-_ip_addresses_pending: dict[bool, asyncio.Task[tuple[str, ...]]] = {}
+_ip_addresses_cache: dict[tuple[bool, bool], tuple[float, tuple[str, ...]]] = {}
+_ip_addresses_pending: dict[tuple[bool, bool], asyncio.Task[tuple[str, ...]]] = {}
+
+# Interfaces that only ever carry container, VM or VPN traffic, so a device on the local
+# network can never reach us on their addresses.
+_VIRTUAL_INTERFACE_PREFIXES = (
+    "cali",
+    "cni",
+    "docker",
+    "flannel",
+    "hassio",
+    "incusbr",
+    "lxcbr",
+    "lxdbr",
+    "nordlynx",
+    "podman",
+    "ppp",
+    "tailscale",
+    "tap",
+    "tun",
+    "utun",
+    "vboxnet",
+    "veth",
+    "virbr",
+    "vmnet",
+    "wg",
+    "zt",
+)
+# Docker names its user-defined bridges br-<12 hex> and the macOS host-only bridges of
+# Docker Desktop, Parallels and VMware start at bridge100. Both are matched in full, so a
+# hand-named LAN bridge (br-lan on OpenWrt, a second macOS bridge1) is left alone - as are
+# the regular LAN bridge names br0, vmbr0 and bond0.
+_VIRTUAL_INTERFACE_NAMES = re.compile(r"br-[0-9a-f]{12}|bridge\d{3}")
 
 
 async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
@@ -939,32 +971,71 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
 
     :param include_ipv6: Whether to include IPv6 addresses in the result.
     """
-    if cached := _ip_addresses_cache.get(include_ipv6):
+    return await _get_ip_addresses(include_ipv6, publish_candidates_only=False)
+
+
+async def get_publish_ip_candidates(include_ipv6: bool = False) -> tuple[str, ...]:
+    """
+    Return the IP addresses a device on the local network may reach this host on.
+
+    Same as get_ip_addresses, minus the addresses of container, VM and VPN interfaces -
+    unless the host holds no other address at all.
+
+    :param include_ipv6: Whether to include IPv6 addresses in the result.
+    """
+    return await _get_ip_addresses(include_ipv6, publish_candidates_only=True)
+
+
+async def _get_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -> tuple[str, ...]:
+    """Return the host's IP addresses, enumerating the adapters at most once per TTL."""
+    cache_key = (include_ipv6, publish_candidates_only)
+    if cached := _ip_addresses_cache.get(cache_key):
         cached_at, addresses = cached
         if (time.monotonic() - cached_at) < IP_ADDRESSES_CACHE_TTL:
             return addresses
 
     async def _probe() -> tuple[str, ...]:
         try:
-            addresses = await asyncio.to_thread(_enumerate_ip_addresses, include_ipv6)
-            _ip_addresses_cache[include_ipv6] = (time.monotonic(), addresses)
+            addresses = await asyncio.to_thread(
+                _enumerate_ip_addresses, include_ipv6, publish_candidates_only
+            )
+            _ip_addresses_cache[cache_key] = (time.monotonic(), addresses)
             return addresses
         finally:
-            _ip_addresses_pending.pop(include_ipv6, None)
+            _ip_addresses_pending.pop(cache_key, None)
 
     # single-flight: no await between the pending-check and storing the task,
     # so concurrent callers always end up awaiting the same probe
-    if not (pending := _ip_addresses_pending.get(include_ipv6)):
+    if not (pending := _ip_addresses_pending.get(cache_key)):
         pending = asyncio.create_task(_probe())
-        _ip_addresses_pending[include_ipv6] = pending
-    # shield the shared probe: a caller awaiting a task holds it as its fut_waiter,
-    # so cancelling that caller would otherwise cancel the probe for all other callers
-    return await asyncio.shield(pending)
+        pending.add_done_callback(_log_ip_probe_failure)
+        _ip_addresses_pending[cache_key] = pending
+    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
+    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
+    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
+    # cancelled caller makes it report the probe's exception through
+    # loop.call_exception_handler, even when another caller already handled it.
+    if not pending.done():
+        await asyncio.wait((pending,))
+    return pending.result()
 
 
-def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
+def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
+    """Log (and thereby retrieve) the exception of a finished address probe, if any."""
+    if probe.cancelled():
+        return
+    # every waiter that is still around reports the failure itself, so a debug line is
+    # enough here; retrieving the exception is what keeps asyncio from reporting it as
+    # "Task exception was never retrieved" once the probe is garbage collected
+    if (err := probe.exception()) is not None:
+        LOGGER.debug("Enumerating IP addresses failed: %s", err)
+
+
+def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -> tuple[str, ...]:
     """Enumerate all IP addresses of all network interfaces (blocking)."""
     result: list[tuple[int, str]] = []
+    # the same addresses, without the ones no device on the local network can reach
+    lan_result: list[tuple[int, str]] = []
     # try to get the primary IP address
     # this is the IP address of the default route
     primary_ip = ""
@@ -993,6 +1064,9 @@ def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
     # get all IP addresses of all network interfaces
     adapters = ifaddr.get_adapters()
     for adapter in adapters:
+        adapter_is_virtual = _is_virtual_interface(adapter.name) or _is_virtual_interface(
+            adapter.nice_name
+        )
         for ip in adapter.ips:
             if ip.is_IPv6 and not include_ipv6:
                 continue
@@ -1017,12 +1091,24 @@ def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
             else:
                 score = 0
             result.append((score, ip_str))
-    result.sort(key=lambda x: x[0], reverse=True)
-    if not result:
+            if not adapter_is_virtual:
+                lan_result.append((score, ip_str))
+    # a host that is only reachable over a tunnel or bridge still has to publish something
+    selected = (lan_result or result) if publish_candidates_only else result
+    selected.sort(key=lambda x: x[0], reverse=True)
+    if not selected:
         # no routable addresses found (e.g. offline host with only loopback/link-local):
         # fall back to loopback so callers that rely on at least one address keep working
         return ("127.0.0.1",)
-    return tuple(ip[1] for ip in result)
+    return tuple(ip[1] for ip in selected)
+
+
+def _is_virtual_interface(name: str) -> bool:
+    """Return whether the named interface belongs to a container, VM or VPN network."""
+    name = name.lower()
+    return name.startswith(_VIRTUAL_INTERFACE_PREFIXES) or bool(
+        _VIRTUAL_INTERFACE_NAMES.fullmatch(name)
+    )
 
 
 def interface_name_for_ip(ip: str) -> str | None:
@@ -1041,10 +1127,6 @@ def interface_name_for_ip(ip: str) -> str | None:
             if addr == ip:
                 return adapter.name
     return None
-
-
-async def get_primary_ip_address() -> str | None:
-    """Return the primary IP address of the system."""
 
 
 async def is_port_in_use(port: int, host: str | None = None) -> bool:
@@ -1114,7 +1196,7 @@ async def select_free_port(range_start: int, range_end: int, host: str | None = 
             if not await is_port_in_use(port, host=host):
                 _reserved_ports[port] = now + _PORT_RESERVATION_TTL
                 return port
-    msg = "No free port available"
+    msg = f"No free port available in range {range_start}-{range_end - 1}"
     raise OSError(msg)
 
 
@@ -1135,30 +1217,14 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-async def get_source_ip_for_target(
-    target_ip: str,
-    *,
-    bind_ip: str | None = None,
-    publish_ip: str | None = None,
-) -> str:
+async def get_source_ip_for_target(target_ip: str) -> str:
     """
-    Resolve a local, bindable source IP that routes to ``target_ip``.
+    Return the local interface address the routing table would egress to ``target_ip`` from.
 
-    For providers that must bind a socket to, or advertise a callback URL
-    reachable by, one specific device. ``publish_ip`` (the server's advertised
-    address) is not necessarily a locally bindable interface address — e.g. a
-    container behind a published IP, or a multi-homed host — so binding to it
-    directly can fail with ``EADDRNOTAVAIL``.
+    Empty when no route to the target can be determined.
 
-    Resolution order:
-      1. an explicitly configured, concrete (non-wildcard) ``bind_ip``;
-      2. a routing-table lookup to ``target_ip`` (the interface that would
-         actually egress to it);
-      3. ``publish_ip`` as a concrete fallback;
-      4. ``bind_ip`` (even if a wildcard) as a last resort.
+    :param target_ip: IP address of the device the traffic is meant for.
     """
-    if bind_ip and bind_ip not in ("0.0.0.0", "::"):
-        return bind_ip
 
     def _routing_lookup() -> str:
         try:
@@ -1174,15 +1240,13 @@ async def get_source_ip_for_target(
                 _sock.settimeout(1.0)
                 _sock.connect(route_target)
                 routed_ip = str(_sock.getsockname()[0])
-                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
                     return routed_ip
             except OSError:
                 pass
         return ""
 
-    if routed := await asyncio.to_thread(_routing_lookup):
-        return routed
-    return str(publish_ip or "") or str(bind_ip or "")
+    return await asyncio.to_thread(_routing_lookup)
 
 
 async def get_ip_pton(ip_string: str) -> bytes:
@@ -1991,13 +2055,28 @@ class _SupportsMass(Protocol):
 def guard_single_request[SelfT: _SupportsMass, **P, R](
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
-    """Guard single request to a function."""
+    """
+    Ensure concurrent calls with identical arguments result in a single request.
+
+    Callers arriving while an identical call is already in flight await that same call and
+    receive its result. Cancelling one caller leaves both the request and the other callers
+    unaffected. Calls count as identical when they are made on the same object with equally
+    represented arguments.
+
+    :param func: The coroutine method to guard.
+    """
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
-        # create a task_id dynamically based on the function and args/kwargs
-        cache_key_parts = [func.__class__.__name__, func.__name__, *args]
+        # create a task_id dynamically based on the bound method and args/kwargs.
+        # the instance is part of the key because a decorated method may be inherited by
+        # multiple subclasses (all media controllers share
+        # MediaControllerBase.get_provider_item) and a class may have multiple instances
+        # (e.g. a provider set up twice), which must never join each other's flight.
+        # id(self) is stable while a flight is live because the task references self;
+        # the class name only serves to keep the task_id readable while debugging.
+        cache_key_parts = [type(self).__name__, id(self), func.__qualname__, *args]
         for key in sorted(kwargs.keys()):
             cache_key_parts.append(f"{key}{kwargs[key]}")
         task_id = ".".join(map(str, cache_key_parts))
@@ -2010,6 +2089,13 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             eager_start=True,
             **kwargs,
         )
-        return await task
+        # wait for the shared task instead of awaiting it directly: a caller awaiting a
+        # task holds it as its fut_waiter, so cancelling that caller would cancel the
+        # request for every other caller too. asyncio.shield achieves the same, but as of
+        # Python 3.14 a cancelled caller makes it report the request's exception through
+        # loop.call_exception_handler, even when another caller already handled it.
+        if not task.done():
+            await asyncio.wait((task,))
+        return task.result()
 
     return wrapper

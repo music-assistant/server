@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import re
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -47,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 41
+API_SCHEMA_VERSION: Final[int] = 43
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -97,6 +98,7 @@ CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 CONF_SERVER_ID: Final[str] = "server_id"
 CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
 CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
+CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
@@ -111,6 +113,12 @@ CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
+CONF_PLAYER_DSP_IRS: Final[str] = "player_dsp_irs"
+# subdirectory under the storage path holding convolution impulse response files
+DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
+# impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
+# validating against this keeps a caller-supplied id from escaping the storage dir
+DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
@@ -121,6 +129,8 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
+# Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
+SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
@@ -199,7 +209,6 @@ def _default_background_scan_concurrency() -> int:
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
-DEFAULT_PORT: Final[int] = 8095
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
@@ -346,10 +355,7 @@ CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
-DEFAULT_CORE_CONFIG_ENTRIES = (
-    CONF_ENTRY_LOG_LEVEL,
-    CONF_ENTRY_MAX_CONCURRENT_TASKS,
-)
+DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 
 # some reusable player config entries
 
@@ -646,6 +652,13 @@ CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
         "hidden": True,
     }
 )
+CONF_ENTRY_HTTP_PROFILE_FORCED_3 = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
+        "default_value": "forced_content_length",
+        "hidden": True,
+    }
+)
 CONF_ENTRY_HTTP_PROFILE_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "hidden": True}
 )
@@ -806,12 +819,12 @@ CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
 CONF_ENTRY_PLAYER_ICON = ConfigEntry(
     key=CONF_ICON,
     type=ConfigEntryType.ICON,
-    default_value="mdi-speaker",
+    default_value="speaker",
     category="generic",
 )
 
 CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
-    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
+    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "speakers"}
 )
 
 

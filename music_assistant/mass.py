@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -335,21 +336,31 @@ class MusicAssistant:
             *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
             return_exceptions=True,
         )
-        # stop core controllers
-        await self.discovery.close()
-        await self.streams.close()
-        await self.webserver.close()
-        await self.tasks.close()
-        await self.metadata.close()
-        await self.music.close()
-        await self.player_queues.close()
-        await self.players.close()
-        await self.translations.close()
-        await self.diagnostics.close()
-        await self.dashboard.close()
-        # cleanup cache and config
-        await self.config.close()
-        await self.cache.close()
+        # stop core controllers, cache and config last because the others rely on them.
+        # a failed startup may not have created (or fully set up) every controller, so
+        # each one is closed independently: leaving a database open here would keep its
+        # worker thread alive and stop the process from ever exiting.
+        for controller_name in (
+            "discovery",
+            "streams",
+            "webserver",
+            "tasks",
+            "metadata",
+            "music",
+            "player_queues",
+            "players",
+            "translations",
+            "diagnostics",
+            "dashboard",
+            "config",
+            "cache",
+        ):
+            if (controller := getattr(self, controller_name, None)) is None:
+                continue
+            try:
+                await controller.close()
+            except Exception:
+                LOGGER.exception("Error while closing the %s controller", controller_name)
         # close/cleanup shared http sessions
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
@@ -409,6 +420,18 @@ class MusicAssistant:
             onboard_done=self.config.onboard_done,
             status=self._state,
         )
+
+    @api_command("time", authenticated=False)
+    def get_server_time(self) -> float:
+        """
+        Return the current server time as UTC timestamp (seconds since epoch).
+
+        Clients compare server-provided timestamps (such as `elapsed_time_last_updated`)
+        against their own clock. Round-tripping this command lets a client estimate the
+        offset between the two clocks and correct for it, so a device with an unsynced
+        clock still renders playback progress and countdowns correctly.
+        """
+        return time.time()
 
     @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
@@ -722,7 +745,11 @@ class MusicAssistant:
             task_id = uuid4().hex
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
-            self._tracked_tasks.pop(task_id, None)
+            # done callbacks run one event loop iteration after the task finished, so a
+            # caller may already have replaced the entry with a new task under the same
+            # task_id - only untrack when the entry still points at this task
+            if self._tracked_tasks.get(task_id) is _task:
+                del self._tracked_tasks[task_id]
             if _task.cancelled():
                 return
             # always retrieve the exception, otherwise asyncio logs a noisy
@@ -987,7 +1014,9 @@ class MusicAssistant:
 
     async def unload_provider(self, instance_id: str, is_removed: bool = False) -> None:
         """Unload a provider."""
-        self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
+        # this waits (bounded) for a running sync to unwind: provider.unload() below tears
+        # down state the sync may still be using, such as the mount of a network share
+        await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
@@ -1443,4 +1472,9 @@ class MusicAssistant:
         if self._state == new_state:
             return
         self._state = new_state
+        if not hasattr(self, "webserver"):
+            # a startup that failed before the core controllers were created has no
+            # server info to report and no subscribers to report it to, while the state
+            # itself must still change so that shutdown can run to completion
+            return
         self.signal_event(EventType.CORE_STATE_UPDATED, data=self.get_server_info())

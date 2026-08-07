@@ -66,7 +66,11 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        PlayerConfig,
+    )
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -80,6 +84,29 @@ _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
     """Return elapsed_time clamped to a non-negative value."""
     return max(0.0, elapsed_time) if elapsed_time is not None else None
+
+
+def _resolve_position(
+    primary: int | None,
+    primary_last_updated: float | None,
+    fallback: float | None,
+    fallback_last_updated: float | None,
+) -> tuple[int | None, float | None]:
+    """
+    Return the (elapsed_time, elapsed_time_last_updated) pair to report for a media item.
+
+    :param primary: Position reported by the media itself, preferred when set.
+    :param primary_last_updated: Timestamp belonging to the primary position.
+    :param fallback: Position to report when the media has none of its own.
+    :param fallback_last_updated: Timestamp belonging to the fallback position.
+    """
+    # a position is only meaningful together with the timestamp it was taken at,
+    # so both values always come from the same source - never a mix of the two
+    if primary is not None:
+        return primary, primary_last_updated
+    if fallback is not None:
+        return int(fallback), fallback_last_updated
+    return None, None
 
 
 # corrected-position jumps larger than this (in seconds) are treated as a discrete
@@ -613,6 +640,18 @@ class Player(ABC):
         return self._attr_can_group_with
 
     @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """
+        Return whether native grouping only works while this player renders its own stream.
+
+        Device-side grouping keeps working whatever feeds the leader, so members can
+        stay natively grouped while the leader streams over another protocol.
+        Grouping that attaches members to the leader's own stream has nothing for
+        them to join once the leader moves to a protocol.
+        """
+        return False
+
+    @property
     def is_active_session(self) -> bool:
         """
         Return whether this group player is currently holding (capturing) its members.
@@ -923,12 +962,18 @@ class Player(ABC):
         """
         return []
 
-    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+    async def handle_config_action(
+        self, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult | None:
         """
-        Handle a one-shot action button press from this player's config and re-render.
+        Run the one-shot side effect for a pressed action button from this player's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        player declares, then return the (possibly refreshed) config entries to display.
+        player declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning entries re-renders the config form from the
+        owning player's freshly resolved entries; the returned entries themselves are not
+        shown, so they serve only as the signal that a re-render is needed.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -1306,7 +1351,9 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        return cast("str", self._config.get_value(CONF_ENTRY_PLAYER_ICON.key))
+        # players without an icon config entry (e.g. protocol players) serve the fallback id
+        icon = self._config.get_value(CONF_ENTRY_PLAYER_ICON.key)
+        return cast("str", icon or CONF_ENTRY_PLAYER_ICON.default_value)
 
     @cached_property
     @final
@@ -1360,6 +1407,10 @@ class Player(ABC):
     def mute_control(self) -> str:
         """Return the mute control type."""
         conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL)
+        if conf == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control to drive there is no way to mute this player at all
+            return PLAYER_CONTROL_NONE
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
@@ -2302,7 +2353,7 @@ class Player(ABC):
             or self.__final_synced_to
             or (self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id)
         )
-        _, _, jumped = _reconcile_position_anchor(
+        position, timestamp, jumped = _reconcile_position_anchor(
             prev_media.elapsed_time,
             prev_media.elapsed_time_last_updated,
             new_media.elapsed_time,
@@ -2311,10 +2362,11 @@ class Player(ABC):
             new_playing,
             force_adopt=mirrors_parent,
         )
-        if not mirrors_parent and not jumped:
-            # steady playback: keep the previous anchor so nothing changed
-            new_media.elapsed_time = prev_media.elapsed_time
-            new_media.elapsed_time_last_updated = prev_media.elapsed_time_last_updated
+        if not mirrors_parent:
+            # steady playback resolves to the previous anchor, so nothing changed;
+            # a jump (or a previous anchor that was still incomplete) adopts the new one
+            new_media.elapsed_time = int(position) if position is not None else None
+            new_media.elapsed_time_last_updated = timestamp
         return jumped
 
     @cached_property
@@ -2545,6 +2597,12 @@ class Player(ABC):
             ):
                 # handle stream metadata in streamdetails (e.g. for radio stream)
                 image_url = stream_metadata.image_url or item_image_url
+                elapsed_time, elapsed_time_last_updated = _resolve_position(
+                    stream_metadata.elapsed_time,
+                    stream_metadata.elapsed_time_last_updated,
+                    active_queue.elapsed_time,
+                    active_queue.elapsed_time_last_updated,
+                )
                 return PlayerMedia(
                     uri=current_item.uri,
                     media_type=current_item.media_type,
@@ -2556,9 +2614,8 @@ class Player(ABC):
                     duration=stream_metadata.duration or current_item.duration,
                     source_id=active_queue.queue_id,
                     queue_item_id=current_item.queue_item_id,
-                    elapsed_time=stream_metadata.elapsed_time or int(active_queue.elapsed_time),
-                    elapsed_time_last_updated=stream_metadata.elapsed_time_last_updated
-                    or active_queue.elapsed_time_last_updated,
+                    elapsed_time=elapsed_time,
+                    elapsed_time_last_updated=elapsed_time_last_updated,
                 )
             if media_item := current_item.media_item:
                 # normal media item
@@ -2612,6 +2669,12 @@ class Player(ABC):
         # return native current media if no group/queue is active
         if self.current_media:
             image_url = self.current_media.image_url
+            elapsed_time, elapsed_time_last_updated = _resolve_position(
+                self.current_media.elapsed_time,
+                self.current_media.elapsed_time_last_updated,
+                self.elapsed_time,
+                self.elapsed_time_last_updated,
+            )
             return PlayerMedia(
                 uri=self.current_media.uri,
                 media_type=self.current_media.media_type,
@@ -2623,11 +2686,8 @@ class Player(ABC):
                 duration=self.current_media.duration,
                 source_id=self.current_media.source_id or active_source,
                 queue_item_id=self.current_media.queue_item_id,
-                elapsed_time=self.current_media.elapsed_time or int(self.elapsed_time)
-                if self.elapsed_time
-                else None,
-                elapsed_time_last_updated=self.current_media.elapsed_time_last_updated
-                or self.elapsed_time_last_updated,
+                elapsed_time=elapsed_time,
+                elapsed_time_last_updated=elapsed_time_last_updated,
             )
         return None
 

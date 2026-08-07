@@ -1,6 +1,7 @@
 """Unit tests for AirPlay player."""
 
 import asyncio
+import logging
 import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -658,6 +659,43 @@ async def test_volume_set_skipped_while_muted(airplay_player: AirPlayPlayer) -> 
 
 
 @pytest.mark.asyncio
+async def test_volume_set_records_level_before_sending(airplay_player: AirPlayPlayer) -> None:
+    """A resync reading the level mid-send must observe the new volume, not the old one."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 20
+    observed: list[int | None] = []
+
+    async def read_level_while_sending(_command: str) -> bool:
+        # stands in for the connect-time volume resync, which reads the player's
+        # level while this send is still suspended
+        await asyncio.sleep(0)
+        observed.append(airplay_player.volume_level)
+        return True
+
+    send_cmd.side_effect = read_level_while_sending
+
+    await airplay_player.volume_set(80)
+
+    assert observed == [80]
+    assert airplay_player.volume_level == 80
+
+
+@pytest.mark.asyncio
+async def test_volume_set_records_level_when_the_send_fails(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A dropped command must not lose the requested level; the resync repairs the device."""
+    send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = False
+    airplay_player._attr_volume_level = 20
+
+    await airplay_player.volume_set(80)
+
+    send_cmd.assert_awaited_once_with("VOLUME=80")
+    assert airplay_player.volume_level == 80
+
+
+@pytest.mark.asyncio
 async def test_volume_unmute_restores_volume(airplay_player: AirPlayPlayer) -> None:
     """Unmuting with a running stream should send VOLUME={current_volume}."""
     send_cmd = _setup_running_stream(airplay_player)
@@ -1250,6 +1288,44 @@ async def test_stop_cancels_pending_rejoin() -> None:
         assert player._rejoin_task is None
         await asyncio.sleep(0)
         assert rejoin_task.cancelled()
+
+
+# --- Group membership and the leader's stream session ---
+
+
+@pytest.mark.asyncio
+async def test_set_members_adds_the_child_to_the_running_session() -> None:
+    """A member joining a leader with a live session is added to that session."""
+    leader = _make_playing_leader()
+    child = _make_idle_player("child")
+    _attach_running_session(leader, [leader])
+    session = cast("MagicMock", leader.stream).session
+    session.add_client = AsyncMock()
+    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+
+    await leader.set_members(player_ids_to_add=["child"])
+
+    session.add_client.assert_awaited_once_with(child)
+    assert leader.group_members == ["leader", "child"]
+
+
+@pytest.mark.asyncio
+async def test_set_members_warns_when_the_leader_has_no_session(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A member joining a leader that renders through a protocol gets no audio, loudly."""
+    leader = _make_idle_player("leader")
+    leader.logger = logging.getLogger("test.airplay.player")
+    child = _make_idle_player("child")
+    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+    # the leader hands its audio to one of its output protocols, so it has no session
+    leader.set_active_output_protocol("bridge_leader")
+
+    with caplog.at_level(logging.WARNING):
+        await leader.set_members(player_ids_to_add=["child"])
+
+    assert leader.group_members == ["leader", "child"]
+    assert "no stream session to join" in caplog.text
 
 
 # --- Device password ---

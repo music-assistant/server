@@ -7,21 +7,22 @@ import os
 import platform
 import plistlib
 import re
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
-from music_assistant.helpers.util import format_ip_for_url, get_source_ip_for_target
+from music_assistant.helpers.util import format_ip_for_url
+
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
 _COMPANION_PAIRING_DISABLED = 0x04
@@ -34,30 +35,6 @@ _CLI_BINARY_CHECK_TIMEOUT = 15.0
 # Bound the /info capability probe: it runs in the discovery path, and a receiver
 # that is slow to answer must not hold up player registration.
 _INFO_PROBE_TIMEOUT = 5.0
-
-
-async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
-    """
-    Resolve best local interface IP for cliairplay's --if argument.
-
-    :param mass: The MusicAssistant instance.
-    :param target_ip: The IP address of the target AirPlay device.
-    """
-    # 1. Prefer an explicitly configured zeroconf interface. The setting may be a
-    #    comma-separated list; pick the first non-empty, non-default/all entry.
-    zc_iface = str(mass.discovery.config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-    for candidate in zc_iface.split(","):
-        iface = candidate.strip()
-        if iface and iface not in ("default", "all"):
-            return iface
-    # 2. Otherwise resolve a bindable, device-reachable source IP: an explicit
-    #    stream bind_ip, else a routing-table lookup to this specific device,
-    #    else publish_ip. Shared with the other providers that need this.
-    return await get_source_ip_for_target(
-        target_ip,
-        bind_ip=str(mass.streams.bind_ip),
-        publish_ip=str(mass.streams.publish_ip or ""),
-    )
 
 
 def convert_airplay_volume(value: float) -> int:
@@ -191,6 +168,27 @@ def is_apple_tv(manufacturer: str, model: str) -> bool:
     (e.g. "Apple TV 4K", "Apple TV Gen4").
     """
     return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
+def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
+    """
+    Return the default receiver buffer depth in ms for a device, 0 for automatic.
+
+    :param manufacturer: Device manufacturer from discovery.
+    :param model: Device model from discovery.
+    :param fv: The device's _airplay fv (firmware) TXT record, when known.
+    """
+    for manufacturer_match, model_match, fv_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
+        # fnmatchcase with both sides lowered: plain fnmatch only normalizes
+        # case on case-insensitive platforms, so a capitalized table row would
+        # match on macOS and silently fail on Linux.
+        if (
+            fnmatchcase(manufacturer.lower(), manufacturer_match.lower())
+            and fnmatchcase(model.lower(), model_match.lower())
+            and fnmatchcase((fv or "").lower(), fv_match.lower())
+        ):
+            return depth_ms
+    return 0
 
 
 def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
@@ -370,12 +368,9 @@ def serialize_txt_records(discovery_info: AsyncServiceInfo) -> str:
     return " ".join(pairs)
 
 
-def get_final_output_format(
-    audio_format: AudioFormat,
-    airplay_player: AirPlayPlayer,  # noqa: ARG001
-) -> AudioFormat:
+def get_final_output_format(audio_format: AudioFormat) -> AudioFormat:
     """
-    Determine final output format for display purposes.
+    Determine the output format ffmpeg must encode to for the cliairplay binary.
 
     The cliairplay binary always uses ALAC encoding internally.
     """

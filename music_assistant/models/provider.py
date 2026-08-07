@@ -15,7 +15,11 @@ from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGE
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
@@ -34,6 +38,9 @@ class Provider:
     mass: MusicAssistant
     manifest: ProviderManifest
     config: ProviderConfig
+    # set to True in providers that capture a mass.streams address or port while loading,
+    # to have them reloaded onto the new one when the streamserver network changes
+    reload_on_streams_network_change: bool = False
 
     def __init__(
         self,
@@ -70,12 +77,17 @@ class Provider:
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
-        Handle a one-shot action button press from this provider's options and re-render.
+        Run the one-shot side effect for a pressed action button from this provider's options.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        provider declares, then return the (possibly refreshed) config entries to display.
+        provider declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning config entries re-renders the options page
+        with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -124,7 +136,9 @@ class Provider:
                 self.domain,
                 self.instance_id,
             )
-            task_id = f"provider_reload_{self.instance_id}"
+            # armed under the load path's task id so any (re)load starting before it fires
+            # cancels it
+            task_id = f"load_provider_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:
@@ -370,7 +384,4 @@ class Provider:
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            # if the root logger's level is higher, we need to adjust that too
-            logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)

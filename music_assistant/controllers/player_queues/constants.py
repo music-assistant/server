@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from music_assistant_models.enums import MediaType
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -80,3 +82,11 @@ QUEUE_CACHE_SAVE_DELAY = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
+
+# Media types that may reach us without a duration, so one determined while streaming is applied.
+# Radio and audio sources would wrongly become seekable. Tracks always carry a duration and a
+# rounded value would affect crossfade and gapless timing.
+PROBED_DURATION_MEDIA_TYPES = (
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
