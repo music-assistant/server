@@ -56,10 +56,12 @@ fi
 warn_missing() {
   local reason=$1 brew_pkg=$2 apt_pkg=$3
   echo "⚠️  $reason"
-  if [[ "$(uname -s)" == "Darwin" ]]; then
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "    Install it with: sudo apt-get install $apt_pkg"
+  elif command -v brew &>/dev/null; then
     echo "    Install it with: brew install $brew_pkg"
   else
-    echo "    Install it with: sudo apt-get install $apt_pkg"
+    echo "    Install Homebrew from https://brew.sh, then: brew install $brew_pkg"
   fi
   missing_prereqs=1
 }
