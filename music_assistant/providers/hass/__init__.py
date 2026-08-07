@@ -22,7 +22,7 @@ from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -51,7 +51,6 @@ from .constants import (
     CONF_MUTE_CONTROLS,
     CONF_POWER_CONTROLS,
     CONF_VOLUME_CONTROLS,
-    CONTROL_DOMAINS,
     OFF_STATES,
     MediaPlayerEntityFeature,
     parse_supported_features,
@@ -61,7 +60,7 @@ from .control_entities import (
     ControlEntitySearch,
     HassControlEntitySearchResult,
 )
-from .helpers import ControlCapabilities, get_control_capabilities, get_control_name
+from .helpers import ControlCapabilities, get_control_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
@@ -144,58 +143,19 @@ async def setup(
     return HomeAssistantProvider(mass, manifest, config, set())
 
 
-async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigEntry, ...]:
-    """Return the (entity based) config entries."""
-    all_power_entities: list[ConfigValueOption] = []
-    all_mute_entities: list[ConfigValueOption] = []
-    all_volume_entities: list[ConfigValueOption] = []
-    if not hass_prov.hass.connected:
-        return ()
-    states = await hass_prov.get_states(domains=CONTROL_DOMAINS)
-    for state in states:
-        capabilities = get_control_capabilities(state, hass_prov.logger)
-        option = ConfigValueOption(
-            state["entity_id"], title=get_control_name(state["entity_id"], state)
+def _control_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return the config entries holding the entities selected as player controls."""
+    return tuple(
+        ConfigEntry(
+            key=conf_key,
+            type=ConfigEntryType.STRING,
+            multi_value=True,
+            required=True,
+            default_value=[],
+            category="player_controls",
         )
-        if capabilities.power:
-            all_power_entities.append(option)
-        if capabilities.volume:
-            all_volume_entities.append(option)
-        if capabilities.mute:
-            all_mute_entities.append(option)
-    all_power_entities.sort(key=lambda x: x.title or "")
-    all_mute_entities.sort(key=lambda x: x.title or "")
-    all_volume_entities.sort(key=lambda x: x.title or "")
-    entries: list[ConfigEntry] = [
-        ConfigEntry(
-            key=CONF_POWER_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=all_power_entities,
-            default_value=[],
-            category="player_controls",
-        ),
-        ConfigEntry(
-            key=CONF_VOLUME_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=all_volume_entities,
-            default_value=[],
-            category="player_controls",
-        ),
-        ConfigEntry(
-            key=CONF_MUTE_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=all_mute_entities,
-            default_value=[],
-            category="player_controls",
-        ),
-    ]
-    return tuple(entries)
+        for conf_key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
+    )
 
 
 class HomeAssistantProvider(PluginProvider):
@@ -275,46 +235,7 @@ class HomeAssistantProvider(PluginProvider):
             # url/token/verify_ssl are collected by the setup flow instead (see setup_flow.py)
             base_entries = ()
 
-        # append player controls entries (if we have an active instance)
-        if self.available:
-            try:
-                return (
-                    *base_entries,
-                    *(await _get_config_entries(self)),
-                )
-            except TimeoutError:
-                # listing the selectable entities needs a live sweep of Home Assistant, so a
-                # slow or busy instance must not fail config resolution for the whole server.
-                # The entries below carry no options but do keep any stored selection.
-                self.logger.warning(
-                    "Timeout fetching entities from Home Assistant, "
-                    "player control options are unavailable until the next refresh"
-                )
-
-        return (
-            *base_entries,
-            ConfigEntry(
-                key=CONF_POWER_CONTROLS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label=CONF_POWER_CONTROLS,
-                default_value=[],
-            ),
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROLS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label=CONF_VOLUME_CONTROLS,
-                default_value=[],
-            ),
-            ConfigEntry(
-                key=CONF_MUTE_CONTROLS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label=CONF_MUTE_CONTROLS,
-                default_value=[],
-            ),
-        )
+        return (*base_entries, *_control_config_entries())
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""

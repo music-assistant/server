@@ -84,6 +84,8 @@ ENTITIES: dict[str, tuple[str | None, str | None, str, dict[str, Any]]] = {
         {"supported_features": FULL_MEDIA_PLAYER_FEATURES, "mass_player_type": "player"},
     ),
     "media_player.featureless": (None, None, "Featureless Player", {"supported_features": 0}),
+    # an uninterpretable supported_features value must not take the whole search down
+    "media_player.broken_features": (None, None, "Broken Receiver", {"supported_features": []}),
     "switch.kitchen_power": ("dev_kitchen", None, "Kitchen Power", {}),
     "number.kitchen_volume": ("dev_kitchen", "area_office", "Kitchen Volume", {}),
     "input_boolean.standalone": (None, "area_living", "Standalone Toggle", {}),
@@ -324,6 +326,16 @@ async def test_search_matches_every_word_separately(search: str, expected: list[
     assert sorted(_entity_ids(result["groups"])) == sorted(expected)
 
 
+async def test_search_survives_an_entity_with_invalid_features() -> None:
+    """Skip an entity reporting an uninterpretable supported_features value."""
+    async with _start_provider() as (provider, _):
+        result = await provider.search_control_entities(search="receiver")
+        usable = await provider.search_control_entities(search="amplifier")
+
+    assert _entity_ids(result["groups"]) == []
+    assert _entity_ids(usable["groups"]) == ["media_player.living_amp"]
+
+
 async def test_search_without_text_returns_all_eligible_entities() -> None:
     """Return every entity that can serve a control role when no search text is given."""
     async with _start_provider() as (provider, _):
@@ -375,6 +387,7 @@ async def test_control_type_filters_on_capability() -> None:
     # a volume search must not sweep the states of the on/off-only domains
     assert volume_requests == [
         "input_number.attic_volume",
+        "media_player.broken_features",
         "media_player.featureless",
         "media_player.living_amp",
         "media_player.mass_player",

@@ -29,7 +29,6 @@ from music_assistant.providers.hass.constants import (
     CONF_MUTE_CONTROLS,
     CONF_POWER_CONTROLS,
     CONF_VOLUME_CONTROLS,
-    MediaPlayerEntityFeature,
 )
 from tests.common import use_real_create_task
 
@@ -1211,58 +1210,32 @@ async def test_entity_registry_subscription_is_replaced() -> None:
         assert hass.active_event_subscriptions == 0
 
 
-async def test_config_entries_survive_a_state_fetch_timeout() -> None:
-    """A Home Assistant too slow to list its entities yields entries without options."""
+async def test_config_entries_do_not_read_home_assistant() -> None:
+    """Build the config entries without asking Home Assistant for anything."""
     async with _start_provider([_state("switch.example", "Example")]) as (provider, _):
-        # the entity sweep only runs for a provider the load machinery marked available
         provider.available = True
-        with patch.object(provider, "get_states", AsyncMock(side_effect=TimeoutError)):
+        with patch.object(provider, "get_states", AsyncMock()) as get_states:
             entries = await provider.get_config_entries()
 
-    keys = {entry.key for entry in entries}
-    assert CONF_POWER_CONTROLS in keys
-    assert all(not entry.options for entry in entries)
+    get_states.assert_not_awaited()
+    assert CONF_POWER_CONTROLS in {entry.key for entry in entries}
 
 
-async def test_config_entries_list_entities_as_options() -> None:
-    """A responsive Home Assistant offers its entities as player control options."""
+async def test_config_entries_offer_the_control_lists_without_options() -> None:
+    """Offer the control lists as plain entity id lists, filled in by the entity picker."""
     async with _start_provider([_state("switch.example", "Example")]) as (provider, _):
         provider.available = True
         entries = await provider.get_config_entries()
 
-    power_controls = next(entry for entry in entries if entry.key == CONF_POWER_CONTROLS)
-    assert [option.value for option in power_controls.options] == ["switch.example"]
-
-
-async def test_config_entries_survive_an_entity_with_invalid_features() -> None:
-    """An entity reporting an uninterpretable supported_features value is skipped."""
-    broken = {
-        "entity_id": "media_player.new_receiver",
-        "state": "idle",
-        "attributes": {"friendly_name": "New Receiver", "supported_features": []},
-    }
-    usable = {
-        "entity_id": "media_player.old_receiver",
-        "state": "idle",
-        "attributes": {
-            "friendly_name": "Old Receiver",
-            "supported_features": int(
-                MediaPlayerEntityFeature.TURN_ON
-                | MediaPlayerEntityFeature.TURN_OFF
-                | MediaPlayerEntityFeature.VOLUME_SET
-            ),
-        },
-    }
-
-    async with _start_provider([broken, usable]) as (provider, _):
-        provider.available = True
-        entries = await provider.get_config_entries()
-
-    options_by_key = {entry.key: entry.options for entry in entries}
-    for key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS):
-        assert [option.value for option in options_by_key[key] or ()] == [
-            "media_player.old_receiver"
-        ]
+    control_entries = [
+        entry
+        for entry in entries
+        if entry.key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
+    ]
+    assert len(control_entries) == 3
+    for entry in control_entries:
+        assert entry.options == []
+        assert entry.multi_value is True
 
 
 async def test_domain_states_use_a_single_subscription() -> None:
