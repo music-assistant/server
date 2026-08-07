@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from music_assistant_models.enums import DashboardType
 
 from music_assistant.helpers.api import parse_value
@@ -43,3 +44,43 @@ def test_parse_value_frozenset_of_str() -> None:
     """A json list is parsed into a frozenset when the annotation is frozenset[str]."""
     result = parse_value("values", ["a", "b"], frozenset[str])
     assert result == frozenset({"a", "b"})
+
+
+def test_parse_value_none_members_dropped_from_list() -> None:
+    """None members are dropped from a homogeneous list annotation."""
+    result = parse_value("values", ["a", None, "b"], list[str])
+    assert result == ["a", "b"]
+
+
+def test_parse_value_fixed_length_tuple_per_position_types() -> None:
+    """Each member of a fixed-length tuple is parsed against the type of its own position."""
+    result = parse_value("values", ["a", 1, "party"], tuple[str, int, DashboardType])
+    assert result == ("a", 1, DashboardType.PARTY)
+
+
+def test_parse_value_fixed_length_tuple_keeps_none_members() -> None:
+    """A None member of a fixed-length tuple is kept, so the tuple keeps its length."""
+    result = parse_value("values", ["a", "name", None], tuple[str, str, str | None])
+    assert result == ("a", "name", None)
+
+
+def test_parse_value_list_of_fixed_length_tuples() -> None:
+    """A json list of lists is parsed into tuples that each keep their None members."""
+    result = parse_value(
+        "stations",
+        [["t1", "Name A", "http://img"], ["t2", "Name B", None]],
+        list[tuple[str, str, str | None]],
+    )
+    assert result == [("t1", "Name A", "http://img"), ("t2", "Name B", None)]
+
+
+def test_parse_value_variadic_tuple() -> None:
+    """A json list is parsed into a tuple of arbitrary length for a variadic annotation."""
+    result = parse_value("values", ["a", "b", "c"], tuple[str, ...])
+    assert result == ("a", "b", "c")
+
+
+def test_parse_value_fixed_length_tuple_wrong_length() -> None:
+    """A value with the wrong number of members is rejected for a fixed-length tuple."""
+    with pytest.raises(ValueError):  # noqa: PT011
+        parse_value("values", ["a"], tuple[str, str])

@@ -497,6 +497,13 @@ def parse_value(  # noqa: PLR0911
     if value is None and value_type is NoneType:
         return None
     origin = get_origin(value_type)
+    if origin is tuple and (subtypes := get_args(value_type)) and subtypes[-1] is not Ellipsis:
+        # a fixed-length tuple annotates every position separately, so each member is
+        # parsed against its own type and kept, including the members that are None
+        return tuple(
+            parse_value(name, subvalue, subtype, allow_value_convert=allow_value_convert)
+            for subvalue, subtype in zip(value, subtypes, strict=True)
+        )
     if origin in (tuple, list, set, frozenset, Sequence, Iterable):
         # For abstract types like Sequence and Iterable, use list as the concrete type
         concrete_type = list if origin in (Sequence, Iterable) else origin
