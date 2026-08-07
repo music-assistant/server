@@ -1,9 +1,17 @@
 """Fixtures for Tidal provider tests."""
 
 from collections.abc import Generator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
+from music_assistant.providers.tidal.media import TidalMediaManager
+
+
+@pytest.fixture
+def media_manager(provider_mock: Mock) -> TidalMediaManager:
+    """Return a TidalMediaManager instance."""
+    return TidalMediaManager(provider_mock)
 
 
 @pytest.fixture(autouse=True)

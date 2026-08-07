@@ -77,14 +77,6 @@ def mass_mock() -> Mock:
 
 
 @pytest.fixture
-def manifest_mock() -> Mock:
-    """Return a mock provider manifest."""
-    manifest = Mock()
-    manifest.domain = "bandcamp"
-    return manifest
-
-
-@pytest.fixture
 def config_mock() -> Mock:
     """Return a mock provider config."""
     config = Mock()
