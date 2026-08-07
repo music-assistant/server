@@ -444,7 +444,9 @@ class StreamsAudio:
         mass = self.mass
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
-        extra_input_args = streamdetails.extra_input_args or []
+        # copy: the args below are appended per call, while the StreamDetails is cached on
+        # the queue item and reused across calls (retry, seek, background analysis)
+        extra_input_args = list(streamdetails.extra_input_args or [])
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -2186,6 +2188,7 @@ class StreamsAudio:
             """Return True if a newer stream session has taken over this queue."""
             return pq_data.session_id != flow_session_id
 
+        queue_exhausted = False
         while True:
             # bail out early if a newer producer has taken over this queue,
             # so we don't append another entry to a stream log we no longer own
@@ -2207,6 +2210,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
+                    queue_exhausted = True
                     break
 
             if self._flow_stream_needs_restart(
@@ -2548,7 +2552,7 @@ class StreamsAudio:
         if not _superseded():
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
-            self.mass.player_queues.queue_buffer_completed(queue.queue_id)
+            self.mass.player_queues.queue_buffer_completed(queue.queue_id, queue_exhausted)
 
     async def get_overlay_mixed_stream(
         self,

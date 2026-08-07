@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from music_assistant.providers.nugs import NugsProvider
+from tests.common import use_real_create_task
 
 POPULAR_DATA = {"items": [{"id": "100"}]}
 SHOW_DATA = {
@@ -47,6 +48,7 @@ def _install_cache_mocks(provider: NugsProvider) -> None:
         return_value=(None, False, False)
     )
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    use_real_create_task(provider.mass)
 
 
 @pytest.mark.asyncio
@@ -135,8 +137,10 @@ async def test_get_recommendation_items_warm_cache_hit(provider: NugsProvider) -
         # mimic production cache storing serialized data
         store[key] = data.to_dict() if hasattr(data, "to_dict") else data
 
-    def _create_task(coro: Any, **_kwargs: Any) -> None:
-        tasks.append(asyncio.ensure_future(coro))
+    def _create_task(coro: Any, **_kwargs: Any) -> Any:
+        task = asyncio.ensure_future(coro)
+        tasks.append(task)
+        return task
 
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
         side_effect=_cache_get

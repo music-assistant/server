@@ -40,6 +40,7 @@ from music_assistant.providers.bandcamp.constants import (
     DEFAULT_TOP_TRACKS_LIMIT,
     SUPPORTED_FEATURES,
 )
+from tests.common import use_real_create_task
 
 
 def _fan_mock(
@@ -71,6 +72,7 @@ def mass_mock() -> Mock:
     # the provider config's get_value (which the config mock stubs)
     mass.config.get = Mock(return_value=None)
     mass.config.get_raw_provider_config_value = Mock(return_value=None)
+    use_real_create_task(mass)
     return mass
 
 
