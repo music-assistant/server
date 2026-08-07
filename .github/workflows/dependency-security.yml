@@ -129,20 +129,27 @@ jobs:
 
           cat deps_report.md
 
-      # Step 3: Resolve what the target branch installs, so findings can be split into
-      # ones this PR introduces and ones that already exist there. Resolving is enough,
-      # no second environment has to be installed. pip-audit is included because it is
-      # part of the audited environment. On failure no file is written and the audit
-      # falls back to comparing the changed requirements.
-      - name: Resolve target branch dependencies
+      # Step 3: Resolve what both branches install, so findings can be split into ones
+      # this PR introduces and ones that already exist on the target branch. Resolving is
+      # enough, no second environment has to be installed. pip-audit is included because
+      # it is part of the audited environment. Both are resolved back to back so that a
+      # release published mid-run cannot make them disagree. On failure no file is written
+      # and the audit falls back to comparing the changed requirements.
+      - name: Resolve branch dependencies
         continue-on-error: true
         run: |
           BASE_BRANCH="${{ github.base_ref }}"
           git show origin/$BASE_BRANCH:requirements_all.txt > base_requirements.txt
           echo "pip-audit" >> base_requirements.txt
 
+          # Step 1 leaves the PR's own requirements_all.txt in place, in sync or not
+          cp requirements_all.txt head_requirements.txt
+          echo "pip-audit" >> head_requirements.txt
+
           uv pip compile --index-strategy unsafe-best-match --python .venv/bin/python \
             --no-annotate --no-header base_requirements.txt -o base_closure.txt
+          uv pip compile --index-strategy unsafe-best-match --python .venv/bin/python \
+            --no-annotate --no-header head_requirements.txt -o head_closure.txt
 
       # Step 4: Run pip-audit for known vulnerabilities. The audit covers the whole
       # installed environment, so only findings this PR introduces gate it; the ones
@@ -157,7 +164,7 @@ jobs:
           .venv/bin/pip-audit --format=json --output=audit.json || true
 
           # Gate when the scan itself could not be completed, rather than pass silently
-          STATUS=$(python3 scripts/audit_changed_packages.py audit.json new_deps.txt base_closure.txt) || STATUS=scan_failed
+          STATUS=$(python3 scripts/audit_changed_packages.py audit.json new_deps.txt base_closure.txt head_closure.txt) || STATUS=scan_failed
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
           echo "" >> audit_report.md
@@ -166,7 +173,7 @@ jobs:
               echo "⚠️  **Vulnerabilities detected in the dependencies this PR introduces!**" >> audit_report.md
               ;;
             preexisting)
-              echo "ℹ️  The findings above are already present on the target branch, so this PR does not introduce them." >> audit_report.md
+              echo "ℹ️  The findings above are not ones this PR introduces." >> audit_report.md
               ;;
             scan_failed)
               echo "❌ The vulnerability scan could not be completed." >> audit_report.md
