@@ -585,14 +585,19 @@ def _parse_sequence(
     :param origin: The unsubscripted origin of the annotation.
     :param allow_value_convert: Whether conversion of common type mistakes is allowed.
     """
+    subtypes = get_args(value_type)
+    # a None member is only kept when the element type admits it, so a plain annotation
+    # like list[str] still shrugs off the nulls a client may have sent along
+    keep_none = bool(subtypes) and (
+        subtypes[0] is NoneType
+        or (get_origin(subtypes[0]) in (Union, UnionType) and NoneType in get_args(subtypes[0]))
+    )
     # For abstract types like Sequence and Iterable, use list as the concrete type
     concrete_type = list if origin in (Sequence, Iterable) else origin
     return concrete_type(
-        parse_value(
-            name, subvalue, get_args(value_type)[0], allow_value_convert=allow_value_convert
-        )
+        parse_value(name, subvalue, subtypes[0], allow_value_convert=allow_value_convert)
         for subvalue in value
-        if subvalue is not None
+        if subvalue is not None or keep_none
     )
 
 

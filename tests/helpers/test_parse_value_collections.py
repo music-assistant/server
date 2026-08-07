@@ -47,9 +47,27 @@ def test_parse_value_frozenset_of_str() -> None:
 
 
 def test_parse_value_none_members_dropped_from_list() -> None:
-    """None members are currently dropped from a homogeneous list annotation."""
+    """None members are dropped when the element type of a list does not admit None."""
     result = parse_value("values", ["a", None, "b"], list[str])
     assert result == ["a", "b"]
+
+
+def test_parse_value_none_members_kept_for_optional_element_type() -> None:
+    """None members are kept when the element type of a list admits None."""
+    result = parse_value("values", ["a", None, "b"], list[str | None])
+    assert result == ["a", None, "b"]
+
+
+def test_parse_value_none_member_kept_in_set_of_optional() -> None:
+    """A None member is kept for a set with an element type that admits None."""
+    result = parse_value("values", ["a", None], set[str | None])
+    assert result == {"a", None}
+
+
+def test_parse_value_none_member_kept_in_variadic_tuple_of_optional() -> None:
+    """A None member is kept for a variadic tuple with an element type that admits None."""
+    result = parse_value("values", ["a", None, "b"], tuple[str | None, ...])
+    assert result == ("a", None, "b")
 
 
 def test_parse_value_fixed_length_tuple_per_position_types() -> None:
