@@ -116,30 +116,23 @@ class _FakeProvider:
 
 
 @pytest.fixture
-async def cache(mass_minimal: MusicAssistant) -> CacheController:
-    """Return an initialized cache controller."""
-    await mass_minimal.cache._setup_database()
-    return mass_minimal.cache
-
-
-@pytest.fixture
-def provider(cache: CacheController) -> _FakeProvider:
+def provider(cache_controller: CacheController) -> _FakeProvider:
     """Return a fake provider with @use_cache decorated methods."""
-    return _FakeProvider(cache.mass)
+    return _FakeProvider(cache_controller.mass)
 
 
-async def _get_row(cache: CacheController, key: str) -> Any:
+async def _get_row(cache_controller: CacheController, key: str) -> Any:
     """Return the raw cache db row for the given key."""
-    assert cache.database is not None
-    return await cache.database.get_row(
+    assert cache_controller.database is not None
+    return await cache_controller.database.get_row(
         DB_TABLE_CACHE, {"category": 0, "provider": _PROVIDER, "key": key}
     )
 
 
-async def _wait_for_stored(cache: CacheController, key: str) -> None:
+async def _wait_for_stored(cache_controller: CacheController, key: str) -> None:
     """Wait until the background store task has written the cache row."""
     for _ in range(200):
-        if await _get_row(cache, key):
+        if await _get_row(cache_controller, key):
             return
         await asyncio.sleep(0.01)
     pytest.fail(f"cache row for {key} was never written")
@@ -169,31 +162,33 @@ async def _wait_for_flight(provider: _FakeProvider) -> None:
 # --- result caching (including None results) ---
 
 
-async def test_result_served_from_cache(cache: CacheController, provider: _FakeProvider) -> None:
+async def test_result_served_from_cache(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
     """Test that a second call is served from cache without re-invoking the function."""
     provider.result = "value"
     assert await provider.fetch("a") == "value"
     assert provider.calls == 1
-    await _wait_for_stored(cache, "fetch.a")
+    await _wait_for_stored(cache_controller, "fetch.a")
     provider.result = "changed"
     assert await provider.fetch("a") == "value"
     assert provider.calls == 1
 
 
 async def test_none_result_cached_and_served(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that a None result is cached and served without re-invoking the function."""
     provider.result = None
     assert await provider.fetch("a") is None
     assert provider.calls == 1
-    await _wait_for_stored(cache, "fetch.a")
+    await _wait_for_stored(cache_controller, "fetch.a")
     assert await provider.fetch("a") is None
     assert provider.calls == 1
 
 
 async def test_cache_none_false_retries_and_skips_store(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that cache_none=False re-invokes on None and does not store the None result."""
     provider.result = None
@@ -201,23 +196,23 @@ async def test_cache_none_false_retries_and_skips_store(
     assert provider.calls == 1
     # give a (wrongly created) store task time to run, then verify nothing was written
     await asyncio.sleep(0.05)
-    assert await _get_row(cache, "fetch_no_none.a") is None
+    assert await _get_row(cache_controller, "fetch_no_none.a") is None
     assert await provider.fetch_no_none("a") is None
     assert provider.calls == 2
     # once the function returns a real value, it is cached again
     provider.result = "found"
     assert await provider.fetch_no_none("a") == "found"
     assert provider.calls == 3
-    await _wait_for_stored(cache, "fetch_no_none.a")
+    await _wait_for_stored(cache_controller, "fetch_no_none.a")
     assert await provider.fetch_no_none("a") == "found"
     assert provider.calls == 3
 
 
 async def test_cache_none_false_ignores_stored_none(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that cache_none=False treats a previously stored None row as a cache miss."""
-    await cache.set("fetch_no_none.a", None, provider=_PROVIDER)
+    await cache_controller.set("fetch_no_none.a", None, provider=_PROVIDER)
     provider.result = "fresh"
     assert await provider.fetch_no_none("a") == "fresh"
     assert provider.calls == 1
@@ -227,17 +222,17 @@ async def test_cache_none_false_ignores_stored_none(
 
 
 async def test_swr_serves_stale_and_refreshes(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that an expired entry is served immediately and refreshed in the background."""
-    await cache.set(
+    await cache_controller.set(
         "fetch_swr.a", "stale", provider=_PROVIDER, expiration=-1, allow_expired_cache=True
     )
     provider.result = "fresh"
     assert await provider.fetch_swr("a") == "stale"
 
     async def _refreshed() -> bool:
-        return bool(await cache.get("fetch_swr.a", provider=_PROVIDER) == "fresh")
+        return bool(await cache_controller.get("fetch_swr.a", provider=_PROVIDER) == "fresh")
 
     await _wait_for(_refreshed)
     assert provider.calls == 1
@@ -246,25 +241,31 @@ async def test_swr_serves_stale_and_refreshes(
 
 
 async def test_wrapper_performs_single_row_fetch(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that one wrapper call does exactly one db row fetch (miss, fresh and stale)."""
-    assert cache.database is not None
+    assert cache_controller.database is not None
     # cache miss
     provider.result = "value"
-    with patch.object(cache.database, "get_row", wraps=cache.database.get_row) as spy:
+    with patch.object(
+        cache_controller.database, "get_row", wraps=cache_controller.database.get_row
+    ) as spy:
         assert await provider.fetch_swr("a") == "value"
     assert spy.await_count == 1
     # fresh hit
-    await _wait_for_stored(cache, "fetch_swr.a")
-    with patch.object(cache.database, "get_row", wraps=cache.database.get_row) as spy:
+    await _wait_for_stored(cache_controller, "fetch_swr.a")
+    with patch.object(
+        cache_controller.database, "get_row", wraps=cache_controller.database.get_row
+    ) as spy:
         assert await provider.fetch_swr("a") == "value"
     assert spy.await_count == 1
     # stale hit (previously fetched the same row twice)
-    await cache.set(
+    await cache_controller.set(
         "fetch_swr.b", "stale", provider=_PROVIDER, expiration=-1, allow_expired_cache=True
     )
-    with patch.object(cache.database, "get_row", wraps=cache.database.get_row) as spy:
+    with patch.object(
+        cache_controller.database, "get_row", wraps=cache_controller.database.get_row
+    ) as spy:
         assert await provider.fetch_swr("b") == "stale"
     assert spy.await_count == 1
 
@@ -273,18 +274,18 @@ async def test_wrapper_performs_single_row_fetch(
 
 
 async def test_concurrent_misses_share_one_fetch(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that concurrent callers on the same key trigger one fetch and one store."""
     provider.result = "value"
     provider.gate.clear()
-    with patch.object(cache, "set", wraps=cache.set) as store:
+    with patch.object(cache_controller, "set", wraps=cache_controller.set) as store:
         tasks = [asyncio.create_task(provider.fetch("a")) for _ in range(3)]
         await _wait_for_flight(provider)
         provider.gate.set()
         assert await asyncio.gather(*tasks) == ["value", "value", "value"]
         assert provider.calls == 1
-        await _wait_for_stored(cache, "fetch.a")
+        await _wait_for_stored(cache_controller, "fetch.a")
     assert store.await_count == 1
 
 
@@ -322,7 +323,7 @@ async def test_model_results_are_copied_per_caller(provider: _FakeProvider) -> N
 
 
 async def test_caller_mutation_does_not_reach_the_other_callers(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that a caller mutating its result right away cannot affect the others."""
 
@@ -345,8 +346,10 @@ async def test_caller_mutation_does_not_reach_the_other_callers(
     assert mutated[0]["played"] is True
     assert [result[0]["played"] for result in others] == [False, False]
     # the entry is written from the fetched objects, which no caller was handed
-    await _wait_for_stored(cache, "fetch_items.a")
-    assert await cache.get("fetch_items.a", provider=_PROVIDER) == [{"id": "a", "played": False}]
+    await _wait_for_stored(cache_controller, "fetch_items.a")
+    assert await cache_controller.get("fetch_items.a", provider=_PROVIDER) == [
+        {"id": "a", "played": False}
+    ]
 
 
 async def test_reentrant_call_on_the_same_key_completes(provider: _FakeProvider) -> None:
@@ -393,7 +396,7 @@ async def test_cancelled_fetch_cancels_every_caller(provider: _FakeProvider) -> 
 
 
 async def test_cancelled_caller_leaves_the_others_untouched(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that one caller giving up neither cancels the fetch nor the other callers."""
     provider.result = "value"
@@ -405,11 +408,11 @@ async def test_cancelled_caller_leaves_the_others_untouched(
     assert await asyncio.gather(*tasks[1:]) == ["value", "value"]
     assert tasks[0].cancelled()
     assert provider.calls == 1
-    await _wait_for_stored(cache, "fetch.a")
+    await _wait_for_stored(cache_controller, "fetch.a")
 
 
 async def test_sole_cancelled_caller_still_completes_the_fetch(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that a fetch runs to completion and stores after its only caller gave up."""
     provider.result = "value"
@@ -420,7 +423,7 @@ async def test_sole_cancelled_caller_still_completes_the_fetch(
     provider.gate.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await _wait_for_stored(cache, "fetch.a")
+    await _wait_for_stored(cache_controller, "fetch.a")
     assert provider.calls == 1
 
 
@@ -446,12 +449,12 @@ async def test_failing_fetch_logs_no_task_warning(
 
 
 async def test_exception_is_shared_and_not_cached(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that every caller gets the raised error and the next call fetches again."""
     provider.error = MediaNotFoundError("not found")
     provider.gate.clear()
-    with patch.object(cache, "set", AsyncMock()) as store:
+    with patch.object(cache_controller, "set", AsyncMock()) as store:
         tasks = [asyncio.create_task(provider.fetch("a")) for _ in range(3)]
         await _wait_for_flight(provider)
         provider.gate.set()
@@ -466,12 +469,12 @@ async def test_exception_is_shared_and_not_cached(
 
 
 async def test_cache_none_false_shares_one_attempt(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that concurrent callers share one attempt and one None, then retry after."""
     provider.result = None
     provider.gate.clear()
-    with patch.object(cache, "set", AsyncMock()) as store:
+    with patch.object(cache_controller, "set", AsyncMock()) as store:
         tasks = [asyncio.create_task(provider.fetch_no_none("a")) for _ in range(3)]
         await _wait_for_flight(provider)
         provider.gate.set()
@@ -502,10 +505,10 @@ async def test_bypass_cache_does_not_join_a_fetch(provider: _FakeProvider) -> No
 
 
 async def test_swr_refreshes_once_for_concurrent_callers(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that concurrent callers on a stale entry trigger one background refresh."""
-    await cache.set(
+    await cache_controller.set(
         "fetch_swr.a", "stale", provider=_PROVIDER, expiration=-1, allow_expired_cache=True
     )
     provider.result = "fresh"
@@ -516,14 +519,14 @@ async def test_swr_refreshes_once_for_concurrent_callers(
     provider.gate.set()
 
     async def _refreshed() -> bool:
-        return bool(await cache.get("fetch_swr.a", provider=_PROVIDER) == "fresh")
+        return bool(await cache_controller.get("fetch_swr.a", provider=_PROVIDER) == "fresh")
 
     await _wait_for(_refreshed)
     assert provider.calls == 1
 
 
 async def test_completed_fetch_is_not_reused(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that a caller is not handed a fetch that already finished."""
 
@@ -533,7 +536,7 @@ async def test_completed_fetch_is_not_reused(
     # a finished flight left under the key must be replaced, not awaited for its outcome
     finished = asyncio.create_task(_noop())
     await finished
-    cache.mass._tracked_tasks[f"cache_flight.{_PROVIDER}.fetch.a"] = finished
+    cache_controller.mass._tracked_tasks[f"cache_flight.{_PROVIDER}.fetch.a"] = finished
     provider.result = "value"
     assert await provider.fetch("a") == "value"
     assert provider.calls == 1
@@ -553,19 +556,29 @@ async def test_single_flight_disabled_runs_every_caller(provider: _FakeProvider)
 # --- get_with_freshness ---
 
 
-async def test_get_with_freshness(cache: CacheController) -> None:
+async def test_get_with_freshness(cache_controller: CacheController) -> None:
     """Test that get_with_freshness reports the freshness and presence of entries."""
-    await cache.set("fresh", "data", provider=_PROVIDER, expiration=3600)
-    assert await cache.get_with_freshness("fresh", provider=_PROVIDER) == ("data", True, True)
-    await cache.set("expired", "old", provider=_PROVIDER, expiration=-1)
+    await cache_controller.set("fresh", "data", provider=_PROVIDER, expiration=3600)
+    assert await cache_controller.get_with_freshness("fresh", provider=_PROVIDER) == (
+        "data",
+        True,
+        True,
+    )
+    await cache_controller.set("expired", "old", provider=_PROVIDER, expiration=-1)
     # an expired entry is reported as not found unless include_expired is set
-    assert await cache.get_with_freshness("expired", provider=_PROVIDER) == (None, False, False)
-    assert await cache.get_with_freshness("expired", provider=_PROVIDER, include_expired=True) == (
+    assert await cache_controller.get_with_freshness("expired", provider=_PROVIDER) == (
+        None,
+        False,
+        False,
+    )
+    assert await cache_controller.get_with_freshness(
+        "expired", provider=_PROVIDER, include_expired=True
+    ) == (
         "old",
         False,
         True,
     )
-    data, is_fresh, found = await cache.get_with_freshness("missing", provider=_PROVIDER)
+    data, is_fresh, found = await cache_controller.get_with_freshness("missing", provider=_PROVIDER)
     assert found is False
     assert is_fresh is False
     assert data is None
