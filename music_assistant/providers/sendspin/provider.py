@@ -38,6 +38,8 @@ from aiosendspin.noise.pairing_token import decode_token
 from aiosendspin.noise.trust_store import FileServerPairingStore
 from aiosendspin.server import (
     ClientAddedEvent,
+    ClientConnectedEvent,
+    ClientDisconnectedEvent,
     ClientRemovedEvent,
     ClientUpdatedEvent,
     SendspinEvent,
@@ -414,6 +416,11 @@ class SendspinProvider(PlayerProvider):
             case ClientUpdatedEvent(client_id):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
+            # Transport lifecycle events, implemented in another PR.
+            case ClientConnectedEvent():
+                pass
+            case ClientDisconnectedEvent():
+                pass
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
