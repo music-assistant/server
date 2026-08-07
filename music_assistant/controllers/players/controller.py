@@ -2420,7 +2420,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # update/signal group player(s) when a member updates. A sync leader is a member of the
         # group player that formed the sync group and gaining members of its own does not change
         # that: a group player mirrors its leader, so it depends on exactly these updates.
-        for group_player in self._get_player_groups(player, powered_only=False):
+        for group_player in self._get_player_groups(player):
             group_player.on_group_member_updated(player, changed_values)
 
         # update/signal manually sync-parent player when child updates
@@ -2449,7 +2449,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
         if player.state.group_members:
             player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
-        for group_player in self._get_player_groups(player, powered_only=False):
+        for group_player in self._get_player_groups(player):
             group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         if player.state.synced_to and (leader := self.get_player(player.state.synced_to)):
             leader.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
@@ -2584,18 +2584,27 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return None
         return media_item, provider
 
-    def _get_player_groups(
-        self, player: Player, available_only: bool = True, powered_only: bool = False
-    ) -> Iterator[Player]:
-        """Return all groupplayers the given player belongs to."""
-        for _player in self.all_players(return_unavailable=not available_only):
-            if _player.player_id == player.player_id:
+    def _get_player_groups(self, player: Player) -> Iterator[Player]:
+        """
+        Return all group players the given player is a member of.
+
+        :param player: The player to look up the group memberships for.
+        """
+        # Deliberately walks the registry instead of all_players(): this is internal
+        # topology used to keep derived state consistent, so it must not be narrowed by
+        # the user context of whichever command happens to trigger the lookup. A group
+        # player mirrors its members, so it is also included while unavailable -
+        # skipping it there is exactly how its state goes stale. Disabled players take
+        # no part at all and players still registering are not fully set up yet.
+        player_id = player.player_id
+        for _player in list(self._players.values()):
+            if _player.player_id == player_id:
                 continue
             if _player.state.type != PlayerType.GROUP:
                 continue
-            if powered_only and _player.state.powered is False:
+            if not _player.state.enabled or not _player.initialized.is_set():
                 continue
-            if player.player_id in _player.state.group_members:
+            if player_id in _player.state.group_members:
                 yield _player
 
     # Protocol linking methods are provided by ProtocolLinkingMixin (protocol_linking.py)
