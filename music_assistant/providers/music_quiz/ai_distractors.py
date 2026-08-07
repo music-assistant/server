@@ -13,7 +13,7 @@ from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads, str
 from music_assistant.helpers.plugin_engines import resolve_ai_engine
 from music_assistant.providers.music_quiz.ai_guards import (
     ai_prompt_exceeds_limit,
-    validated_ai_response,
+    validate_ai_response,
 )
 from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.suggestions import answer_labels_are_too_close
@@ -90,7 +90,7 @@ def parse_ai_distractor_response(
     :param expected_kinds: Exact ordered synthetic distractor kinds requested.
     :return: Strictly validated ranking and synthetic labels.
     """
-    response_text = validated_ai_response(response)
+    response_text = validate_ai_response(response)
     if len(expected_kinds) > MAX_AI_SYNTHETIC_COUNT:
         raise ValueError("too many synthetic distractors were requested")
     if len(set(candidate_ids)) != len(candidate_ids):

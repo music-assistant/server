@@ -1,4 +1,4 @@
-"""AI request and response limit guards for the Music Quiz provider."""
+"""Shared AI request and response limit guards for the Music Quiz provider."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def ai_prompt_exceeds_limit(prompt: str) -> bool:
     return len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES
 
 
-def validated_ai_response(response: object) -> str:
+def validate_ai_response(response: object) -> str:
     """
     Return the AI response text, if it is within the shared response limits.
 

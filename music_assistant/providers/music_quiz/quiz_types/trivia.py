@@ -25,7 +25,7 @@ from music_assistant.helpers.json import (
 from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
 from music_assistant.providers.music_quiz.ai_guards import (
     ai_prompt_exceeds_limit,
-    validated_ai_response,
+    validate_ai_response,
 )
 from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
@@ -398,7 +398,7 @@ class TriviaQuizType(QuizType):
         grounded_tracks: Collection[TriviaTrackFacts] = (),
     ) -> TriviaGeneration:
         """Parse and validate one strict AI Trivia response."""
-        response_text = validated_ai_response(response)
+        response_text = validate_ai_response(response)
         try:
             payload = json_loads(strip_code_fence(response_text))
         except JSON_DECODE_EXCEPTIONS as err:
