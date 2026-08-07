@@ -177,11 +177,18 @@ class SonosPlayer(Player):
                 self.player_id,
             )
             return
-        if "Pause" not in self.soco.available_actions:
+
+        def _pause() -> bool:
+            """Pause the speaker, reporting whether it accepts the command."""
+            if "Pause" not in self.soco.available_actions:
+                return False
+            self.soco.pause()
+            return True
+
+        if not await asyncio.to_thread(_pause):
             # pause not possible
             await self.stop()
             return
-        await asyncio.to_thread(self.soco.pause)
         self.schedule_poll()
 
     async def volume_set(self, volume_level: int) -> None:

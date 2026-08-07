@@ -120,6 +120,51 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert "library://track/123" not in call_args.kwargs["meta"]
 
 
+class _RecordingSoco:
+    """Minimal soco stand-in that records the thread its speaker query ran on."""
+
+    def __init__(self, actions: list[str]) -> None:
+        self._actions = actions
+        self.query_threads: list[int] = []
+        self.paused = False
+
+    @property
+    def available_actions(self) -> list[str]:
+        """Return the transport actions the speaker currently offers."""
+        self.query_threads.append(threading.get_ident())
+        return self._actions
+
+    def pause(self) -> None:
+        """Pause playback on the speaker."""
+        self.paused = True
+
+
+async def test_pause_queries_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
+    """Asking a speaker whether it can pause must not stall the event loop."""
+    soco = _RecordingSoco(["Play", "Stop", "Pause"])
+    sonos_player.soco = soco
+
+    await sonos_player.pause()
+
+    assert len(soco.query_threads) == 1
+    assert soco.query_threads[0] != threading.get_ident()
+    assert soco.paused
+
+
+async def test_pause_falls_back_to_stop_when_the_speaker_cannot_pause(
+    sonos_player: SonosPlayer,
+) -> None:
+    """A speaker that offers no pause action is stopped instead."""
+    soco = _RecordingSoco(["Play", "Stop"])
+    sonos_player.soco = soco
+
+    with patch.object(sonos_player, "stop", AsyncMock()) as stop:
+        await sonos_player.pause()
+
+    stop.assert_awaited_once()
+    assert not soco.paused
+
+
 def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
     """Make the mocked speaker report the given transport state."""
     sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
