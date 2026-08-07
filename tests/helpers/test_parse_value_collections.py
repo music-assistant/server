@@ -47,7 +47,7 @@ def test_parse_value_frozenset_of_str() -> None:
 
 
 def test_parse_value_none_members_dropped_from_list() -> None:
-    """None members are dropped from a homogeneous list annotation."""
+    """None members are currently dropped from a homogeneous list annotation."""
     result = parse_value("values", ["a", None, "b"], list[str])
     assert result == ["a", "b"]
 
@@ -87,7 +87,7 @@ def test_parse_value_fixed_length_tuple_wrong_length() -> None:
 
 
 def test_parse_value_fixed_length_tuple_names_the_failing_member() -> None:
-    """An unparseable member is reported with its position in the tuple."""
+    """A member that does not fit its type is reported with its position in the tuple."""
     with pytest.raises(TypeError, match=r"invalid for values\[1\]"):
         parse_value("values", ["a", {}], tuple[str, str])
 

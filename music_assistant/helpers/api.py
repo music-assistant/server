@@ -463,7 +463,7 @@ def parse_utc_timestamp(datetime_string: str) -> datetime:
     return datetime.fromisoformat(datetime_string)
 
 
-def parse_value(  # noqa: PLR0911
+def parse_value(  # noqa: PLR0911, PLR0915
     name: str,
     value: Any,
     value_type: Any,
