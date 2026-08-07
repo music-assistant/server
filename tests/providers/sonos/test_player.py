@@ -209,6 +209,36 @@ async def test_on_unload_unsubscribes_before_disconnecting(timer_mass: MusicAssi
 
 
 @pytest.mark.asyncio
+async def test_a_listener_ending_during_the_unload_cannot_rearm_a_reconnect(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a listener that ends while the player is unloading does not schedule a reconnect."""
+    player, client = _bind_player(timer_mass)
+    socket_drops = asyncio.Event()
+
+    async def _start_listening(init_ready: asyncio.Event) -> None:
+        init_ready.set()
+        await socket_drops.wait()
+        raise ConnectionResetError("socket dropped")
+
+    client.connect = AsyncMock()
+    client.start_listening = _start_listening
+    await player._connect()
+    listener = player._listen_task
+    assert listener is not None
+
+    # release the listener so it is queued to run its finally, then unload without
+    # yielding in between: the cancellations and connected=False must be indivisible
+    socket_drops.set()
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    assert timer_mass._tracked_timers == {}
+    assert timer_mass._tracked_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistant) -> None:
     """Test a speaker that cannot be disconnected does not abort the unload."""
     player, client = _bind_player(timer_mass)
