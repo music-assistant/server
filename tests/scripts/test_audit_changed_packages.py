@@ -99,6 +99,15 @@ def test_requirement_versions_reads_pinned_versions() -> None:
     }
 
 
+def test_requirement_versions_collects_every_pinned_version() -> None:
+    """A package can appear more than once, as the marker-split torch requirements do."""
+    closure = """
+        torch==2.13.0+cpu ; sys_platform == 'linux' and platform_machine == 'x86_64'
+        torch==2.13.0 ; sys_platform != 'linux' or platform_machine != 'x86_64'
+    """
+    assert requirement_versions(closure) == {"torch": {"2.13.0+cpu", "2.13.0"}}
+
+
 def test_vulnerable_packages_ignores_clean_and_skipped() -> None:
     """Only packages with findings count; skipped ones carry no vulns key."""
     report = audit_report("aiohttp==3.14.3", skipped="torch")
@@ -207,6 +216,19 @@ def test_main_without_a_base_closure_file(
     requirements.write_text("beat-this==1.1.0\n")
 
     assert main([str(audit), str(requirements), str(tmp_path / "missing.txt")]) == 0
+    assert capsys.readouterr().out.strip() == "preexisting"
+
+
+def test_main_with_an_empty_base_closure_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An empty resolved set carries no comparison and must not raise."""
+    audit = tmp_path / "audit.json"
+    audit.write_text(audit_report("transformers==5.14.1"))
+    base_closure = tmp_path / "base_closure.txt"
+    base_closure.write_text("")
+
+    assert main([str(audit), str(tmp_path / "missing.txt"), str(base_closure)]) == 0
     assert capsys.readouterr().out.strip() == "preexisting"
 
 
