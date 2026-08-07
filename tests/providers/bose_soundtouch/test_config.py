@@ -221,10 +221,9 @@ async def test_search_action_resets_previous_result_and_target() -> None:
             CONF_SEARCH_TARGET: "5",
         }
     )
-
-    entries = _entries_by_key(
-        list(await BoseSoundTouchProvider.handle_config_action(_as_provider(stub), ACTION_SEARCH))
-    )
+    entry = await BoseSoundTouchProvider.handle_config_action(_as_provider(stub), ACTION_SEARCH)
+    assert entry is not None
+    entries = _entries_by_key(list(entry))
 
     assert stub.config_updates == [
         (CONF_SEARCH_RESULT, "", True),
@@ -263,9 +262,9 @@ async def test_assign_action_copies_result_to_selected_preset() -> None:
         }
     )
 
-    entries = _entries_by_key(
-        list(await BoseSoundTouchProvider.handle_config_action(_as_provider(stub), ACTION_ASSIGN))
-    )
+    entry = await BoseSoundTouchProvider.handle_config_action(_as_provider(stub), ACTION_ASSIGN)
+    assert entry is not None
+    entries = _entries_by_key(list(entry))
 
     assert stub._values[preset_media_key(4)] == selected_uri
     assert stub.config_updates == [
