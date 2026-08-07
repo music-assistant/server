@@ -11,6 +11,8 @@ from music_assistant.providers.tidal.media import TidalMediaManager
 @pytest.fixture
 def media_manager(provider_mock: Mock) -> TidalMediaManager:
     """Return a TidalMediaManager instance."""
+    # provider_mock is defined per test module and differs between them, so a module
+    # requesting this fixture must bring its own
     return TidalMediaManager(provider_mock)
 
 

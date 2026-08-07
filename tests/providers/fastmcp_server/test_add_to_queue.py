@@ -25,7 +25,10 @@ from music_assistant.providers.fastmcp_server.tools.queue import build_queue_ser
 def mounted_queue_no_delete(mock_mass: Any) -> FastMCP:
     """Queue server with delete:queue permission disabled."""
     mcp: FastMCP = FastMCP(name="test")
-    mcp.mount(build_queue_server(mock_mass, delete_queue_enabled=False), namespace="queue")
+    mcp.mount(
+        build_queue_server(mock_mass, delete_queue_enabled=False, require_confirmation=False),
+        namespace="queue",
+    )
     return mcp
 
 
