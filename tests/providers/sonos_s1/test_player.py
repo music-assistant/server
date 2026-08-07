@@ -86,7 +86,6 @@ async def test_failed_subscribe_marks_the_speaker_offline() -> None:
     await _subscribe_with_failing_speaker(player)
 
     assert player.available is False
-    assert player._subscription_lock is not None
     assert not player._subscription_lock.locked()
 
 
@@ -98,5 +97,66 @@ async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
     with patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target:
         async with asyncio.timeout(5):
             await player.subscribe()
+
+    assert subscribe_target.await_count == len(SUBSCRIPTION_SERVICES)
+
+
+async def test_speaker_taken_offline_mid_subscribe_keeps_no_subscriptions() -> None:
+    """A speaker that goes offline while subscribing must not keep the subscriptions it created."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    subscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_subscribe_target(_target: object, _callback: object) -> None:
+        subscribing.set()
+        await speaker_responds.wait()
+        player._subscriptions.append(MagicMock(unsubscribe=AsyncMock()))
+
+    with (
+        patch.object(player, "_subscribe_target", _slow_subscribe_target),
+        patch.object(player, "update_state"),
+    ):
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await subscribing.wait()
+
+        offline_task = asyncio.create_task(player.offline())
+        await asyncio.sleep(0)
+        assert not offline_task.done()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(subscribe_task, offline_task)
+
+    assert player.available is False
+    assert player._subscriptions == []
+    assert player.missing_subscriptions == SUBSCRIPTION_SERVICES
+
+
+async def test_speaker_going_offline_is_not_resubscribed_halfway() -> None:
+    """No new subscriptions may be created while a speaker is still going offline."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    unsubscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_unsubscribe() -> None:
+        unsubscribing.set()
+        await speaker_responds.wait()
+
+    player._subscriptions = [MagicMock(unsubscribe=_slow_unsubscribe)]
+
+    with (
+        patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target,
+        patch.object(player, "update_state"),
+    ):
+        offline_task = asyncio.create_task(player.offline())
+        await unsubscribing.wait()
+
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await asyncio.sleep(0)
+        subscribe_target.assert_not_called()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(offline_task, subscribe_task)
 
     assert subscribe_target.await_count == len(SUBSCRIPTION_SERVICES)
