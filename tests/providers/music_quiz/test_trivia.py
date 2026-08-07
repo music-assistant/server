@@ -26,7 +26,7 @@ from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.plugin import AIEngine, PluginProvider
-from music_assistant.providers.music_quiz.ai_distractors import (
+from music_assistant.providers.music_quiz.constants import (
     AI_QUERY_TIMEOUT_SECONDS,
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,

@@ -23,7 +23,7 @@ from music_assistant.helpers.json import (
     strip_code_fence,
 )
 from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
-from music_assistant.providers.music_quiz.ai_distractors import (
+from music_assistant.providers.music_quiz.constants import (
     AI_QUERY_TIMEOUT_SECONDS,
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,

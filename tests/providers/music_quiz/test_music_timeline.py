@@ -25,7 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.models.plugin import AIEngine, PluginProvider
-from music_assistant.providers.music_quiz.ai_distractors import AI_QUERY_TIMEOUT_SECONDS
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.models import (
     MusicQuizConfig,
     MusicQuizDifficulty,
