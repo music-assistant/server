@@ -16,6 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
@@ -629,8 +630,12 @@ class AirPlayStream:
             # full metadata each time — which makes an Apple TV re-render its
             # Now Playing popup.
             text_checksum = f"{item_id}|{title}|{artist}|{album}"
-            artwork_checksum = metadata.image_url or ""
-            metadata_checksum = f"{text_checksum}|{metadata.image_url}"
+            # the artwork identity must survive URL-form changes: the session
+            # media and the player state carry the same image behind different
+            # base URLs, and re-sending on such a flip would re-render and
+            # re-push identical artwork on every seek and media update
+            artwork_checksum = _artwork_identity(metadata.image_url) if metadata.image_url else ""
+            metadata_checksum = f"{text_checksum}|{artwork_checksum}"
 
         artwork_url: str | None = None
         artwork_render: asyncio.Task[str | None] | None = None
@@ -828,7 +833,7 @@ class AirPlayStream:
                 and metadata_generation == self._metadata_generation
                 and await self.send_cli_command(f"ARTWORK={artwork}")
             ):
-                self._metadata_artwork_checksum = artwork_url
+                self._metadata_artwork_checksum = _artwork_identity(artwork_url)
 
     async def _build_cli_args(  # noqa: PLR0915
         self,
@@ -1861,6 +1866,22 @@ class AirPlayStream:
             self.player.display_name,
             margin_ms,
         )
+
+
+def _artwork_identity(image_url: str) -> str:
+    """
+    Return a URL-form independent identity for a cover-art URL.
+
+    :param image_url: The cover-art URL as carried on the player media.
+    """
+    # An imageproxy URL embeds a server base URL (webserver or stream server,
+    # depending on who built the PlayerMedia) plus size/format parameters, but
+    # the opaque image id in its path alone identifies the underlying image.
+    # Any other URL is its own identity.
+    _, sep, image_id = urlsplit(image_url).path.partition("/imageproxy/")
+    if sep and image_id:
+        return image_id
+    return image_url
 
 
 def _status_int(fields: Mapping[str, str], key: str) -> int:
