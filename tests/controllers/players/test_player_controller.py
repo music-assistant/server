@@ -764,8 +764,9 @@ class TestRegisterUnregisterRace:
     @staticmethod
     def _stub_register_calls(mock_mass: MagicMock) -> None:
         """Stub the awaited mass calls made during register/unregister."""
-        # the player config store is read as a mapping during protocol link evaluation
-        mock_mass.config.get = MagicMock(return_value={})
+        # registration reads config keys with differently typed defaults (mapping for the
+        # player config store, str | None for the cached MAC addresses)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
         mock_mass.cache.get = AsyncMock(return_value=None)
         mock_mass.config.get_player_config = AsyncMock(return_value=create_mock_config("Player 1"))
         mock_mass.player_queues.on_player_register = AsyncMock()
@@ -912,6 +913,30 @@ class TestRegisterUnregisterRace:
         # config backed setting (group members, flow mode, visibility, ...)
         assert replacement.config is resolved_config
         config_hook.assert_awaited_once()
+
+    async def test_register_or_update_aborts_when_replacement_is_unregistered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A replacement unregistered while its config hook runs is not marked ready."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        existing.set_config(create_mock_config("Player 1"))
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway() -> None:
+            await controller.unregister("player_1")
+
+        with patch.object(
+            replacement, "on_config_updated", AsyncMock(side_effect=_unregister_midway)
+        ):
+            await controller.register_or_update(replacement)
+
+        assert "player_1" not in controller._players
+        assert not replacement.initialized.is_set()
 
     async def test_register_or_update_leaves_same_instance_untouched(
         self, mock_mass: MagicMock

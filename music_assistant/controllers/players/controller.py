@@ -1512,6 +1512,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                     # the config the registration resolved before it can be used
                     player.set_config(existing.config)
                     await player.on_config_updated()
+                    if self._registration_aborted(player):
+                        return
                 # the replacement takes over the identity of an already registered
                 # player, so it must be marked initialized as well
                 player.set_initialized()
