@@ -12,13 +12,17 @@ drive the load path the server uses, which is what the options page resolves aga
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock, patch
 
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ProviderType
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import CONF_PATH, CONF_PROVIDERS
-from music_assistant.controllers.config.providers import DEFAULT_PROVIDER_CONFIG_ENTRIES
+from music_assistant.constants import (
+    CONF_PATH,
+    CONF_PROVIDERS,
+    DEFAULT_PROVIDER_CONFIG_ENTRIES,
+)
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
@@ -90,7 +94,12 @@ async def test_setup_data_content_type_wins(mass_minimal: MusicAssistant) -> Non
 
 
 async def test_legacy_stored_content_type_is_read_through(mass_minimal: MusicAssistant) -> None:
-    """A non-default content type still in `values` survives until it is migrated."""
+    """
+    A non-default content type still in `values` is read through instead of lost.
+
+    `migrate_provider_setup_data` moves such a value into `setup_data` at startup, before any
+    provider loads; the read path stays correct without depending on that having run.
+    """
     provider = await _load_provider(
         mass_minimal, setup_data={}, values={CONF_CONTENT_TYPE: "audiobooks"}
     )
@@ -116,6 +125,31 @@ async def test_content_type_mirror_is_never_persisted(mass_minimal: MusicAssista
     provider = await _load_provider(mass_minimal, setup_data={CONF_CONTENT_TYPE: "podcasts"})
 
     assert CONF_CONTENT_TYPE not in provider.config.to_raw()["values"]
+
+
+async def test_content_type_survives_saving_the_options_page(mass_minimal: MusicAssistant) -> None:
+    """Saving the options page keeps the content type where the setup flow put it."""
+    provider = await _load_provider(mass_minimal, setup_data={CONF_CONTENT_TYPE: "audiobooks"})
+    # the options page posts back every entry it was handed, the read-only mirror included
+    posted = {entry.key: entry.value for entry in provider.config.values.values()}
+
+    with (
+        patch.object(
+            mass_minimal.config, "get_provider_config", AsyncMock(return_value=provider.config)
+        ),
+        patch.object(mass_minimal, "load_provider_config", AsyncMock()),
+    ):
+        await mass_minimal.config._update_provider_config(INSTANCE_ID, posted)
+    stored = mass_minimal.config.get(f"{CONF_PROVIDERS}/{INSTANCE_ID}")
+
+    # the save rebuilds `values` from the declared entries and only preserves stored keys
+    # that have no entry, so a mirror written there would be dropped by the next save
+    assert CONF_CONTENT_TYPE not in stored["values"]
+    assert stored["setup_data"][CONF_CONTENT_TYPE] == "audiobooks"
+    reloaded = await _load_provider(
+        mass_minimal, setup_data=stored["setup_data"], values=stored["values"]
+    )
+    assert reloaded.media_content_type == "audiobooks"
 
 
 async def test_display_only_entry_does_not_shadow_the_default(
