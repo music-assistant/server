@@ -245,7 +245,7 @@ class BoseSoundTouchPlayer(Player):
             for player_id in player_ids:
                 player = self.mass.players.get_player(player_id)
                 if isinstance(player, BoseSoundTouchPlayer) and (
-                    ip_address := player.device_info.ip_address
+                    ip_address := player._client.session_config.ip
                 ):
                     members.append(ZoneMember(ip=ip_address, mac=player.device_id))
             return Zone(
@@ -400,6 +400,7 @@ class BoseSoundTouchPlayer(Player):
                     name=PlayerOptionKeys.NETWORK_NAME,
                     type=PlayerOptionType.STRING,
                     value=info.name,
+                    read_only=True,  # TODO: make that non-read-only
                 )
             )
         if PlayerOptionKeys.BASS in self._supported_player_options:

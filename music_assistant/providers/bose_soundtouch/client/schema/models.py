@@ -108,6 +108,8 @@ class NowPlaying(DataClassJSONMixin):
     art: Art | None = None
     time_information: TimeInformation | None = None
     content_item: NowPlayingContentItem | None = None
+    device_id: Annotated[str | None, Alias("deviceID")] = None
+    source: str | None = None
 
 
 @dataclass

@@ -63,6 +63,20 @@ def create_zone_xml(zone: Zone, sender_ip: str | None = None) -> str:
     return xml
 
 
+def create_notification_xml(app_key: str, url: str, volume: int | None = None) -> str:
+    """Create xml used for notifications."""
+    volume_xml = f"<volume>{volume}</volume>" if volume is not None else ""
+    return (
+        "<play_info>"
+        f"<app_key>{xml_escape(app_key)}</app_key>"
+        f"<url>{xml_escape(url)}</url>"
+        "<service>Music Assistant</service>"
+        "<reason>Music Assistant</reason>"
+        f"{volume_xml}"
+        "</play_info>"
+    )
+
+
 class SoundtouchDevice:
     """SoundtouchDevice."""
 
@@ -157,7 +171,7 @@ class SoundtouchDevice:
     async def get_now_playing(self, endpoint: str = "nowPlaying") -> NowPlaying:
         """Get now playing."""
         element = await self._get(endpoint)
-        d: dict[str, Any] = {}
+        d: dict[str, Any] = element.attrib
         for el in element:
             if el.tag == "ContentItem":
                 item_name: str | None = None
@@ -225,6 +239,9 @@ class SoundtouchDevice:
                 software_version = version.split(" ", 1)[0]
                 break
 
+        # our connection ip should already be present, but just in case
+        ip_addresses.add(self.session_config.ip)
+
         return Info(
             device_id=response.attrib.get("deviceID", ""),
             name=response.findtext("name") or "Bose SoundTouch",
@@ -241,16 +258,7 @@ class SoundtouchDevice:
 
     async def play_notification(self, app_key: str, url: str, volume: int | None = None) -> None:
         """Plays notification as in previous client."""
-        volume_xml = f"<volume>{volume}</volume>" if volume is not None else ""
-        xml = (
-            "<play_info>"
-            f"<app_key>{xml_escape(app_key)}</app_key>"
-            f"<url>{xml_escape(url)}</url>"
-            "<service>Music Assistant</service>"
-            "<reason>Music Assistant</reason>"
-            f"{volume_xml}"
-            "</play_info>"
-        )
+        xml = create_notification_xml(app_key, url, volume)
         await self._post("speaker", xml)
 
     async def _add_or_remove_zone_members(self, zone: Zone, *, add_members: bool = True) -> None:

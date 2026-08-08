@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, Mock, patch
 from defusedxml import ElementTree as DefusedET
 
 from music_assistant.providers.bose_soundtouch.client import SoundtouchDevice
-from music_assistant.providers.bose_soundtouch.client.client import create_zone_xml
+from music_assistant.providers.bose_soundtouch.client.client import (
+    create_notification_xml,
+    create_zone_xml,
+)
 from music_assistant.providers.bose_soundtouch.client.schema.enums import PlayStatus, SourceStatus
 from music_assistant.providers.bose_soundtouch.client.schema.models import Zone, ZoneMember
 from music_assistant.providers.bose_soundtouch.helpers import extract_preset_id
@@ -45,6 +48,7 @@ NOW_PLAYING_XML = """
 def _get_client() -> SoundtouchDevice:
     session_config = Mock()
     session_config.logger = None
+    session_config.ip = "10.0.0.9"
     return SoundtouchDevice(session_configuration=session_config)
 
 
@@ -56,7 +60,6 @@ async def test_parse_info() -> None:
 
         info = await client.get_info()
 
-    # info = parse_info(DefusedET.fromstring(INFO_XML), fallback_ip="10.0.0.1")
     assert info.device_id == "ABC123"
     assert info.name == "Living Room"
     assert info.model == "SoundTouch 20"
@@ -67,14 +70,17 @@ async def test_parse_info() -> None:
     assert info.software_version == "27.0.6.46330"
 
 
-# def test_parse_info_falls_back_to_connection_ip() -> None:
-#     """When the device reports no network IP, the connection IP is used."""
-#     info = parse_info(
-#         DefusedET.fromstring('<info deviceID="X"><name>N</name></info>'), fallback_ip="10.0.0.9"
-#     )
-#     assert info.ip_address == "10.0.0.9"
-#
-#
+async def test_parse_info_falls_back_to_connection_ip() -> None:
+    """When the device reports no network IP, we still have the ip in our session config."""
+    client = _get_client()
+    with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = DefusedET.fromstring('<info deviceID="X"><name>N</name></info>')
+        info = await client.get_info()
+
+    assert isinstance(info.ip_addresses, set)
+    assert "10.0.0.9" in info.ip_addresses
+
+
 async def test_parse_now_playing() -> None:
     """A playing now_playing snapshot maps to the expected fields."""
     client = _get_client()
@@ -96,16 +102,17 @@ async def test_parse_now_playing() -> None:
     assert now_playing.play_status in [PlayStatus.PLAY_STATE, PlayStatus.BUFFERING_STATE]
 
 
-# async def test_parse_now_playing_standby() -> None:
-#     """A standby snapshot reports the STANDBY source."""
-#     client = _get_client()
-#     client._get = AsyncMock(
-#         return_value=DefusedET.fromstring('<nowPlaying deviceID="A" source="STANDBY"></nowPlaying>')
-#     )
-#     now_playing = await client.get_now_playing()
-#     assert now_playing.content_item is not None
-#     assert now_playing.content_item.source == "STANDBY"
-#     assert now_playing.track is None
+async def test_parse_now_playing_standby() -> None:
+    """A standby snapshot reports the STANDBY source."""
+    client = _get_client()
+    with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = DefusedET.fromstring(
+            '<nowPlaying deviceID="A" source="STANDBY"></nowPlaying>'
+        )
+        now_playing = await client.get_now_playing()
+    assert now_playing.content_item is None
+    assert now_playing.source == "STANDBY"
+    assert now_playing.track is None
 
 
 async def test_parse_volume() -> None:
@@ -185,20 +192,20 @@ async def test_build_zone_xml() -> None:
     )
 
 
-# async def test_build_notification_xml() -> None:
-#     """The notification body includes the app key, url and volume, escaping the url."""
-#     xml = _build_notification_xml("KEY", "http://host/stream?a=1&b=2", volume=25)
-#     assert "<app_key>KEY</app_key>" in xml
-#     assert "<url>http://host/stream?a=1&amp;b=2</url>" in xml
-#     assert "<volume>25</volume>" in xml
-#
-#
-# def test_build_notification_xml_without_volume() -> None:
-#     """The notification body omits the volume element when no volume is given."""
-#     xml = _build_notification_xml("KEY", "http://host/stream")
-#     assert "<volume>" not in xml
-#
-#
+async def test_build_notification_xml() -> None:
+    """The notification body includes the app key, url and volume, escaping the url."""
+    xml = create_notification_xml("KEY", "http://host/stream?a=1&b=2", volume=25)
+    assert "<app_key>KEY</app_key>" in xml
+    assert "<url>http://host/stream?a=1&amp;b=2</url>" in xml
+    assert "<volume>25</volume>" in xml
+
+
+def test_build_notification_xml_without_volume() -> None:
+    """The notification body omits the volume element when no volume is given."""
+    xml = create_notification_xml("KEY", "http://host/stream")
+    assert "<volume>" not in xml
+
+
 def test_extract_preset_id() -> None:
     """A preset button press is detected from a websocket message."""
     assert extract_preset_id('<updates deviceID="A"><preset id="3"/></updates>') == 3
@@ -217,15 +224,3 @@ def test_extract_preset_id_invalid_xml() -> None:
 def test_extract_preset_id_non_numeric() -> None:
     """A non-numeric preset id returns None instead of raising."""
     assert extract_preset_id('<preset id="abc"/>') is None
-
-
-#
-#
-# def test_play_status_helpers() -> None:
-#     """Play status helpers classify the SoundTouch playStatus values."""
-#     assert play_status_is_playing("PLAY_STATE")
-#     assert play_status_is_playing("BUFFERING_STATE")
-#     assert not play_status_is_playing("STOP_STATE")
-#     assert not play_status_is_playing(None)
-#     assert play_status_is_paused("PAUSE_STATE")
-#     assert not play_status_is_paused("PLAY_STATE")
