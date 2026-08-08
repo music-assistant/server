@@ -236,7 +236,7 @@ async def test_unload_provider_unregisters_hidden_players(
     stored_configs = {
         player_id
         for player_id in all_player_ids
-        if mass_minimal.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if mass_minimal.config.get(f"{CONF_PLAYERS}/{player_id}") is not None
     }
     assert stored_configs == ({other_player.player_id} if is_removed else all_player_ids)
 
