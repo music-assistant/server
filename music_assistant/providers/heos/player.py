@@ -62,6 +62,7 @@ class HeosPlayer(Player):
 
         self._device: PyHeosPlayer = device
         self._ma_controls_playback = False
+        self._ma_playback_starting = False
         self._queue_cleanup_lock = asyncio.Lock()
         self._queue_cleanup_pending = False
 
@@ -220,6 +221,14 @@ class HeosPlayer(Player):
             )
             return
 
+        if self._ma_playback_starting:
+            self.logger.debug(
+                "[%s] Ignoring now playing change while MA playback starts: %s",
+                self._device.name,
+                now_playing,
+            )
+            return
+
         # Only update if we're not playing from our queue
         # HEOS does not make a distinction on source ID when playing from a DLNA server, USB stick,
         # generic URL (like MA), or other local source.
@@ -334,10 +343,12 @@ class HeosPlayer(Player):
         )
 
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        self._ma_playback_starting = True
         self._ma_controls_playback = True
         try:
             await self._device.play_url(url)
         except HeosError as err:
+            self._ma_playback_starting = False
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False
             raise PlayerCommandFailed("Failed to start playback.") from err
@@ -346,7 +357,17 @@ class HeosPlayer(Player):
         self._attr_active_source = self.player_id
         self._queue_cleanup_pending = True
 
+        self.mass.call_later(
+            5,
+            self._finish_ma_playback_transition,
+            task_id=f"heos_playback_transition_{self.player_id}",
+        )
+
         self.update_state()
+
+    def _finish_ma_playback_transition(self) -> None:
+        """Stop suppressing delayed events from the source replaced by MA playback."""
+        self._ma_playback_starting = False
 
     def _schedule_queue_cleanup(self) -> None:
         """Debounce queue cleanup so rapid queue changes only trigger one follow-up."""

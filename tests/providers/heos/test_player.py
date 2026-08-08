@@ -105,6 +105,29 @@ def test_external_source_now_playing_still_updates_media() -> None:
     assert player._attr_current_media.title == "External Track"
 
 
+def test_external_source_is_ignored_during_ma_playback_transition() -> None:
+    """Suppress external-source media updates while MA playback is starting."""
+    player = _make_player(_external_now_playing(None))
+    player._ma_playback_starting = True
+    player._ma_controls_playback = True
+    current_media = PlayerMedia(
+        uri="http://ma/stream/foo", media_type=MediaType.TRACK, title="MA Track"
+    )
+    player._attr_current_media = current_media
+
+    player._update_player_current_media()
+
+    assert player._ma_playback_starting is True
+    assert player._ma_controls_playback is True
+    assert player._attr_current_media.title == "MA Track"
+
+    player._finish_ma_playback_transition()
+    player._update_player_current_media()
+
+    assert player._attr_current_media.title == "External Track"
+    assert player._ma_controls_playback is False
+
+
 def test_media_position_and_duration_reported_in_seconds() -> None:
     """HEOS reports milliseconds; the media must carry seconds."""
     player = _make_player(_external_now_playing(113000))
