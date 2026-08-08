@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from typing import cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 from bandcamp_async_api import (
@@ -1760,6 +1760,7 @@ async def test_browse_following_returns_artists(provider: BandcampProvider) -> N
         result = await provider.browse("bandcamp_test://following")
 
         mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=None)
+        mock_get_artist.assert_has_awaits([call("100"), call("200")])
         assert mock_get_artist.call_count == 2
         assert len(result) == 2
 

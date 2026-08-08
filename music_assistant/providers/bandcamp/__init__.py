@@ -380,7 +380,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 cached_int = int(cached)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self.logger.warning(
                     "Discarding corrupt performer_band_id cache for %r: %r",
                     target_slug,
@@ -1211,7 +1211,7 @@ class BandcampProvider(MusicProvider):
             )
             for item in collection:
                 try:
-                    artists.append(await self.get_artist(item.band_id))
+                    artists.append(await self.get_artist(str(item.band_id)))
                 except MediaNotFoundError:
                     self.logger.warning(
                         "Artist not found for band_id %s (%s)", item.band_id, item.name
