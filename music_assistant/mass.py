@@ -1373,7 +1373,18 @@ class MusicAssistant:
 
         # execute post load actions
         async def _on_provider_loaded() -> None:
-            await provider.loaded_in_mass()
+            try:
+                await provider.loaded_in_mass()
+            except Exception as err:
+                # the provider stays registered and available either way, so the steps
+                # below still run: an event left unset makes every waiter pay the full
+                # timeout, on every attempt, until the provider reloads
+                LOGGER.warning(
+                    "Error in the post load step of provider %s: %s",
+                    provider.name,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
             provider.initialized.set()
             self.get_provider_ready_event(provider.domain).set()
             await self.run_provider_discovery(provider.instance_id)
