@@ -289,13 +289,7 @@ async def test_migrate_database_backfills_external_id_lookup(
     # the external_ids columns (and their unusable indexes) are dropped;
     # the lookup table is now the single source of truth
     for table in MEDIA_TABLES:
-        columns = {
-            column["name"]
-            for column in await music.database.get_rows_from_query(
-                f"PRAGMA table_info({table})", limit=0
-            )
-        }
-        assert "external_ids" not in columns
+        assert "external_ids" not in await _table_columns(music.database, table)
     old_indexes = await music.database.get_rows_from_query(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_external_ids_idx'"
     )
