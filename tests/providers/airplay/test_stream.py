@@ -2574,8 +2574,58 @@ async def test_track_change_artwork_missing_the_budget_follows_as_artwork_comman
     commands = [args.args[0].decode() for args in write_command.await_args_list]
     assert "ARTWORKFILE" not in commands[0]
     assert commands[0].endswith("ACTION=SENDMETA\n")
-    assert commands[-1] == "ARTWORK=/cache/late.jpg\n"
+    assert [command for command in commands if command.startswith("ARTWORK=")] == [
+        "ARTWORK=/cache/late.jpg\n"
+    ]
     assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_pending_start_interrupts_the_artwork_wait() -> None:
+    """A pending START releases the bounded artwork wait instead of queueing behind it."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    release_render = asyncio.Event()
+    render_started = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        render_started.set()
+        await release_render.wait()
+        return "/cache/late.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            side_effect=_acking_write_cli_command(stream),
+        ) as write_command,
+        patch.object(
+            stream, "_prepare_artwork", new_callable=AsyncMock, side_effect=_prepare_artwork
+        ),
+    ):
+        push = asyncio.create_task(stream.send_metadata(0, metadata))
+        await render_started.wait()
+        # the metadata push sits in its render budget holding the lock; the
+        # START must release that wait instead of losing its anchor lead to it
+        assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
+        release_render.set()
+        await push
+
+    commands = [args.args[0] for args in write_command.await_args_list]
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    assert "ARTWORKFILE" not in commands[0]
+    assert commands[1].startswith(f"START_UNIX_MS={START_UNIX_MS}")
 
 
 @pytest.mark.asyncio

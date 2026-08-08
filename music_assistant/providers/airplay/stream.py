@@ -119,10 +119,13 @@ class AirPlayStream:
         self._stopping = False
         self._cleanup_complete = False
         self._stop_lock = asyncio.Lock()
-        # Set the moment stop() begins, so a track-change metadata push waiting
-        # out its artwork render budget inside the metadata lock yields to the
-        # teardown right away instead of stalling it for the full budget.
-        self._teardown_started = asyncio.Event()
+        # Both wake a track-change metadata push waiting out its artwork render
+        # budget inside the metadata lock: the first is set permanently the
+        # moment stop() begins, the second while start() is waiting on the lock
+        # (a pending START is time-critical — the anchor lead is a few hundred
+        # ms). Either makes the bounded wait yield so the teardown or START
+        # proceeds and the artwork follows asynchronously.
+        self._teardown_started, self._start_waiting = asyncio.Event(), asyncio.Event()
         self._connected = asyncio.Event()
         # Set when the stderr reader ends, i.e. the binary is gone. A connect
         # wait watches it so a process that died (for example on a rejected
@@ -513,7 +516,12 @@ class AirPlayStream:
         start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
         if join:
             start_cmd = f"START_UNIX_MS={start_unix_ms}\nSTART_JOIN=1\nACTION=START"
-        async with self._metadata_lock:
+        self._start_waiting.set()
+        try:
+            await self._metadata_lock.acquire()
+        finally:
+            self._start_waiting.clear()
+        try:
             if not await self._write_cli_command(start_cmd):
                 # Surfacing the dropped delivery lets the session fall back to a
                 # cold restart instead of waiting on an anchor that never happens.
@@ -532,6 +540,8 @@ class AirPlayStream:
             # from the post-anchor media-updated nudge (+1s) does the job with
             # one refresh instead of two.
             self._metadata_generation += 1
+        finally:
+            self._metadata_lock.release()
         self.mass.create_task(
             self._send_current_metadata_without_progress,
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
@@ -748,7 +758,8 @@ class AirPlayStream:
 
         Called with the metadata lock held. A render that misses the budget is
         never cancelled: the returned task keeps running so the caller can hand
-        it to :meth:`_render_and_send_artwork` for the ARTWORK delivery.
+        it to :meth:`_render_and_send_artwork` for the ARTWORK delivery. The
+        wait also yields early to a teardown or a pending START.
 
         :param artwork_url: The cover-art URL to render.
         :param metadata_generation: Generation the render belongs to.
@@ -758,11 +769,14 @@ class AirPlayStream:
         artwork_render = asyncio.create_task(
             self._prepare_artwork(artwork_url, metadata_generation)
         )
-        # A teardown must not sit out the render budget behind the metadata
-        # lock, so it releases this wait early; the caller's doomed bundle
-        # write is then dropped by send_cli_command.
+        # Neither a teardown nor a time-critical START must sit out the render
+        # budget behind the metadata lock, so both release this wait early: a
+        # teardown's doomed bundle write is then dropped by send_cli_command,
+        # and a START's bundle goes out without artwork (the render delivers
+        # through the ARTWORK command once it completes).
         teardown = asyncio.ensure_future(self._teardown_started.wait())
-        waiters: set[asyncio.Future[Any]] = {artwork_render, teardown}
+        start_waiting = asyncio.ensure_future(self._start_waiting.wait())
+        waiters: set[asyncio.Future[Any]] = {artwork_render, teardown, start_waiting}
         try:
             await asyncio.wait(
                 waiters,
@@ -775,6 +789,7 @@ class AirPlayStream:
             raise
         finally:
             teardown.cancel()
+            start_waiting.cancel()
         artwork_file = artwork_render.result() if artwork_render.done() else None
         return artwork_file, artwork_render
 
@@ -811,8 +826,6 @@ class AirPlayStream:
                 and not self._stopped
                 and not self._stopping
                 and metadata_generation == self._metadata_generation
-                # the SENDMETA bundle may have delivered this artwork already
-                and self._metadata_artwork_checksum != artwork_url
                 and await self.send_cli_command(f"ARTWORK={artwork}")
             ):
                 self._metadata_artwork_checksum = artwork_url
