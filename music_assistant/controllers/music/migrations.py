@@ -969,9 +969,9 @@ async def migrate_database(  # noqa: PLR0915
         # know it yet refuse to parse a playlist that advertises it. Rewriting the rows
         # here makes upgrading enough, instead of having to wait for the next library sync.
         await database.execute(
-            f"UPDATE {DB_TABLE_PLAYLISTS} SET supported_mediatypes = ("
+            f"UPDATE {DB_TABLE_PLAYLISTS} SET supported_mediatypes = json(("
             "SELECT json_group_array(value) FROM json_each"
-            f"({DB_TABLE_PLAYLISTS}.supported_mediatypes) WHERE value != 'sound_effect')"
+            f"({DB_TABLE_PLAYLISTS}.supported_mediatypes) WHERE value != 'sound_effect'))"
             " WHERE json_valid(supported_mediatypes)"
             " AND supported_mediatypes LIKE '%sound_effect%'"
         )
