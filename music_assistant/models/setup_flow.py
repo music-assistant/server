@@ -293,7 +293,7 @@ class SetupSession:
         step's countdown and the engine deadline cannot drift. On the deadline
         StepExpiredError is raised here and the awaitable is cancelled - this also
         cancels a pre-existing Task (cancellation propagates through the await);
-        wrap work in ``asyncio.shield`` if it must survive the deadline.
+        pass ``join_task(task)`` (helpers.util) if a task must survive the deadline.
 
         :param awaitable: The work/wait to perform while the progress step shows.
         :param step_id: Stable slug identifying this step (also the i18n key segment).
@@ -385,6 +385,11 @@ class SetupSession:
         self.last_activity = time.monotonic()
         errors: dict[str, str] = {}
         parsed: dict[str, ConfigValueType] = {}
+        # gates resolve against the submitted values, so flipping one takes effect on the
+        # same submit regardless of where it sits on the form
+        submitted_entries = [
+            replace(entry, value=values.get(entry.key, entry.value)) for entry in step.entries
+        ]
         for entry in step.entries:
             if entry.type in UI_ONLY:
                 continue
@@ -392,7 +397,11 @@ class SetupSession:
             try:
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
-                parsed[entry.key] = entry.parse_value(raw_value, allow_none=False)
+                # an entry behind an unmet dependency renders disabled, so demanding a
+                # value the user has no way to supply would wedge the flow
+                parsed[entry.key] = entry.parse_value(
+                    raw_value, allow_none=not entry.dependency_met(submitted_entries)
+                )
             except TypeError, ValueError:
                 errors[entry.key] = "required" if raw_value in (None, "") else "invalid_value"
                 if not isinstance(raw_value, list):

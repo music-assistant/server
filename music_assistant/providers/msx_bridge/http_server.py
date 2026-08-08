@@ -21,9 +21,11 @@ from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.util import join_task
 
 from .constants import (
     CONF_SHOW_STOP_NOTIFICATION,
@@ -560,8 +562,7 @@ class MSXHTTPServer:
         safe_host: str = html_escape(request.host)  # escape for HTML display
         _raw_host: str = request.url.host or request.host.split(":")[0]  # IPv6-safe, no port
         hostname = f"[{_raw_host}]" if ":" in _raw_host else _raw_host
-        sendspin_port = "8927"
-        sendspin_url = f"http://{hostname}:{sendspin_port}"
+        sendspin_url = f"http://{hostname}:{SENDSPIN_SERVER_PORT}"
         kiosk_html5_url = f"{base}/web?kiosk=1"
         # escape the composed URL as a whole: host-derived prefix plus & separators
         sendspin_query = f"sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
@@ -621,7 +622,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 </div>
 <div class="link-row" style="margin-top: 12px;">
 <strong>Custom Sendspin URL:</strong><br>
-<code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:8927</code>
+<code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:{SENDSPIN_SERVER_PORT}</code>
 </div>
 </div>
 
@@ -2390,11 +2391,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         cache_key = (image_url, party.qr_version)
         if (cached := self._qr_cover_cache.get(cache_key)) is None:
             try:
-                # shield: a TV dropping its request must not cancel the shared
+                # join: a TV dropping its request must not cancel the shared
                 # render — late joiners and the cache still get the result
-                cached = await asyncio.shield(
-                    self._qr_cover_task(cache_key, image_url, party.join_url)
-                )
+                cached = await join_task(self._qr_cover_task(cache_key, image_url, party.join_url))
             except Exception as err:
                 logger.debug("QR cover composite failed for %s: %s", image_url, err)
                 raise web.HTTPFound(location=image_url) from None

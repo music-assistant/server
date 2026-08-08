@@ -659,6 +659,43 @@ async def test_volume_set_skipped_while_muted(airplay_player: AirPlayPlayer) -> 
 
 
 @pytest.mark.asyncio
+async def test_volume_set_records_level_before_sending(airplay_player: AirPlayPlayer) -> None:
+    """A resync reading the level mid-send must observe the new volume, not the old one."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 20
+    observed: list[int | None] = []
+
+    async def read_level_while_sending(_command: str) -> bool:
+        # stands in for the connect-time volume resync, which reads the player's
+        # level while this send is still suspended
+        await asyncio.sleep(0)
+        observed.append(airplay_player.volume_level)
+        return True
+
+    send_cmd.side_effect = read_level_while_sending
+
+    await airplay_player.volume_set(80)
+
+    assert observed == [80]
+    assert airplay_player.volume_level == 80
+
+
+@pytest.mark.asyncio
+async def test_volume_set_records_level_when_the_send_fails(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A dropped command must not lose the requested level; the resync repairs the device."""
+    send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = False
+    airplay_player._attr_volume_level = 20
+
+    await airplay_player.volume_set(80)
+
+    send_cmd.assert_awaited_once_with("VOLUME=80")
+    assert airplay_player.volume_level == 80
+
+
+@pytest.mark.asyncio
 async def test_volume_unmute_restores_volume(airplay_player: AirPlayPlayer) -> None:
     """Unmuting with a running stream should send VOLUME={current_volume}."""
     send_cmd = _setup_running_stream(airplay_player)
@@ -847,7 +884,7 @@ async def test_grouped_play_resumes_active_native_queue(airplay_player: AirPlayP
 async def test_single_player_pause_sends_action_pause(airplay_player: AirPlayPlayer) -> None:
     """An unsynced player pauses the stream in place with ACTION=PAUSE."""
     airplay_player._attr_group_members = []
-    airplay_player.mass.players.all_players.return_value = []  # type: ignore[attr-defined]
+    airplay_player.mass.players.iter_players.return_value = []  # type: ignore[attr-defined]
     send_cmd = _setup_running_stream(airplay_player)
 
     with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
@@ -926,7 +963,7 @@ def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
         airplay_discovery_info=None,
     )
     # the synced_to property scans all players of the provider
-    _players_mock(player).all_players.return_value = []
+    _players_mock(player).iter_players.return_value = []
     player._attr_group_members = []
     player._attr_playback_state = PlaybackState.IDLE
     player.stream = None
@@ -1086,7 +1123,7 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     foreign_leader.player_id = "other"
     foreign_leader.group_members = ["other", player.player_id]
     # the player reports it is now synced to a leader outside the original group
-    _players_mock(player).all_players.return_value = [foreign_leader]
+    _players_mock(player).iter_players.return_value = [foreign_leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     players_mock.cmd_group = AsyncMock()
@@ -1116,7 +1153,7 @@ def test_resolve_rejoin_target_skips_candidate_in_foreign_group() -> None:
     foreign_leader._attr_group_members = ["foreign", "old_leader"]
     old_leader = _make_playing_leader("old_leader")
     # the old leader reports it is now synced to the foreign leader
-    _players_mock(old_leader).all_players.return_value = [foreign_leader]
+    _players_mock(old_leader).iter_players.return_value = [foreign_leader]
     _players_mock(player).get_player.side_effect = lambda player_id: {
         "old_leader": old_leader,
         "foreign": foreign_leader,
@@ -1161,7 +1198,7 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
     # the sync membership survived the stream loss: the player is still listed
     # as a member of (and synced to) the leader
     leader._attr_group_members = ["leader", player.player_id]
-    _players_mock(player).all_players.return_value = [leader]
+    _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     players_mock.cmd_group = AsyncMock()
@@ -1188,7 +1225,7 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     leader._attr_group_members = ["leader", player.player_id]
-    _players_mock(player).all_players.return_value = [leader]
+    _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     players_mock.cmd_group = AsyncMock()

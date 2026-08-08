@@ -89,6 +89,7 @@ ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
+    reload_on_streams_network_change = True
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
@@ -241,7 +242,7 @@ class AirPlayProvider(PlayerProvider):
         self._dacp_info = AsyncServiceInfo(
             DACP_DISCOVERY_TYPE,
             name=server_id,
-            addresses=[await get_ip_pton(str(self.mass.streams.publish_ip))],
+            addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
             port=dacp_port,
             properties={
                 "txtvers": "1",

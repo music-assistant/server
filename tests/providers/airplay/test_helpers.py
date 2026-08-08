@@ -9,6 +9,7 @@ from aiohttp import ClientError
 
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    default_buffer_depth,
     get_cli_binary,
     get_decoded_property,
     probe_audio_formats,
@@ -239,3 +240,16 @@ def _mass_serving_info(info: dict[str, Any], status: int = 200) -> MagicMock:
     mass = MagicMock()
     mass.http_session.get = MagicMock(return_value=context)
     return mass
+
+
+def test_default_buffer_depth_family_table() -> None:
+    """The family table maps both LinkPlay generations to the deep queue."""
+    # Newer platform: Linkplay named as manufacturer.
+    assert (
+        default_buffer_depth("Linkplay Technology Inc.", "WiiM Pro Receiver", "p20.4.8.814756")
+        == 1750
+    )
+    # Older platform: OEM brand, the platform only marked in fv.
+    assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 1750
+    assert default_buffer_depth("Sonos", "Era 100", "p20.96.0-79160") == 0
+    assert default_buffer_depth("Apple Inc.", "AppleTV11,1", None) == 0

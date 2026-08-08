@@ -46,12 +46,11 @@ class ClockReadiness(StrEnum):
     NOT_APPLICABLE = "not_applicable"
     # The receiver never answered our PTP clock and will render silence.
     STALLED = "stalled"
-    # Nothing arrived within the wait: a slow device (retryable) or a binary
-    # too old to report readiness at all.
+    # Nothing arrived within the wait: a slow device (retryable) or a receiver
+    # whose readiness went unreported.
     UNREPORTED = "unreported"
 
 
-CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
 # Storage-only marker (no config entry) set when the device rejected the stored
 # password, so the player keeps asking for setup across restarts until a working
@@ -106,6 +105,27 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
+# Default receiver buffer depth per device family: (manufacturer wildcard,
+# model wildcard, firmware wildcard) -> depth in ms, matched case-insensitively
+# in order, first match wins; unmatched devices stay on Automatic (the binary's
+# stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
+# behind a perfectly healthy session - and need the full 1750 ms once the
+# device is also master of a native multiroom group, at the cost of slower
+# warm seeks. Extend the table as field reports identify more starving devices.
+AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
+    # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
+    ("linkplay*", "*", "*", 1750),
+    # The older LinkPlay platform ships under OEM brands (Edifier, ...) but
+    # marks the platform in its firmware string.
+    ("*", "*", "p20.linkplay.*", 1750),
+)
+# Per-player override of the splice receiver-queue depth in ms (0 = automatic).
+CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
+# How long a plain (non-join) START waits for the binary's [STATUS] started ack.
+# Nothing holds that ack back, so the window only has to cover the command's trip
+# down the pipe and the answer coming back - unlike a join's ack below, which is
+# withheld until the receiver clock verification resolves.
+AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 2000
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
 # held back until the clock verification above resolves, so the window must
 # cover the verification arm window plus a poll round on top of the commanded
@@ -190,6 +210,12 @@ AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
 AIRPLAY_ARTWORK_SIZE: Final[int] = 512
+# How long a track-change metadata push waits for that render, so the artwork
+# can ride the SENDMETA bundle and the receiver rewrites its now-playing state
+# once instead of twice (bare replace, then artwork). A render that misses the
+# budget is not abandoned: it keeps running and is delivered with the
+# stand-alone ARTWORK command once it completes.
+AIRPLAY_ARTWORK_RENDER_TIMEOUT: Final[float] = 1.5
 EXTERNAL_ARTWORK_PATH_PREFIX: Final[str] = "external_artwork"
 
 # Per-protocol credential storage keys
@@ -211,8 +237,6 @@ CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_PAIR_NOW: Final[str] = "pair_now"
-BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
-BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0

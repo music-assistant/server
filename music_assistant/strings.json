@@ -8,6 +8,10 @@
       "label": "Password",
       "description": "The password to authenticate to the remote server."
     },
+    "email": {
+      "label": "Email",
+      "description": "The email address to authenticate to the remote server."
+    },
     "max_num_episodes": {
       "label": "Maximum number of episodes (0 for unlimited)",
       "description": "Maximum number of episodes to sync per feed. Use 0 for unlimited"
@@ -112,7 +116,7 @@
     },
     "icon": {
       "label": "Icon",
-      "description": "Material design icon for this player.\n\nSee https://pictogrammers.com/library/mdi/."
+      "description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons."
     },
     "ignore_album_playlists": {
       "label": "Ignore playlists with album tracks within album folders",
@@ -403,6 +407,20 @@
     "child": {
       "label": "Device to set up",
       "description": "Choose which connected device to set up."
+    },
+    "ai_engine": {
+      "label": "AI engine",
+      "description": "The AI engine used for this feature."
+    },
+    "ai_engine_unavailable": {
+      "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
+    },
+    "tts_engine": {
+      "label": "Text-to-speech engine",
+      "description": "The text-to-speech engine used for this feature."
+    },
+    "tts_engine_unavailable": {
+      "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     }
   },
   "config_categories": {
@@ -1131,6 +1149,7 @@
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
     "media_not_found": "The requested media item could not be found.",
+    "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",

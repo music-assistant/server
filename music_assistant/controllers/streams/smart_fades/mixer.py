@@ -17,6 +17,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
 )
 from music_assistant.controllers.streams.smart_fades.helpers import detect_effective_audio_end
 from music_assistant.controllers.streams.smart_fades.vocal import (
+    PROTECTIVE_VOCAL_CONFIG,
     VocalMask,
     build_vocal_windows,
     parse_vocal_probabilities,
@@ -252,6 +253,7 @@ class SmartFadesMixer:
             buffer_offset,
             track_duration,
             beat_duration=60.0 / analysis.bpm if analysis.bpm and analysis.bpm > 0.0 else None,
+            config=PROTECTIVE_VOCAL_CONFIG,
         )
         if not vocal_mask.windows:
             return 0

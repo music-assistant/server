@@ -12,6 +12,7 @@ on:
     branches:
       - stable
       - dev
+  merge_group:
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -29,6 +30,7 @@ env:
 
 concurrency:
   group: test-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  # Not merge_group: a cancelled run reports no check, hanging the queue entry until timeout.
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
@@ -49,7 +51,8 @@ jobs:
       # On PRs, run only the tests affected by the changed files: a PR touching a
       # single provider runs just that provider's tests. A change to shared code
       # (incl. translations under music_assistant/), dependencies or the CI itself
-      # runs the full suite, as do pushes, manual runs and reusable-workflow calls.
+      # runs the full suite, as do pushes, merge groups, manual runs and
+      # reusable-workflow calls.
       # PRs that only touch docs or other non-code files run nothing.
       - name: Determine test scope
         id: scope
@@ -144,7 +147,7 @@ jobs:
         run: |
           # Restore cached .deb files to apt cache (if any)
           cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          apt-get update && apt-get install -y ffmpeg libchromaprint1 git build-essential libssl-dev curl gpg
+          apt-get update && apt-get install -y ffmpeg libchromaprint1 libportaudio2 git build-essential libssl-dev curl gpg
           # Save .deb files for next run
           mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
       - name: Check out code from GitHub
@@ -165,7 +168,12 @@ jobs:
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
-        # `-o addopts=` clears the default "--cov music_assistant" so the scope applies.
+        # --dist loadfile keeps each test file on one xdist worker: snapshot updates
+        # never race on an .ambr file and module-scoped fixtures are reused.
+        # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
+        # crash leaves the controller blocked on its event queue forever, so the job only
+        # ends at its 30m cap with no summary. Shutting down instead fails in seconds and
+        # names the crashing test; a crashed worker invalidates the run either way.
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
@@ -195,7 +203,7 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7

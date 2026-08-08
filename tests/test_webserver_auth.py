@@ -390,7 +390,7 @@ async def test_revoke_token(auth_manager: AuthenticationManager) -> None:
 
 async def test_list_users(auth_manager: AuthenticationManager) -> None:
     """
-    Test listing all users (admin only).
+    Test listing all users (requires the users.read scope).
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -712,6 +712,57 @@ async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
 
     assert len(providers) > 0
     assert any(p["provider_id"] == "builtin" for p in providers)
+
+
+class _FakeHassProvider:
+    """Minimal stand-in for the Home Assistant provider."""
+
+    domain = "hass"
+    available = True
+
+    def __init__(self, url: str | None) -> None:
+        self._url = url
+
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        return self._url
+
+
+async def test_get_login_providers_with_ha_provider(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that the HA OAuth login provider is registered when the HA provider has a URL.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider("http://homeassistant.local:8123")  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "homeassistant" for p in providers)
+
+
+async def test_get_login_providers_ha_provider_without_url(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that a HA provider without a URL does not break the login providers endpoint.
+
+    Regression test for the HA provider storing its URL in setup data instead of
+    config: builtin login must remain available and the endpoint must not raise.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider(None)  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "builtin" for p in providers)
+    assert not any(p["provider_id"] == "homeassistant" for p in providers)
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:
@@ -2184,10 +2235,32 @@ def test_has_scope() -> None:
     assert not has_scope(_user(UserRole.GUEST), Scope.CONFIG_CORE_READ)
     # service
     assert has_scope(_user(UserRole.SERVICE), Scope.USERS_IMPERSONATE)
+    assert has_scope(_user(UserRole.SERVICE), Scope.USERS_READ)
     assert has_scope(_user(UserRole.SERVICE), Scope.CONFIG_PLAYERS_WRITE)
     assert not has_scope(_user(UserRole.SERVICE), Scope.CONFIG_CORE_WRITE)
+    # reading user accounts does not imply managing them
+    assert not has_scope(_user(UserRole.SERVICE), Scope.USERS_MANAGE)
     # an unknown (custom) role id is fail-closed and grants no scopes at all
     assert not has_scope(_user("some_future_role"), Scope.LIBRARY_READ)
+
+
+async def test_homeassistant_system_user_may_read_users(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the Home Assistant integration may list users to resolve the calling user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    system_user = await auth_manager.get_homeassistant_system_user()
+    standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+    guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
+    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user):
+        assert getattr(command, "api_required_scope", None) is Scope.USERS_READ
+    assert has_scope(system_user, Scope.USERS_READ)
+    # reading user accounts remains off limits for regular users and guests
+    assert not has_scope(standard_user, Scope.USERS_READ)
+    assert not has_scope(guest_user, Scope.USERS_READ)
 
 
 async def test_homeassistant_system_user_has_service_role(

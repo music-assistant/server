@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CompressorFilter,
     ConvolutionFilter,
     CrossfeedFilter,
     DSPFilter,
@@ -16,6 +17,7 @@ from music_assistant_models.dsp import (
     HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
+    SafetyLimiterFilter,
     StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
@@ -32,15 +34,19 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class ComplexFilterInput:
     """
-    An extra audio file feeding a ComplexFilter.
+    An extra audio source feeding a ComplexFilter.
 
-    :param path: Audio file to read.
+    :param path: Audio source to read, either a file path or a URL.
     :param filters: Optional chain applied to the input before the body consumes
         it (e.g. "aresample=48000").
+    :param input_args: Optional FFmpeg options for reading this input, placed
+        before its ``-i`` on top of the ones every input already gets
+        (e.g. ["-stream_loop", "-1"]).
     """
 
     path: str
     filters: str = ""
+    input_args: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -54,7 +60,7 @@ class ComplexFilter:
 
     :param body: The filter consuming the main input followed by each extra
         input in order (e.g. "afir=irnorm=1").
-    :param inputs: Extra audio files for ``body``, in the order it consumes them.
+    :param inputs: Extra audio sources for ``body``, in the order it consumes them.
     """
 
     body: str
@@ -202,6 +208,24 @@ def filter_to_ffmpeg_params(
         # these quality options if they prove too costly on low powered hardware
         filter_params.append(
             f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
+    if isinstance(dsp_filter, SafetyLimiterFilter):
+        # user placed safety limiter; level=false keeps it a transparent
+        # ceiling (no auto make-up), latency=true realigns the lookahead buffer
+        filter_params.append(
+            f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true:latency=true"
+        )
+    # a unity ratio compresses nothing, leaving the make-up gain as the only effect
+    if isinstance(dsp_filter, CompressorFilter) and (
+        dsp_filter.ratio != 1.0 or dsp_filter.makeup != 0
+    ):
+        # acompressor knee is threshold/sqrt(knee)..threshold*sqrt(knee), so a knee
+        # width of N dB maps to a linear knee factor of 10**(N/20)
+        knee = 10 ** (dsp_filter.knee / 20)
+        filter_params.append(
+            f"acompressor=threshold={dsp_filter.threshold}dB:ratio={dsp_filter.ratio}"
+            f":attack={dsp_filter.attack}:release={dsp_filter.release}"
+            f":knee={knee}:makeup={dsp_filter.makeup}dB"
         )
 
     if isinstance(dsp_filter, HighLowPassFilter):

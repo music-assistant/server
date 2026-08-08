@@ -260,6 +260,8 @@ async def test_apply_playback_states_respects_watermark() -> None:
     call = provider.mass.music.mark_item_played.await_args
     assert call.kwargs["fully_played"] is True
     assert call.kwargs["seconds_played"] == 123
+    # the playlog flag is sticky, so a sync must never claim the user asked for the play
+    assert call.kwargs["user_initiated"] is False
 
 
 async def test_apply_playback_states_ignores_other_feeds_watermark() -> None:
@@ -353,8 +355,7 @@ def _sync_provider(applied: datetime, monkeypatch: pytest.MonkeyPatch) -> MagicM
             raise MediaNotFoundError("feed is down")
         return {"title": "Feed One", "episodes": []}
 
-    monkeypatch.setattr(overcast_provider, "get_podcastparser_dict", _parsed_feed)
-    monkeypatch.setattr(overcast_provider, "set_cached_podcast", AsyncMock())
+    monkeypatch.setattr(overcast_provider, "refresh_cached_podcast", _parsed_feed)
     monkeypatch.setattr(overcast_provider, "parse_podcast", Mock(return_value=MagicMock()))
     return provider
 

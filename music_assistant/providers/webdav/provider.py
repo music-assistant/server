@@ -31,7 +31,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_connection
@@ -303,7 +303,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """Walk the WebDAV tree via PROPFIND and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -324,16 +324,18 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             except LoginFailed, SetupFailedError, ProviderUnavailableError:
                 raise
             except aiohttp.ClientError as err:
-                # only a root-level failure aborts the sync; subdir failures
-                # are logged and skipped, matching the local-filesystem walker
-                if is_root:
-                    root_scan_errors.append(OSError(str(err)))
-                else:
+                # a root-level failure aborts the sync right away, subdir failures only
+                # once too many happen in a row, matching the local-filesystem walker
+                if not is_root:
                     self.logger.warning("WebDAV error scanning %s: %s", path, err)
+                scan_errors.record_dir_error(err, is_root=is_root, path=path)
                 return
+            scan_errors.record_dir_read()
             for item in items:
                 if item.is_dir:
                     await _walk(item.relative_path, is_root=False)
+                    if scan_errors.aborted:
+                        return
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue

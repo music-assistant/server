@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -23,22 +22,6 @@ from music_assistant.controllers.dashboard.controller import (
     _RegisteredDashboard,
 )
 from music_assistant.mass import MusicAssistant
-
-
-@pytest.fixture(autouse=True)
-def _use_ephemeral_ports() -> Generator[None]:
-    """
-    Bind the webserver and streamserver to OS-assigned ephemeral ports.
-
-    Avoids clashing with a Music Assistant instance already running on the
-    default ports (8095/8097) on the developer's machine. Autouse ensures the
-    patch is active before the `mass` fixture boots the server.
-    """
-    with (
-        patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
-        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
-    ):
-        yield
 
 
 def _make_controller() -> DashboardController:
@@ -139,6 +122,33 @@ async def test_resolve_dashboard_url_encodes_player_id() -> None:
 
     query = _query(url)
     assert query["path"] == "/now-playing?player=a%26b%3Dc+d"
+
+
+@pytest.mark.parametrize(
+    ("player_id", "expected"),
+    [
+        # dlna/wiim UDNs and MAC-based ids (bluesound, squeezelite, samsung_wam)
+        ("uuid:FF98F7F4-EEC9-70AF", "uuid:FF98F7F4-EEC9-70AF"),
+        ("20:F8:3B:09:6B:92", "20:F8:3B:09:6B:92"),
+        # alexa uses the device name the user typed, verbatim
+        ("Marvin's Echo (Kitchen)!", "Marvin's+Echo+(Kitchen)!"),
+        # every remaining safe character, so the set cannot silently shrink
+        ("a*b@c,d;e$f/g", "a*b@c,d;e$f/g"),
+    ],
+)
+async def test_resolve_dashboard_url_keeps_route_safe_chars_literal(
+    player_id: str, expected: str
+) -> None:
+    """The now_playing route leaves the characters the frontend's router keeps literal."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, player_id)
+
+    assert _query(url)["path"] == f"/now-playing?player={expected}"
 
 
 async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:

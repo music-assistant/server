@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -335,21 +336,31 @@ class MusicAssistant:
             *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
             return_exceptions=True,
         )
-        # stop core controllers
-        await self.discovery.close()
-        await self.streams.close()
-        await self.webserver.close()
-        await self.tasks.close()
-        await self.metadata.close()
-        await self.music.close()
-        await self.player_queues.close()
-        await self.players.close()
-        await self.translations.close()
-        await self.diagnostics.close()
-        await self.dashboard.close()
-        # cleanup cache and config
-        await self.config.close()
-        await self.cache.close()
+        # stop core controllers, cache and config last because the others rely on them.
+        # a failed startup may not have created (or fully set up) every controller, so
+        # each one is closed independently: leaving a database open here would keep its
+        # worker thread alive and stop the process from ever exiting.
+        for controller_name in (
+            "discovery",
+            "streams",
+            "webserver",
+            "tasks",
+            "metadata",
+            "music",
+            "player_queues",
+            "players",
+            "translations",
+            "diagnostics",
+            "dashboard",
+            "config",
+            "cache",
+        ):
+            if (controller := getattr(self, controller_name, None)) is None:
+                continue
+            try:
+                await controller.close()
+            except Exception:
+                LOGGER.exception("Error while closing the %s controller", controller_name)
         # close/cleanup shared http sessions
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
@@ -409,6 +420,18 @@ class MusicAssistant:
             onboard_done=self.config.onboard_done,
             status=self._state,
         )
+
+    @api_command("time", authenticated=False)
+    def get_server_time(self) -> float:
+        """
+        Return the current server time as UTC timestamp (seconds since epoch).
+
+        Clients compare server-provided timestamps (such as `elapsed_time_last_updated`)
+        against their own clock. Round-tripping this command lets a client estimate the
+        offset between the two clocks and correct for it, so a device with an unsynced
+        clock still renders playback progress and countdowns correctly.
+        """
+        return time.time()
 
     @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
@@ -722,7 +745,11 @@ class MusicAssistant:
             task_id = uuid4().hex
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
-            self._tracked_tasks.pop(task_id, None)
+            # done callbacks run one event loop iteration after the task finished, so a
+            # caller may already have replaced the entry with a new task under the same
+            # task_id - only untrack when the entry still points at this task
+            if self._tracked_tasks.get(task_id) is _task:
+                del self._tracked_tasks[task_id]
             if _task.cancelled():
                 return
             # always retrieve the exception, otherwise asyncio logs a noisy
@@ -1000,8 +1027,13 @@ class MusicAssistant:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
             if is_player_provider(provider):
-                # unregister all players of this provider
-                for player in provider.players:
+                # unregister all players of this provider, straight from the registry: the
+                # provider's own players listing hides disabled and still-initializing
+                # players, which must be unregistered here too so their on_unload runs
+                # and no stale entry is left behind
+                for player in list(self.players):
+                    if player.provider.instance_id != instance_id:
+                        continue
                     await self.players.unregister(player.player_id, permanent=is_removed)
             try:
                 await provider.unload(is_removed)
@@ -1341,7 +1373,18 @@ class MusicAssistant:
 
         # execute post load actions
         async def _on_provider_loaded() -> None:
-            await provider.loaded_in_mass()
+            try:
+                await provider.loaded_in_mass()
+            except Exception as err:
+                # the provider stays registered and available either way, so the steps
+                # below still run: an event left unset makes every waiter pay the full
+                # timeout, on every attempt, until the provider reloads
+                LOGGER.warning(
+                    "Error in the post load step of provider %s: %s",
+                    provider.name,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
             provider.initialized.set()
             self.get_provider_ready_event(provider.domain).set()
             await self.run_provider_discovery(provider.instance_id)
@@ -1445,4 +1488,9 @@ class MusicAssistant:
         if self._state == new_state:
             return
         self._state = new_state
+        if not hasattr(self, "webserver"):
+            # a startup that failed before the core controllers were created has no
+            # server info to report and no subscribers to report it to, while the state
+            # itself must still change so that shutdown can run to completion
+            return
         self.signal_event(EventType.CORE_STATE_UPDATED, data=self.get_server_info())

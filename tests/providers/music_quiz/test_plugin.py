@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProviderFeature,
     QueueOption,
 )
 from music_assistant_models.errors import (
@@ -37,9 +36,12 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
+    ASSUMED_AUDIO_START_LATENCY,
+    CONF_AI_ENGINE,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
     PLAYBACK_PREFERENCE_CACHE_KEY,
@@ -271,6 +273,16 @@ def _make_text_trivia_round(
     return game_round
 
 
+def _create_ai_plugin(instance_id: str = "ai--test") -> MagicMock:
+    """Create a mock plugin provider exposing a single AI engine."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name=instance_id, provider=provider)]
+    )
+    return provider
+
+
 def _create_plugin(
     mode: str | None = "venue",
     player: str | None = "venue_player",
@@ -286,6 +298,7 @@ def _create_plugin(
         "mode": mode,
         "player": player,
         "use_ai_distractors": use_ai_distractors,
+        "ai_engine": "ai--test/engine",
     }
     plugin.config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     plugin._game = None
@@ -343,6 +356,23 @@ def _mock_playback_session(player_id: str, queue_id: str) -> SharedPlaybackSessi
     session.player_id = player_id
     session.queue_id = queue_id
     return cast("SharedPlaybackSession", session)
+
+
+def _install_reported_playback(
+    plugin: MusicQuizPlugin,
+    elapsed_time: float | None,
+    elapsed_time_last_updated: float | None,
+    *,
+    flow_mode: bool = False,
+) -> None:
+    """Attach a playback session whose venue target reports the given position anchor."""
+    plugin._playback_session = _mock_playback_session("venue_player", "venue_player")
+    venue_player = cast("MagicMock", plugin.mass.players.all_players).return_value[0]
+    venue_player.state.elapsed_time = elapsed_time
+    venue_player.state.elapsed_time_last_updated = elapsed_time_last_updated
+    cast("MagicMock", plugin.mass.player_queues).get = MagicMock(
+        return_value=SimpleNamespace(flow_mode=flow_mode)
+    )
 
 
 def _configure_venue_listener_playback(
@@ -1817,8 +1847,8 @@ async def test_generic_submit_answer_uses_discriminated_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
-    """Expose Trivia only when a loaded AI_QUERY plugin can support it."""
+async def test_available_quiz_types_reflect_ai_engine_availability() -> None:
+    """Expose Trivia only when an available AI engine can support it."""
     plugin = _create_plugin()
     providers = cast("MagicMock", plugin.mass.get_providers_supporting_feature)
 
@@ -1826,7 +1856,7 @@ async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
     assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
     providers.return_value = [MagicMock()]
     assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
-    providers.return_value = [MagicMock(spec=PluginProvider)]
+    providers.return_value = [_create_ai_plugin()]
     assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline", "trivia"]
 
 
@@ -1926,8 +1956,7 @@ async def test_trivia_creation_rejects_without_ai_plugin(providers: list[object]
 async def test_trivia_creation_initializes_with_ai_plugin() -> None:
     """Create Trivia when an AI plugin and enough selected metadata are available."""
     plugin = _create_plugin()
-    ai_provider = MagicMock(spec=PluginProvider)
-    ai_provider.instance_id = "ai--test"
+    ai_provider = _create_ai_plugin()
     cast("MagicMock", plugin.mass.get_providers_supporting_feature).return_value = [ai_provider]
     eligible_tracks = AsyncMock(return_value={"library://track/1": MagicMock()})
     prepare_round = AsyncMock(side_effect=_make_trivia_round)
@@ -3766,6 +3795,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "track_uri",
         "image_url",
         "duration",
+        "audio_started_at",
         "ended_at",
     }
     assert current_round["correct_suggestion_id"] == "correct_0"
@@ -3774,6 +3804,113 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     alice = next(player for player in state["players"] if player["name"] == "Alice")
     assert set(alice) == {*public_player_keys, "last_answer"}
     assert set(alice["last_answer"]) == {"suggestion_id", "correct", "points"}
+
+
+@pytest.mark.asyncio
+async def test_reveal_anchors_audio_start_on_the_reported_playback_position() -> None:
+    """Derive the round's audible start from the playback target's reported position."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    assert game.rounds[0].started_at == 1000.0
+    _install_reported_playback(plugin, 2.0, 1003.5)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1001.5
+    revealed = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert revealed["current_round"]["audio_started_at"] == 1001.5
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    assert host_state["rounds"][0]["audio_started_at"] == 1001.5
+
+
+@pytest.mark.asyncio
+async def test_reveal_assumes_audio_start_latency_without_a_reported_position() -> None:
+    """Assume the startup latency when the playback target reports no position."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    _install_reported_playback(plugin, None, 1003.5)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0 + ASSUMED_AUDIO_START_LATENCY
+
+
+@pytest.mark.asyncio
+async def test_reveal_discards_an_implausible_reported_playback_position() -> None:
+    """Fall back to the assumed latency when the reported start is out of bounds."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    # a stale anchor from before this round's track: 29.5s after the play command
+    _install_reported_playback(plugin, 0.5, 1030.0)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0 + ASSUMED_AUDIO_START_LATENCY
+
+
+@pytest.mark.asyncio
+async def test_reveal_never_anchors_audio_before_the_round_started() -> None:
+    """Clamp a reported start that slightly predates the play command to the round start."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    _install_reported_playback(plugin, 2.0, 1001.5)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_reveal_ignores_the_reported_position_of_a_flow_stream() -> None:
+    """Fall back to the assumed latency when the queue reports a whole-queue position."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    _install_reported_playback(plugin, 2.0, 1003.5, flow_mode=True)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0 + ASSUMED_AUDIO_START_LATENCY
+
+
+@pytest.mark.asyncio
+async def test_trivia_reveal_leaves_the_audio_start_unresolved() -> None:
+    """Skip the audible-start anchor for quiz types that only play a track on reveal."""
+    plugin = _create_plugin()
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+    ):
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+            await _create_started_trivia_game(plugin, round_count=1)
+        game = plugin._game
+        assert game is not None
+        _install_reported_playback(plugin, 2.0, 1003.5)
+
+        await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at is None
+    revealed = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert revealed["current_round"]["audio_started_at"] is None
 
 
 @pytest.mark.asyncio
@@ -3954,6 +4091,7 @@ async def test_host_rounds_preserve_flat_wire_shape() -> None:
             "image_url": game_round.image_url,
             "duration": game_round.duration,
             "started_at": game_round.started_at,
+            "audio_started_at": game_round.audio_started_at,
             "ended_at": game_round.ended_at,
             "auto_advance_at": game_round.auto_advance_at,
         }
@@ -5446,7 +5584,7 @@ async def test_create_game_rejects_invalid_difficulty() -> None:
     ],
 )
 async def test_get_config_entries_reports_unavailable_ai(providers: list[object]) -> None:
-    """Disable AI enhancements and explain when no AI provider is available."""
+    """Disable AI enhancements and explain when no AI engine is available."""
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = providers
     plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
@@ -5454,28 +5592,54 @@ async def test_get_config_entries_reports_unavailable_ai(providers: list[object]
 
     entries = await plugin.get_config_entries()
 
-    assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_unavailable"]
+    assert [entry.key for entry in entries] == [
+        "use_ai_distractors",
+        "ai_engine",
+        "ai_engine_unavailable",
+    ]
     ai_entry = entries[0]
     assert ai_entry.type == ConfigEntryType.BOOLEAN
     assert ai_entry.default_value is False
     assert ai_entry.required is False
     assert ai_entry.read_only is True
-    assert entries[1].type == ConfigEntryType.ALERT
-    mass.get_providers_supporting_feature.assert_called_once_with(ProviderFeature.AI_QUERY)
+    assert entries[1].read_only is True
+    assert entries[2].type == ConfigEntryType.ALERT
 
 
 @pytest.mark.asyncio
 async def test_get_config_entries_reports_available_ai() -> None:
-    """Allow AI enhancements and confirm when an AI provider is available."""
+    """Allow AI enhancements and offer the engine picker when an AI engine is available."""
     mass = MagicMock()
-    mass.get_providers_supporting_feature.return_value = [MagicMock(spec=PluginProvider)]
+    mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
     plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
     plugin.mass = mass
 
     entries = await plugin.get_config_entries()
 
-    assert [entry.key for entry in entries] == ["use_ai_distractors"]
+    assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_engine"]
     assert entries[0].read_only is False
+    # the picker stays reachable with the distractor toggle off (Trivia always needs an engine)
+    assert entries[1].depends_on is None
+    assert [option.value for option in entries[1].options] == ["ai--test/engine"]
+
+
+@pytest.mark.asyncio
+async def test_first_use_adopts_a_concrete_engine_selection() -> None:
+    """An instance without a stored selection adopts a concrete engine uid on first use."""
+    plugin = _create_plugin()
+    mass = cast("MagicMock", plugin.mass)
+    mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
+    mass.config.get_raw_provider_config_value.return_value = None
+
+    engine = await select_ai_engine(plugin, CONF_AI_ENGINE)
+
+    assert engine is not None
+    assert engine.uid == "ai--test/engine"
+    assert mass.config.set_raw_provider_config_value.call_args.args == (
+        plugin.instance_id,
+        CONF_AI_ENGINE,
+        "ai--test/engine",
+    )
 
 
 @pytest.mark.asyncio

@@ -43,11 +43,10 @@ from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
     get_cached_podcast,
-    get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
-    set_cached_podcast,
+    refresh_cached_podcast,
 )
 from music_assistant.helpers.throttle_retry import parse_retry_after
 from music_assistant.models.music_provider import MusicProvider
@@ -146,20 +145,15 @@ class OvercastProvider(MusicProvider):
         for feed_url, subscription in subscriptions.items():
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
             try:
-                parsed_podcast = await get_podcastparser_dict(
-                    session=self.mass.http_session,
+                parsed_podcast = await refresh_cached_podcast(
+                    mass=self.mass,
+                    provider_instance_id=self.instance_id,
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
             except MediaNotFoundError:
                 self.logger.warning("Was unable to obtain podcast with feed %s", feed_url)
                 continue
-            await set_cached_podcast(
-                mass=self.mass,
-                provider_instance_id=self.instance_id,
-                feed_url=feed_url,
-                parsed_feed=parsed_podcast,
-            )
             applied = await self._apply_playback_states(feed_url, subscription, parsed_podcast)
             if applied is not None:
                 # stored right away: the caller may stop consuming this generator at
@@ -416,6 +410,7 @@ class OvercastProvider(MusicProvider):
                 mass_episode,
                 fully_played=state.played,
                 seconds_played=state.progress_s or 0,
+                user_initiated=False,
             )
             if newest_applied is None or state.user_updated_at > newest_applied:
                 newest_applied = state.user_updated_at

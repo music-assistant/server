@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import socket
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
+from ipaddress import AddressValueError, IPv4Address
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
@@ -31,7 +31,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -84,6 +84,8 @@ class AriaCastReceiver(PluginProvider):
     yielded by get_audio_stream exactly like the VBAN receiver.
     """
 
+    reload_on_streams_network_change = True
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this provider."""
@@ -128,6 +130,8 @@ class AriaCastReceiver(PluginProvider):
         # aiohttp server handles
         self._runner: web.AppRunner | None = None
         self._discovery_transport: asyncio.BaseTransport | None = None
+        # Guard so an unusable publish IP is reported once instead of on every probe
+        self._discovery_address_warned: bool = False
 
         self._audio_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
@@ -178,16 +182,22 @@ class AriaCastReceiver(PluginProvider):
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", ARIACAST_PORT, reuse_address=True)
+        bind_ip = self.mass.streams.bind_ip
+        # a wildcard string binds one address family only, None binds both
+        host = None if bind_ip in WILDCARD_BIND_IPS else bind_ip
+        site = web.TCPSite(self._runner, host, ARIACAST_PORT, reuse_address=True)
         try:
             await site.start()
         except OSError as err:
             raise SetupFailedError(
-                f"Cannot bind AriaCast server on port {ARIACAST_PORT}: {err}"
+                f"Cannot bind AriaCast server on {bind_ip}:{ARIACAST_PORT}: {err}"
             ) from err
 
         self.logger.info(
-            "AriaCast server '%s' listening on port %d", self._ariacast_name, ARIACAST_PORT
+            "AriaCast server '%s' listening on %s:%d",
+            self._ariacast_name,
+            bind_ip,
+            ARIACAST_PORT,
         )
         self.mass.create_task(self._run_udp_discovery())
         self._stats_task = self.mass.create_task(self._run_stats_broadcast())
@@ -226,10 +236,10 @@ class AriaCastReceiver(PluginProvider):
         """Return the single AriaCast audio source."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return stream details for the given audio source."""
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         # Allow through if currently playing OR if a player has played before (resume path)
         if not self._is_playing and not self._active_player_id:
             raise AudioError(
@@ -237,7 +247,7 @@ class AriaCastReceiver(PluginProvider):
             )
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._audio_format,
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
@@ -674,7 +684,7 @@ class AriaCastReceiver(PluginProvider):
             "album": m.album,
             "artwork_url": m.image_url,
             "duration_ms": int(m.duration * 1000) if m.duration else None,
-            "position_ms": int(m.elapsed_time * 1000) if m.elapsed_time else None,
+            "position_ms": int(m.elapsed_time * 1000) if m.elapsed_time is not None else None,
             "is_playing": self._is_playing,
         }
 
@@ -694,7 +704,9 @@ class AriaCastReceiver(PluginProvider):
         if duration is not None:
             m.duration = int(duration) // 1000
 
-        position = data.get("positionMs") or data.get("position_ms")
+        # the fallback is on the key rather than on the value, so a reported position
+        # of 0 (the start of a track) is applied instead of read as 'not reported'
+        position = data.get("positionMs", data.get("position_ms"))
         if position is not None:
             m.elapsed_time = int(position) // 1000
             m.elapsed_time_last_updated = time.time()
@@ -835,27 +847,15 @@ class AriaCastReceiver(PluginProvider):
         """Respond to DISCOVER_AUDIOCAST UDP broadcasts on port 12888."""
         loop = asyncio.get_running_loop()
 
-        local_ip = self._get_local_ip()
-
-        response_payload = json.dumps(
-            {
-                "server_name": self._ariacast_name,
-                "ip": local_ip,
-                "port": ARIACAST_PORT,
-                "samplerate": 48000,
-                "channels": 2,
-            }
-        ).encode()
-
         class _Proto(asyncio.DatagramProtocol):
             def __init__(
                 self,
                 transport_holder: list[asyncio.DatagramTransport],
-                payload: bytes,
+                build_payload: Callable[[], bytes | None],
                 logger: Any,
             ) -> None:
                 self._holder = transport_holder
-                self._payload = payload
+                self._build_payload = build_payload
                 self._log = logger
 
             def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -863,17 +863,22 @@ class AriaCastReceiver(PluginProvider):
                     self._holder.append(transport)
 
             def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-                if data.strip() == b"DISCOVER_AUDIOCAST":
-                    self._log.debug("Discovery from %s", addr)
-                    transport = self._holder[0] if self._holder else None
-                    if transport:
-                        with suppress(Exception):
-                            transport.sendto(self._payload, addr)
+                if data.strip() != b"DISCOVER_AUDIOCAST":
+                    return
+                self._log.debug("Discovery from %s", addr)
+                if (payload := self._build_payload()) is None:
+                    return
+                transport = self._holder[0] if self._holder else None
+                if transport:
+                    with suppress(Exception):
+                        transport.sendto(payload, addr)
 
         holder: list[asyncio.DatagramTransport] = []
         try:
             transport, _ = await loop.create_datagram_endpoint(
-                lambda: _Proto(holder, response_payload, self.logger),
+                lambda: _Proto(holder, self._build_discovery_payload, self.logger),
+                # Senders find us by broadcast, which is only delivered to a socket
+                # bound to the wildcard address, so this cannot follow streams.bind_ip.
                 local_addr=("0.0.0.0", DISCOVERY_PORT),
                 allow_broadcast=True,
             )
@@ -884,14 +889,33 @@ class AriaCastReceiver(PluginProvider):
                 "UDP discovery unavailable (port %d in use?): %s", DISCOVERY_PORT, exc
             )
 
-    @staticmethod
-    def _get_local_ip() -> str:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                return str(s.getsockname()[0])
-        except Exception:
-            return "127.0.0.1"
+    def _build_discovery_payload(self) -> bytes | None:
+        """
+        Return the discovery reply to send to a sender, or None to stay silent.
+
+        None means this server has no address a sender could connect back to.
+        """
+        publish_ip = str(self.mass.streams.publish_ip)
+        if not _is_advertisable_address(publish_ip):
+            if not self._discovery_address_warned:
+                self._discovery_address_warned = True
+                self.logger.warning(
+                    "Ignoring AriaCast discovery requests: the streamserver publish IP (%s) "
+                    "is not an IPv4 address senders can reach. Set the publish IP in "
+                    "Settings --> System --> Streams.",
+                    publish_ip,
+                )
+            return None
+        self._discovery_address_warned = False
+        return json.dumps(
+            {
+                "server_name": self._ariacast_name,
+                "ip": publish_ip,
+                "port": ARIACAST_PORT,
+                "samplerate": 48000,
+                "channels": 2,
+            }
+        ).encode()
 
     # -----------------------------------------------------------------------
     # Player selection helper
@@ -926,3 +950,30 @@ class AriaCastReceiver(PluginProvider):
 
         self.logger.debug("Using configured player: %s", self._default_player_id)
         return self._default_player_id
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_advertisable_address(address: str) -> bool:
+    """
+    Return whether an address may be advertised to an AriaCast sender.
+
+    Senders reach discovery over IPv4 and connect straight back to the bare address
+    in the reply, so anything that is not a routable IPv4 address is unusable here.
+
+    :param address: The address that would be advertised.
+    """
+    try:
+        parsed = IPv4Address(address)
+    except AddressValueError:
+        return False
+    return not (
+        parsed.is_loopback
+        or parsed.is_unspecified
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+    )

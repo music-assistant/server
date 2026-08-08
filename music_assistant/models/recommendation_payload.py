@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from music_assistant_models.media_items import RecommendationFolder
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.util import join_task
+
 if TYPE_CHECKING:
     from collections.abc import Coroutine
     from typing import Any
@@ -52,8 +54,8 @@ class RecommendationPayloadMixin(_MixinBase):
       read; a stale persisted payload is likewise served while one refresh runs.
 
     Concurrent callers share one in-flight fetch (single-flight); the shared fetch is
-    shielded so a timed-out caller cannot cancel it for the other waiters and its
-    result still lands in memory and cache.
+    isolated from caller cancellation, so a timed-out caller cannot cancel it for the
+    other waiters and its result still lands in memory and cache.
 
     All background work runs in tasks created via mass.create_task, so it is cancelled
     on server stop; the mixin's unload() additionally cancels any in-flight fetch or
@@ -136,9 +138,9 @@ class RecommendationPayloadMixin(_MixinBase):
                 task_id=f"recommendation_payload_fetch.{self.instance_id}",
             )
             self._recommendation_payload_task = task
-        # shield: a timed-out caller must not cancel the shared load out from under
-        # the other waiters (and the load must still complete to warm memory + cache)
-        return await asyncio.shield(task)
+        # a timed-out caller must not cancel the load: it still has to complete to warm
+        # memory + cache for the other waiters
+        return await join_task(task)
 
     async def _refresh_recommendation_payload(self) -> list[RecommendationFolder]:
         """
@@ -148,8 +150,8 @@ class RecommendationPayloadMixin(_MixinBase):
         cached payload is known to be outdated (e.g. after detecting rotated backend ids).
         Subsequent _recommendation_payload calls serve the refreshed payload.
         """
-        # shield: see _recommendation_payload
-        return await asyncio.shield(self._schedule_recommendation_refresh())
+        task = self._schedule_recommendation_refresh()
+        return await join_task(task)
 
     def _schedule_recommendation_refresh(self) -> asyncio.Task[list[RecommendationFolder]]:
         """Return the in-flight refresh task, starting one if none is running."""

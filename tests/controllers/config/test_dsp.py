@@ -456,8 +456,14 @@ async def test_remove_ir_clears_references(tmp_path: Path) -> None:
         )
     )
 
+    config.signal_event.reset_mock()
+
     await config.remove_dsp_ir("abc123")
 
+    signalled = [call.args[0] for call in config.signal_event.call_args_list]
+    assert EventType.PLAYER_DSP_CONFIG_UPDATED in signalled
+    # the blanked preset must be announced too, or a client keeps offering the deleted IR
+    assert EventType.DSP_PRESETS_UPDATED in signalled
     player_filter = config.get_player_dsp_config("player-1").filters[0]
     assert isinstance(player_filter, ConvolutionFilter)
     assert player_filter.ir_id == ""

@@ -14,7 +14,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.constants import PLAYER_CONTROL_FAKE
+from music_assistant_models.constants import (
+    PLAYER_CONTROL_FAKE,
+    PLAYER_CONTROL_NATIVE,
+    PLAYER_CONTROL_NONE,
+)
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
@@ -300,6 +304,73 @@ class TestIdleGraceTimer:
         assert ugp._idle_grace_task is None
 
 
+class TestMemberPositionPropagation:
+    """The group mirrors the playback position reported by its active member."""
+
+    def test_position_is_adopted(self) -> None:
+        """A member's position anchor becomes the group's position anchor."""
+        ugp = self._ugp_with_member(self._member(42.0, 2000.0))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 42.0
+        assert ugp._attr_elapsed_time_last_updated == 2000.0
+
+    def test_zero_position_is_adopted(self) -> None:
+        """Position 0 is a real position and replaces the group's own anchor."""
+        ugp = self._ugp_with_member(self._member(0.0, 2000.0))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 0.0
+        assert ugp._attr_elapsed_time_last_updated == 2000.0
+
+    def test_position_without_timestamp_is_ignored(self) -> None:
+        """A position without its timestamp is unusable, so the group keeps its anchor."""
+        ugp = self._ugp_with_member(self._member(42.0, None))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 12.0
+        assert ugp._attr_elapsed_time_last_updated == 1000.0
+
+    def test_unknown_position_is_ignored(self) -> None:
+        """A member that reports no position leaves the group's own anchor in place."""
+        ugp = self._ugp_with_member(self._member(None, 2000.0))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 12.0
+        assert ugp._attr_elapsed_time_last_updated == 1000.0
+
+    @staticmethod
+    def _member(elapsed_time: float | None, last_updated: float | None) -> MagicMock:
+        """Create an active member reporting the given position anchor."""
+        member = _make_mock_player(
+            "m1", playback_state=PlaybackState.PLAYING, active_group="ugp_test"
+        )
+        member.state.elapsed_time = elapsed_time
+        member.state.elapsed_time_last_updated = last_updated
+        return member
+
+    @staticmethod
+    def _ugp_with_member(member: MagicMock) -> UniversalGroupPlayer:
+        """Create a playing UGP holding a stale anchor and deriving state from the member."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp.stream = MagicMock()
+        ugp.stream.done = False
+        ugp._attr_playback_state = PlaybackState.PLAYING
+        ugp._attr_elapsed_time = 12.0
+        ugp._attr_elapsed_time_last_updated = 1000.0
+        mass.players.iter_group_members.side_effect = lambda *_args, **_kwargs: iter([member])
+        return ugp
+
+
 class TestFakePowerLifecycle:
     """When the user assigns Fake power control, power(True/False) drives form/dissolve."""
 
@@ -371,3 +442,133 @@ class TestSupportedFeaturesPower:
         ugp = _make_ugp(mass)
         await ugp.on_config_updated()
         assert PlayerFeature.POWER in ugp.supported_features
+
+
+class TestSupportedFeaturesSetMembers:
+    """SET_MEMBERS tracks the dynamic-members config option."""
+
+    @staticmethod
+    def _make_mass(dynamic: bool) -> MagicMock:
+        """Build a mock mass whose group is (or isn't) a dynamic group."""
+        mass = _make_mock_mass()
+
+        def _config_value(key: str, default: object = None) -> object:
+            if key == "group_members":
+                return []
+            if key == "dynamic_members":
+                return dynamic
+            return default
+
+        mass.config.get_base_player_config.return_value = MagicMock(
+            name=None, default_name="Test UGP", get_value=_config_value
+        )
+        return mass
+
+    def test_dynamic_group_advertises_set_members(self) -> None:
+        """A dynamic group lets the user change its members."""
+        ugp = _make_ugp(self._make_mass(dynamic=True))
+        assert PlayerFeature.SET_MEMBERS in ugp.supported_features
+
+    def test_static_group_does_not_advertise_set_members(self) -> None:
+        """A static group's members are fixed by its config."""
+        ugp = _make_ugp(self._make_mass(dynamic=False))
+        assert PlayerFeature.SET_MEMBERS not in ugp.supported_features
+
+
+class TestSupportedFeaturesFromMembers:
+    """Volume and mute are inherited from the members those commands are fanned out to."""
+
+    @staticmethod
+    def _attach_members(mass: MagicMock, *members: MagicMock) -> None:
+        """Register the given mock members on the mock player controller."""
+        by_id = {member.player_id: member for member in members}
+        mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: by_id.get(pid)
+        )
+
+    def test_volume_advertised_when_a_member_supports_it(self) -> None:
+        """A volume-capable member gives the group a volume capability."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1")
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
+        self._attach_members(mass, member)
+        ugp._attr_group_members = ["m1"]
+
+        assert PlayerFeature.VOLUME_SET in ugp.supported_features
+
+    def test_volume_not_advertised_without_capable_members(self) -> None:
+        """An empty group has nothing to send a volume command to."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+
+        assert ugp._attr_group_members == []
+        assert PlayerFeature.VOLUME_SET not in ugp.supported_features
+
+    def test_mute_not_advertised_without_capable_members(self) -> None:
+        """Members that can't be muted leave the group without a mute capability."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1")
+        self._attach_members(mass, member)
+        ugp._attr_group_members = ["m1"]
+
+        assert PlayerFeature.VOLUME_MUTE not in ugp.supported_features
+
+    def test_mute_advertised_when_a_member_supports_it(self) -> None:
+        """A single mute-capable member is enough to advertise mute on the group."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        plain_member = _make_mock_player("m1")
+        mute_member = _make_mock_player("m2")
+        mute_member.state.supported_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        self._attach_members(mass, plain_member, mute_member)
+        ugp._attr_group_members = ["m1", "m2"]
+
+        assert PlayerFeature.VOLUME_MUTE in ugp.supported_features
+
+    def test_unavailable_members_do_not_contribute(self) -> None:
+        """An offline member's capabilities are not advertised by the group."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1", available=False)
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_MUTE}
+        self._attach_members(mass, member)
+        ugp._attr_group_members = ["m1"]
+
+        assert PlayerFeature.VOLUME_MUTE not in ugp.supported_features
+
+    def test_dormant_group_resolves_a_native_mute_control(self) -> None:
+        """
+        An idle group resolves a mute control, which is what HA gates its mute button on.
+
+        Without an inherited VOLUME_MUTE this lands on PLAYER_CONTROL_NONE and the
+        capability is dropped from the player state again.
+        """
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1")
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_MUTE}
+        self._attach_members(mass, member)
+        ugp._attr_static_group_members = ["m1"]
+        ugp._attr_group_members = ["m1"]
+        # a member update reaches the group as trigger_player_update -> update_state,
+        # which is what drops the cached mute_control so it can be re-resolved
+        ugp.update_state()
+
+        assert not ugp.is_active_session
+        assert ugp.mute_control == PLAYER_CONTROL_NATIVE
+
+    def test_mute_control_stays_none_without_capable_members(self) -> None:
+        """No member can be muted → no mute control to hand to HA."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1")
+        self._attach_members(mass, member)
+        ugp._attr_group_members = ["m1"]
+        ugp.update_state()
+
+        assert ugp.mute_control == PLAYER_CONTROL_NONE
