@@ -19,9 +19,7 @@ import aiofiles
 import shortuuid
 import xmltodict
 from aiofiles.os import wrap
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     EventType,
     ExternalID,
@@ -116,6 +114,7 @@ from .constants import (
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
+    content_type_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -137,7 +136,7 @@ from .helpers import (
 from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -204,9 +203,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Return Config entries to configure this provider."""
         # content type and path are collected by the setup flow; surface the (immutable)
         # content type read-only so the sync options' depends_on chains still resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
