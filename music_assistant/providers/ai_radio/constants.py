@@ -45,6 +45,9 @@ SHOW_START_TIMEOUT_SECONDS = 300
 AI_QUERY_TIMEOUT_SECONDS = 180
 TTS_QUERY_TIMEOUT_SECONDS = 180
 
+# ffprobe reports no status code, so its message is all we have to spot a failed render
+TTS_SERVER_ERROR_MARKERS = ("Server returned 5XX", "HTTP error 5")
+
 SUPPORTED_FEATURES: set[Any] = set()
 EMPTY_SECTION_ID = "EMPTY_SECTION"
 VALID_WEB_SEARCH_MODES = {"disabled", "allow", "force"}
