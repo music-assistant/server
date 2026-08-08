@@ -247,17 +247,58 @@ async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssi
     assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
 
 
-async def test_grouping_failure_is_reported_as_a_player_command_failure(
+async def test_join_failure_names_the_speaker_that_refused(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A speaker that refuses to join surfaces as a typed player command failure."""
+    """A speaker that refuses to join is named in the failure, not the group leader."""
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
     cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
     study.soco.join.side_effect = SoCoException("the speaker refused to join")
 
-    with pytest.raises(PlayerCommandFailed, match="Kitchen"):
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
         await kitchen.set_members(player_ids_to_add=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
+
+
+async def test_grouping_leaves_the_speakers_after_a_failure_untouched(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Speakers joined before a failure keep their poll, the ones after it are never reached."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
+    attic = _make_player(timer_mass, "RINCON_000E58DDDDDD01400", "Attic")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {
+        study.player_id: study,
+        hallway.player_id: hallway,
+        attic.player_id: attic,
+    }.get
+    hallway.soco.join.side_effect = SoCoException("the speaker refused to join")
+
+    with pytest.raises(PlayerCommandFailed, match="Hallway"):
+        await kitchen.set_members(
+            player_ids_to_add=[study.player_id, hallway.player_id, attic.player_id]
+        )
+
+    assert _pending_polls(timer_mass) == [_poll_id(study)]
+    attic.soco.join.assert_not_called()
+
+
+async def test_unjoin_failure_names_the_speaker_that_refused(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that refuses to leave a group is named in the failure, not the group leader."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    study.soco.unjoin.side_effect = SoCoException("the speaker refused to leave")
+
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
+        await kitchen.set_members(player_ids_to_remove=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
 
 
 async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
