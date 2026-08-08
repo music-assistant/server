@@ -600,13 +600,14 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
 async def test_play_media_non_queue_sends_broadcast_play(
     player: MSXPlayer,
 ) -> None:
-    """play_media without queue context should use broadcast_play as before."""
+    """play_media without queue context should push the media metadata via broadcast_play."""
     media = Mock(spec=PlayerMedia)
     media.uri = "http://ma-server/stream/12345"
     media.title = "Track 1"
     media.artist = "Artist 1"
-    media.image_url = None
+    media.image_url = "http://ma-server/image.png"
     media.duration = 180
+    media.stream_duration = None
     media.source_id = None
     media.queue_item_id = None
 
@@ -617,7 +618,15 @@ async def test_play_media_non_queue_sends_broadcast_play(
         await player.play_media(media)
 
     mock_playlist.assert_not_called()
-    mock_play.assert_called_once()
+    mock_play.assert_called_once_with(
+        player.player_id,
+        title="Track 1",
+        artist="Artist 1",
+        image_url="http://ma-server/image.png",
+        duration=180,
+        next_action=f"request:interaction:/api/next/{player.player_id}",
+        prev_action=f"request:interaction:/api/previous/{player.player_id}",
+    )
 
 
 async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:

@@ -42,6 +42,15 @@ def test_crossfade_uses_equal_power_curves() -> None:
     assert filter_strings == ["[fadeout][fadein]acrossfade=d=12.5:c1=qsin:c2=qsin"]
 
 
+def test_crossfade_emits_the_given_curves() -> None:
+    """Explicit fadeout/fadein curves override the default qsin:qsin pair."""
+    crossfade = CrossfadeFilter(
+        logger=LOGGER, crossfade_duration=12.5, fadeout_curve="nofade", fadein_curve="tri"
+    )
+    filter_strings = crossfade.apply("[fadein]", "[fadeout]")
+    assert filter_strings == ["[fadeout][fadein]acrossfade=d=12.5:c1=nofade:c2=tri"]
+
+
 def test_crossfade_sample_count_uses_ns() -> None:
     """
     A sample-count crossfade must emit ``acrossfade=ns=`` rather than ``d=``.

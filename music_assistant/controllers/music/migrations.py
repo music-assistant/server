@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_ALBUMS,
@@ -39,7 +40,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
@@ -963,6 +963,18 @@ async def migrate_database(  # noqa: PLR0915
                 "Migrated the Apple Music artwork of %d library item(s) to resolvable tokens",
                 migrated_artwork_rows,
             )
+
+    if prev_version <= 55:
+        # drop the sound effect media type from the stored playlists: clients that do not
+        # know it yet refuse to parse a playlist that advertises it. Rewriting the rows
+        # here makes upgrading enough, instead of having to wait for the next library sync.
+        await database.execute(
+            f"UPDATE {DB_TABLE_PLAYLISTS} SET supported_mediatypes = json(("
+            "SELECT json_group_array(value) FROM json_each"
+            f"({DB_TABLE_PLAYLISTS}.supported_mediatypes) WHERE value != 'sound_effect'))"
+            " WHERE json_valid(supported_mediatypes)"
+            " AND supported_mediatypes LIKE '%sound_effect%'"
+        )
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

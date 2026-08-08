@@ -20,7 +20,9 @@ def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
     """Return (tasks, mock) that captures coroutines passed to mass.create_task."""
     tasks: list[asyncio.Future[Any]] = []
 
-    def _schedule(coro: Any) -> asyncio.Future[Any]:
+    # accept create_task's keyword-only options (task_id, abort_existing, ...) so the stub
+    # keeps matching its signature
+    def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(coro)
         tasks.append(task)
         return task
@@ -191,6 +193,67 @@ async def test_stream_details_raises_media_not_found(provider: OpenSonicProvider
         await provider.get_stream_details("tr-missing", MediaType.TRACK)
 
 
+@pytest.mark.asyncio
+async def test_get_library_radios_returns_parsed_radios(provider: OpenSonicProvider) -> None:
+    """Internet radio stations are pulled from the server and parsed into MA radios."""
+    radio_station = Mock()
+    radio_station.id = "radio-1"
+    radio_station.name = "Sample Radio"
+    radio_station.stream_url = "https://example.com/stream"
+    radio_station.home_page_url = "https://example.com"
+    radio_station.cover_art = "/cover.jpg"
+
+    provider.conn = Mock()
+    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[radio_station])
+
+    radios = [radio async for radio in provider.get_library_radios()]
+
+    assert len(radios) == 1
+    assert radios[0].item_id == "radio-1"
+    assert radios[0].name == "Sample Radio"
+    assert radios[0].uri == "https://example.com/stream"
+
+
+@pytest.mark.asyncio
+async def test_get_radio_returns_matching_station(provider: OpenSonicProvider) -> None:
+    """Lookup by provider id resolves the requested radio station."""
+    radio_station = Mock()
+    radio_station.id = "radio-1"
+    radio_station.name = "Sample Radio"
+    radio_station.stream_url = "https://example.com/stream"
+    radio_station.home_page_url = "https://example.com"
+    radio_station.cover_art = None
+
+    provider.conn = Mock()
+    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[radio_station])
+
+    radio = await provider.get_radio("radio-1")
+
+    assert radio.item_id == "radio-1"
+    assert radio.name == "Sample Radio"
+
+
+@pytest.mark.asyncio
+async def test_stream_details_for_radio(provider: OpenSonicProvider) -> None:
+    """Radio stream details point to the station stream URL and disable seeking."""
+    radio_station = Mock()
+    radio_station.id = "radio-1"
+    radio_station.name = "Sample Radio"
+    radio_station.stream_url = "https://example.com/stream"
+    radio_station.home_page_url = "https://example.com"
+    radio_station.cover_art = None
+
+    provider.conn = Mock()
+    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[radio_station])
+
+    sd = await provider.get_stream_details("radio-1", MediaType.RADIO)
+
+    assert sd.stream_type == StreamType.HTTP
+    assert sd.path == "https://example.com/stream"
+    assert sd.can_seek is False
+    assert sd.allow_seek is False
+
+
 # ---------------------------------------------------------------------------
 # on_played
 # ---------------------------------------------------------------------------
@@ -286,3 +349,55 @@ async def test_get_resume_position_no_bookmark_returns_zero(
     assert not fully_played
     assert position == 0
     assert created is None
+
+
+# ---------------------------------------------------------------------------
+# get_playlist_tracks
+# ---------------------------------------------------------------------------
+
+
+def _parse_track_stub(*_args: Any, **_kwargs: Any) -> Mock:
+    """Return a lightweight stand-in Track (parse_track is covered by test_parsers)."""
+    return Mock(position=0)
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_avoids_per_track_metadata_fetch(
+    provider: OpenSonicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enqueuing a playlist must not fetch album or lyrics per track (avoids N+1 requests)."""
+    sonic_playlist = Mock()
+    sonic_playlist.entry = [_make_sonic_item(item_id=f"tr-{i}") for i in range(3)]
+
+    provider.conn = Mock()
+    provider.conn.get_playlist = AsyncMock(return_value=sonic_playlist)
+    provider.conn.get_album = AsyncMock()
+    provider.conn.get_album_info2 = AsyncMock()
+    provider.conn.get_lyrics = AsyncMock()
+    provider.conn.get_lyrics_by_song_id = AsyncMock()
+
+    # force a cache miss so the real method body runs, and capture the background
+    # store task so its coroutine is awaited rather than left pending
+    tasks, task_mock = _make_task_capturer()
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(None, False, False)
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    provider.mass.create_task = task_mock  # type: ignore[method-assign]
+
+    # parse_track has its own coverage in test_parsers; isolate the fetch behaviour here
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.parse_track",
+        _parse_track_stub,
+    )
+
+    result = await provider.get_playlist_tracks("pl-1")
+    await asyncio.gather(*tasks)
+
+    assert len(result) == 3
+    assert [track.position for track in result] == [1, 2, 3]
+    provider.conn.get_playlist.assert_awaited_once_with("pl-1")
+    provider.conn.get_album.assert_not_awaited()
+    provider.conn.get_album_info2.assert_not_awaited()
+    provider.conn.get_lyrics.assert_not_awaited()
+    provider.conn.get_lyrics_by_song_id.assert_not_awaited()

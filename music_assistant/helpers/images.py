@@ -30,6 +30,7 @@ from PIL import Image, UnidentifiedImageError
 from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.util import join_task
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
@@ -325,7 +326,7 @@ async def get_image_data(
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
     )
-    return await asyncio.shield(task)
+    return await join_task(task)
 
 
 async def _resolve_own_imageproxy_url(mass: MusicAssistant, url: str) -> tuple[str, str] | None:
@@ -632,7 +633,7 @@ async def _get_image_thumb(
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
     )
-    thumb_data = await asyncio.shield(task)
+    thumb_data = await join_task(task)
     _put_in_memory_cache(cache_filename, thumb_data)
     return thumb_data, cache_filepath
 

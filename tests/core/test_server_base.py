@@ -84,3 +84,57 @@ async def test_create_task_failure_logged(
         for record in caplog.records
         if record.levelno == logging.WARNING
     )
+
+
+async def test_create_task_replacement_stays_tracked(mass_minimal: MusicAssistant) -> None:
+    """Test that a finished task does not untrack a replacement with the same task_id."""
+    task_id = "test_replacement"
+    release = asyncio.Event()
+
+    async def _instant() -> None:
+        return
+
+    async def _blocked() -> None:
+        await release.wait()
+
+    # a task that never suspends is already finished when create_task returns,
+    # so its done callback is still queued while the caller continues
+    first = mass_minimal.create_task(_instant(), task_id=task_id)
+    assert first.done()
+    second = mass_minimal.create_task(_blocked(), task_id=task_id)
+    assert second is not first
+    assert mass_minimal._tracked_tasks[task_id] is second
+
+    # allow the first task's done callback to run
+    await asyncio.sleep(0)
+
+    assert mass_minimal._tracked_tasks.get(task_id) is second
+    # a later caller must join the in-flight task instead of starting a duplicate
+    assert mass_minimal.create_task(_blocked(), task_id=task_id) is second
+
+    release.set()
+    await second
+    assert task_id not in mass_minimal._tracked_tasks
+
+
+async def test_create_task_abort_existing_tracks_replacement(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Test that a task aborted in favour of a replacement does not untrack it."""
+    task_id = "test_abort_existing"
+
+    async def _blocked() -> None:
+        await asyncio.Event().wait()
+
+    first = mass_minimal.create_task(_blocked(), task_id=task_id)
+    second = mass_minimal.create_task(_blocked(), task_id=task_id, abort_existing=True)
+    assert second is not first
+
+    # the aborted task runs its done callback only once the cancellation is delivered
+    await asyncio.wait((first,))
+    assert first.cancelled()
+    assert mass_minimal._tracked_tasks.get(task_id) is second
+
+    second.cancel()
+    await asyncio.wait((second,))
+    assert task_id not in mass_minimal._tracked_tasks

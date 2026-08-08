@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
@@ -26,7 +27,6 @@ from music_assistant.helpers.compare import (
     compare_album,
     compare_artists,
     compare_media_item,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -246,7 +246,15 @@ class AlbumsController(MediaControllerBase[Album]):
     async def library_count(
         self, favorite_only: bool = False, album_types: list[AlbumType] | None = None
     ) -> int:
-        """Return the total number of items in the library."""
+        """
+        Return the number of albums in the library.
+
+        Restricted to the providers the current user is allowed to see when that user
+        has a provider filter set.
+
+        :param favorite_only: Only count albums marked as favorite.
+        :param album_types: Only count albums of these types.
+        """
         sql_query = f"SELECT item_id FROM {self.db_table}"
         query_parts: list[str] = []
         query_params: dict[str, Any] = {}
@@ -255,6 +263,10 @@ class AlbumsController(MediaControllerBase[Album]):
         if album_types:
             query_parts.append("albums.album_type IN :album_types")
             query_params["album_types"] = [x.value for x in album_types]
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)

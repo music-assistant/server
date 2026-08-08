@@ -26,5 +26,9 @@
   },
   "manifest": {
     "description": "Play music and audiobooks stored on NFS connected network drives."
+  },
+  "errors": {
+    "invalid_subfolder": "Invalid subfolder {0}: it must be a relative path inside the export.",
+    "subfolder_not_found": "Subfolder {0} does not exist in the NFS export."
   }
 }

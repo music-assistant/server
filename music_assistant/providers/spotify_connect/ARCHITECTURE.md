@@ -113,6 +113,15 @@ to go-librespot REST calls. Volume flows both ways: MA → Spotify via `POST /pl
 Spotify → MA via the `volume` event (de-duplicated to avoid ping-pong, and ignored briefly right
 after a session becomes active so the player's own volume wins).
 
+**Initial volume sync.** With `external_volume` set, go-librespot never applies its
+`initial_volume` config value and starts its Connect device state at 100%. The provider
+therefore pushes the target player's live volume over REST when a session becomes active
+(device selected in the Spotify app) and again when the source is claimed on a player,
+so the Spotify app's volume slider adopts the player's actual volume — otherwise the first
+volume tap in the app would send an absolute value computed from 100% and snap the player's
+volume up. The push is unconditional: the last-sent cache tracks the last value exchanged,
+not the daemon's current volume, which resets to its default on a new session or restart.
+
 **Taking playback back.** When the user moves the active device away in the Spotify app, pressing
 play in Music Assistant calls `POST /player/play` with the last seen context (and `skip_to_uri`
 for the last track) — go-librespot activates this device unconditionally for a play request, so

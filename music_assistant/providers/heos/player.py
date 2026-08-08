@@ -238,6 +238,7 @@ class HeosPlayer(Player):
             else:
                 self._attr_active_source = str(now_playing.source_id)
 
+            # HEOS reports position and duration in milliseconds, PlayerMedia expects seconds
             self._attr_current_media = PlayerMedia(
                 uri=now_playing.media_id or media_uri_from_now_playing_media(now_playing),
                 media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE.get(
@@ -248,9 +249,13 @@ class HeosPlayer(Player):
                 artist=now_playing.artist,
                 album=now_playing.album,
                 image_url=now_playing.image_url,
-                duration=now_playing.duration,
+                duration=int(now_playing.duration / 1000) if now_playing.duration else None,
                 source_id=str(now_playing.source_id),
-                elapsed_time=now_playing.current_position,
+                elapsed_time=(
+                    int(now_playing.current_position / 1000)
+                    if now_playing.current_position is not None
+                    else None
+                ),
                 elapsed_time_last_updated=(
                     now_playing.current_position_updated.timestamp()
                     if now_playing.current_position_updated
@@ -264,7 +269,9 @@ class HeosPlayer(Player):
         now_playing = self._device.now_playing_media
 
         self._attr_elapsed_time = (
-            now_playing.current_position / 1000 if now_playing.current_position else None
+            now_playing.current_position / 1000
+            if now_playing.current_position is not None
+            else None
         )
         self._attr_elapsed_time_last_updated = (
             now_playing.current_position_updated.timestamp()

@@ -7,6 +7,7 @@ import os
 import platform
 import plistlib
 import re
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
@@ -16,11 +17,12 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
 
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
+
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
 _COMPANION_PAIRING_DISABLED = 0x04
@@ -166,6 +168,27 @@ def is_apple_tv(manufacturer: str, model: str) -> bool:
     (e.g. "Apple TV 4K", "Apple TV Gen4").
     """
     return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
+def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
+    """
+    Return the default receiver buffer depth in ms for a device, 0 for automatic.
+
+    :param manufacturer: Device manufacturer from discovery.
+    :param model: Device model from discovery.
+    :param fv: The device's _airplay fv (firmware) TXT record, when known.
+    """
+    for manufacturer_match, model_match, fv_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
+        # fnmatchcase with both sides lowered: plain fnmatch only normalizes
+        # case on case-insensitive platforms, so a capitalized table row would
+        # match on macOS and silently fail on Linux.
+        if (
+            fnmatchcase(manufacturer.lower(), manufacturer_match.lower())
+            and fnmatchcase(model.lower(), model_match.lower())
+            and fnmatchcase((fv or "").lower(), fv_match.lower())
+        ):
+            return depth_ms
+    return 0
 
 
 def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
@@ -345,12 +368,9 @@ def serialize_txt_records(discovery_info: AsyncServiceInfo) -> str:
     return " ".join(pairs)
 
 
-def get_final_output_format(
-    audio_format: AudioFormat,
-    airplay_player: AirPlayPlayer,  # noqa: ARG001
-) -> AudioFormat:
+def get_final_output_format(audio_format: AudioFormat) -> AudioFormat:
     """
-    Determine final output format for display purposes.
+    Determine the output format ffmpeg must encode to for the cliairplay binary.
 
     The cliairplay binary always uses ALAC encoding internally.
     """

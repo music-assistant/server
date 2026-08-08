@@ -47,6 +47,8 @@ from .constants import (
     EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
     MRP_DISCOVERY_TYPE,
+    PTP_DAEMON_WARN_BURST,
+    PTP_DAEMON_WARN_WINDOW,
     RAOP_DISCOVERY_TYPE,
     AirPlayRemoteCommand,
     StreamingProtocol,
@@ -87,6 +89,7 @@ ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
+    reload_on_streams_network_change = True
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
@@ -100,6 +103,11 @@ class AirPlayProvider(PlayerProvider):
     # control channel; created/cleared per daemon start so a crash+restart
     # re-gates readiness. None until the daemon is first started.
     _ptp_daemon_ready: asyncio.Event | None = None
+    # Rate-limit state for daemon lines promoted to WARNING (see
+    # PTP_DAEMON_WARN_BURST).
+    _ptp_daemon_warn_window_start: float | None = None
+    _ptp_daemon_warns_in_window: int = 0
+    _ptp_daemon_warns_suppressed: int = 0
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -112,14 +120,30 @@ class AirPlayProvider(PlayerProvider):
         Return if the shared PTP clock daemon process is alive.
 
         This reflects process liveness only (spawned, not closed, still
-        running) for status/diagnostics. The streaming timing decision must use
-        :meth:`wait_ptp_daemon_ready`, which also waits for the daemon to have
-        actually bound its ports and opened its control channel.
+        running). It says nothing about whether streams can use it: a daemon
+        that never bound its ports stays alive and reports True here while every
+        group silently degrades to NTP. Use :attr:`ptp_daemon_ready` for the
+        real state, or :meth:`wait_ptp_daemon_ready` to wait for it.
         """
         return (
             self._ptp_daemon is not None
             and not self._ptp_daemon.closed
             and self._ptp_daemon.returncode is None
+        )
+
+    @property
+    def ptp_daemon_ready(self) -> bool:
+        """
+        Return whether the shared PTP clock daemon is serving streams right now.
+
+        This is the condition a session actually gates on: the daemon has bound
+        the privileged PTP ports (UDP 319/320), opened its control channel, and
+        is still alive.
+        """
+        return (
+            self.ptp_daemon_running
+            and self._ptp_daemon_ready is not None
+            and self._ptp_daemon_ready.is_set()
         )
 
     async def wait_ptp_daemon_ready(self, timeout: float = PTP_DAEMON_READY_TIMEOUT) -> bool:
@@ -218,7 +242,7 @@ class AirPlayProvider(PlayerProvider):
         self._dacp_info = AsyncServiceInfo(
             DACP_DISCOVERY_TYPE,
             name=server_id,
-            addresses=[await get_ip_pton(str(self.mass.streams.publish_ip))],
+            addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
             port=dacp_port,
             properties={
                 "txtvers": "1",
@@ -324,16 +348,26 @@ class AirPlayProvider(PlayerProvider):
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
         streams_by_type: dict[str, int] = {}
+        streams_by_route: dict[str, int] = {}
         for player in self.get_players():
             if not (player.stream and player.stream.running):
                 continue
             stream_type = "airplay2" if player.protocol == StreamingProtocol.AIRPLAY2 else "raop"
             streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
+            # The route the binary resolved names the timing source each stream
+            # really got (PTP or NTP), which the daemon flags cannot: a daemon
+            # can be alive and every stream still be running on NTP. A process
+            # that has not reported its route yet is counted apart rather than
+            # folded into either.
+            route = player.stream.active_route or "unreported"
+            streams_by_route[route] = streams_by_route.get(route, 0) + 1
         return {
             "dacp_server_running": self._dacp_server.is_serving(),
             "ptp_daemon_running": self.ptp_daemon_running,
+            "ptp_daemon_ready": self.ptp_daemon_ready,
             "active_streams": sum(streams_by_type.values()),
             "streams_by_type": streams_by_type,
+            "streams_by_route": streams_by_route,
         }
 
     def get_players(self) -> list[AirPlayPlayer]:
@@ -798,6 +832,7 @@ class AirPlayProvider(PlayerProvider):
             self._ptp_daemon_ready = asyncio.Event()
         else:
             self._ptp_daemon_ready.clear()
+        self._reset_ptp_daemon_warn_budget()
         await daemon.start()
         self._ptp_daemon = daemon
         self._ptp_daemon_started = time.monotonic()
@@ -826,7 +861,7 @@ class AirPlayProvider(PlayerProvider):
         # (the per-packet timing trace only runs at verbose in the first place).
         lowered = line.lower()
         if any(marker in lowered for marker in CLI_PROBLEM_MARKERS):
-            self.logger.warning("PTP daemon: %s", line)
+            self._warn_ptp_daemon_line(line)
         else:
             self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)
         # The readiness marker is matched on either pipe: the daemon's diagnostic
@@ -839,6 +874,63 @@ class AirPlayProvider(PlayerProvider):
         ):
             self.logger.debug("Shared PTP clock daemon reported ready")
             event.set()
+
+    def _reset_ptp_daemon_warn_budget(self) -> None:
+        """
+        Give a newly spawned daemon a full warning budget of its own.
+
+        The budget is per daemon, not per provider: a daemon that spent it
+        before crashing would otherwise have its replacement's startup failure -
+        the one line worth reading - suppressed for the rest of the window.
+        Whatever the old daemon had held back is reported on the way out rather
+        than dropped.
+        """
+        if self._ptp_daemon_warns_suppressed:
+            self.logger.warning(
+                "PTP daemon: %d further problem line(s) from the previous daemon were "
+                "suppressed; enable verbose logging to see them all",
+                self._ptp_daemon_warns_suppressed,
+            )
+        self._ptp_daemon_warn_window_start = None
+        self._ptp_daemon_warns_in_window = 0
+        self._ptp_daemon_warns_suppressed = 0
+
+    def _warn_ptp_daemon_line(self, line: str) -> None:
+        """
+        Warn about a daemon line that reads like a problem, at a bounded rate.
+
+        The markers are broad by design, and "error" is ordinary vocabulary in
+        clock telemetry (offset error, path delay error), so one matching line
+        in the daemon's per-packet trace would fill a user's log with warnings.
+        A burst still gets through - which is what a real one-shot daemon
+        failure looks like - and the rest of the window is counted and reported
+        once instead. Suppressed lines still reach the verbose log.
+
+        :param line: The daemon output line that matched a problem marker.
+        """
+        now = time.monotonic()
+        window_start = self._ptp_daemon_warn_window_start
+        # None means no window is open yet, which is not the same as one that
+        # started at monotonic zero: time.monotonic() counts from boot on Linux,
+        # so a server started in the first minute of uptime would otherwise get
+        # a first window shorter than the rest.
+        if window_start is None or now - window_start >= PTP_DAEMON_WARN_WINDOW:
+            if self._ptp_daemon_warns_suppressed:
+                self.logger.warning(
+                    "PTP daemon: %d further problem line(s) were suppressed over the last "
+                    "%.0fs; enable verbose logging to see them all",
+                    self._ptp_daemon_warns_suppressed,
+                    PTP_DAEMON_WARN_WINDOW,
+                )
+            self._ptp_daemon_warn_window_start = now
+            self._ptp_daemon_warns_in_window = 0
+            self._ptp_daemon_warns_suppressed = 0
+        if self._ptp_daemon_warns_in_window < PTP_DAEMON_WARN_BURST:
+            self._ptp_daemon_warns_in_window += 1
+            self.logger.warning("PTP daemon: %s", line)
+            return
+        self._ptp_daemon_warns_suppressed += 1
+        self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)
 
     async def _ptp_daemon_monitor(self, daemon: AsyncProcess) -> None:
         """Watch the PTP daemon process and restart it once if it crashes."""

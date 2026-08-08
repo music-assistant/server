@@ -26,6 +26,7 @@ from music_assistant.helpers.images import (
     create_thumb_hash,
     get_image_data,
 )
+from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -270,7 +271,7 @@ async def get_palette(
         task_id=f"palette.{key}",
         abort_existing=False,
     )
-    return await asyncio.shield(task)
+    return await join_task(task)
 
 
 async def invalidate_cached_palette(mass: MusicAssistant, provider: str, path_or_url: str) -> None:

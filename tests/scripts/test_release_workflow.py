@@ -498,6 +498,8 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
         "EXPECTED_APP_BOT_LOGIN": "musicassistant-bot[bot]",
         "EXPECTED_APP_BOT_LOGIN_ENCODED": "musicassistant-bot%5Bbot%5D",
         "EXPECTED_APP_BOT_ID": "304008617",
+        "EXPECTED_APP_SLUG": "musicassistant-bot",
+        "EXPECTED_APP_INSTALLATION_ID": "146062122",
     }
 
     job = workflow["jobs"]["auto-merge"]
@@ -549,6 +551,11 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     assert "python3 -m pip download --no-deps" in availability_check
     assert "--approve" in steps["Auto-approve PR"]["run"]
     assert "--auto --squash" in steps["Enable auto-merge"]["run"]
+
+    refresh_steps = {step["name"]: step for step in workflow["jobs"]["refresh-stale"]["steps"]}
+    identity_check = refresh_steps["Verify GitHub App identity"]["run"]
+    assert '[ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] ||' in identity_check
+    assert '[ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then' in identity_check
 
 
 def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() -> None:

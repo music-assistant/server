@@ -51,12 +51,18 @@ def _mass(
     devices: list[dict[str, Any]] | None = None,
     native_players: list[SimpleNamespace] | None = None,
 ) -> MusicAssistant:
+    entities_by_id = {entity["entity_id"]: entity for entity in entities}
+
+    async def _registry_entries(entity_ids: list[str]) -> dict[str, dict[str, Any]]:
+        return {entity_id: entities_by_id[entity_id] for entity_id in entity_ids}
+
     hass_prov = SimpleNamespace(
-        hass=SimpleNamespace(
-            connected=True,
-            get_entity_registry=AsyncMock(return_value=entities),
-            get_device_registry=AsyncMock(return_value=devices or []),
+        hass=SimpleNamespace(connected=True),
+        get_device_registry=AsyncMock(
+            return_value={device["id"]: device for device in devices or []}
         ),
+        get_entity_registry=AsyncMock(return_value=entities_by_id),
+        get_entity_registry_entries=AsyncMock(side_effect=_registry_entries),
         get_states=AsyncMock(return_value=[_state(entity["entity_id"]) for entity in entities]),
         logger=logging.getLogger("test.hass"),
     )

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import logging
 import os
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from music_assistant_models.errors import MediaNotFoundError
@@ -16,6 +17,12 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.security import is_safe_path
 
 logger = logging.getLogger(__name__)
+
+# number of consecutive unreadable directories that marks the storage itself as gone
+MAX_CONSECUTIVE_SCAN_ERRORS = 10
+
+# number of example paths kept for the scan summary the user gets to see
+MAX_REPORTED_FAILED_PATHS = 5
 
 IGNORE_DIRS = (
     "recycle",
@@ -26,6 +33,109 @@ IGNORE_DIRS = (
     "lost+found",
     "@eaDir",
 )
+
+
+@dataclass
+class ScanErrors:
+    """
+    Error state of a single (recursive) scan of a filesystem provider.
+
+    Shared by all directory levels of one scan, so a storage that goes away
+    halfway through is detected after a handful of failures instead of failing
+    once per remaining directory.
+
+    - fatal: The error that ended the scan: the provider root itself is unreadable
+      or too many directories failed in a row. Callers abort the sync and mark
+      the provider unavailable.
+    - failed_dirs: Number of directories that could not be read. A scan with
+      failed directories is incomplete, so callers must not run deletions.
+    - failed_entries: Number of files that could not be read or processed. Those
+      files are missing from the scan result too, so they block deletions as well.
+    - failed_paths: The first few paths that could not be read, named in the summary
+      so the user can find them without turning on debug logging.
+    - consecutive_failures: Directories that failed since the last one read
+      successfully, excluding failures that do not point at unreachable storage.
+    """
+
+    fatal: Exception | None = None
+    failed_dirs: int = 0
+    failed_entries: int = 0
+    consecutive_failures: int = 0
+    failed_paths: list[str] = field(default_factory=list)
+
+    @property
+    def aborted(self) -> bool:
+        """Return True if the scan must be stopped."""
+        return self.fatal is not None
+
+    @property
+    def incomplete(self) -> bool:
+        """Return True if the scan missed content that is still on the storage."""
+        return bool(self.failed_dirs or self.failed_entries)
+
+    def describe(self) -> str:
+        """Return a summary of what this scan could not read. Only meaningful when incomplete."""
+        parts = []
+        if self.failed_dirs:
+            parts.append(f"{self.failed_dirs} folder(s)")
+        if self.failed_entries:
+            parts.append(f"{self.failed_entries} file(s)")
+        summary = f"{' and '.join(parts)} could not be read"
+        if self.failed_paths:
+            summary += f" (e.g. {', '.join(self.failed_paths)})"
+        return summary
+
+    def record_dir_read(self) -> None:
+        """Register a directory that was read successfully."""
+        self.consecutive_failures = 0
+
+    def record_dir_error(
+        self,
+        err: Exception,
+        *,
+        is_root: bool,
+        counts_toward_abort: bool = True,
+        path: str | None = None,
+    ) -> None:
+        """
+        Register a directory that could not be read.
+
+        :param err: The error raised while reading the directory.
+        :param is_root: True if the directory is the provider's root path.
+        :param counts_toward_abort: False for an error that leaves the scan incomplete
+            but says nothing about the storage being reachable, such as a folder that
+            is only permission-denied.
+        :param path: Path of the directory, named in the summary shown to the user.
+        """
+        if is_root:
+            self.fatal = err
+            return
+        self.failed_dirs += 1
+        self._remember_path(path)
+        if not counts_toward_abort:
+            return
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= MAX_CONSECUTIVE_SCAN_ERRORS:
+            self.fatal = err
+
+    def record_entry_error(self, err: Exception, path: str | None = None) -> None:
+        """
+        Register a file that could not be read or processed.
+
+        :param err: The error raised while reading or processing the file.
+        :param path: Path of the file, named in the summary shown to the user.
+        """
+        # a file that disappeared between the listing and the read is a normal race
+        # during a long scan, and it really is gone, so deletions may handle it
+        if getattr(err, "errno", None) == errno.ENOENT:
+            return
+        self.failed_entries += 1
+        self._remember_path(path)
+
+    def _remember_path(self, path: str | None) -> None:
+        """Keep the first few failed paths as examples for the user."""
+        if path and len(self.failed_paths) < MAX_REPORTED_FAILED_PATHS:
+            self.failed_paths.append(path)
 
 
 @dataclass
@@ -107,6 +217,18 @@ class FileSystemItem:
             file_size=stat.st_size,
             created_at=created_at,
         )
+
+
+def get_folder_signature(items: list[FileSystemItem]) -> str:
+    """
+    Return an order-independent digest of the given files' paths, mtimes and sizes.
+
+    Intended as a cache checksum: any file added, removed, replaced or retagged changes it.
+
+    :param items: The files to include in the digest.
+    """
+    parts = sorted(f"{x.relative_path}\0{x.checksum}\0{x.file_size}" for x in items)
+    return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()
 
 
 def get_artist_dir(
@@ -245,7 +367,7 @@ def recursive_iter(
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
-    scan_errors: list[OSError] | None = None,
+    scan_errors: ScanErrors | None = None,
 ) -> Iterator[FileSystemItem]:
     """
     Recursively traverse directory entries yielding supported files.
@@ -254,11 +376,11 @@ def recursive_iter(
     :param base_path: The root base path for constructing relative paths.
     :param supported_extensions: Set of file extensions to include (lowercase, no dot).
     :param log: Logger instance to use for warnings/debug messages.
-    :param scan_errors: Optional list populated with OSErrors raised while scanning
-        the provider's root base path. Callers treat a non-empty list as "provider
-        unreachable" and abort the sync.
+    :param scan_errors: Optional state object collecting the errors raised during this
+        scan. Callers treat ``fatal`` as "provider unreachable" and abort the sync.
     """
-    is_root = path == base_path
+    if scan_errors is None:
+        scan_errors = ScanErrors()
     try:
         scan_iter = os.scandir(path)
     except OSError as err:
@@ -269,19 +391,19 @@ def recursive_iter(
             )
             return
         log.warning("Unable to scan directory %s: %s", path, err)
-        if is_root and scan_errors is not None:
-            scan_errors.append(err)
+        _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
         return
+    entry_error_logged = False
     with scan_iter:
         while True:
             try:
                 item = next(scan_iter)
             except StopIteration:
+                scan_errors.record_dir_read()
                 break
             except OSError as err:
                 log.warning("Error while scanning directory %s: %s", path, err)
-                if is_root and scan_errors is not None:
-                    scan_errors.append(err)
+                _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
                 return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
@@ -295,7 +417,15 @@ def recursive_iter(
                         item.name,
                     )
                 else:
-                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
+                    # the entry may well be a directory, so this can hide a whole subtree
+                    entry_error_logged = _record_entry_failure(
+                        scan_errors,
+                        err,
+                        entry_path=item.path,
+                        base_path=base_path,
+                        log=log,
+                        already_logged=entry_error_logged,
+                    )
                 continue
             if is_dir:
                 yield from recursive_iter(
@@ -305,6 +435,8 @@ def recursive_iter(
                     log,
                     scan_errors,
                 )
+                if scan_errors.aborted:
+                    return
             elif is_file:
                 if "." not in item.name:
                     continue
@@ -320,10 +452,13 @@ def recursive_iter(
                             item.name,
                         )
                     else:
-                        log.debug(
-                            "Skipping file %s due to OS error: %s",
-                            item.path,
-                            str(err),
+                        entry_error_logged = _record_entry_failure(
+                            scan_errors,
+                            err,
+                            entry_path=item.path,
+                            base_path=base_path,
+                            log=log,
+                            already_logged=entry_error_logged,
                         )
 
 
@@ -386,3 +521,51 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
             key=lambda x: nat_key(x.name),
         )
     return items
+
+
+def _record_entry_failure(
+    scan_errors: ScanErrors,
+    err: OSError,
+    *,
+    entry_path: str,
+    base_path: str,
+    log: logging.Logger,
+    already_logged: bool,
+) -> bool:
+    """Register a directory entry that could not be read and report it once per directory."""
+    # a share that drops mid-listing fails every entry in the directory it was reading,
+    # so only the first one is a warning and the rest are debug to keep the log readable
+    log.log(
+        logging.DEBUG if already_logged else logging.WARNING,
+        "Skipping %s due to OS error: %s",
+        entry_path,
+        err,
+    )
+    scan_errors.record_entry_error(err, get_relative_path(base_path, entry_path))
+    return True
+
+
+def _record_dir_failure(
+    scan_errors: ScanErrors,
+    err: OSError,
+    *,
+    path: str,
+    base_path: str,
+    log: logging.Logger,
+) -> None:
+    """Register a directory that could not be read and report it if the scan gives up."""
+    is_root = path == base_path
+    # a folder we may not read is an ACL problem; the storage itself is still there
+    denied = err.errno in (errno.EACCES, errno.EPERM)
+    scan_errors.record_dir_error(
+        err,
+        is_root=is_root,
+        counts_toward_abort=not denied,
+        path=get_relative_path(base_path, path),
+    )
+    if scan_errors.aborted and not is_root:
+        log.error(
+            "Stopping the scan of %s: %d folders in a row could not be read",
+            base_path,
+            scan_errors.consecutive_failures,
+        )

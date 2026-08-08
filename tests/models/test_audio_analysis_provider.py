@@ -18,6 +18,7 @@ from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
 )
+from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -244,6 +245,45 @@ async def test_run_offloaded_holds_permit_until_thread_finishes_on_cancel() -> N
             break
         await asyncio.sleep(0.02)
     assert not semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_run_offloaded_worker_failure_after_cancel_logs_no_loop_error() -> None:
+    """A worker failing after the awaiter was cancelled must not be reported to the loop."""
+    provider = _make_provider()
+    semaphore = InstrumentedSemaphore(1)
+    provider.mass.streams.audio_analysis.analysis_semaphore = semaphore
+
+    started = threading.Event()
+    may_finish = threading.Event()
+
+    def _failing() -> str:
+        started.set()
+        may_finish.wait(timeout=5)
+        raise RuntimeError("boom")
+
+    with collect_loop_errors() as reported:
+        task = asyncio.create_task(provider._run_offloaded(_failing))
+        assert await asyncio.to_thread(started.wait, 5)  # thread is running, permit acquired
+        assert semaphore.locked()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # release the worker only once the cancellation is fully processed, so the failure
+        # reliably lands after the awaiter has already given up -- releasing earlier would
+        # let the failure race the cancellation and pass even on the buggy shield-based code
+        may_finish.set()
+
+        # the done-callback releases the permit once the worker (and its failure) is
+        # observed, so waiting for that also gives any (buggy) loop report time to land
+        for _ in range(100):
+            if not semaphore.locked():
+                break
+            await asyncio.sleep(0.02)
+        assert not semaphore.locked()  # permit still released despite the failure
+
+    assert reported == []
 
 
 @pytest.mark.asyncio

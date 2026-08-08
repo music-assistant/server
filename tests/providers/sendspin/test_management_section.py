@@ -14,7 +14,6 @@ from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
 if TYPE_CHECKING:
     from aiosendspin.models.management import ManagementResultData
-    from aiosendspin.noise.trust_store import ServerPairingRecord
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -55,13 +54,7 @@ def _player() -> SendspinBasePlayer:
 
 
 async def _paired(provider: _FakeProvider, snapshot: ManagementResultData | None) -> set[str]:
-    entries = await _player()._paired_entries(
-        cast("SendspinProvider", provider),
-        None,
-        cast("ServerPairingRecord", None),
-        None,
-        snapshot,
-    )
+    entries = await _player()._paired_entries(cast("SendspinProvider", provider), snapshot)
     return {entry.key for entry in entries}
 
 

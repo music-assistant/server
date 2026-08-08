@@ -258,6 +258,9 @@ class CrossfadeFilter(Filter):
         logger: logging.Logger,
         crossfade_duration: float | None = None,
         crossfade_samples: int | None = None,
+        *,
+        fadeout_curve: str = "qsin",
+        fadein_curve: str = "qsin",
     ):
         """
         Initialize crossfade filter.
@@ -268,11 +271,15 @@ class CrossfadeFilter(Filter):
             acrossfade silently emits nothing when its requested length exceeds the
             buffer it is fed, and a fractional ``d`` can round just past a
             frame-aligned buffer. A sample count cannot.
+        :param fadeout_curve: acrossfade ``c1`` curve applied to the outgoing stream.
+        :param fadein_curve: acrossfade ``c2`` curve applied to the incoming stream.
         """
         if (crossfade_duration is None) == (crossfade_samples is None):
             raise ValueError("Provide exactly one of crossfade_duration or crossfade_samples")
         self.crossfade_duration = crossfade_duration
         self.crossfade_samples = crossfade_samples
+        self.fadeout_curve = fadeout_curve
+        self.fadein_curve = fadein_curve
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
@@ -283,7 +290,10 @@ class CrossfadeFilter(Filter):
             else f"d={self.crossfade_duration}"
         )
         # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated material
-        return [f"{input_fadeout_label}{input_fadein_label}acrossfade={overlap}:c1=qsin:c2=qsin"]
+        return [
+            f"{input_fadeout_label}{input_fadein_label}acrossfade={overlap}:"
+            f"c1={self.fadeout_curve}:c2={self.fadein_curve}"
+        ]
 
     def __repr__(self) -> str:
         """Return string representation of CrossfadeFilter."""
