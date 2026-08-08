@@ -219,6 +219,7 @@ async def test_unload_provider_unregisters_hidden_players(
     add_player(provider, "initializing_player", initialized=False)
     other_player = add_player(other_provider, "other_provider_player")
     provider_player_ids = {"enabled_player", "disabled_player", "initializing_player"}
+    all_player_ids = provider_player_ids | {other_player.player_id}
 
     try:
         await mass_minimal.unload_provider(provider.instance_id, is_removed=is_removed)
@@ -234,10 +235,14 @@ async def test_unload_provider_unregisters_hidden_players(
     # the players come back with their settings
     stored_configs = {
         player_id
-        for player_id in provider_player_ids | {other_player.player_id}
+        for player_id in all_player_ids
         if mass_minimal.config.get(f"{CONF_PLAYERS}/{player_id}")
     }
-    expected_configs = (
-        {other_player.player_id} if is_removed else provider_player_ids | {other_player.player_id}
-    )
-    assert stored_configs == expected_configs
+    assert stored_configs == ({other_player.player_id} if is_removed else all_player_ids)
+
+    # the queue controller is the other consumer of the removal flag: it drops the
+    # persisted queue of a player only when that player is gone for good
+    assert {
+        (mock_call.args[0], mock_call.kwargs["permanent"])
+        for mock_call in mass_minimal.player_queues.on_player_remove.call_args_list
+    } == {(player_id, is_removed) for player_id in provider_player_ids}
