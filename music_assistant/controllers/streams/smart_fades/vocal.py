@@ -108,6 +108,8 @@ class VocalHysteresisConfig:
 
 
 DEFAULT_VOCAL_CONFIG = VocalHysteresisConfig()
+# retention keeps audio, so it wants recall; only the planner's veto needs the gate
+PROTECTIVE_VOCAL_CONFIG = VocalHysteresisConfig(min_run_peak=0.0, min_run_mean=0.0)
 
 
 @dataclass(frozen=True, slots=True)

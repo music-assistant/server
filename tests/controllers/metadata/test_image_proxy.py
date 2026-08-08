@@ -42,16 +42,20 @@ from music_assistant.helpers.images import (
     is_svg_data,
     player_image_url,
 )
-from music_assistant.mass import MusicAssistant
 
 
 @pytest.fixture
-async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataController:
-    """Construct a MetaDataController with the minimal MA fixture."""
-    await mass_minimal.cache._setup_database()
-    controller = MetaDataController(mass_minimal)
-    mass_minimal.metadata = controller
-    return controller
+async def metadata_controller(
+    cache_database: None,  # noqa: ARG001
+    metadata_controller: MetaDataController,
+) -> MetaDataController:
+    """
+    Construct a MetaDataController backed by the cache database.
+
+    The controller tests in this module all persist and resolve image ids, unlike the
+    pure helper tests here, which need neither a controller nor a cache database.
+    """
+    return metadata_controller
 
 
 async def _wait_for_persisted_image_id(

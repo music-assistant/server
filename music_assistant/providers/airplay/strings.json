@@ -18,7 +18,7 @@
     },
     "buffer_depth": {
       "label": "Audio buffer depth",
-      "description": "How much audio the speaker keeps queued ahead of playback. Automatic uses 600 ms, or 1000 ms for LinkPlay-based devices (WiiM, Edifier and others), whose audio pipeline needs a deeper buffer - especially when the speaker is also part of the vendor's own multiroom group. Pick a deeper value if this speaker stays silent while Music Assistant shows it playing; deeper buffers make track skips respond slower.",
+      "description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips. Automatic picks a default suited to the device.",
       "options": {
         "0": "Automatic",
         "500": "500 ms",
@@ -88,7 +88,10 @@
   "errors": {
     "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
     "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
-    "show_dashboard_failed": "Failed to show the dashboard on {0}."
+    "show_dashboard_failed": "Failed to show the dashboard on {0}.",
+    "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
+    "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
+    "pairing_wrong_pin": "The device rejected the PIN. Start pairing again and enter the new code shown on its screen."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."

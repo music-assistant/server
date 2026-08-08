@@ -95,6 +95,18 @@ def test_unload_with_error_forwards_exception() -> None:
     )
 
 
+async def test_config_change_arms_the_reload_under_the_load_task_id() -> None:
+    """A config change arms the reload so a (re)load starting first cancels it."""
+    provider = _make_base_provider()
+    config = MagicMock()
+    config.instance_id = "test_instance"
+    await provider.update_config(config, {"values/some_setting"})
+    mass = cast("MagicMock", provider.mass)
+    mass.call_later.assert_called_once_with(
+        1, mass.load_provider_config, config, task_id="load_provider_test_instance"
+    )
+
+
 def test_verbose_log_level_stays_scoped_to_the_provider() -> None:
     """A provider on VERBOSE logs its own records without un-gating unrelated loggers."""
     logging.addLevelName(VERBOSE_LOG_LEVEL, "VERBOSE")

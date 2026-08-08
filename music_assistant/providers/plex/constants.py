@@ -24,6 +24,9 @@ CONF_EXTENDED_RECOMMENDATIONS = "extended_recommendations"
 
 FAKE_ARTIST_PREFIX = "_fake://"
 
+# maximum number of tracks returned for an artist's top tracks listing
+MAX_TOP_TRACKS = 25
+
 # sentinel token value for local (unauthenticated) connections, not via plex.tv
 AUTH_TOKEN_UNAUTH = "local_auth"
 

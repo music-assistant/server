@@ -24,7 +24,7 @@ from music_assistant.constants import CONF_ENABLED, CONF_LOG_LEVEL, VERBOSE_LOG_
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.helpers.util import get_ip_pton, select_announce_addresses
+from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.snapcast.constants import (
     CONF_CATEGORY_BUILT_IN,
@@ -411,10 +411,7 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError("Snapserver is already started!")
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
-        # the snapserver listens on all interfaces, so announce the addresses a client
-        # could reach us on and let it pick one on its own network
-        announce_addresses = select_announce_addresses(self.mass.streams.publish_addresses)
-        addresses = [await get_ip_pton(address) for address in announce_addresses]
+        addresses = [await get_ip_pton(self.mass.streams.publish_ip)]
         # register the snapcast mdns services
         for name, port in (
             ("-http", 1780),
@@ -581,8 +578,15 @@ class SnapCastProvider(PlayerProvider):
             "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.",
             str(exc),
         )
-        # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)
+        # schedule a reload of the provider, armed under the load path's task id so any
+        # (re)load starting before it fires cancels it
+        self.mass.call_later(
+            5,
+            self.mass.load_provider,
+            self.instance_id,
+            allow_retry=True,
+            task_id=f"load_provider_{self.instance_id}",
+        )
 
     async def remove_player(self, player_id: str) -> None:
         """Remove the client from the snapserver when it is deleted."""

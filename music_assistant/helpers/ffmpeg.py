@@ -19,7 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
-from .dsp import ComplexFilter
+from .dsp import ComplexFilter, ComplexFilterInput
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -36,6 +36,17 @@ DEFAULT_MP3_BIT_RATE: Final[int] = 320
 # restores its original level. _get_channel_conform_filter avoids the same loss on the
 # main decode path by duplicating the channel instead.
 _MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5
+
+# FFmpeg applies these to the single input they precede, not to the command as a whole,
+# so every input we open has to bring its own copy.
+_INPUT_READ_ARGS: Final[list[str]] = [
+    "-protocol_whitelist",
+    "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
+    "-probesize",
+    "8096",
+    "-analyzeduration",
+    "500000",  # 0.5 seconds should be enough to detect the format
+]
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -89,7 +100,6 @@ class FFMpeg(AsyncProcess):
         input_format: AudioFormat,
         output_format: AudioFormat,
         filter_params: Sequence[str | ComplexFilter] | None = None,
-        extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
         extra_output_args: list[str] | None = None,
         audio_output: str | int = "-",
@@ -101,7 +111,6 @@ class FFMpeg(AsyncProcess):
             input_format=input_format,
             output_format=output_format,
             filter_params=filter_params or [],
-            extra_args=extra_args or [],
             input_path=audio_input if isinstance(audio_input, str) else "-",
             output_path=audio_output if isinstance(audio_output, str) else "-",
             extra_input_args=extra_input_args or [],
@@ -379,7 +388,6 @@ async def get_ffmpeg_stream(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: Sequence[str | ComplexFilter] | None = None,
-    extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
@@ -395,7 +403,6 @@ async def get_ffmpeg_stream(
         input_format=input_format,
         output_format=output_format,
         filter_params=filter_params,
-        extra_args=extra_args,
         extra_input_args=extra_input_args,
         extra_output_args=extra_output_args,
         collect_log_history=True,
@@ -438,45 +445,13 @@ async def get_ffmpeg_overlay_stream(
     :param pcm_format: PCM format of both the main input and the mixed output.
     :param chunk_size: Optional exact chunk size for the yielded audio.
     """
-    # the overlay is passed as an extra (first) ffmpeg input, infinitely looped;
-    # the main audio arrives on stdin. amix with duration=first follows the main
-    # input's length, normalize=0 keeps the original levels (no averaging).
-    overlay_input_args = []
-    if overlay_input.startswith("http"):
-        overlay_input_args += [
-            "-reconnect",
-            "1",
-            "-reconnect_delay_max",
-            "10",
-            "-reconnect_streamed",
-            "1",
-        ]
-    overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
-    # conform the overlay to the main stream's layout so amix sees two matching inputs;
-    # an unnameable count is left to FFmpeg's own negotiation
-    layout = _get_channel_layout_name(pcm_format.channels)
-    conform_filter = f",aformat=channel_layouts={layout}" if layout else ""
-    # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
-    # fade-in) so it becomes audible right away; it is a no-op for sources that
-    # already start at full level. It runs before volume so detection is based on
-    # the source's own levels rather than the scaled output. volume in turn has to
-    # stay ahead of the resample and conform steps, which replace the source's own
-    # channel count with the output's.
-    filter_complex = (
-        f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
-        f"{_get_overlay_volume_filter(overlay_volume, pcm_format.channels)},"
-        f"aresample={pcm_format.sample_rate}"
-        f"{conform_filter}[overlay];"
-        "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
-    )
     async with FFMpeg(
         audio_input=audio_input,
-        # The overlay is input 0, so ffmpeg probes it before the PCM input and
-        # mutates input_format with its metadata. Keep that mutation local.
+        # ffmpeg mirrors the metadata it probes from the input onto input_format,
+        # so hand it a copy to keep that mutation off the caller's format.
         input_format=copy(pcm_format),
         output_format=pcm_format,
-        extra_input_args=overlay_input_args,
-        extra_output_args=["-filter_complex", filter_complex, "-map", "[mixed]"],
+        filter_params=[_build_overlay_mixer(overlay_input, pcm_format, overlay_volume)],
         collect_log_history=True,
     ) as ffmpeg_proc:
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
@@ -528,7 +503,6 @@ def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: Sequence[str | ComplexFilter],
-    extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
     extra_input_args: list[str] | None = None,
@@ -537,33 +511,24 @@ def get_ffmpeg_args(
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
     filter_params = list(filter_params)
-    if extra_args is None:
-        extra_args = []
     if extra_input_args is None:
         extra_input_args = []
     if extra_output_args is None:
         extra_output_args = []
-    # generic args
-    generic_args = [
+    # the binary plus the options that apply to the command as a whole
+    global_args = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         loglevel,
         "-nostats",
         "-ignore_unknown",
-        "-protocol_whitelist",
-        "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
-        "-probesize",
-        "8096",
-        "-analyzeduration",
-        "500000",  # 0.5 seconds should be enough to detect the format
     ]
-    # collect input args
-    if "-f" in extra_input_args:
-        # input format is already specified in the extra input args
-        input_args = extra_input_args
-    else:
-        input_args = [*extra_input_args]
+    # collect args for the main input, mirroring how _build_filtergraph_args opens the
+    # extra inputs: the read args lead the group so the caller can still override them
+    input_args = [*_INPUT_READ_ARGS, *extra_input_args]
+    if "-f" not in extra_input_args:
+        # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
             # append reconnect options for direct stream from http
             input_args += [
@@ -681,20 +646,12 @@ def get_ffmpeg_args(
     ):
         filter_params.append(resample_filter)
 
-    # ffmpeg refuses a simple -af chain alongside a complex graph on the same stream, so we
-    # leave the graph to any caller that declares one in one of the passthrough arg lists
-    caller_owns_filtergraph = any(
-        "-filter_complex" in args for args in (extra_args, extra_input_args, extra_output_args)
-    )
-
     # a complex fragment brings its own inputs, which must follow the main input
-    extra_input_args, filter_args = (
-        _build_filtergraph_args(filter_params)
-        if filter_params and not caller_owns_filtergraph
-        else ([], [])
+    filter_input_args, filter_args = (
+        _build_filtergraph_args(filter_params) if filter_params else ([], [])
     )
 
-    return generic_args + input_args + extra_input_args + filter_args + extra_args + output_args
+    return global_args + input_args + filter_input_args + filter_args + output_args
 
 
 def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
@@ -814,6 +771,56 @@ def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str
     return f"volume={gain}*{_MONO_WIDEN_COMPENSATION}^not(nb_channels-1)"
 
 
+def _build_overlay_mixer(
+    overlay_input: str, pcm_format: AudioFormat, overlay_volume: int
+) -> ComplexFilter:
+    """
+    Build the filter that mixes a looping audio overlay into the main audio.
+
+    :param overlay_input: File path or URL of the overlay audio.
+    :param pcm_format: PCM format of the main input and the mixed output.
+    :param overlay_volume: Overlay loudness relative to the main audio in percent.
+    """
+    input_args = []
+    if overlay_input.startswith("http"):
+        input_args += [
+            "-reconnect",
+            "1",
+            "-reconnect_delay_max",
+            "10",
+            "-reconnect_streamed",
+            "1",
+        ]
+    input_args += ["-stream_loop", "-1"]
+    # conform the overlay to the main stream's layout so amix sees two matching inputs;
+    # an unnameable count is left to FFmpeg's own negotiation
+    layout = _get_channel_layout_name(pcm_format.channels)
+    conform_filter = f",aformat=channel_layouts={layout}" if layout else ""
+    return ComplexFilter(
+        # the main audio is amix's first input, so duration=first follows its length;
+        # normalize=0 keeps the original levels (no averaging)
+        body="amix=inputs=2:duration=first:normalize=0",
+        inputs=[
+            ComplexFilterInput(
+                path=overlay_input,
+                # silenceremove strips a near-silent intro from the overlay source (e.g. a
+                # soft fade-in) so it becomes audible right away; it is a no-op for sources
+                # that already start at full level. It runs before volume so detection is
+                # based on the source's own levels rather than the scaled output. volume
+                # in turn has to stay ahead of the resample and conform steps, which
+                # replace the source's own channel count with the output's.
+                filters=(
+                    f"silenceremove=start_periods=1:start_threshold=-40dB,"
+                    f"{_get_overlay_volume_filter(overlay_volume, pcm_format.channels)},"
+                    f"aresample={pcm_format.sample_rate}"
+                    f"{conform_filter}"
+                ),
+                input_args=input_args,
+            )
+        ],
+    )
+
+
 def _build_filtergraph_args(
     filter_params: list[str | ComplexFilter],
 ) -> tuple[list[str], list[str]]:
@@ -861,7 +868,7 @@ def _build_filtergraph_args(
         flush_pending()
         source_labels: list[str] = []
         for extra_input in item.inputs:
-            input_args += ["-i", extra_input.path]
+            input_args += [*_INPUT_READ_ARGS, *extra_input.input_args, "-i", extra_input.path]
             source = f"{next_input}:a"
             next_input += 1
             if extra_input.filters:

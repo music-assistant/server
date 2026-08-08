@@ -15,9 +15,11 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
+    _INPUT_READ_ARGS,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
+    _build_overlay_mixer,
     _get_overlay_volume_filter,
     get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
@@ -662,6 +664,58 @@ def test_overlay_volume_filter_compensates_only_for_a_stereo_output() -> None:
     assert _get_overlay_volume_filter(60, 6) == "volume=0.6"
 
 
+def test_overlay_mixer_loops_its_source() -> None:
+    """The overlay source is looped for as long as the main stream runs."""
+    (overlay,) = _build_overlay_mixer("/sound.wav", _PCM_FORMAT, 100).inputs
+    # a local file has nothing to reconnect to
+    assert overlay.input_args == ["-stream_loop", "-1"]
+
+
+def test_overlay_mixer_reconnects_for_http_sources() -> None:
+    """An http overlay source additionally gets the reconnect options."""
+    (overlay,) = _build_overlay_mixer("http://host/sound.mp3", _PCM_FORMAT, 100).inputs
+    assert "-reconnect" in overlay.input_args
+    assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
+
+
+def test_overlay_args_probe_the_main_input_and_add_no_filters() -> None:
+    """Both inputs are read under our own limits and no filter is injected on top."""
+    args = get_ffmpeg_args(
+        _PCM_FORMAT, _PCM_FORMAT, [_build_overlay_mixer("/sound.wav", _PCM_FORMAT, 100)]
+    )
+    main_input = args.index("-i")
+    # the limits must reach the main input, which is the first one, and the overlay
+    assert args.index("-probesize") < main_input
+    assert args.count("-probesize") == 2
+    assert args.index("-stream_loop") > main_input
+    # the overlay format matches the output, so nothing gets resampled or reconformed
+    assert "-af" not in args
+    assert args.count("-filter_complex") == 1
+    assert not any(arg.startswith(("pan=", "aresample=resampler=")) for arg in args)
+
+
+@pytest.mark.parametrize(
+    "extra_input_args",
+    [
+        # the concat demuxer brings its own -f, and needs the whitelist for the listed files
+        ["-safe", "0", "-f", "concat", "-i", "/list.txt"],
+        # a caller raising the probe limits relies on its own values landing last
+        ["-probesize", "65536", "-analyzeduration", "5000000"],
+    ],
+    ids=["caller-supplied-input-format", "caller-raised-probe-limits"],
+)
+def test_read_args_lead_the_main_input(extra_input_args: list[str]) -> None:
+    """Every main input is opened under our read limits, which the caller may override."""
+    args = get_ffmpeg_args(_PCM_FORMAT, _PCM_FORMAT, [], extra_input_args=extra_input_args)
+    start = args.index("-protocol_whitelist")
+    end = start + len(_INPUT_READ_ARGS)
+    assert args[start:end] == _INPUT_READ_ARGS
+    # the caller's args follow ours within the same input group, so theirs win on a conflict
+    assert args[end : end + len(extra_input_args)] == extra_input_args
+    # exactly one input either way: we add ours only when the caller brings none
+    assert args.count("-i") == 1
+
+
 # -- _log_reader_task (decode-error flood guard) --
 
 
@@ -838,7 +892,7 @@ def test_build_filtergraph_single_complex_fragment() -> None:
         [ComplexFilter("afir=irnorm=1", [ComplexFilterInput("/ir.wav", "aresample=48000")])]
     )
     assert result == (
-        ["-i", "/ir.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/ir.wav"],
         [
             "-filter_complex",
             "[1:a]aresample=48000[dsp1];[0:a][dsp1]afir=irnorm=1[dsp2]",
@@ -858,7 +912,7 @@ def test_build_filtergraph_complex_between_simple_runs() -> None:
         ]
     )
     assert result == (
-        ["-i", "/ir.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/ir.wav"],
         [
             "-filter_complex",
             "[0:a]equalizer=x[dsp1];[1:a]aresample=48000[dsp2];"
@@ -875,8 +929,24 @@ def test_build_filtergraph_multiple_inputs() -> None:
         [ComplexFilter("amerge", [ComplexFilterInput("/a.wav"), ComplexFilterInput("/b.wav")])]
     )
     assert result == (
-        ["-i", "/a.wav", "-i", "/b.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/a.wav", *_INPUT_READ_ARGS, "-i", "/b.wav"],
         ["-filter_complex", "[0:a][1:a][2:a]amerge[dsp1]", "-map", "[dsp1]"],
+    )
+
+
+def test_build_filtergraph_input_args_precede_the_input() -> None:
+    """An input's own ffmpeg options are emitted directly before its -i."""
+    result = _build_filtergraph_args(
+        [
+            ComplexFilter(
+                "amix=inputs=2",
+                [ComplexFilterInput("/loop.wav", input_args=["-stream_loop", "-1"])],
+            )
+        ]
+    )
+    assert result == (
+        [*_INPUT_READ_ARGS, "-stream_loop", "-1", "-i", "/loop.wav"],
+        ["-filter_complex", "[0:a][1:a]amix=inputs=2[dsp1]", "-map", "[dsp1]"],
     )
 
 
@@ -904,56 +974,6 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     # the impulse response is a real input, so it never passes through graph quoting
     assert args.count("-i") == 2
     assert args.index("/ir.wav") > args.index("-i")
-
-
-PASSTHROUGH_ARG_LISTS = ["extra_args", "extra_input_args", "extra_output_args"]
-
-
-def _args_with_caller_filtergraph(
-    input_format: AudioFormat,
-    output_format: AudioFormat,
-    filter_params: list[str],
-    arg_list: str,
-) -> list[str]:
-    """Build ffmpeg args with a caller-owned filter graph in the named passthrough list."""
-    graph = ["-filter_complex", "[0:a][1:a]amix[mixed]"]
-    return get_ffmpeg_args(
-        input_format,
-        output_format,
-        filter_params,
-        extra_args=graph if arg_list == "extra_args" else [],
-        extra_input_args=graph if arg_list == "extra_input_args" else [],
-        extra_output_args=graph if arg_list == "extra_output_args" else [],
-    )
-
-
-@pytest.mark.parametrize("arg_list", PASSTHROUGH_ARG_LISTS)
-def test_get_ffmpeg_args_yields_filtergraph_to_caller(arg_list: str) -> None:
-    """A caller-owned graph keeps our simple -af chain out of the command."""
-    fmt = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
-    )
-
-    args = _args_with_caller_filtergraph(fmt, fmt, ["volume=-1dB"], arg_list)
-
-    assert "-af" not in args
-    assert "volume=-1dB" not in args
-
-
-@pytest.mark.parametrize("arg_list", PASSTHROUGH_ARG_LISTS)
-def test_get_ffmpeg_args_channel_conform_yields_to_caller(arg_list: str) -> None:
-    """The auto-injected channel filter is dropped too when the caller owns the graph."""
-    input_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=1
-    )
-    output_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
-    )
-
-    args = _args_with_caller_filtergraph(input_format, output_format, [], arg_list)
-
-    assert "-af" not in args
-    assert not any(arg.startswith("pan=") for arg in args)
 
 
 def _rms_db(path: Path) -> float:

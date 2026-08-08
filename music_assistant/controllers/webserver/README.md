@@ -72,6 +72,9 @@ Handles all authentication and user management:
 **User Roles:**
 - `ADMIN` - Full access to all commands and settings
 - `USER` - Standard access (configurable via player/provider filters)
+- `GUEST` - Read-only library access plus player/queue control
+- `SERVICE` - Standard access plus player config, reading user accounts and impersonation
+  (used by the Home Assistant integration)
 
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 

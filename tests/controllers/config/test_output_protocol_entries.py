@@ -1,4 +1,4 @@
-"""Unit tests for unavailable output protocols being offered disabled, not omitted."""
+"""Unit tests for the output protocol config entries a player renders."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ _STRINGS_PATH = Path(_constants.__file__).resolve().parent / "strings.json"
 _AIRPLAY_ID = "airplay_aabbccddeeff"
 _DLNA_ID = "dlna_aabbccddeeff"
 _DLNA_PREFIX = f"{_DLNA_ID}{CONF_PROTOCOL_KEY_SPLITTER}"
+_PARENT_ID = "soundtouch_aabbccddeeff"
 
 
 def _make_output_protocol(
@@ -103,6 +104,47 @@ async def _protocol_block_entries(
         patch.object(mass.config, "_get_player_config_entries", return_value=protocol_entries),
     ):
         entries = await mass.config._create_output_protocol_config_entries(player)
+    return {entry.key: entry for entry in entries}
+
+
+async def _control_only_player_entries(
+    mass: MusicAssistant,
+    parent_entries: list[ConfigEntry],
+    protocol_entries: list[ConfigEntry],
+) -> dict[str, ConfigEntry]:
+    """
+    Build the full config surface of a control-only player, the way the api renders it.
+
+    :param mass: the MusicAssistant instance to build the entries with.
+    :param parent_entries: the config entries the control-only player itself reports.
+    :param protocol_entries: the config entries its linked protocol player reports.
+    """
+    protocols = [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)]
+    player = MagicMock()
+    player.player_id = _PARENT_ID
+    player.needs_setup = False
+    # no native protocol: this player only controls, playback goes through the linked protocol
+    player.output_protocols = protocols
+    player.linked_output_protocols = protocols
+    protocol_player = _make_protocol_player(available=True, needs_setup=False)
+    protocol_player.player_id = _DLNA_ID
+    protocol_player.translation_owner = "dlna"
+    players = {_PARENT_ID: player, _DLNA_ID: protocol_player}
+    own_entries = {_PARENT_ID: parent_entries, _DLNA_ID: protocol_entries}
+    mass.players = MagicMock()
+    mass.players.get_player.side_effect = lambda player_id, *_: players.get(player_id)
+    mass.players.player_controls.return_value = []
+    with (
+        patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest),
+        # the block is only built for a protocol whose provider is loaded
+        patch.object(mass, "get_provider", return_value=MagicMock()),
+        patch.object(
+            mass.config,
+            "_get_player_config_entries",
+            side_effect=lambda target: own_entries[target.player_id],
+        ),
+    ):
+        entries = await mass.config.get_player_config_entries(_PARENT_ID)
     return {entry.key: entry for entry in entries}
 
 
@@ -246,3 +288,30 @@ async def test_crossfade_entry_still_tracks_flow_mode(mass_minimal: MusicAssista
     assert crossfade.depends_on_value_not is True
     # the shared constant is reused across players, so the block must not have mutated it
     assert CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.depends_on == CONF_FLOW_MODE
+
+
+async def test_protocol_dependency_never_binds_to_the_players_own_setting(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A copied entry follows the protocol's own setting, not the player's same-named one."""
+    entries = await _control_only_player_entries(
+        mass_minimal,
+        [ConfigEntry(key=CONF_FLOW_MODE, type=ConfigEntryType.BOOLEAN, default_value=True)],
+        [
+            ConfigEntry(key=CONF_FLOW_MODE, type=ConfigEntryType.BOOLEAN, default_value=False),
+            ConfigEntry(
+                key="flow_mode_sample_rate",
+                type=ConfigEntryType.STRING,
+                default_value="smart",
+                depends_on=CONF_FLOW_MODE,
+                depends_on_value=True,
+            ),
+        ],
+    )
+    sample_rate = entries[f"{_DLNA_PREFIX}flow_mode_sample_rate"]
+    assert sample_rate.depends_on == f"{_DLNA_PREFIX}{CONF_FLOW_MODE}"
+    assert sample_rate.depends_on_value is True
+    # both settings are rendered side by side on this player, so a bare key would have
+    # gated the protocol's entry on the player's own flow mode instead of the protocol's
+    assert entries[f"{_DLNA_PREFIX}{CONF_FLOW_MODE}"].default_value is False
+    assert entries[CONF_FLOW_MODE].default_value is True
