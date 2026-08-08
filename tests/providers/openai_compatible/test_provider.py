@@ -50,7 +50,7 @@ def mass() -> AsyncMock:
 @pytest.fixture
 def provider(mass: AsyncMock) -> OpenAICompatibleProvider:
     """Return an OpenAICompatibleProvider with mocked dependencies and no models selected."""
-    return _provider_on(mass, {"base_url": BASE_URL})
+    return _build_provider(mass, {"base_url": BASE_URL})
 
 
 async def test_list_models_returns_sorted_ids(mass: AsyncMock) -> None:
@@ -278,6 +278,13 @@ def test_base_url_strips_whitespace() -> None:
     assert provider._base_url == "https://api.example.com/v1"
 
 
+async def test_handle_async_init_accepts_a_configured_base_url() -> None:
+    """A usable endpoint must pass the init check, whatever shape the address has."""
+    provider = _provider_for_setup({"base_url": "http://localhost:11434/v1"})
+
+    await provider.handle_async_init()
+
+
 async def test_handle_async_init_raises_when_base_url_missing() -> None:
     """A never-configured base URL cannot be initialized into a working provider."""
     provider = _provider_for_setup({})
@@ -301,8 +308,8 @@ def test_api_key_defaults_to_empty_string_when_not_stored() -> None:
     assert provider._api_key == ""
 
 
-def test_api_key_is_decrypted_and_stripped() -> None:
-    """A stored key is used once decrypted, with surrounding whitespace removed."""
+def test_api_key_comes_from_setup_data_and_is_stripped() -> None:
+    """The key is only stored in setup_data, and surrounding whitespace is removed."""
     provider = _provider_for_setup({"base_url": BASE_URL, "api_key": "  sk-secret  "})
 
     assert provider._api_key == "sk-secret"
@@ -624,10 +631,10 @@ def _provider_for_setup(setup_data: dict[str, Any]) -> OpenAICompatibleProvider:
     mass = AsyncMock()
     mass.http_session = MagicMock()
     mass.config = MagicMock()
-    return _provider_on(mass, setup_data)
+    return _build_provider(mass, setup_data)
 
 
-def _provider_on(mass: AsyncMock, setup_data: dict[str, Any]) -> OpenAICompatibleProvider:
+def _build_provider(mass: AsyncMock, setup_data: dict[str, Any]) -> OpenAICompatibleProvider:
     """Build a provider on the given mass, backed by the given setup_data."""
     mass.config.get = MagicMock(return_value=dict(setup_data))
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)

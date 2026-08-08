@@ -96,7 +96,7 @@ class OpenAICompatibleProvider(PluginProvider):
     def _base_url(self) -> str:
         """Return the configured API endpoint, without trailing slash."""
         # read on demand: the config entries are resolved before async init runs,
-        # so nothing this provider needs may live on an attribute set there
+        # so this has to be readable without it
         return str(self.get_setup_value(CONF_BASE_URL) or "").strip().rstrip("/")
 
     @property
