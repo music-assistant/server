@@ -3,7 +3,7 @@
   "stage": "experimental",
   "domain": "milkdrop_visualizer",
   "name": "MilkDrop Visualizer",
-  "description": "Stream real-time waveform data from any playing Sendspin group to the Music Assistant web interface, powering the MilkDrop visualizer in the now-playing views. Rendering by Butterchurn, the WebGL implementation of MilkDrop 2. Requires a browser with WebGL2: displays that lack it, including some TV and cast receivers, keep their normal background.",
+  "description": "Stream real-time waveform data from any playing Sendspin group to the Music Assistant web interface, powering the MilkDrop visualizer in the now-playing views. Rendering by Butterchurn, the WebGL implementation of MilkDrop 2. Requires a browser with WebGL2. Google Cast receivers do not support WebGL, so cast dashboards keep their normal background.",
   "codeowners": [
     "@music-assistant"
   ],
