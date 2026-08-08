@@ -16,14 +16,13 @@ from contextlib import suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.images import get_image_thumb_path
+from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
@@ -1878,10 +1877,7 @@ def _artwork_identity(image_url: str) -> str:
     # depending on who built the PlayerMedia) plus size/format parameters, but
     # the opaque image id in its path alone identifies the underlying image.
     # Any other URL is its own identity.
-    _, sep, image_id = urlsplit(image_url).path.partition("/imageproxy/")
-    if sep and image_id:
-        return image_id
-    return image_url
+    return _extract_imageproxy_id(image_url) or image_url
 
 
 def _status_int(fields: Mapping[str, str], key: str) -> int:

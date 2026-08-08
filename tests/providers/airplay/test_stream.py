@@ -2364,9 +2364,15 @@ async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
 
     # the queue session builds the image URL on the stream server base, the
     # player state on the webserver base - same image id behind both forms
-    session_media = make_metadata("http://192.168.1.5:8097/imageproxy/abc123?size=512&fmt=jpeg")
-    state_media = make_metadata("http://192.168.1.5:8095/imageproxy/abc123?size=512&fmt=png")
-    other_image_media = make_metadata("http://192.168.1.5:8095/imageproxy/def456?size=512&fmt=png")
+    image_id = "ab" * 32
+    other_image_id = "cd" * 32
+    session_media = make_metadata(
+        f"http://192.168.1.5:8097/imageproxy/{image_id}?size=512&fmt=jpeg"
+    )
+    state_media = make_metadata(f"http://192.168.1.5:8095/imageproxy/{image_id}?size=512&fmt=png")
+    other_image_media = make_metadata(
+        f"http://192.168.1.5:8095/imageproxy/{other_image_id}?size=512&fmt=png"
+    )
 
     with (
         patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
@@ -2392,7 +2398,7 @@ async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
     assert len(bundled) == 1
     assert resends == ["ARTWORK=/cache/thumb.jpg\n"]
     assert prepare_artwork.await_count == 2
-    assert stream._metadata_artwork_checksum == "def456"
+    assert stream._metadata_artwork_checksum == other_image_id
 
 
 @pytest.mark.asyncio
