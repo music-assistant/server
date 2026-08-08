@@ -23,12 +23,11 @@ from music_assistant.helpers.json import (
     strip_code_fence,
 )
 from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
-from music_assistant.providers.music_quiz.ai_distractors import (
-    AI_QUERY_TIMEOUT_SECONDS,
-    MAX_AI_PROMPT_BYTES,
-    MAX_AI_RESPONSE_BYTES,
-    MAX_AI_RESPONSE_LINES,
+from music_assistant.providers.music_quiz.ai_guards import (
+    ai_prompt_exceeds_limit,
+    validate_ai_response,
 )
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
@@ -317,7 +316,7 @@ class TriviaQuizType(QuizType):
     async def _generate_question(self, fact: TriviaFact) -> TriviaGeneration:
         """Return validated AI wording and distractors for a server-selected fact."""
         prompt = self._build_prompt(fact)
-        if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
+        if ai_prompt_exceeds_limit(prompt):
             raise self._generation_error()
         grounded_tracks = self._eligible_tracks.values() if self._eligible_tracks else ()
         engine = await self._require_ai_engine()
@@ -399,14 +398,9 @@ class TriviaQuizType(QuizType):
         grounded_tracks: Collection[TriviaTrackFacts] = (),
     ) -> TriviaGeneration:
         """Parse and validate one strict AI Trivia response."""
-        if not isinstance(response, str):
-            raise TypeError("response must be a string")
-        if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
-            raise ValueError("response exceeds the size limit")
-        if len(response.splitlines()) > MAX_AI_RESPONSE_LINES:
-            raise ValueError("response exceeds the line limit")
+        response_text = validate_ai_response(response)
         try:
-            payload = json_loads(strip_code_fence(response))
+            payload = json_loads(strip_code_fence(response_text))
         except JSON_DECODE_EXCEPTIONS as err:
             raise ValueError("response is not valid JSON") from err
         if not isinstance(payload, dict) or payload.keys() != {"question", "wrong_answers"}:

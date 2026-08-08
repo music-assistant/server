@@ -1,4 +1,4 @@
-"""Tests for the URL scheme and settings alerts that follow the webserver's SSL state."""
+"""Tests for the URL scheme, settings alerts and verify action driven by the SSL state."""
 
 from __future__ import annotations
 
@@ -11,10 +11,15 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import WILDCARD_BIND_IPS
-from music_assistant.controllers.webserver.controller import WebserverController
+from music_assistant.controllers.webserver.controller import (
+    CONF_ACTION_VERIFY_SSL,
+    WebserverController,
+)
 from music_assistant.helpers.datetime import utc
 
 if TYPE_CHECKING:
@@ -52,6 +57,8 @@ def self_signed_cert() -> tuple[str, str]:
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock Music Assistant instance."""
+    # deliberate override of the package fixture: the base URL these tests exercise
+    # is also derived from the addon and provider state
     mass = MagicMock()
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
     mass.running_as_hass_addon = False
@@ -143,6 +150,65 @@ async def test_switching_ssl_off_drops_the_certificate_alert(
     await _run_setup(webserver, tmp_path, certificate="", private_key="", enable_ssl=False)
 
     assert await _visible_alerts(webserver) == {"webserver_warn"}
+
+
+async def test_verify_ssl_action_reports_the_certificate_info(
+    mock_mass: MagicMock, tmp_path: Path, self_signed_cert: tuple[str, str]
+) -> None:
+    """The verify action reports the certificate details as its outcome message."""
+    certificate, private_key = self_signed_cert
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate=certificate, private_key=private_key
+    )
+
+    result = await webserver.handle_config_action(CONF_ACTION_VERIFY_SSL)
+
+    assert isinstance(result, ConfigActionResult)
+    assert result.message is not None
+    assert "Certificate verification:" in result.message
+    assert "Key type: ECDSA" in result.message
+    assert "Subject: CN=localhost" in result.message
+    # computed details, so there is nothing to look up in a strings.json
+    assert result.translation_key is None
+
+
+async def test_verify_ssl_action_raises_for_an_unusable_certificate(
+    mock_mass: MagicMock, tmp_path: Path, self_signed_cert: tuple[str, str]
+) -> None:
+    """A certificate that cannot be verified is reported as a failure, not an outcome."""
+    certificate, _ = self_signed_cert
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate=certificate, private_key="not-a-key"
+    )
+
+    with pytest.raises(InvalidDataError) as err:
+        await webserver.handle_config_action(CONF_ACTION_VERIFY_SSL)
+
+    assert err.value.translation_key == "ssl_verification_failed"
+    assert err.value.translation_owner == "core.webserver"
+    # the reason fills the {0} placeholder so the user learns what is wrong
+    assert len(err.value.translation_args) == 1
+    assert err.value.translation_args[0]
+
+
+async def test_config_entries_hold_no_verify_result_label(
+    mock_mass: MagicMock, tmp_path: Path, self_signed_cert: tuple[str, str]
+) -> None:
+    """The config form carries the verify action itself, with no label to render a result into."""
+    certificate, private_key = self_signed_cert
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate=certificate, private_key=private_key
+    )
+
+    with patch(
+        "music_assistant.controllers.webserver.controller.get_ip_addresses",
+        AsyncMock(return_value=("192.168.1.5",)),
+    ):
+        entries = await webserver._build_config_entries()
+
+    keys = {entry.key for entry in entries}
+    assert CONF_ACTION_VERIFY_SSL in keys
+    assert "ssl_verify_result" not in keys
 
 
 def _make_server_mock() -> MagicMock:
