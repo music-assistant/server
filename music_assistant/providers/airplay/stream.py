@@ -15,7 +15,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
@@ -26,6 +26,7 @@ from music_assistant.helpers.images import get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_ARTWORK_RENDER_TIMEOUT,
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -118,6 +119,13 @@ class AirPlayStream:
         self._stopping = False
         self._cleanup_complete = False
         self._stop_lock = asyncio.Lock()
+        # Both wake a track-change metadata push waiting out its artwork render
+        # budget inside the metadata lock: the first is set permanently the
+        # moment stop() begins, the second while start() is waiting on the lock
+        # (a pending START is time-critical — the anchor lead is a few hundred
+        # ms). Either makes the bounded wait yield so the teardown or START
+        # proceeds and the artwork follows asynchronously.
+        self._teardown_started, self._start_waiting = asyncio.Event(), asyncio.Event()
         self._connected = asyncio.Event()
         # Set when the stderr reader ends, i.e. the binary is gone. A connect
         # wait watches it so a process that died (for example on a rejected
@@ -324,6 +332,7 @@ class AirPlayStream:
             if self._cleanup_complete:
                 return
             self._stopping = True
+            self._teardown_started.set()
             async with self._metadata_lock:
                 self._metadata_generation += 1
                 try:
@@ -507,7 +516,12 @@ class AirPlayStream:
         start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
         if join:
             start_cmd = f"START_UNIX_MS={start_unix_ms}\nSTART_JOIN=1\nACTION=START"
-        async with self._metadata_lock:
+        self._start_waiting.set()
+        try:
+            await self._metadata_lock.acquire()
+        finally:
+            self._start_waiting.clear()
+        try:
             if not await self._write_cli_command(start_cmd):
                 # Surfacing the dropped delivery lets the session fall back to a
                 # cold restart instead of waiting on an anchor that never happens.
@@ -526,6 +540,8 @@ class AirPlayStream:
             # from the post-anchor media-updated nudge (+1s) does the job with
             # one refresh instead of two.
             self._metadata_generation += 1
+        finally:
+            self._metadata_lock.release()
         self.mass.create_task(
             self._send_current_metadata_without_progress,
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
@@ -581,7 +597,7 @@ class AirPlayStream:
         """Clear the accumulated re-anchor shift."""
         self.cumulative_shift_seconds = 0.0
 
-    async def send_metadata(
+    async def send_metadata(  # noqa: PLR0915
         self,
         progress: int | None,
         metadata: PlayerMedia | None,
@@ -617,6 +633,7 @@ class AirPlayStream:
             metadata_checksum = f"{text_checksum}|{metadata.image_url}"
 
         artwork_url: str | None = None
+        artwork_render: asyncio.Task[str | None] | None = None
         metadata_generation = 0
         async with self._metadata_lock:
             if self._stopped or self._stopping:
@@ -634,19 +651,55 @@ class AirPlayStream:
                 and (needs_artwork or text_checksum != self._metadata_text_checksum)
             ):
                 if text_checksum != self._metadata_text_checksum:
+                    artwork_file: str | None = None
+                    if (
+                        send_artwork
+                        and metadata.image_url
+                        and needs_artwork
+                        and metadata_generation not in self._artwork_render_generations
+                    ):
+                        # Budgeted pre-render so metadata and artwork ride ONE
+                        # SENDMETA push: back-to-back now-playing rewrites (a
+                        # bare replace followed by the artwork) intermittently
+                        # wedge the Apple TV now-playing screen. A render that
+                        # misses the budget keeps running and delivers through
+                        # the ARTWORK command instead.
+                        self._artwork_render_generations.add(metadata_generation)
+                        artwork_url = metadata.image_url
+                        artwork_file, artwork_render = await self._render_artwork_bounded(
+                            artwork_url, metadata_generation
+                        )
                     # ITEMID gives the binary a stable per-track identity, so
                     # a later tag refinement for the same queue item (library
                     # enrichment can settle after playback starts) updates the
                     # receiver's now-playing item in place instead of
                     # presenting as a new track.
                     cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
-                    cmd += f"DURATION={duration}\nITEMID={item_id}\nACTION=SENDMETA\n"
+                    cmd += f"DURATION={duration}\nITEMID={item_id}\n"
+                    if artwork_file:
+                        cmd += f"ARTWORKFILE={artwork_file}\n"
+                    cmd += "ACTION=SENDMETA\n"
                     if not await self.send_cli_command(cmd):
+                        if artwork_render is not None:
+                            # the identity push never went out, so drop the
+                            # render and let the next update retry from scratch
+                            artwork_render.cancel()
+                            self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
-                    # the metadata push carried the previous position; always
-                    # follow with a fresh progress correction
-                    self._last_progress_sent = None
+                    # the push resets a changed track to position zero (a
+                    # same-item refinement carries the current position), so
+                    # the correction below only follows when playback is
+                    # actually elsewhere (mid-track start, tag refinement)
+                    self._last_progress_sent = 0
+                    if artwork_file:
+                        # the bundle delivered the artwork: settle it and stand
+                        # down the ARTWORK follow-up
+                        self._metadata_artwork_checksum = artwork_checksum
+                        self._artwork_render_generations.discard(metadata_generation)
+                        needs_artwork = False
+                        artwork_url = None
+                        artwork_render = None
                 if metadata_generation != self._metadata_generation:
                     return
                 if (
@@ -669,7 +722,7 @@ class AirPlayStream:
                     self._last_progress_sent = progress
 
         if artwork_url is not None:
-            await self._render_and_send_artwork(artwork_url, metadata_generation)
+            await self._render_and_send_artwork(artwork_url, metadata_generation, artwork_render)
 
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
@@ -697,17 +750,72 @@ class AirPlayStream:
                     return min(int(full_duration), 3600)
         return min(metadata.duration or 0, 3600)
 
-    async def _render_and_send_artwork(self, artwork_url: str, metadata_generation: int) -> None:
+    async def _render_artwork_bounded(
+        self, artwork_url: str, metadata_generation: int
+    ) -> tuple[str | None, asyncio.Task[str | None]]:
+        """
+        Start the artwork render and wait for it within the bundling budget.
+
+        Called with the metadata lock held. A render that misses the budget is
+        never cancelled: the returned task keeps running so the caller can hand
+        it to :meth:`_render_and_send_artwork` for the ARTWORK delivery. The
+        wait also yields early to a teardown or a pending START.
+
+        :param artwork_url: The cover-art URL to render.
+        :param metadata_generation: Generation the render belongs to.
+        :return: The rendered artwork path (None when the budget was missed or
+            the render failed) and the render task itself.
+        """
+        artwork_render = asyncio.create_task(
+            self._prepare_artwork(artwork_url, metadata_generation)
+        )
+        # Neither a teardown nor a time-critical START must sit out the render
+        # budget behind the metadata lock, so both release this wait early: a
+        # teardown's doomed bundle write is then dropped by send_cli_command,
+        # and a START's bundle goes out without artwork (the render delivers
+        # through the ARTWORK command once it completes).
+        teardown = asyncio.ensure_future(self._teardown_started.wait())
+        start_waiting = asyncio.ensure_future(self._start_waiting.wait())
+        waiters: set[asyncio.Future[Any]] = {artwork_render, teardown, start_waiting}
+        try:
+            await asyncio.wait(
+                waiters,
+                timeout=AIRPLAY_ARTWORK_RENDER_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            artwork_render.cancel()
+            self._artwork_render_generations.discard(metadata_generation)
+            raise
+        finally:
+            teardown.cancel()
+            start_waiting.cancel()
+        artwork_file = artwork_render.result() if artwork_render.done() else None
+        return artwork_file, artwork_render
+
+    async def _render_and_send_artwork(
+        self,
+        artwork_url: str,
+        metadata_generation: int,
+        render: asyncio.Task[str | None] | None = None,
+    ) -> None:
         """
         Render and apply artwork for the current metadata generation.
 
         :param artwork_url: Source URL for the artwork; settles as the
             delivered artwork identity once the binary accepts the command.
         :param metadata_generation: Generation that must still be current before apply.
+        :param render: Render already under way for this generation to deliver,
+            instead of starting a new one.
         """
         try:
-            artwork = await self._prepare_artwork(artwork_url, metadata_generation)
+            if render is not None:
+                artwork = await render
+            else:
+                artwork = await self._prepare_artwork(artwork_url, metadata_generation)
         except asyncio.CancelledError:
+            if render is not None:
+                render.cancel()
             async with self._metadata_lock:
                 self._artwork_render_generations.discard(metadata_generation)
             raise

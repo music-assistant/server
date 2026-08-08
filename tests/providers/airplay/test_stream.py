@@ -1340,6 +1340,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
             new_callable=AsyncMock,
             side_effect=prepare_artwork,
         ),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
     ):
         pretransition_task = asyncio.create_task(stream.send_metadata(None, metadata))
         await render_started.wait()
@@ -1353,10 +1354,12 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
     commands = [args.args[0] for args in write_command.await_args_list]
     start_command = f"START_UNIX_MS={START_UNIX_MS}\nACTION=START"
     if complete_before_start:
-        # artwork delivered before the anchor stays settled; re-pushing it
-        # around the START would make an Apple TV re-render its screen
+        # artwork delivered inside the transition bundle stays settled;
+        # re-pushing it around the START would make an Apple TV re-render
+        # its screen
         assert commands[-1] == start_command
-        assert "ARTWORK=/cache/pretransition.jpg" in commands
+        assert any("ARTWORKFILE=/cache/pretransition.jpg" in command for command in commands)
+        assert not any(command.startswith("ARTWORK=") for command in commands)
     else:
         # the anchor superseded the in-flight render; the post-anchor push
         # renders again and delivers the artwork once
@@ -1874,11 +1877,11 @@ async def test_initial_metadata_skips_artwork() -> None:
     ):
         await stream.send_metadata(0, metadata, send_artwork=False)
 
-    assert send_command.await_count == 2
-    commands = [args.args[0] for args in send_command.await_args_list]
-    assert "TITLE=Track" in commands[0]
-    # the progress correction rides along right after the metadata push
-    assert commands[1].endswith("PROGRESS=0")
+    # the metadata push resets the device position to zero, so a push at the
+    # start of a track needs no separate progress correction
+    assert send_command.await_count == 1
+    assert "TITLE=Track" in send_command.await_args_list[0].args[0]
+    assert stream._last_progress_sent == 0
     send_artwork.assert_not_awaited()
 
 
@@ -2322,19 +2325,23 @@ async def test_concurrent_metadata_updates_only_send_latest_artwork() -> None:
             new_callable=AsyncMock,
             side_effect=_prepare_artwork,
         ),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
     ):
         old_task = asyncio.create_task(stream.send_metadata(0, old_metadata))
         await first_render_started.wait()
         new_task = asyncio.create_task(stream.send_metadata(0, new_metadata))
-        await asyncio.sleep(0)
+        # the new update supersedes the old render once the old push's render
+        # budget lapses and the metadata lock is released
+        await new_task
         assert stream._metadata_generation == 2
         release_first_render.set()
-        await asyncio.gather(old_task, new_task)
+        await old_task
 
     commands = [call.args[0].decode() for call in write_command.await_args_list]
     assert any("TITLE=New track" in command for command in commands)
     assert not any("ARTWORK=old.jpg" in command for command in commands)
-    assert commands[-1] == "ARTWORK=new.jpg\n"
+    assert "ARTWORKFILE=new.jpg\n" in commands[-1]
+    assert commands[-1].endswith("ACTION=SENDMETA\n")
 
 
 @pytest.mark.asyncio
@@ -2451,6 +2458,7 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
             new_callable=AsyncMock,
             side_effect=_prepare_artwork,
         ) as prepare_artwork,
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
     ):
         first_b_task = asyncio.create_task(stream.send_metadata(0, metadata_b))
         await first_artwork_started.wait()
@@ -2467,13 +2475,15 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     assert rendered_images == ["b-image", "c-image", "b-image"]
     assert "ARTWORK=b-stale.jpg\n" not in commands
     assert "ARTWORK=c.jpg\n" not in commands
-    assert commands[-1] == "ARTWORK=b-final.jpg\n"
+    # the final B render completed within the budget, so it rides the bundle
+    assert "ARTWORKFILE=b-final.jpg\n" in commands[-1]
+    assert commands[-1].endswith("ACTION=SENDMETA\n")
     assert stream._metadata_artwork_checksum == "b-image"
 
 
 @pytest.mark.asyncio
 async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
-    """The ARTWORK command passes the absolute cache path returned by preparation."""
+    """The staged artwork carries the absolute cache path returned by preparation."""
     player = _make_player()
     stream = AirPlayStream(player)
     metadata = MagicMock(
@@ -2492,7 +2502,159 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
     ):
         await stream.send_metadata(None, metadata)
 
-    assert send_command.await_args_list[-1] == call(f"ARTWORK={cached_path}")
+    assert f"ARTWORKFILE={cached_path}\n" in send_command.await_args_list[-1].args[0]
+
+
+@pytest.mark.asyncio
+async def test_track_change_bundles_ready_artwork_into_a_single_push() -> None:
+    """A track change whose artwork renders within budget lands as ONE bundled write."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value="/cache/art.jpg")),
+    ):
+        await stream.send_metadata(0, metadata)
+
+    assert write_command.await_count == 1
+    lines = write_command.await_args_list[0].args[0].decode().splitlines()
+    assert "TITLE=Track" in lines
+    assert "ITEMID=item-1" in lines
+    # the artwork is staged before the SENDMETA applies the whole bundle
+    assert lines[-2:] == ["ARTWORKFILE=/cache/art.jpg", "ACTION=SENDMETA"]
+    # the push resets the device position to zero: no PROGRESS correction
+    assert stream._last_progress_sent == 0
+    assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_track_change_artwork_missing_the_budget_follows_as_artwork_command() -> None:
+    """A render missing the bundling budget still delivers via ARTWORK once it completes."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    release_render = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        await release_render.wait()
+        return "/cache/late.jpg"
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream, "_prepare_artwork", new_callable=AsyncMock, side_effect=_prepare_artwork
+        ),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.01),
+    ):
+        push = asyncio.create_task(stream.send_metadata(0, metadata))
+        async with asyncio.timeout(2):
+            while write_command.await_count == 0:
+                await asyncio.sleep(0)
+        # the identity bundle went out without artwork once the budget lapsed
+        assert stream._metadata_artwork_checksum == ""
+        release_render.set()
+        await push
+
+    commands = [args.args[0].decode() for args in write_command.await_args_list]
+    assert "ARTWORKFILE" not in commands[0]
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    assert [command for command in commands if command.startswith("ARTWORK=")] == [
+        "ARTWORK=/cache/late.jpg\n"
+    ]
+    assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_pending_start_interrupts_the_artwork_wait() -> None:
+    """A pending START releases the bounded artwork wait instead of queueing behind it."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    release_render = asyncio.Event()
+    render_started = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        render_started.set()
+        await release_render.wait()
+        return "/cache/late.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            side_effect=_acking_write_cli_command(stream),
+        ) as write_command,
+        patch.object(
+            stream, "_prepare_artwork", new_callable=AsyncMock, side_effect=_prepare_artwork
+        ),
+    ):
+        push = asyncio.create_task(stream.send_metadata(0, metadata))
+        await render_started.wait()
+        # the metadata push sits in its render budget holding the lock; the
+        # START must release that wait instead of losing its anchor lead to it
+        assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
+        release_render.set()
+        await push
+
+    commands = [args.args[0] for args in write_command.await_args_list]
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    assert "ARTWORKFILE" not in commands[0]
+    assert commands[1].startswith(f"START_UNIX_MS={START_UNIX_MS}")
+
+
+@pytest.mark.asyncio
+async def test_track_change_starting_mid_track_sends_a_progress_correction() -> None:
+    """A track change landing mid-position corrects the timeline after the bundle."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value="/cache/art.jpg")),
+    ):
+        await stream.send_metadata(120, metadata)
+
+    commands = [args.args[0].decode() for args in write_command.await_args_list]
+    assert len(commands) == 2
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    # the push reset the device position to zero, so the mid-track start is
+    # corrected right after
+    assert commands[1].endswith("PROGRESS=120\n")
+    assert stream._last_progress_sent == 120
 
 
 @pytest.mark.asyncio
@@ -2508,13 +2670,21 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         image_url="image",
     )
     artwork_path = "/cache/thumbnails/artwork.jpg"
+    release_render = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        # the first render misses the bundling budget, so the artwork goes
+        # out through the stand-alone ARTWORK command
+        if not release_render.is_set():
+            await release_render.wait()
+        return artwork_path
 
     with (
         patch.object(
             stream,
             "_prepare_artwork",
             new_callable=AsyncMock,
-            return_value=artwork_path,
+            side_effect=_prepare_artwork,
         ) as prepare_artwork,
         patch.object(
             stream,
@@ -2522,8 +2692,14 @@ async def test_failed_artwork_delivery_is_retried() -> None:
             new_callable=AsyncMock,
             side_effect=[True, False, True],
         ) as send_command,
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.01),
     ):
-        await stream.send_metadata(None, metadata)
+        first_push = asyncio.create_task(stream.send_metadata(None, metadata))
+        async with asyncio.timeout(2):
+            while send_command.await_count == 0:
+                await asyncio.sleep(0)
+        release_render.set()
+        await first_push
         assert stream._metadata_artwork_checksum == ""
         await stream.send_metadata(None, metadata)
 
@@ -2577,7 +2753,8 @@ async def test_text_refinement_keeps_delivered_artwork_settled() -> None:
 
     prepare_artwork.assert_awaited_once()
     commands = [args.args[0] for args in send_command.await_args_list]
-    assert commands.count(f"ARTWORK={artwork_path}") == 1
+    assert sum(f"ARTWORKFILE={artwork_path}\n" in command for command in commands) == 1
+    assert "ARTWORKFILE" not in commands[-1]
     assert "TITLE=Track (Remastered)" in commands[-1]
 
 
