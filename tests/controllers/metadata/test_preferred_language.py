@@ -7,22 +7,14 @@ from typing import TYPE_CHECKING
 import pytest
 
 from music_assistant.constants import CONF_CORE, CONF_LANGUAGE
-from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
     CONF_THUMB_CACHE_MAX_SIZE,
     DEFAULT_LANGUAGE,
 )
 
 if TYPE_CHECKING:
+    from music_assistant.controllers.metadata import MetaDataController
     from music_assistant.mass import MusicAssistant
-
-
-@pytest.fixture
-async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataController:
-    """Construct a MetaDataController with the minimal MA fixture."""
-    controller = MetaDataController(mass_minimal)
-    mass_minimal.metadata = controller
-    return controller
 
 
 async def test_locale_falls_back_to_the_default_language(

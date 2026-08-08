@@ -11,11 +11,13 @@ import pytest
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.ai_distractors import (
     MAX_AI_LABEL_LENGTH,
+    parse_ai_distractor_response,
+    request_ai_distractors,
+)
+from music_assistant.providers.music_quiz.constants import (
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,
     MAX_AI_RESPONSE_LINES,
-    parse_ai_distractor_response,
-    request_ai_distractors,
 )
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,

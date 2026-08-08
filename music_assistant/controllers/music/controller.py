@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -171,22 +175,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
-        """Handle a one-shot action button press and re-render the config entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot action button press and report its outcome."""
         if action == CONF_RESET_DB:
             await self._reset_database()
             await self.mass.cache.clear()
             await self.start_sync()
-            return (
-                *await self.get_config_entries(),
-                # distinct key so the result label doesn't collide with the action's label
-                ConfigEntry(
-                    key="reset_db_result",
-                    type=ConfigEntryType.LABEL,
-                    category="generic",
-                    advanced=True,
-                ),
-            )
+            return ConfigActionResult(translation_key=f"{CONF_RESET_DB}.result")
         return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:
@@ -328,6 +325,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             (by instance id or domain), where the special value "library" selects
             the library. Omit to search the library and all available providers.
         """
+        if not search_query.strip():
+            # several providers reject an empty query with a hard error
+            return SearchResults()
         if not media_types:
             media_types = MediaType.ALL
         if library_only and providers is None:

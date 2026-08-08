@@ -66,7 +66,11 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        PlayerConfig,
+    )
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -667,7 +671,7 @@ class Player(ABC):
         # provider has a more efficient way to determine this
         if self.type == PlayerType.GROUP:
             return None
-        for player in self.mass.players.all_players(
+        for player in self.mass.players.iter_players(
             return_unavailable=False,
             provider_filter=self.provider.instance_id,
             return_protocol_players=True,
@@ -958,15 +962,18 @@ class Player(ABC):
         """
         return []
 
-    async def handle_config_action(self, action: str) -> list[ConfigEntry] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult | None:
         """
         Run the one-shot side effect for a pressed action button from this player's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        player declares. Raise to report failure to the caller. Return None when there is
-        nothing to re-render. Returning entries re-renders the config form from the owning
-        player's freshly resolved entries; the returned entries themselves are not shown,
-        so they serve only as the signal that a re-render is needed.
+        player declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning entries re-renders the config form from the
+        owning player's freshly resolved entries; the returned entries themselves are not
+        shown, so they serve only as the signal that a re-render is needed.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -2531,7 +2538,7 @@ class Player(ABC):
             # protocol players should not have an active group,
             # they follow the group state of their parent player
             return None
-        for group_player in self.mass.players.all_players(
+        for group_player in self.mass.players.iter_players(
             return_unavailable=False, return_disabled=False
         ):
             if group_player.type != PlayerType.GROUP:
@@ -3027,7 +3034,7 @@ class Player(ABC):
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
             if provider := self.mass.get_provider(member_id):
-                for player in self.mass.players.all_players(
+                for player in self.mass.players.iter_players(
                     return_unavailable=False,  # Only include available players
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,

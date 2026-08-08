@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads, strip_code_fence
 from music_assistant.helpers.plugin_engines import resolve_ai_engine
+from music_assistant.providers.music_quiz.ai_guards import (
+    ai_prompt_exceeds_limit,
+    validate_ai_response,
+)
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.suggestions import answer_labels_are_too_close
 
 if TYPE_CHECKING:
@@ -18,10 +23,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-AI_QUERY_TIMEOUT_SECONDS = 30.0
-MAX_AI_PROMPT_BYTES = 8192
-MAX_AI_RESPONSE_BYTES = 4096
-MAX_AI_RESPONSE_LINES = 32
 MAX_AI_CONTEXT_VALUE_LENGTH = 500
 MAX_AI_LABEL_LENGTH = 200
 MAX_AI_SYNTHETIC_COUNT = 12
@@ -59,7 +60,7 @@ async def request_ai_distractors(
     :param timeout: Maximum request duration in seconds.
     :return: The untrusted engine response, or ``None`` when unavailable.
     """
-    if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
+    if ai_prompt_exceeds_limit(prompt):
         return None
     engine = await resolve_ai_engine(mass, engine_uid)
     if engine is None:
@@ -89,18 +90,13 @@ def parse_ai_distractor_response(
     :param expected_kinds: Exact ordered synthetic distractor kinds requested.
     :return: Strictly validated ranking and synthetic labels.
     """
-    if not isinstance(response, str):
-        raise TypeError("response must be a string")
-    if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
-        raise ValueError("response exceeds the size limit")
-    if len(response.splitlines()) > MAX_AI_RESPONSE_LINES:
-        raise ValueError("response exceeds the line limit")
+    response_text = validate_ai_response(response)
     if len(expected_kinds) > MAX_AI_SYNTHETIC_COUNT:
         raise ValueError("too many synthetic distractors were requested")
     if len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("candidate IDs must be unique")
     try:
-        payload = json_loads(strip_code_fence(response))
+        payload = json_loads(strip_code_fence(response_text))
     except JSON_DECODE_EXCEPTIONS as err:
         raise ValueError("response is not valid JSON") from err
     if not isinstance(payload, dict) or payload.keys() != {"ranked_ids", "synthetic"}:

@@ -22,10 +22,10 @@
 #   success — no dependency changes, or changes reviewed/auto-approved
 #   pending — dependency changes detected, analysis in progress (set by init job)
 #   failure — awaiting maintainer review (overridable via /approve-dependencies)
-#   error   — analysis failed, or high-risk packages / known vulnerabilities in the
-#             dependencies the PR changes. The analysis scans the whole installed
-#             environment and only direct requirements are compared, so findings
-#             elsewhere are reported but never gate the PR
+#   error   — analysis failed, or high-risk packages / known vulnerabilities the PR
+#             introduces. The analysis scans the whole installed environment and
+#             compares its findings against the branch the PR targets, so ones that
+#             already exist there are reported but never gate the PR
 #             (NOT overridable via /approve-dependencies; requires a re-run or fix)
 #
 # The `init` job runs on `pull_request_target` for EVERY PR (the analysis
@@ -323,9 +323,9 @@ jobs:
             echo "" >> security_report.md
 
             if [ "$PIP_AUDIT" == "fail" ]; then
-              echo "- ❌ **Vulnerability Scan**: Known vulnerabilities in the dependencies this PR changes" >> security_report.md
+              echo "- ❌ **Vulnerability Scan**: Known vulnerabilities introduced by this PR" >> security_report.md
             elif [ "$PIP_AUDIT" == "preexisting" ]; then
-              echo "- ⚠️  **Vulnerability Scan**: Known vulnerabilities found, but none in the dependencies this PR changes" >> security_report.md
+              echo "- ⚠️  **Vulnerability Scan**: Known vulnerabilities found, but none introduced by this PR" >> security_report.md
             elif [ "$PIP_AUDIT" == "pass" ]; then
               echo "- ✅ **Vulnerability Scan**: Passed - No known vulnerabilities" >> security_report.md
             else
@@ -469,7 +469,7 @@ jobs:
               description = 'High-risk packages detected - security review required';
             } else if (hasVulns) {
               state = 'error';
-              description = 'Known vulnerabilities in the dependencies this PR changes';
+              description = 'Known vulnerabilities introduced by this PR';
             } else {
               // Every open PR sharing this head commit must pass the gate
               const blocked = prs.find(p =>

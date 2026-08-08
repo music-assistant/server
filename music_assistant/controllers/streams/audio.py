@@ -42,6 +42,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    ProviderType,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -1758,14 +1759,7 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            if (
-                (finished or seconds_streamed >= 90)
-                and streamdetails.media_type != MediaType.AUDIO_SOURCE
-                and (music_prov := self.mass.get_provider(streamdetails.provider))
-            ):
-                if TYPE_CHECKING:
-                    assert isinstance(music_prov, MusicProvider)
-                self.mass.create_task(music_prov.on_streamed(streamdetails))
+            self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -2772,6 +2766,19 @@ class StreamsAudio:
             await writer.wait_closed()
 
     # --- Private methods ---
+
+    def _notify_provider_streamed(
+        self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
+    ) -> None:
+        """Report a (mostly) streamed item back to the provider that owns it."""
+        if not finished and seconds_streamed < 90:
+            return
+        provider = self.mass.get_provider(streamdetails.provider)
+        # plugin providers serve playable items too, but on_streamed is MusicProvider-only
+        if provider is None or provider.type != ProviderType.MUSIC:
+            return
+        music_prov = cast("MusicProvider", provider)
+        self.mass.create_task(music_prov.on_streamed(streamdetails))
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails

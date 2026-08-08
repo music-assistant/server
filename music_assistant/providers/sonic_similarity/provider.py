@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -277,7 +281,9 @@ class SonicSimilarityPlugin(PluginProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """Handle a rebuild button press (fire-and-forget)."""
         if action == ACTION_REBUILD_18DIM:
             # per-engine locks in _safe_rebuild serialise double-clicks

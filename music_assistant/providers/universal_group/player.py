@@ -505,7 +505,14 @@ class UniversalGroupPlayer(Player):
         # use state properties (not raw attributes) to account for protocol player propagation
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
             self._attr_playback_state = child_player.state.playback_state
-            if child_player.state.elapsed_time:
+            # a position is only meaningful together with the timestamp it was taken at,
+            # so the pair is adopted as a whole or not at all. Position 0 is a valid
+            # position: members that anchor the group stream once report a fixed 0 and
+            # let the timestamp carry both the progression and their own buffer delay.
+            if (
+                child_player.state.elapsed_time is not None
+                and child_player.state.elapsed_time_last_updated is not None
+            ):
                 self._attr_elapsed_time = child_player.state.elapsed_time
                 self._attr_elapsed_time_last_updated = child_player.state.elapsed_time_last_updated
             break
