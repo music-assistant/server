@@ -325,6 +325,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             (by instance id or domain), where the special value "library" selects
             the library. Omit to search the library and all available providers.
         """
+        if not search_query.strip():
+            # several providers reject an empty query with a hard error
+            return SearchResults()
         if not media_types:
             media_types = MediaType.ALL
         if library_only and providers is None:
