@@ -34,7 +34,6 @@ dependencies = [
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
-  "unidecode==1.4.0",
   "xmltodict==1.0.4",
   "markdownify==1.2.3",
   "shortuuid==1.0.13",

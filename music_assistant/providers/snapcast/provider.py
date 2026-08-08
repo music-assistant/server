@@ -16,12 +16,12 @@ from bidict import bidict
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
 from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.helpers import create_safe_string
 from snapcast.control.server import CONTROL_PORT, Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import CONF_ENABLED, CONF_LOG_LEVEL, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import get_ip_pton
