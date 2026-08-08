@@ -1,12 +1,13 @@
-"""Unit tests for the Sonos S1 provider discovery scheduling."""
+"""Unit tests for the Sonos S1 player provider."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import CoreState
@@ -178,3 +179,93 @@ async def test_unload_stops_an_untracked_discovery_from_rescheduling(
             await post_load
 
     assert harness.armed_reschedules == []
+
+
+def _make_provider() -> tuple[SonosPlayerProvider, MagicMock]:
+    """Create a provider bound to a mocked server, and return both."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_raw_player_config_value.return_value = True
+    provider = object.__new__(SonosPlayerProvider)
+    provider.mass = mass
+    provider.logger = logging.getLogger("test.sonos_s1.provider")
+    return provider, mass
+
+
+def _make_soco(ip_address: str = "127.0.0.1") -> MagicMock:
+    """Create a mocked soco device as discovery hands it over."""
+    soco = MagicMock()
+    soco.uid = "RINCON_000E58AAAAAA01400"
+    soco.ip_address = ip_address
+    soco.is_visible = True
+    soco.fixed_volume = False
+    # a freshly discovered device has not been asked for its details yet
+    soco.speaker_info = {}
+    return soco
+
+
+async def test_disabled_speaker_is_not_interrogated() -> None:
+    """A speaker the user disabled must not be queried over the network at all."""
+    provider, mass = _make_provider()
+    mass.config.get_raw_player_config_value.return_value = False
+    soco = _make_soco()
+
+    with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:
+        await provider._setup_player(soco)
+
+    soco.get_speaker_info.assert_not_called()
+    player_cls.assert_not_called()
+
+
+async def test_invisible_speaker_is_not_interrogated() -> None:
+    """A bridge or stereo-pair follower is skipped before it is queried any further."""
+    provider, _ = _make_provider()
+    soco = _make_soco()
+    soco.is_visible = False
+
+    with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:
+        await provider._setup_player(soco)
+
+    soco.get_speaker_info.assert_not_called()
+    player_cls.assert_not_called()
+
+
+async def test_new_speaker_is_registered() -> None:
+    """A newly discovered speaker is built and set up."""
+    provider, _ = _make_provider()
+    soco = _make_soco()
+
+    with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:
+        player_cls.return_value.setup = AsyncMock()
+        await provider._setup_player(soco)
+
+    soco.get_speaker_info.assert_called_once()
+    player_cls.assert_called_once_with(provider, soco)
+    player_cls.return_value.setup.assert_awaited_once()
+
+
+async def test_speaker_found_at_a_new_address_is_handed_the_rediscovered_device() -> None:
+    """A known speaker seen at another address adopts the device discovery just built."""
+    provider, mass = _make_provider()
+    existing = MagicMock()
+    existing.soco.ip_address = "127.0.0.1"
+    existing.update_ip = AsyncMock()
+    mass.players.get_player.return_value = existing
+    soco = _make_soco("127.0.0.2")
+
+    await provider._setup_player(soco)
+
+    existing.update_ip.assert_awaited_once_with(soco)
+
+
+async def test_known_speaker_at_the_same_address_is_left_alone() -> None:
+    """Rediscovering a speaker at the address it already uses changes nothing."""
+    provider, mass = _make_provider()
+    existing = MagicMock()
+    existing.soco.ip_address = "127.0.0.1"
+    existing.update_ip = AsyncMock()
+    mass.players.get_player.return_value = existing
+
+    await provider._setup_player(_make_soco("127.0.0.1"))
+
+    existing.update_ip.assert_not_awaited()
