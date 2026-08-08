@@ -69,11 +69,12 @@ class Provider:
         """
         Return the (options) config entries to configure this provider instance.
 
-        Called only for an existing (loaded) instance: read the current values via
-        ``self.config``/``self.get_config_value`` and the capabilities via
-        ``self.supported_features``. One-time setup input is collected by the setup flow
-        (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION`` entries for
-        one-shot buttons and handle their presses in ``handle_config_action``.
+        Resolved on every load - before ``handle_async_init`` - as well as whenever the
+        options page is opened, so this may not read state that async init assigns. Read
+        the current values via ``self.config``/``self.get_config_value`` and the
+        capabilities via ``self.supported_features``. One-time setup input is collected by
+        the setup flow (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION``
+        entries for one-shot buttons and handle their presses in ``handle_config_action``.
         """
         return ()
 
@@ -94,7 +95,12 @@ class Provider:
         raise ActionUnavailable(f"Unknown action: {action}")
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """
+        Handle async initialization of the provider.
+
+        Runs after ``get_config_entries`` was already resolved, so state assigned here
+        is not available to it.
+        """
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

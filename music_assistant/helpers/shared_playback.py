@@ -33,6 +33,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.util import join_task
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
@@ -144,7 +146,9 @@ class SharedPlaybackSession:
             cls._cancel_and_observe_creation(mass, sendspin, creation_task)
             raise
         try:
-            player_id = await asyncio.shield(creation_task)
+            # join: cancelling the caller must not abort the creation halfway, or the
+            # cleanup task can no longer remove the player it left behind
+            player_id = await join_task(creation_task)
         except asyncio.CancelledError:
             cleanup_required.set_result(True)
             raise

@@ -107,11 +107,16 @@ class SonosPlayer(Player):
 
     async def setup(self) -> None:
         """Set up the player."""
-        self._attr_volume_level = self.soco.volume
-        self._attr_volume_muted = self.soco.mute
-        self.update_groups()
-        if not self.synced_to:
-            self.poll_media()
+
+        def _read_speaker_state() -> None:
+            """Read the initial state from the speaker (NOT async friendly)."""
+            self._attr_volume_level = self.soco.volume
+            self._attr_volume_muted = self.soco.mute
+            self.update_groups()
+            if not self.synced_to:
+                self.poll_media()
+
+        await asyncio.to_thread(_read_speaker_state)
         await self.subscribe()
         await self.mass.players.register_or_update(self)
 
@@ -172,11 +177,18 @@ class SonosPlayer(Player):
                 self.player_id,
             )
             return
-        if "Pause" not in self.soco.available_actions:
+
+        def _pause() -> bool:
+            """Pause the speaker, reporting whether it accepts the command."""
+            if "Pause" not in self.soco.available_actions:
+                return False
+            self.soco.pause()
+            return True
+
+        if not await asyncio.to_thread(_pause):
             # pause not possible
             await self.stop()
             return
-        await asyncio.to_thread(self.soco.pause)
         self.schedule_poll()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -333,25 +345,34 @@ class SonosPlayer(Player):
         self._set_basic_track_info(update_position=update_position)
         self.update_player()
 
-    def update_ip(self, ip_address: str) -> None:
-        """Handle updated IP of a Sonos player (NOT async friendly)."""
-        if self._attr_available:
+    async def update_ip(self, soco: SoCo) -> None:
+        """
+        Handle a Sonos player that was rediscovered at another IP-address.
+
+        :param soco: The SoCo instance discovered at the new address.
+        """
+        if self._unloaded or self._attr_available:
             return
         self.logger.debug(
-            "Player IP-address changed from %s to %s", self.soco.ip_address, ip_address
+            "Player IP-address changed from %s to %s", self.soco.ip_address, soco.ip_address
         )
+        # the UPnP endpoints of a SoCo instance are resolved once, when it is constructed,
+        # so reaching the speaker at its new address takes the rediscovered instance
+        self.soco = soco
         try:
-            self.ping()
+            await asyncio.to_thread(self.ping)
         except SonosUpdateError:
+            # the regular poll retries the new address until the speaker answers again
             return
-        self.soco.ip_address = ip_address
-        asyncio.run_coroutine_threadsafe(self.setup(), self.mass.loop)
+        # mark the speaker alive before reading it back, so its state survives the update
+        self._speaker_activity("IP change")
+        await self.setup()
         self._attr_device_info = DeviceInfo(
             model=self._attr_device_info.model,
             manufacturer=self._attr_device_info.manufacturer,
         )
-        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
-        self._attr_device_info.add_identifier(IdentifierType.UUID, self.soco.uid)
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id)
         mac_address = self._extract_mac_from_player_id()
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
@@ -802,6 +823,8 @@ class SonosPlayer(Player):
 
     def _speaker_activity(self, source: str) -> None:
         """Track the last activity on this speaker, set availability and resubscribe."""
+        if self._unloaded:
+            return
         if self._resub_cooldown_expires_at:
             if time.monotonic() < self._resub_cooldown_expires_at:
                 self.logger.debug(

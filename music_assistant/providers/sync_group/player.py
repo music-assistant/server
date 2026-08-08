@@ -246,7 +246,7 @@ class SyncGroupPlayer(Player):
         # all members offline), offer any compatible player.
         # Actual compatibility is validated when adding members
         can_group_with = set()
-        for player in self.mass.players.all_players(return_unavailable=False):
+        for player in self.mass.players.iter_players(return_unavailable=False):
             if not player.available or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
                 continue

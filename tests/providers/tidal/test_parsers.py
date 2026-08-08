@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.providers.tidal.parsers import (
     parse_album,
@@ -16,7 +15,6 @@ from music_assistant.providers.tidal.parsers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import MediaType
     from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
@@ -24,29 +22,6 @@ ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))
 ALBUM_FIXTURES = list(FIXTURES_DIR.glob("albums/*.json"))
 TRACK_FIXTURES = list(FIXTURES_DIR.glob("tracks/*.json"))
 PLAYLIST_FIXTURES = list(FIXTURES_DIR.glob("playlists/*.json"))
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.user.profile_name = "Test User"
-    provider.auth.user.user_name = "Test User"
-
-    def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=provider.instance_id,
-            name=name,
-        )
-
-    provider.get_item_mapping.side_effect = get_item_mapping
-
-    return provider
 
 
 @pytest.mark.parametrize("example", ARTIST_FIXTURES, ids=lambda val: str(val.stem))

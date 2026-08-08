@@ -692,18 +692,14 @@ class OpenSonicProvider(MusicProvider):
         if not sonic_playlist.entry:
             return result
 
-        album: Album | None = None
         for index, sonic_song in enumerate(sonic_playlist.entry, 1):
-            aid = sonic_song.album_id or sonic_song.parent
-            if not aid:
-                self.logger.warning("Unable to find album for track %s", sonic_song.id)
-            if aid is not None and (not album or album.item_id != aid):
-                album = await self.get_album(prov_album_id=aid)
+            # A playlist can hold thousands of tracks, so we must not trigger a per-track
+            # metadata fetch here: parse_track derives the album reference from the playlist
+            # entry itself, and lyrics are fetched on demand when a track is played (get_track).
+            # Fetching album + lyrics per entry turned a single getPlaylist call into thousands
+            # of serial requests, making large playlists take minutes to start.
             self._set_loudness(sonic_song)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
-            track = parse_track(
-                self.logger, self.instance_id, sonic_song, album=album, lyrics=lyrics
-            )
+            track = parse_track(self.logger, self.instance_id, sonic_song)
             track.position = index
             result.append(track)
         return result
