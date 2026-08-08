@@ -231,6 +231,23 @@ async def test_placeholder_album_art_is_discarded(reported: str) -> None:
     assert player.current_media.image_url is None
 
 
+@pytest.mark.parametrize(
+    "reported",
+    [
+        "http://[::1/cover.jpg",
+        "http://192.168.1.139:99999999/cover.jpg",
+        "http://192.168.1.139:port/cover.jpg",
+    ],
+)
+async def test_unparsable_album_art_does_not_break_the_update(reported: str) -> None:
+    """A device reporting an unparsable album art URL must not kill the player update."""
+    player = await _updated_player(media_image_url=reported)
+
+    assert player.current_media is not None
+    assert player.current_media.image_url is None
+    assert player.elapsed_time == 42.0
+
+
 @pytest.mark.parametrize(("reported", "expected"), [(0.5, 50), (0.0, 0), (1.0, 100)])
 async def test_volume_level_is_scaled_to_percent(reported: float, expected: int) -> None:
     """The device reports volume as a 0..1 fraction, the player as a percentage."""

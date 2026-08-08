@@ -27,7 +27,12 @@ def parse_media_image_url(image_url: str | None) -> str | None:
     """
     if not image_url:
         return None
-    parsed = URL(image_url)
+    try:
+        parsed = URL(image_url)
+    except ValueError:
+        # a device can report a URL yarl refuses (bad port, unterminated IPv6),
+        # which is not fetchable either
+        return None
     if parsed.scheme not in ("http", "https"):
         return None
     if parsed.name.casefold() in PLACEHOLDER_IMAGE_NAMES:
