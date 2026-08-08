@@ -451,7 +451,8 @@ async def test_migration_strips_sound_effect_from_playlists(
         "INSERT INTO playlists (item_id, supported_mediatypes) VALUES "
         '(1, \'["track","sound_effect","radio"]\'), '
         "(2, '[\"track\"]'), "
-        "(3, 'corrupt value naming sound_effect')"
+        "(3, 'corrupt value naming sound_effect'), "
+        "(4, '[\"sound_effect\"]')"
     )
     await database.commit()
 
@@ -472,3 +473,5 @@ async def test_migration_strips_sound_effect_from_playlists(
     # playlists without the media type, and rows we cannot parse, are left alone
     assert json.loads(rows[1]["supported_mediatypes"]) == ["track"]
     assert rows[2]["supported_mediatypes"] == "corrupt value naming sound_effect"
+    # a playlist left with nothing yields an empty list, not NULL (the column is NOT NULL)
+    assert json.loads(rows[3]["supported_mediatypes"]) == []
