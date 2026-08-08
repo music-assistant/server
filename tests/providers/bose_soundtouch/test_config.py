@@ -263,7 +263,7 @@ async def test_assign_action_copies_result_to_selected_preset() -> None:
     )
 
     entry = await BoseSoundTouchProvider.handle_config_action(_as_provider(stub), ACTION_ASSIGN)
-    assert entry is not None
+    assert isinstance(entry, tuple)
     entries = _entries_by_key(list(entry))
 
     assert stub._values[preset_media_key(4)] == selected_uri
