@@ -57,6 +57,10 @@ class Provider:
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        # set by the controller once teardown of this provider starts, so work that is
+        # already in flight (e.g. a discovery running in a worker thread) can tell a
+        # provider on its way out apart from one that is not loaded yet
+        self.unloading = False
         self.initialized = asyncio.Event()
 
     @property

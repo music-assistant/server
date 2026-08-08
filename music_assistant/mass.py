@@ -1018,6 +1018,10 @@ class MusicAssistant:
         # down state the sync may still be using, such as the mount of a network share
         await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
+            # mark the provider as on its way out before anything is torn down: the steps
+            # below have await points, so without this a callback that is still in flight
+            # could register a player back onto a provider that is already gone
+            provider.unloading = True
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
