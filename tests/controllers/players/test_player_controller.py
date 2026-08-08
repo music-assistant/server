@@ -3085,5 +3085,36 @@ class TestRemovePlayerControl:
         mock_mass.loop.call_soon.assert_not_called()
 
 
+class _FailingTeardownPlayer(MockPlayer):
+    """Player whose provider fails to release it."""
+
+    unloaded = False
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        self.unloaded = True
+        msg = "device is gone"
+        raise RuntimeError(msg)
+
+
+class TestUnregisterTeardown:
+    """Test that a failing player teardown stays contained."""
+
+    async def test_failing_on_unload_still_unregisters_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a provider raising while releasing its player does not break unregister."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player = _FailingTeardownPlayer(provider, "boom", "Boom")
+        controller._players = {"boom": player}
+
+        await controller.unregister("boom")
+
+        assert "boom" not in controller._players
+        assert player.unloaded
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

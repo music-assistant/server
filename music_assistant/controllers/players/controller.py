@@ -1598,7 +1598,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             handle.cancel()
         self._clear_sleep_timer(player)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
-        await player.on_unload()
+        # teardown is best-effort: a provider that fails to release its player must not
+        # strand the other players of that provider, nor the provider unload itself
+        try:
+            await player.on_unload()
+        except Exception:
+            self.logger.exception("Error unloading player %s", player.name)
         if permanent:
             # player permanent removal: cleanup protocol links, delete config
             # and signal PLAYER_REMOVED event
