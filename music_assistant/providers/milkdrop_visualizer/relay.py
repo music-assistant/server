@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 from music_assistant_models.enums import PlaybackState
@@ -59,6 +60,7 @@ class MilkdropRelay:
         self.logger = provider.logger.getChild("relay")
         self.taps = TapManager(provider)
         self._unregister: Callable[[], None] | None = None
+        self._sessions: set[web.WebSocketResponse] = set()
 
     def setup(self) -> None:
         """Register the WebSocket route on the MA webserver."""
@@ -68,10 +70,15 @@ class MilkdropRelay:
         self.logger.info("MilkDrop visualizer relay active on %s", RELAY_ROUTE)
 
     async def close(self) -> None:
-        """Unregister the route and tear down any live taps."""
+        """Unregister the route, close live viewers, and tear down the taps."""
         if self._unregister is not None:
             self._unregister()
             self._unregister = None
+        # Close viewers explicitly: on a provider reload they would otherwise
+        # freeze on a dead route until they happened to reconnect.
+        for ws in list(self._sessions):
+            with suppress(Exception):
+                await ws.close()
         await self.taps.close()
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
@@ -101,6 +108,7 @@ class MilkdropRelay:
         queue = ViewerQueue()
         tap = await self.taps.acquire(target)
         tap.queues.add(queue)
+        self._sessions.add(ws)
 
         try:
             await ws.send_str(
@@ -124,6 +132,7 @@ class MilkdropRelay:
         finally:
             # Detach synchronously; the linger runs detached so the request
             # handler (and its socket) is not held open for its duration.
+            self._sessions.discard(ws)
             tap.queues.discard(queue)
             self.taps.schedule_release(target.player_id)
             if not ws.closed:
@@ -191,31 +200,45 @@ class MilkdropRelay:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
-                data = loads(msg.data)
-                if data.get("type") == "client/time":
-                    now_us = clock.now_us()
-                    await ws.send_str(
-                        dumps(
-                            {
-                                "type": "server/time",
-                                "payload": {
-                                    "client_transmitted": data["payload"]["client_transmitted"],
-                                    "server_received": now_us,
-                                    "server_transmitted": now_us,
-                                },
-                            }
-                        ).decode()
-                    )
-                elif data.get("type") == "client/error":
-                    # Cast displays and kiosks have no reachable console, so a
-                    # renderer that cannot start would otherwise fail in silence.
-                    self.logger.warning(
-                        "Viewer reported a problem: %s", data.get("message", "unknown")
-                    )
-                elif data.get("type") == "client/goodbye":
+                # A malformed frame from an (authenticated) client must not read
+                # as a server crash: log it and keep the session alive.
+                try:
+                    data = loads(msg.data)
+                    await self._handle_client_message(ws, clock, data)
+                except ValueError, KeyError, TypeError:
+                    self.logger.debug("Ignoring malformed viewer message", exc_info=True)
+                    continue
+                if data.get("type") == "client/goodbye":
                     break
         finally:
             pump_task.cancel()
+            # The pump raises if the socket died mid-send; awaiting it here keeps
+            # that from surfacing later as "Task exception was never retrieved".
+            with suppress(asyncio.CancelledError, ConnectionError, RuntimeError):
+                await pump_task
+
+    async def _handle_client_message(
+        self, ws: web.WebSocketResponse, clock: Any, data: dict[str, Any]
+    ) -> None:
+        """Answer a single text frame from a viewer."""
+        if data.get("type") == "client/time":
+            now_us = clock.now_us()
+            await ws.send_str(
+                dumps(
+                    {
+                        "type": "server/time",
+                        "payload": {
+                            "client_transmitted": data["payload"]["client_transmitted"],
+                            "server_received": now_us,
+                            "server_transmitted": now_us,
+                        },
+                    }
+                ).decode()
+            )
+        elif data.get("type") == "client/error":
+            # Cast displays and kiosks have no reachable console, so a renderer
+            # that cannot start would otherwise fail in silence.
+            self.logger.warning("Viewer reported a problem: %s", data.get("message", "unknown"))
 
     def _resolve_target(self, query: str | None) -> SendspinBasePlayer | None:
         """

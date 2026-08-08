@@ -9,6 +9,7 @@ waveform frames. One tap is shared by every viewer of the same target player.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import struct
 from collections import deque
 from typing import TYPE_CHECKING, cast
@@ -210,8 +211,12 @@ class TapManager:
         async with self._lock:
             if (existing := self._taps.get(target.player_id)) is not None:
                 return existing
-            # Stable id: reconnects and multiple viewers reuse one hidden tap player.
-            tap = Tap(f"milkdrop-{target.player_id[-8:]}")
+            # Stable id: reconnects and multiple viewers reuse one hidden tap
+            # player. Hash the full id rather than slicing its tail, so two
+            # players sharing the same last characters cannot collide onto one
+            # Sendspin client id.
+            digest = hashlib.blake2s(target.player_id.encode(), digest_size=6).hexdigest()
+            tap = Tap(f"milkdrop-{digest}")
             viz_client = self._register_client(tap)
             await target.api.group.add_client(viz_client)
             self._taps[target.player_id] = tap
@@ -362,6 +367,10 @@ class TapManager:
         """
         await asyncio.sleep(2.5)
         if tap.frames_seen or not tap.queues:
+            return
+        # close() (a provider reload) may have removed this tap during the sleep;
+        # re-adding then would leave a stray client with no manager entry.
+        if self._taps.get(target.player_id) is not tap:
             return
         self.logger.info("Waveform tap %s got no audio after late join, re-kicking", tap.client_id)
         try:

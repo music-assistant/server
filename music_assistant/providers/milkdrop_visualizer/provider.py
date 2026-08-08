@@ -9,7 +9,7 @@ from music_assistant.models.plugin import PluginProvider
 from .relay import MilkdropRelay
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
@@ -29,10 +29,6 @@ class MilkdropVisualizerProvider(PluginProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._relay = MilkdropRelay(self)
-
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return the configuration entries for this provider."""
-        return await super().get_config_entries()
 
     async def loaded_in_mass(self) -> None:
         """Register the relay route once fully loaded."""
