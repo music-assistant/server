@@ -222,7 +222,7 @@ async def test_search_action_resets_previous_result_and_target() -> None:
         }
     )
     entry = await BoseSoundTouchProvider.handle_config_action(_as_provider(stub), ACTION_SEARCH)
-    assert entry is not None
+    assert isinstance(entry, tuple)
     entries = _entries_by_key(list(entry))
 
     assert stub.config_updates == [
