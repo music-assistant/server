@@ -98,6 +98,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -175,6 +176,8 @@ class LocalFileSystemProvider(MusicProvider):
 
     # parallel workers per sync; subclasses lower this for slower transports
     _SYNC_CONCURRENCY: ClassVar[int] = 16
+    _sync_tracks: bool = True
+    _sync_playlists: bool = True
 
     def __init__(
         self,
@@ -192,9 +195,9 @@ class LocalFileSystemProvider(MusicProvider):
         )
         self.write_access: bool = False
         self.sync_running: bool = False
-        self._sync_tracks: bool = True
-        self._sync_playlists: bool = True
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self._cue = CueSheetHandler(self)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -1139,6 +1142,11 @@ class LocalFileSystemProvider(MusicProvider):
         :param ignore_album_playlists: When True, skip playlists nested inside
             album directories.
         """
+        # a file this provider never imports gets no mapping, so it would flag as
+        # changed on every sync; it is still on disk, so record it as present
+        if not self._is_imported_file(item):
+            cur_filenames.add(item.relative_path)
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1159,6 +1167,22 @@ class LocalFileSystemProvider(MusicProvider):
                 unchanged_cue_items.append(item)
         else:
             items_to_process.append((item, prev_checksum))
+
+    def _is_imported_file(self, item: FileSystemItem) -> bool:
+        """Return True when this provider imports the given file into the library."""
+        if self.media_content_type == "music":
+            if item.ext in CUE_EXTENSIONS:
+                return True
+            if item.ext in TRACK_EXTENSIONS:
+                return self._sync_tracks
+            if item.ext in PLAYLIST_EXTENSIONS:
+                return self._sync_playlists
+            return False
+        if self.media_content_type == "audiobooks":
+            return item.ext in AUDIOBOOK_EXTENSIONS
+        if self.media_content_type == "podcasts":
+            return item.ext in PODCAST_EPISODE_EXTENSIONS
+        return False
 
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""
