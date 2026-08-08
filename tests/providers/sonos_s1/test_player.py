@@ -488,6 +488,19 @@ async def test_update_ip_skips_setup_when_the_new_address_stays_silent(
     assert sonos_player.soco is new_soco
 
 
+async def test_update_ip_leaves_an_unloaded_speaker_alone(sonos_player: SonosPlayer) -> None:
+    """An unloaded speaker must not be reconnected, its subscriptions would leak."""
+    sonos_player._attr_available = False
+    sonos_player._unloaded = True
+    original_soco = sonos_player.soco
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(_make_rediscovered_soco())
+
+    assert sonos_player.soco is original_soco
+    setup.assert_not_awaited()
+
+
 async def test_update_ip_leaves_a_responding_speaker_alone(sonos_player: SonosPlayer) -> None:
     """A speaker that is still reachable keeps the device it is already talking to."""
     original_soco = sonos_player.soco

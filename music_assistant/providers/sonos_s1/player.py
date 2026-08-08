@@ -351,7 +351,7 @@ class SonosPlayer(Player):
 
         :param soco: The SoCo instance discovered at the new address.
         """
-        if self._attr_available:
+        if self._unloaded or self._attr_available:
             return
         self.logger.debug(
             "Player IP-address changed from %s to %s", self.soco.ip_address, soco.ip_address
