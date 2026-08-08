@@ -53,6 +53,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockPlayer, MockProvider
 
 
@@ -507,6 +508,35 @@ class TestUnscopedPlayerLookups:
         with _restricted_user(["member"]):
             assert controller.all_players() == [member]
             assert set(controller.iter_players()) == {group_player, member}
+
+    def test_provider_filter_still_ignores_the_user_filter(self, mock_mass: MagicMock) -> None:
+        """A lookup scoped to one provider must still ignore the user filter."""
+        controller, group_player, member = _group_with_member(mock_mass)
+
+        with _restricted_user(["member"]):
+            found = set(controller.iter_players(provider_filter="test"))
+
+        assert found == {group_player, member}
+
+    def test_provider_sees_all_of_its_own_players(self, mock_mass: MagicMock) -> None:
+        """A provider owns its players, so a user filter must never hide them from it."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        plain = MockPlayer(provider, "plain", "Plain")
+        # a protocol player id is picked from a list that hides protocol players, so it
+        # is never in a user's filter - the whole set used to disappear for any non-admin
+        protocol = MockPlayer(provider, "protocol", "Protocol", player_type=PlayerType.PROTOCOL)
+        controller._players = {"plain": plain, "protocol": protocol}
+        mock_mass.players = controller
+        for player in (plain, protocol):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with _restricted_user(["plain"]):
+            owned = set(PlayerProvider.players.fget(provider))  # type: ignore[attr-defined]
+
+        assert owned == {plain, protocol}
 
     def test_active_group_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
         """A member must still know its group when the triggering user cannot see it."""
