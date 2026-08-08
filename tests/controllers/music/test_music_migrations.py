@@ -49,7 +49,14 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     for table in MEDIA_TABLES:
         await db.execute(
             f"CREATE TABLE {table}([item_id] INTEGER PRIMARY KEY, "
-            "[external_ids] json NOT NULL DEFAULT '[]')"
+            "[external_ids] json NOT NULL DEFAULT '[]'"
+            # every playlists table at the schema versions under test carries this column
+            + (
+                ", [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]'"
+                if table == "playlists"
+                else ""
+            )
+            + ")"
         )
     await db.execute(
         f"CREATE TABLE {DB_TABLE_EXTERNAL_ID_LOOKUP}([media_type] TEXT NOT NULL, "
@@ -434,3 +441,34 @@ async def test_migration_rewrites_apple_music_artwork_to_tokens(
     assert json.loads(rows[1]["metadata"])["images"] == [
         {"path": "https://x/y.jpg", "provider": "spotify"}
     ]
+
+
+async def test_migration_strips_sound_effect_from_playlists(
+    database: DatabaseConnection,
+) -> None:
+    """The sound effect media type is removed from the stored playlists."""
+    await database.execute(
+        "INSERT INTO playlists (item_id, supported_mediatypes) VALUES "
+        '(1, \'["track","sound_effect","radio"]\'), '
+        "(2, '[\"track\"]'), "
+        "(3, 'corrupt value naming sound_effect')"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=55,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, supported_mediatypes FROM playlists ORDER BY item_id"
+    )
+    assert json.loads(rows[0]["supported_mediatypes"]) == ["track", "radio"]
+    # playlists without the media type, and rows we cannot parse, are left alone
+    assert json.loads(rows[1]["supported_mediatypes"]) == ["track"]
+    assert rows[2]["supported_mediatypes"] == "corrupt value naming sound_effect"
