@@ -13,7 +13,7 @@ from wiim.exceptions import WiimDeviceException, WiimRequestException
 from wiim.models import WiimGroupRole
 
 from music_assistant.constants import create_sample_rates_config_entry
-from music_assistant.helpers.upnp import create_didl_metadata
+from music_assistant.helpers.upnp import create_didl_metadata, parse_media_image_url
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
@@ -427,7 +427,7 @@ class WiimPlayer(Player):
                 title=(media.title if media else None) or source_display_name,
                 artist=media.artist if media else None,
                 album=media.album if media else None,
-                image_url=media.image_url if media else None,
+                image_url=parse_media_image_url(media.image_url) if media else None,
                 duration=media.duration if media else None,
                 source_id=self._attr_active_source,
             )

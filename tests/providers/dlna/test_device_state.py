@@ -204,6 +204,33 @@ async def test_transport_state_event_polls_before_reading_the_position() -> None
     assert player.elapsed_time_last_updated >= started_at
 
 
+async def test_reported_album_art_is_applied() -> None:
+    """An album art URL reported by the device is adopted as-is."""
+    player = await _updated_player(media_image_url="http://192.168.1.10/cover.jpg")
+
+    assert player.current_media is not None
+    assert player.current_media.image_url == "http://192.168.1.10/cover.jpg"
+
+
+@pytest.mark.parametrize(
+    "reported",
+    [
+        # LinkPlay/WiiM firmware sends the literal 'un_known' as albumArtURI, which
+        # async_upnp_client resolves against the device base URL
+        "http://192.168.1.139:49152/un_known",
+        "http://192.168.1.139:49152/UN_KNOWN",
+        "http://192.168.1.139:49152/unknown",
+        "un_known",
+    ],
+)
+async def test_placeholder_album_art_is_discarded(reported: str) -> None:
+    """A device reporting a placeholder instead of album art must not leave an image URL."""
+    player = await _updated_player(media_image_url=reported)
+
+    assert player.current_media is not None
+    assert player.current_media.image_url is None
+
+
 @pytest.mark.parametrize(("reported", "expected"), [(0.5, 50), (0.0, 0), (1.0, 100)])
 async def test_volume_level_is_scaled_to_percent(reported: float, expected: int) -> None:
     """The device reports volume as a 0..1 fraction, the player as a percentage."""

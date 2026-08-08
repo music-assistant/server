@@ -16,7 +16,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.upnp import create_didl_metadata
+from music_assistant.helpers.upnp import create_didl_metadata, parse_media_image_url
 from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import PLAYER_CONFIG_ENTRIES
@@ -162,7 +162,7 @@ class DLNAPlayer(Player):
             media_title = self.device.media_title
             media_artist = self.device.media_artist
             media_album = self.device.media_album_name
-            media_image_url = self.device.media_image_url
+            media_image_url = parse_media_image_url(self.device.media_image_url)
             media_duration = self.device.media_duration
         except ParseError as err:
             # some devices (e.g. Bose SoundTouch) return malformed DIDL-Lite

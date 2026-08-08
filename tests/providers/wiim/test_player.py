@@ -171,6 +171,7 @@ class TestFalsePlayingFilter:
         """A PLAYING report with media loaded is a real start and passes through."""
         media = MagicMock()
         media.uri = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        media.image_url = None
         mock_wiim_device.play_mode = SOURCE_NETWORK
         mock_wiim_device.current_media = media
         mock_wiim_device.playing_status = PlayingStatus.PLAYING
@@ -340,3 +341,49 @@ class TestErrorHandling:
         await player.pause()
         assert player._attr_available is True
         player.update_state.assert_called()
+
+
+class TestPlaceholderAlbumArt:
+    """LinkPlay firmware reports a placeholder token instead of an album art URL."""
+
+    def _updated_player(
+        self, provider: MagicMock, device: MagicMock, image_url: str | None
+    ) -> WiimPlayer:
+        media = MagicMock()
+        media.uri = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        media.title = "Starry Night"
+        media.image_url = image_url
+        device.play_mode = SOURCE_NETWORK
+        device.current_media = media
+        device.playing_status = PlayingStatus.PLAYING
+        player = WiimPlayer(provider=provider, player_id="uuid:test", device=device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._update_ma_state_from_sdk_cache()
+        return player
+
+    def test_reported_album_art_is_applied(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """An album art URL reported by the device is adopted as-is."""
+        player = self._updated_player(
+            mock_provider, mock_wiim_device, "https://192.168.1.243/data/AirplayArtWorkData.jpeg"
+        )
+
+        assert player._attr_current_media is not None
+        assert (
+            player._attr_current_media.image_url
+            == "https://192.168.1.243/data/AirplayArtWorkData.jpeg"
+        )
+
+    @pytest.mark.parametrize(
+        "reported",
+        ["http://192.168.1.139:49152/un_known", "http://192.168.1.139:49152/UN_KNOWN", "un_known"],
+    )
+    def test_placeholder_album_art_is_discarded(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, reported: str
+    ) -> None:
+        """A device reporting a placeholder instead of album art must not leave an image URL."""
+        player = self._updated_player(mock_provider, mock_wiim_device, reported)
+
+        assert player._attr_current_media is not None
+        assert player._attr_current_media.image_url is None

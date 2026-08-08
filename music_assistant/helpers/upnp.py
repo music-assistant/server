@@ -6,12 +6,33 @@ from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xmlescape
 
 from music_assistant_models.enums import MediaType
+from yarl import URL
 
 from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.helpers.audio import get_mime_type
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
+
+# LinkPlay/WiiM firmware writes this token into any DIDL field it has no value for.
+# A device base URL is then prepended to it, which yields a URL that serves nothing.
+PLACEHOLDER_IMAGE_NAMES = frozenset({"un_known", "unknown"})
+
+
+def parse_media_image_url(image_url: str | None) -> str | None:
+    """
+    Return the media image URL reported by a device, or None if it points at no artwork.
+
+    :param image_url: Media image URL as reported by the device.
+    """
+    if not image_url:
+        return None
+    parsed = URL(image_url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.name.casefold() in PLACEHOLDER_IMAGE_NAMES:
+        return None
+    return image_url
 
 
 # XML
