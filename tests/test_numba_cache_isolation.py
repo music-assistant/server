@@ -18,4 +18,5 @@ def test_numba_kernel_cache_is_process_private(pytestconfig: pytest.Config) -> N
     # a TemporaryDirectory of this session's own, so no other process can be writing there
     assert os.environ["NUMBA_CACHE_DIR"] == pytestconfig.stash[NUMBA_CACHE_DIR].name
     # numba snapshots the variable as it is imported, so a mismatch means it got in first
-    assert os.environ["NUMBA_CACHE_DIR"] == numba_config.CACHE_DIR  # type: ignore[attr-defined]
+    # (numba ships type info only on newer versions, where CACHE_DIR is set at runtime)
+    assert os.environ["NUMBA_CACHE_DIR"] == numba_config.CACHE_DIR  # type: ignore[attr-defined, unused-ignore]
