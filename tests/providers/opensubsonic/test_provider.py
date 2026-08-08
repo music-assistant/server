@@ -22,7 +22,7 @@ def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
 
     # accept create_task's keyword-only options (task_id, abort_existing, ...) so the stub
     # keeps matching its signature
-    def _schedule(coro: Any, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
+    def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(coro)
         tasks.append(task)
         return task
