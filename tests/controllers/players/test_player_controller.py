@@ -1657,8 +1657,15 @@ class TestEnforceVolumeLimits:
 class TestFakeMuteControl:
     """Fake mute must report the muted state and restore the volume on unmute."""
 
-    def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
-        """Build a controller with a single player using fake mute control."""
+    def _make_player(
+        self, mock_mass: MagicMock, volume_level: int | None = 40
+    ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """
+        Build a controller with a single player using fake mute control.
+
+        :param mock_mass: the mocked MusicAssistant instance.
+        :param volume_level: initial volume level of the player, None if unknown.
+        """
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
@@ -1669,7 +1676,7 @@ class TestFakeMuteControl:
         mock_mass.players = controller
         mock_mass.player_queues.get = MagicMock(return_value=None)
         player.set_initialized()
-        player._attr_volume_level = 40
+        player._attr_volume_level = volume_level
         # let the mocked native volume control behave like a real device
         volume_set = AsyncMock(
             side_effect=lambda volume: setattr(player, "_attr_volume_level", volume)
@@ -1707,6 +1714,34 @@ class TestFakeMuteControl:
 
         await controller.cmd_volume_mute("player_1", False)
         volume_set.assert_awaited_with(40)
+
+    async def test_unmute_with_unknown_previous_volume(self, mock_mass: MagicMock) -> None:
+        """Unmuting a player whose volume was unknown at mute time restores a low volume."""
+        controller, player, volume_set = self._make_player(mock_mass, volume_level=None)
+
+        await controller.cmd_volume_mute("player_1", True)
+        assert player.extra_data[ATTR_PREVIOUS_VOLUME] is None
+
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_awaited_with(1)
+        player.update_state()
+        assert player.state.volume_muted is False
+
+    async def test_unmute_of_unmuted_player_keeps_volume(self, mock_mass: MagicMock) -> None:
+        """An unmute command for a player that is not muted may not touch the volume."""
+        controller, player, volume_set = self._make_player(mock_mass, volume_level=50)
+
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_not_awaited()
+        assert player.state.volume_level == 50
+
+    async def test_unmute_restores_a_stored_zero_volume(self, mock_mass: MagicMock) -> None:
+        """A player that was already silent stays silent after mute and unmute."""
+        controller, _player, volume_set = self._make_player(mock_mass, volume_level=0)
+
+        await controller.cmd_volume_mute("player_1", True)
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_awaited_with(0)
 
     async def test_volume_set_clears_fake_mute(self, mock_mass: MagicMock) -> None:
         """A regular volume change while fake muted implies an unmute."""

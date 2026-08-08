@@ -3634,10 +3634,19 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 player.extra_data[ATTR_FAKE_MUTE] = True
                 player.update_state()
             else:
-                prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
+                was_muted = bool(player.extra_data.get(ATTR_FAKE_MUTE))
                 player.extra_data[ATTR_FAKE_MUTE] = False
                 player.update_state()
-                await self._handle_cmd_volume_set(player.player_id, prev_volume)
+                if not was_muted:
+                    # the volume is the one the user is listening at, restoring
+                    # anything here would turn a no-op unmute into a volume change
+                    return
+                stored_volume: int | None = player.extra_data.pop(ATTR_PREVIOUS_VOLUME, None)
+                # the volume was still unknown at mute time, so pick a low volume
+                # rather than blasting the speaker at some assumed level
+                await self._handle_cmd_volume_set(
+                    player.player_id, 1 if stored_volume is None else stored_volume
+                )
             return
 
         # handle external player control
