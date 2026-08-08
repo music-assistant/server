@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -135,7 +139,9 @@ class PandoraProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """Handle a one-shot config action button press."""
         if action == CONF_TAKEOVER_ACTION:
             await self.takeover_stream()

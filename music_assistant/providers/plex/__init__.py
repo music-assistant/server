@@ -92,6 +92,7 @@ from music_assistant.providers.plex.constants import (
     ERR_NO_ARTIST_FOR_TRACK,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
+    MAX_TOP_TRACKS,
     MIX_CACHE_EXPIRATION,
     MIX_ITEM_PREFIX,
     RECOMMENDATIONS_HUB_PARAMS,
@@ -901,28 +902,19 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get top tracks for the given artist using Plex artist radio/station."""
+        """Get top tracks for the given artist."""
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             return []
-
+        plex_artist = await self._get_data(prov_artist_id, PlexArtist)
         try:
-            plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-            # Get the artist radio station which contains top/popular tracks
-            if station := await self._run_async(plex_artist.station):
-                # Get tracks from the station
-                station_tracks = await self._run_async(station.items)
-                tracks = []
-                for plex_track in station_tracks[:25]:  # Limit to 25 top tracks
-                    if track := await self._parse_track(plex_track):
-                        tracks.append(track)
-                self.logger.debug(
-                    "Retrieved %d top tracks for artist %s", len(tracks), prov_artist_id
-                )
-                return tracks
-            self.logger.warning("No station available for artist %s", prov_artist_id)
-        except Exception as err:
-            self.logger.warning("Error getting top tracks for artist %s: %s", prov_artist_id, err)
-        return []
+            plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_artist.popularTracks))
+        except plexapi.exceptions.NotFound:
+            # PlexArtist.popularTracks() relies on Plex's advanced filters API.
+            # Some Plex servers return no filtering metadata, making plexapi
+            # raise 'Unknown libtype "artist"'. Fall back to ranking the artist's
+            # own tracks, which does not depend on the filters API.
+            plex_tracks = await self._rank_artist_tracks(plex_artist)
+        return [await self._parse_track(plex_track) for plex_track in plex_tracks[:MAX_TOP_TRACKS]]
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -1081,6 +1073,25 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         db_row["item_id"],
                         err,
                     )
+
+    async def _rank_artist_tracks(self, plex_artist: PlexArtist) -> list[PlexTrack]:
+        """
+        Rank an artist's own tracks by popularity, keeping one version per title.
+
+        :param plex_artist: The Plex artist to rank the tracks of.
+        """
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_artist.tracks))
+        best_per_title: dict[str, PlexTrack] = {}
+        for plex_track in plex_tracks:
+            if not plex_track.ratingCount:
+                # ratingCount is the Last.fm scrobble count popularTracks() ranks on,
+                # so a track without one has no rank. viewCount is local plays instead.
+                continue
+            title = (plex_track.title or "").casefold()
+            best = best_per_title.get(title)
+            if best is None or plex_track.ratingCount > best.ratingCount:
+                best_per_title[title] = plex_track
+        return sorted(best_per_title.values(), key=lambda track: track.ratingCount, reverse=True)
 
     async def _run_async(
         self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs

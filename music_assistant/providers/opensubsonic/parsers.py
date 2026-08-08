@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType
+from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -14,11 +14,13 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemImage,
+    MediaItemLink,
     MediaItemMetadata,
     Playlist,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     Track,
 )
 
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
     from libopensonic.media import ArtistID3 as SonicArtist
     from libopensonic.media import ArtistInfo2 as SonicArtistInfo
     from libopensonic.media import Child as SonicSong
+    from libopensonic.media import InternetRadioStation as SonicRadio
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastChannel as SonicPodcast
     from libopensonic.media import PodcastEpisode as SonicEpisode
@@ -405,6 +408,42 @@ def parse_album(
             )
 
     return album
+
+
+def parse_radio(instance_id: str, sonic_station: SonicRadio) -> Radio:
+    """Parse an OpenSubsonic internet radio station into an MA Radio item."""
+    metadata: MediaItemMetadata = MediaItemMetadata()
+    if sonic_station.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_station.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
+    radio = Radio(
+        item_id=sonic_station.id,
+        provider=instance_id,
+        name=sonic_station.name,
+        uri=sonic_station.stream_url,
+        metadata=metadata,
+        provider_mappings={
+            ProviderMapping(
+                item_id=sonic_station.id,
+                provider_domain=SUBSONIC_DOMAIN,
+                provider_instance=instance_id,
+            )
+        },
+    )
+
+    if sonic_station.home_page_url:
+        radio.metadata.links = {
+            MediaItemLink(type=LinkType.WEBSITE, url=sonic_station.home_page_url)
+        }
+
+    return radio
 
 
 def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:

@@ -26,6 +26,7 @@ from music_assistant.helpers.images import (
     create_thumb_hash,
     get_image_data,
 )
+from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -270,14 +271,7 @@ async def get_palette(
         task_id=f"palette.{key}",
         abort_existing=False,
     )
-    # wait for the shared extraction instead of awaiting it directly: a caller awaiting a
-    # task holds it as its fut_waiter, so cancelling that caller would cancel the
-    # extraction for every other caller too. asyncio.shield achieves the same, but as of
-    # Python 3.14 a cancelled caller makes it report the extraction's exception through
-    # loop.call_exception_handler, even when another caller already handled it.
-    if not task.done():
-        await asyncio.wait((task,))
-    return task.result()
+    return await join_task(task)
 
 
 async def invalidate_cached_palette(mass: MusicAssistant, provider: str, path_or_url: str) -> None:
