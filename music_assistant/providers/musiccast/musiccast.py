@@ -188,12 +188,18 @@ class MusicCastZoneDevice:
 
     @property
     def state(self) -> MusicCastPlayerState:
-        """Return the state of the player."""
+        """
+        Return the state of the player.
+
+        A main-sync zone mirrors the driving zone's netusb playback status, since only
+        one zone can hold the shared netusb session at a time.
+        """
         assert self.zone_data is not None
         if self.zone_data.power == "on":
-            if self.is_netusb and self.device.data.netusb_playback == "pause":
+            _tracks_netusb = self.is_netusb or self.source_id == MC_SOURCE_MAIN_SYNC
+            if _tracks_netusb and self.device.data.netusb_playback == "pause":
                 return MusicCastPlayerState.PAUSED
-            if self.is_netusb and self.device.data.netusb_playback == "stop":
+            if _tracks_netusb and self.device.data.netusb_playback == "stop":
                 return MusicCastPlayerState.IDLE
             return MusicCastPlayerState.PLAYING
         return MusicCastPlayerState.OFF
