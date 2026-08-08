@@ -74,12 +74,39 @@ async def test_backoff_failure_carries_specific_translation() -> None:
     assert "error tag: 3" in str(excinfo.value)
 
 
-async def test_wrong_pin_failure_carries_specific_translation() -> None:
-    """A rejected PIN (error tag 2 at M4) surfaces as the pairing_wrong_pin error."""
+@pytest.mark.parametrize(
+    ("tag", "translation_key"),
+    [(2, "pairing_wrong_pin"), (3, "pairing_backoff"), (5, "pairing_backoff")],
+)
+async def test_hap_error_tags_map_to_specific_translations(tag: int, translation_key: str) -> None:
+    """Actionable HAP error tags surface as their specific error translation."""
     pairing = _make_pairing()
     _attach_proc(pairing)
     pairing._pair_proc_stderr = [
-        "[10:00:01.000] ap2_hap_pair_setup_pin:1310 [HAP] Pair-setup M4 error tag: 2",
+        f"[10:00:01.000] ap2_hap_pair_setup_pin:1310 [HAP] Pair-setup M4 error tag: {tag}",
+        "Pairing failed.",
+    ]
+
+    with pytest.raises(PlayerCommandFailed) as excinfo:
+        await pairing.finish_pairing(pin="0000")
+
+    assert excinfo.value.translation_key == translation_key
+
+
+async def test_error_line_glued_to_pin_prompt_still_surfaces() -> None:
+    """
+    Surface the error even when it arrives glued to the PIN prompt.
+
+    The binary writes its PIN prompt without a newline, so the line-based stderr
+    reader glues the prompt to the front of the next line - which on a post-PIN
+    failure is the error line itself.
+    """
+    pairing = _make_pairing()
+    _attach_proc(pairing)
+    pairing._pair_proc_stderr = [
+        "[10:00:00.000] ap2_hap_pair_setup_pin:1272 [HAP] Pair-setup M2 OK - waiting for the PIN entry",
+        "Enter the PIN shown on the device: [10:00:05.000] ap2_hap_pair_setup_pin:1313 "
+        "[HAP] Pair-setup M4 error tag: 2 (authentication failed - wrong PIN or key mismatch)",
         "Pairing failed.",
     ]
 
@@ -87,10 +114,12 @@ async def test_wrong_pin_failure_carries_specific_translation() -> None:
         await pairing.finish_pairing(pin="0000")
 
     assert excinfo.value.translation_key == "pairing_wrong_pin"
+    assert "error tag: 2" in str(excinfo.value)
+    assert "M2 OK" not in str(excinfo.value)
 
 
-async def test_unclassified_failure_keeps_default_translation() -> None:
-    """Failures without a HAP error tag keep the generic player command error."""
+async def test_unclassified_failure_uses_generic_pairing_translation() -> None:
+    """Failures without a HAP error tag surface as the generic pairing error."""
     pairing = _make_pairing()
     _attach_proc(pairing)
     pairing._pair_proc_stderr = ["Cannot connect to 192.168.68.60:7000"]
@@ -98,5 +127,5 @@ async def test_unclassified_failure_keeps_default_translation() -> None:
     with pytest.raises(PlayerCommandFailed) as excinfo:
         await pairing.finish_pairing(pin="1234")
 
-    assert excinfo.value.translation_key == PlayerCommandFailed.translation_key
+    assert excinfo.value.translation_key == "pairing_failed"
     assert "Cannot connect" in str(excinfo.value)

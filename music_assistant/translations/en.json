@@ -863,6 +863,7 @@
   "provider.airplay.errors.authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
   "provider.airplay.errors.invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
   "provider.airplay.errors.pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
+  "provider.airplay.errors.pairing_failed": "The device refused the pairing attempt. Make sure it is awake and reachable, then try again.",
   "provider.airplay.errors.pairing_wrong_pin": "The device rejected the PIN. Start pairing again and enter the new code shown on its screen.",
   "provider.airplay.errors.show_dashboard_failed": "Failed to show the dashboard on {0}.",
   "provider.airplay.manifest.description": "Stream to AirPlay-enabled devices on your local network.",

@@ -273,13 +273,12 @@ class AirPlayPairing:
         :param summary: Short summary prefixed to the error detail.
         """
         detail = f"{summary}: {self._pair_setup_error()}"
-        if translation_key := self._pair_setup_translation_key():
-            return PlayerCommandFailed(detail, translation_key=translation_key)
-        return PlayerCommandFailed(detail)
+        translation_key = self._pair_setup_translation_key() or "pairing_failed"
+        return PlayerCommandFailed(detail, translation_key=translation_key)
 
     def _pair_setup_translation_key(self) -> str | None:
         """Map the HAP error tag from the pair-setup stderr (if any) to an error translation."""
-        for line in self._pair_proc_stderr:
+        for line in reversed(self._pair_proc_stderr):
             if match := HAP_ERROR_TAG_RE.search(line):
                 tag = int(match.group(1))
                 if tag == 2:
@@ -294,8 +293,11 @@ class AirPlayPairing:
         # the binary reports failures as plain lines on stderr; the last specific
         # line wins, its generic "Pairing failed." trailer only as a last resort
         fallback = "no error details reported"
-        for line in reversed(self._pair_proc_stderr):
-            if not line or "Enter the PIN" in line:
+        for raw_line in reversed(self._pair_proc_stderr):
+            # the PIN prompt is written without a newline, so it arrives glued
+            # to the front of the next line - strip it rather than skip the line
+            line = raw_line.split("Enter the PIN shown on the device:")[-1].strip()
+            if not line:
                 continue
             if line == "Pairing failed.":
                 fallback = line
