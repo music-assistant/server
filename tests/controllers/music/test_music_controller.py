@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
@@ -16,6 +17,7 @@ from music_assistant_models.media_items import Radio, SoundEffect, Track
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import CONF_RESET_DB
 from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
@@ -76,6 +78,23 @@ async def test_setup_runs_vacuum_when_reclaimable(music: MusicController) -> Non
     ):
         await music._setup_database()
     mock_vacuum.assert_awaited_once_with()
+
+
+async def test_reset_db_action_reports_its_outcome(music: MusicController) -> None:
+    """The reset-database action reports its outcome instead of re-rendering the config form."""
+    with (
+        patch.object(music, "_reset_database", AsyncMock()) as mock_reset,
+        patch.object(music.mass.cache, "clear", AsyncMock()) as mock_clear,
+        patch.object(music, "start_sync", AsyncMock()) as mock_sync,
+    ):
+        result = await music.handle_config_action(CONF_RESET_DB)
+
+    mock_reset.assert_awaited_once()
+    mock_clear.assert_awaited_once()
+    mock_sync.assert_awaited_once()
+    assert isinstance(result, ConfigActionResult)
+    assert result.translation_key == f"{CONF_RESET_DB}.result"
+    assert result.open_url is None
 
 
 def test_database_setup_mixin_applied() -> None:

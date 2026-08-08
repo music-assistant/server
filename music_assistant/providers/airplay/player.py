@@ -1007,6 +1007,9 @@ class AirPlayPlayer(Player):
                 entered_value = str(values[field_key])
                 credentials = await pairing.finish_pairing(pin=entered_value)
             except PlayerCommandFailed as err:
+                # leave a default-level trace: the flow swallows the error into
+                # the re-served form, which support logs otherwise never show
+                self.logger.warning("Pairing with %s failed: %s", self.display_name, err)
                 errors = {"base": err.translation_key or str(err)}
                 continue
             finally:

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from libopensonic import AsyncConnection as SonicConnection
+from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
     AuthError,
     CredentialError,
@@ -15,12 +16,7 @@ from libopensonic.errors import (
 )
 from libopensonic.media import PodcastChannel
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ContentType,
-    MediaType,
-    StreamType,
-)
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
@@ -75,16 +71,17 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from libopensonic.media import AlbumID3 as SonicAlbum
-    from libopensonic.media import ArtistID3 as SonicArtist
+    from libopensonic.media import ArtistWithAlbumsID3 as SonicArtist
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicItem
+    from libopensonic.media import InternetRadioStation as SonicRadio
     from libopensonic.media import Lyrics as SonicLyrics
     from libopensonic.media import OpenSubsonicExtension, StructuredLyrics
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
-
 CONF_BASE_URL = "baseURL"
+CONF_API_KEY = "api_key"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_RADIO_STATIONS = "enable_radio_stations"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
@@ -114,6 +111,7 @@ class OpenSonicProvider(MusicProvider):
     _reco_limit: int = 10
     _pagination_size: int = 200
     _id_lyrics: bool = False
+    _direct_podcast_episode: bool = False
     _raw_file: bool = True
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -185,16 +183,38 @@ class OpenSonicProvider(MusicProvider):
         if path is None:
             path = ""
 
-        self.conn = SonicConnection(
-            str(self.get_setup_value(CONF_BASE_URL)),
-            username=str(self.get_setup_value(CONF_USERNAME)),
-            password=str(self.get_setup_value(CONF_PASSWORD)),
-            legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
-            port=port,
-            server_path=str(path),
-            use_get=True,
-            app_name="Music Assistant",
-        )
+        api_key = self.get_setup_value(CONF_API_KEY)
+        username = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
+
+        if api_key:
+            self.conn = SonicConnection(
+                str(self.get_setup_value(CONF_BASE_URL)),
+                api_key=str(api_key),
+                port=port,
+                server_path=str(path),
+                use_get=True,
+                app_name="Music Assistant",
+            )
+        elif username and password:
+            self.conn = SonicConnection(
+                str(self.get_setup_value(CONF_BASE_URL)),
+                username=str(username),
+                password=str(password),
+                legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
+                port=port,
+                server_path=str(path),
+                use_get=True,
+                app_name="Music Assistant",
+            )
+        else:
+            msg = f"No credentials for {self.get_setup_value(CONF_BASE_URL)}, provide an API key or username and password."
+            raise LoginFailed(
+                msg,
+                translation_key="connect_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[self.get_setup_value(CONF_BASE_URL)],
+            )
 
         try:
             success = await self.conn.ping()
@@ -214,8 +234,10 @@ class OpenSonicProvider(MusicProvider):
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == "songLyrics":
+                if entry.name == OpenSubsonicExtensions.STRUCTURED_LYRICS:
                     self._id_lyrics = True
+                elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
+                    self._direct_podcast_episode = True
         except OSError:
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
@@ -440,7 +462,7 @@ class OpenSonicProvider(MusicProvider):
         """Provide a generator for library radio stations."""
         if not self._enable_radio_stations:
             return
-        stations = await self.conn.get_internet_radio_stations()
+        stations: list[SonicRadio] = await self.conn.get_internet_radio_stations()
         for entry in stations:
             yield parse_radio(self.instance_id, entry)
 
@@ -946,6 +968,14 @@ class OpenSonicProvider(MusicProvider):
 
     async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
         chan_id, ep_id = eid.split(EP_CHAN_SEP)
+
+        if self._direct_podcast_episode:
+            try:
+                return await self.conn.get_podcast_episode(ep_id)
+            except DataNotFoundError as e:
+                msg = f"Can't find episode {ep_id} in podcast {chan_id}"
+                raise MediaNotFoundError(msg) from e
+
         chan = await self.conn.get_podcasts(inc_episodes=True, pid=chan_id)
 
         if not chan[0].episode:

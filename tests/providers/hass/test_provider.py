@@ -18,17 +18,18 @@ from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedE
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
-    CONF_MUTE_CONTROLS,
-    CONF_POWER_CONTROLS,
     CONF_URL,
     CONF_VERIFY_SSL,
-    CONF_VOLUME_CONTROLS,
     STATE_FETCH_BATCH_SIZE,
     HassRegistryEntity,
     HomeAssistantProvider,
     setup,
 )
-from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
+from music_assistant.providers.hass.constants import (
+    CONF_MUTE_CONTROLS,
+    CONF_POWER_CONTROLS,
+    CONF_VOLUME_CONTROLS,
+)
 from tests.common import use_real_create_task
 
 LAST_CHANGED = 1683832716.072648
@@ -168,6 +169,8 @@ class _HomeAssistantClient:
         self._registry_result = (
             asyncio.get_running_loop().create_future() if block_registry else None
         )
+        # resolve this to make an already running listener return, as a lost connection does
+        self.connection_lost: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.send_command = AsyncMock(side_effect=self._send_command)
 
     async def connect(self) -> None:
@@ -178,13 +181,13 @@ class _HomeAssistantClient:
         self.connected = True
 
     async def start_listening(self) -> None:
-        """Listen until the provider stops the listener task."""
+        """Listen until the connection is lost or the provider stops the listener task."""
         self.calls.append("start_listening")
         self.listener_started.set()
         try:
             if self._listener_error:
                 raise self._listener_error
-            await asyncio.Event().wait()
+            await self.connection_lost
         except asyncio.CancelledError:
             self.listener_cancelled.set()
             raise
@@ -555,6 +558,23 @@ async def test_connection_failure_cleans_up_client() -> None:
     assert provider._listen_task is None
 
 
+async def test_lost_connection_arms_the_reconnect_under_the_load_task_id() -> None:
+    """A lost connection arms the reconnect so a (re)load starting first cancels it."""
+    async with _start_provider([]) as (provider, hass):
+        mass = cast("MagicMock", provider.mass)
+        mass.call_later.reset_mock()
+        assert provider._listen_task is not None
+
+        hass.connection_lost.set_exception(BaseHassClientError("connection lost"))
+        async with asyncio.timeout(1):
+            await provider._listen_task
+
+        assert provider.available is False
+        retry = mass.call_later.call_args
+        assert retry.args == (5, mass.load_provider, "hass--test")
+        assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_hass--test"}
+
+
 async def test_engines_are_listed_for_every_feature_entity() -> None:
     """Expose every Home Assistant TTS and AI Task entity as an engine."""
     states = [
@@ -887,7 +907,7 @@ async def test_registry_update_of_another_domain_invalidates_the_registry() -> N
     [
         pytest.param({"name": "Old name"}, id="rename"),
         pytest.param({"icon": None}, id="icon"),
-        pytest.param({"area_id": None, "labels": []}, id="area_and_labels"),
+        pytest.param({"labels": []}, id="labels"),
         pytest.param({"hidden_by": None}, id="hidden"),
         # an integration reload re-registers its entities, which touches these
         pytest.param({"capabilities": None, "supported_features": 0}, id="reload"),
@@ -915,6 +935,7 @@ async def test_registry_update_of_unmirrored_fields_keeps_the_registry(
         pytest.param({"entity_id": "light.old"}, id="entity_id"),
         pytest.param({"platform": "old_platform"}, id="platform"),
         pytest.param({"device_id": None}, id="device_id"),
+        pytest.param({"area_id": None}, id="area_id"),
         # the listing omits disabled entities, so this one enters or leaves it
         pytest.param({"disabled_by": None}, id="disabled_by"),
         # a device rename reports no changed fields at all
@@ -1027,21 +1048,26 @@ async def test_shared_registry_rejects_writes() -> None:
 
         with pytest.raises(TypeError):
             registry["light.kitchen"] = HassRegistryEntity(  # type: ignore[index]
-                platform="test", device_id=None
+                platform="test", device_id=None, area_id=None
             )
         with pytest.raises(AttributeError):
             registry["tts.only"].platform = "test"  # type: ignore[misc]
 
 
 async def test_registry_reuses_repeated_strings() -> None:
-    """Hold on to a single string object per distinct platform and device id."""
+    """Hold on to a single string object per distinct platform, device id and area id."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
-        # decode the listing like a real response, so the repeated platform and device id
-        # arrive as distinct string objects instead of shared literals
+        # decode the listing like a real response, so the repeated platform, device id and
+        # area id arrive as distinct string objects instead of shared literals
         entities = json.loads(
             json.dumps(
                 [
-                    {"ei": f"light.lamp_{index}", "pl": "esphome", "di": "device"}
+                    {
+                        "ei": f"light.lamp_{index}",
+                        "pl": "esphome",
+                        "di": "device",
+                        "ai": "area",
+                    }
                     for index in range(3)
                 ]
             )
@@ -1053,10 +1079,32 @@ async def test_registry_reuses_repeated_strings() -> None:
 
         assert len(registry) == 3
         assert registry["light.lamp_0"] == HassRegistryEntity(
-            platform="esphome", device_id="device"
+            platform="esphome", device_id="device", area_id="area"
         )
         assert len({id(entry.platform) for entry in registry.values()}) == 1
         assert len({id(entry.device_id) for entry in registry.values()}) == 1
+        assert len({id(entry.area_id) for entry in registry.values()}) == 1
+
+
+async def test_registry_leaves_out_the_device_and_area_it_is_not_told_about() -> None:
+    """Report no device or area for the entities whose listing entry omits them."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
+        entities = [
+            {"ei": "light.full", "pl": "esphome", "di": "device", "ai": "area"},
+            {"ei": "light.bare", "pl": "esphome"},
+            {"ei": "light.device_only", "pl": "esphome", "di": "other_device"},
+        ]
+        with patch.object(
+            provider.hass, "send_command", AsyncMock(return_value={"entities": entities})
+        ):
+            registry = await provider._fetch_entity_registry()
+
+        assert registry["light.bare"] == HassRegistryEntity(
+            platform="esphome", device_id=None, area_id=None
+        )
+        assert registry["light.device_only"] == HassRegistryEntity(
+            platform="esphome", device_id="other_device", area_id=None
+        )
 
 
 async def test_device_registry_is_reused_within_the_cache_window() -> None:
@@ -1181,58 +1229,32 @@ async def test_entity_registry_subscription_is_replaced() -> None:
         assert hass.active_event_subscriptions == 0
 
 
-async def test_config_entries_survive_a_state_fetch_timeout() -> None:
-    """A Home Assistant too slow to list its entities yields entries without options."""
+async def test_config_entries_do_not_read_home_assistant() -> None:
+    """Build the config entries without asking Home Assistant for anything."""
     async with _start_provider([_state("switch.example", "Example")]) as (provider, _):
-        # the entity sweep only runs for a provider the load machinery marked available
         provider.available = True
-        with patch.object(provider, "get_states", AsyncMock(side_effect=TimeoutError)):
+        with patch.object(provider, "get_states", AsyncMock()) as get_states:
             entries = await provider.get_config_entries()
 
-    keys = {entry.key for entry in entries}
-    assert CONF_POWER_CONTROLS in keys
-    assert all(not entry.options for entry in entries)
+    get_states.assert_not_awaited()
+    assert CONF_POWER_CONTROLS in {entry.key for entry in entries}
 
 
-async def test_config_entries_list_entities_as_options() -> None:
-    """A responsive Home Assistant offers its entities as player control options."""
+async def test_config_entries_offer_the_control_lists_without_options() -> None:
+    """Offer the control lists as plain entity id lists, filled in by the entity picker."""
     async with _start_provider([_state("switch.example", "Example")]) as (provider, _):
         provider.available = True
         entries = await provider.get_config_entries()
 
-    power_controls = next(entry for entry in entries if entry.key == CONF_POWER_CONTROLS)
-    assert [option.value for option in power_controls.options] == ["switch.example"]
-
-
-async def test_config_entries_survive_an_entity_with_invalid_features() -> None:
-    """An entity reporting an uninterpretable supported_features value is skipped."""
-    broken = {
-        "entity_id": "media_player.new_receiver",
-        "state": "idle",
-        "attributes": {"friendly_name": "New Receiver", "supported_features": []},
-    }
-    usable = {
-        "entity_id": "media_player.old_receiver",
-        "state": "idle",
-        "attributes": {
-            "friendly_name": "Old Receiver",
-            "supported_features": int(
-                MediaPlayerEntityFeature.TURN_ON
-                | MediaPlayerEntityFeature.TURN_OFF
-                | MediaPlayerEntityFeature.VOLUME_SET
-            ),
-        },
-    }
-
-    async with _start_provider([broken, usable]) as (provider, _):
-        provider.available = True
-        entries = await provider.get_config_entries()
-
-    options_by_key = {entry.key: entry.options for entry in entries}
-    for key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS):
-        assert [option.value for option in options_by_key[key] or ()] == [
-            "media_player.old_receiver"
-        ]
+    control_entries = [
+        entry
+        for entry in entries
+        if entry.key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
+    ]
+    assert len(control_entries) == 3
+    for entry in control_entries:
+        assert entry.options == []
+        assert entry.multi_value is True
 
 
 async def test_domain_states_use_a_single_subscription() -> None:
