@@ -2,7 +2,6 @@
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Coroutine
 from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -10,6 +9,7 @@ from music_assistant.providers.spotify.provider import (
     _PLAYLIST_PAGINATION_STATE_LIMIT,
     SpotifyProvider,
 )
+from tests.common import use_real_create_task
 
 PLAYLIST_ID = "private-playlist"
 
@@ -37,10 +37,7 @@ def _make_provider(instance_id: str = "spotify--test") -> SpotifyPlaylistHarness
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
 
-    def close_task(coro: Coroutine[Any, Any, Any], **_: Any) -> None:
-        coro.close()
-
-    mass.create_task = MagicMock(side_effect=close_task)
+    use_real_create_task(mass)
     provider.mass = mass
 
     get_playlist = AsyncMock()
