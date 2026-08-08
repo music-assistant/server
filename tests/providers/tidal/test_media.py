@@ -363,6 +363,40 @@ async def test_get_playlist_tracks_favorite_tracks(
     assert tracks[1].position == 2
 
 
+@patch("music_assistant.providers.tidal.media.parse_track_v2")
+async def test_favorite_tracks_walk_feeds_churn_cache(
+    mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """
+    Test the favourites walk hands each linkage item to note_replaced_track.
+
+    The read is made with replaceMedia, so Tidal already computed any stale->live
+    replacement pairs; discarding them would waste the largest healing source.
+    """
+    items = [{"type": "tracks", "id": "1"}, {"type": "tracks", "id": "2"}]
+    doc = JsonApiDocument(
+        {
+            "data": items,
+            "included": [
+                {"type": "tracks", "id": "1", "attributes": {}},
+                {"type": "tracks", "id": "2", "attributes": {}},
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+    mock_parse_track.side_effect = [Mock(item_id="1"), Mock(item_id="2")]
+
+    await media_manager.get_playlist_tracks("favorite_tracks", page=0)
+
+    assert provider_mock.note_replaced_track.call_count == 2
+    provider_mock.note_replaced_track.assert_any_call(items[0])
+    provider_mock.note_replaced_track.assert_any_call(items[1])
+
+
 async def test_get_playlist_tracks_favorite_tracks_later_page(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:

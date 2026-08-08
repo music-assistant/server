@@ -301,6 +301,9 @@ class TidalMediaManager:
                     track = parse_track_v2(self.provider, doc, resource)
                     track.position = len(tracks) + 1
                     tracks.append(track)
+                    # Feed the stale->live pairs Tidal computed for this read into
+                    # the churn cache, as the library walk already does.
+                    self.provider.note_replaced_track(item)
         return tracks
 
     async def _get_mix_tracks(self, mix_id: str, limit: int, offset: int) -> list[Track]:

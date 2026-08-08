@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from aiohttp.client_exceptions import ClientError
@@ -55,7 +56,9 @@ class TidalPlaylistManager:
         # knows are stale onto their live equivalents before they would be skipped.
         # The playlist ETag guards the write against a concurrent modification.
         try:
-            sent = [await self.provider.redirect_cached_id(str(tid)) for tid in prov_track_ids]
+            sent = await asyncio.gather(
+                *(self.provider.redirect_cached_id(str(tid)) for tid in prov_track_ids)
+            )
             playlist_obj, etag = await self.api.get_with_etag(f"{PLAYLISTS}/{prov_playlist_id}")
             data = {
                 "onArtifactNotFound": "SKIP",
