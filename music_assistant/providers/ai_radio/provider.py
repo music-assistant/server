@@ -24,6 +24,8 @@ from .constants import (
     CONF_TTS_ENGINE,
     DEFAULT_MAX_CONCURRENT_RUNS,
     ENGINE_DISCOVERY_TIMEOUT,
+    ENGINE_RECHECK_GRACE,
+    ENGINE_RETRY_DELAY,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
@@ -36,6 +38,7 @@ from .storage import AIRadioStorageMixin
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -64,6 +67,8 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         self._station_lock = asyncio.Lock()
         self._session_lock = asyncio.Lock()
         self._unregister_handles: list[Callable[[], None]] = []
+        self._unloading = False
+        self._engine_recheck_task: asyncio.Task[None] | None = None
         self._sessions: dict[str, SessionState] = {}
         self._stations: dict[str, dict[str, Any]] = {}
         self._sections: dict[str, dict[str, Any]] = {}
@@ -117,13 +122,19 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED)
+        )
         self.logger.info(
             "AI Radio API routes registered (%d handlers)",
-            len(self._unregister_handles),
+            len(api_handlers),
         )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        self._unloading = True
+        if self._engine_recheck_task and not self._engine_recheck_task.done():
+            self._engine_recheck_task.cancel()
         cancelled = 0
         for session in self._sessions.values():
             if session.task and not session.task.done():
@@ -343,10 +354,11 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
 
-    async def _wait_for_engines(self) -> None:
+    async def _wait_for_engines(self, timeout: float | None = None) -> None:
         """
         Wait (bounded) until a concrete AI and TTS engine are selected for this instance.
 
+        :param timeout: How long to wait, defaulting to the engine discovery timeout.
         :raises SetupFailedError: When either engine is still unavailable at the deadline.
         """
         engines_changed = asyncio.Event()
@@ -354,7 +366,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
             lambda _event: engines_changed.set(), EventType.PROVIDERS_UPDATED
         )
         try:
-            async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT):
+            async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT if timeout is None else timeout):
                 while (error := await self._engine_selection_error()) is not None:
                     await engines_changed.wait()
                     # clearing only after the wait keeps an update that lands during the
@@ -387,6 +399,41 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
                 translation_owner=TRANSLATION_OWNER,
             )
         return None
+
+    async def _on_providers_updated(self, _event: MassEvent) -> None:
+        """Re-check the engine selection whenever the set of loaded providers changes."""
+        # nothing to watch when this instance, or the whole server, is shutting down anyway
+        if self._unloading or self.mass.closing:
+            return
+        if self._engine_recheck_task and not self._engine_recheck_task.done():
+            return
+        if await self._engine_selection_error() is None:
+            return
+        self._engine_recheck_task = self.mass.create_task(self._unload_when_engines_stay_missing())
+
+    async def _unload_when_engines_stay_missing(self) -> None:
+        """Unload with an error when a vanished engine does not come back in time."""
+        # a plugin reload or a Home Assistant restart takes its engines with it for a
+        # while, so wait that out instead of tearing the provider down right away
+        try:
+            await self._wait_for_engines(ENGINE_RECHECK_GRACE)
+        except SetupFailedError as err:
+            # a shutdown (or our own unload) landing during the wait can surface as the
+            # timeout instead of a cancellation, and needs no error for the user
+            if self._unloading or self.mass.closing:
+                return
+            self.logger.warning("%s - unloading the provider", err)
+            self.unload_with_error(err)
+            # unloading records the error but arms no retry of its own, so schedule the
+            # reload that picks the provider back up once the engines return. Armed under
+            # the load path's task id, so any (re)load starting before it fires cancels it.
+            self.mass.call_later(
+                ENGINE_RETRY_DELAY,
+                self.mass.load_provider,
+                self.instance_id,
+                allow_retry=True,
+                task_id=f"load_provider_{self.instance_id}",
+            )
 
     def _prune_finished_sessions(self) -> None:
         """Drop the oldest finished sessions beyond the retention limit."""

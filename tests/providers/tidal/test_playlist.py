@@ -1,20 +1,10 @@
 """Test Tidal Playlist Manager."""
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from music_assistant.providers.tidal.playlist import TidalPlaylistManager
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.auth.user_id = "12345"
-    provider.api = AsyncMock()
-    provider.logger = Mock()
-    return provider
 
 
 @pytest.fixture

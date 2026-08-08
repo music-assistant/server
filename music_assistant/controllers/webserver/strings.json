@@ -43,5 +43,8 @@
   "manifest": {
     "name": "Webserver",
     "description": "Configuration of the webserver and API"
+  },
+  "errors": {
+    "ssl_verification_failed": "Certificate verification failed: {0}"
   }
 }

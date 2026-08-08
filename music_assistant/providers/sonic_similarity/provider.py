@@ -20,9 +20,17 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
+from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -273,18 +281,26 @@ class SonicSimilarityPlugin(PluginProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a rebuild button press (fire-and-forget) and re-render the entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a rebuild button press (fire-and-forget)."""
         if action == ACTION_REBUILD_18DIM:
             # per-engine locks in _safe_rebuild serialise double-clicks
             self.mass.create_task(self._safe_rebuild("Traits", self._rebuild_search_index))
-            return await self.get_config_entries()
+            return None
         if action == ACTION_REBUILD_CLAP:
-            if self._clap_index is not None:
-                self.mass.create_task(
-                    self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
+            if self._clap_index is None:
+                raise ActionUnavailable(
+                    "The Character index is not available; check the provider logs and "
+                    "reload the provider before rebuilding.",
+                    translation_key="clap_index_unavailable",
+                    translation_owner=self.translation_owner,
                 )
-            return await self.get_config_entries()
+            self.mass.create_task(
+                self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
+            )
+            return None
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
@@ -678,6 +694,9 @@ class SonicSimilarityPlugin(PluginProvider):
         except Exception as err:
             self.logger.exception("%s rebuild failed", label)
             self._last_rebuild_error[label] = str(err)
+        # the status label entries render counts and errors collected above, so nudge
+        # listeners to re-fetch the config now that the (background) rebuild is done
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
     async def _count_analysis_rows(self) -> int:
         """Return the current count of sonic_analysis track rows in the database."""

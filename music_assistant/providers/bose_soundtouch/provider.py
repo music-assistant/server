@@ -23,7 +23,11 @@ from .const import PLAYER_ID_PREFIX
 from .player import BoseSoundTouchPlayer
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -34,7 +38,9 @@ class BoseSoundTouchProvider(PlayerProvider):
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_MANUAL_DISCOVERY_IPS, *await build_preset_config_entries(self))
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
         Handle a preset search/select button press and re-render the entries.
 
