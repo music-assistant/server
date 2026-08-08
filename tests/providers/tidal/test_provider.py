@@ -426,7 +426,7 @@ async def test_note_replaced_track_schedules_healing(
         },
     }
 
-    mass_mock.create_task = Mock(side_effect=lambda coro: coro.close())
+    mass_mock.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
 
     with patch.object(provider, "_apply_replacement", new_callable=AsyncMock) as apply_mock:
         provider.note_replaced_track(item)
@@ -477,7 +477,7 @@ async def test_resolve_live_track_id_cache_hit_dead_reresolves(
     lib_track.item_id = 1
     lib_track.external_ids = [(ExternalID.ISRC, "US1234567890")]
     mass_mock.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=lib_track)
-    mass_mock.create_task = Mock(side_effect=lambda coro: coro.close())
+    mass_mock.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
 
     with (
         patch.object(
@@ -578,7 +578,7 @@ async def test_resolve_live_track_id_stale_caches_and_schedules_heal(
 
     # Discard the scheduled coroutine (avoid "never awaited" warnings) while
     # still recording the call for assertions.
-    mass_mock.create_task = Mock(side_effect=lambda coro: coro.close())
+    mass_mock.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
 
     with (
         patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,

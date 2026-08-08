@@ -354,9 +354,9 @@ class TidalMediaManager:
         if (cached := await cache.get(cache_key, provider=self.provider.instance_id)) is not None:
             return cast("dict[str, Any]", cached)
         data = await self.api.get(PAGES_MIX, params={"mixId": mix_id, "deviceType": "BROWSER"})
-        self.provider.mass.create_task(
-            cache.set(cache_key, data, expiration=3600 * 3, provider=self.provider.instance_id)
-        )
+        # Await the store: details and tracks are read back-to-back on a mix open,
+        # and a background write could lose that race and refetch the feed.
+        await cache.set(cache_key, data, expiration=3600 * 3, provider=self.provider.instance_id)
         return data
 
     @staticmethod

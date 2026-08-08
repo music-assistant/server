@@ -313,7 +313,12 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         live_id = str(item.get("id") or "")
         if not stale_id or not live_id or stale_id == live_id:
             return
-        self.mass.create_task(self._apply_replacement(stale_id, live_id))
+        # The same replaced track resurfaces on every collection walk; the task id
+        # dedups the (idempotent) heal so concurrent walks don't schedule copies.
+        self.mass.create_task(
+            self._apply_replacement(stale_id, live_id),
+            task_id=f"tidal_heal_{self.instance_id}_{stale_id}",
+        )
 
     async def resolve_live_track_id(self, item_id: str) -> str | None:
         """
@@ -372,7 +377,10 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
             expiration=86400 * 90,
         )
 
-        self.mass.create_task(self._heal_track_mapping(lib_track.item_id, item_id, live_id))
+        self.mass.create_task(
+            self._heal_track_mapping(lib_track.item_id, item_id, live_id),
+            task_id=f"tidal_heal_{self.instance_id}_{item_id}",
+        )
 
         return live_id
 

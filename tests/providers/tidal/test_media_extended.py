@@ -156,7 +156,7 @@ async def test_mix_feed_fetched_once(
     async def _get(key: str, **_kw: object) -> object:
         return store.get(key)
 
-    def _set(key: str, data: object, **_kw: object) -> None:
+    async def _set(key: str, data: object, **_kw: object) -> None:
         store[key] = data
 
     provider_mock.mass.cache.get = _get
