@@ -101,7 +101,7 @@ def sync_get_visible_zones(soco: SoCo) -> set[SoCo]:
 
 
 def _handle_soco_error(
-    instance: Any,
+    instance: SonosPlayer,
     err: Exception,
     function: str,
     errorcodes: list[str] | None,
@@ -112,17 +112,8 @@ def _handle_soco_error(
         _LOGGER.debug("Error code %s ignored in call to %s", error_code, function)
         return
 
-    if (target := _find_target_identifier(instance)) is None:
-        msg = "Unexpected use of soco_error"
-        raise RuntimeError(msg) from err
-
+    soco = instance.soco
+    # Only use attributes with no I/O
+    target = soco._player_name or soco.ip_address
     message = f"Error calling {function} on {target}: {err}"
     raise SonosUpdateError(message) from err
-
-
-def _find_target_identifier(instance: Any) -> str | None:
-    """Return the name or IP address of the speaker, or None if the instance holds no SoCo."""
-    if soco := getattr(instance, "soco", None):
-        # Only use attributes with no I/O
-        return str(soco._player_name or soco.ip_address)
-    return None
