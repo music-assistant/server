@@ -7,6 +7,5 @@
   "codeowners": ["@Odn0"],
   "requirements": ["defusedxml==0.7.1"],
   "documentation": "https://music-assistant.io/player-support/bose-soundtouch/",
-  "depends_on": "dlna",
   "mdns_discovery": ["_soundtouch._tcp.local."]
 }

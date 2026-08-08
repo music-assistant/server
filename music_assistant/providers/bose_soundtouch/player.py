@@ -24,14 +24,22 @@ from music_assistant_models.player import (
     PlayerSource,
 )
 
+from music_assistant.constants import (
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
+    create_sample_rates_config_entry,
+)
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.providers.bose_soundtouch.avt_helpers import avt_play, avt_set_url, avt_stop
 
 from .client.exceptions import ApiError
 from .client.schema.enums import Key, PlayStatus, SourceStatus
 from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
     CONF_APP_KEY,
+    IDLE_POLL_INTERVAL,
     NOTIFICATION_PORT,
+    PLAYBACK_POLL_INTERVAL,
     PLAYER_ID_PREFIX,
     PRESET_IDS,
     RECONNECT_DELAY,
@@ -44,11 +52,10 @@ from .const import (
 from .helpers import extract_preset_id, source_id
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
     from .client import SoundtouchDevice
     from .provider import BoseSoundTouchProvider
-
-IDLE_POLL_INTERVAL = 30
-PLAYBACK_POLL_INTERVAL = 20
 
 
 class BoseSoundTouchPlayer(Player):
@@ -109,6 +116,7 @@ class BoseSoundTouchPlayer(Player):
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.OPTIONS,
+            PlayerFeature.PLAY_MEDIA,
         }
         if self._app_key:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
@@ -193,6 +201,22 @@ class BoseSoundTouchPlayer(Player):
         await self._client.press_key(Key.PLAY)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Play media."""
+        async with self._update_lock:
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+            # clear any pending AVT state to avoid wedging on rapid play_media
+            self.logger.debug("Starting to play %s.", media.title)
+            await avt_stop(self.mass.http_session, self)
+            await avt_set_url(self.mass.http_session, self, player_media=media)
+            await avt_play(self.mass.http_session, self)
+            self._attr_poll_interval = PLAYBACK_POLL_INTERVAL
+            self.update_state()
+
+    async def stop(self) -> None:
+        """Stop command."""
+        await self._client.press_key(Key.STOP)
 
     async def pause(self) -> None:
         """Handle PAUSE command on a native source."""
@@ -289,6 +313,17 @@ class BoseSoundTouchPlayer(Player):
         self._client.session_config.ip = ip_address
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
         self.mass.players.trigger_player_update(self.player_id)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Get config entries."""
+        base_entries = await super().get_config_entries()
+
+        default_entries = [
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+            CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
+            create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
+        ]
+        return base_entries + default_entries
 
     # --- Private helpers ---
 
