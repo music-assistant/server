@@ -6,12 +6,14 @@ import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import MediaType, ProviderType
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.tasks import TasksController
@@ -22,7 +24,6 @@ from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.config_entries import ProviderError
 
 
@@ -141,11 +142,17 @@ async def test_unload_provider_waits_for_running_sync(
     assert sync_finished_on_unload is True
 
 
+@pytest.mark.parametrize("is_removed", [False, True])
 async def test_unload_provider_unregisters_hidden_players(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
+    is_removed: bool,
 ) -> None:
-    """Unloading a player provider also unregisters its disabled and initializing players."""
+    """
+    Unloading a player provider also unregisters its disabled and initializing players.
+
+    Removing the provider deletes their configs as well, a plain reload keeps them.
+    """
     mass_minimal.players = PlayerController(mass_minimal)
     mass_minimal.music = MagicMock(unschedule_provider_sync=AsyncMock())
     mass_minimal.player_queues = MagicMock()
@@ -211,12 +218,26 @@ async def test_unload_provider_unregisters_hidden_players(
     # a player that is still being set up when its provider goes away
     add_player(provider, "initializing_player", initialized=False)
     other_player = add_player(other_provider, "other_provider_player")
+    provider_player_ids = {"enabled_player", "disabled_player", "initializing_player"}
 
     try:
-        await mass_minimal.unload_provider(provider.instance_id)
+        await mass_minimal.unload_provider(provider.instance_id, is_removed=is_removed)
     finally:
         # unregistering schedules a debounced state update for the players that remain
         mass_minimal.cancel_timer(f"player_update_state_{other_player.player_id}")
 
-    assert set(unloaded_players) == {"enabled_player", "disabled_player", "initializing_player"}
+    assert set(unloaded_players) == provider_player_ids
     assert set(mass_minimal.players._players) == {other_player.player_id}
+
+    # a removed provider takes the configs of all its players with it, including the ones
+    # its own players listing hides; a plain reload must leave every config untouched so
+    # the players come back with their settings
+    stored_configs = {
+        player_id
+        for player_id in provider_player_ids | {other_player.player_id}
+        if mass_minimal.config.get(f"{CONF_PLAYERS}/{player_id}")
+    }
+    expected_configs = (
+        {other_player.player_id} if is_removed else provider_player_ids | {other_player.player_id}
+    )
+    assert stored_configs == expected_configs
