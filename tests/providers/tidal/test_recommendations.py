@@ -22,26 +22,6 @@ INSTANCE_ID = "tidal_test"
 
 
 @pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider for manager-level tests."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.country_code = "US"
-    provider.api = AsyncMock()
-    provider.logger = Mock()
-
-    # Mock mass
-    provider.mass = Mock()
-    provider.mass.config.get_provider_configs = AsyncMock(return_value=[])
-    provider.mass.metadata.locale = "en_US"
-    provider.mass.cache.set = AsyncMock()
-
-    return provider
-
-
-@pytest.fixture
 def recommendation_manager(provider_mock: Mock) -> TidalRecommendationManager:
     """Return a TidalRecommendationManager instance."""
     return TidalRecommendationManager(provider_mock)

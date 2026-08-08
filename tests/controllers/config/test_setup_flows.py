@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -53,6 +54,11 @@ PORT_ENTRY = ConfigEntry(key="port", type=ConfigEntryType.INTEGER, required=Fals
 PASSWORD_ENTRY = ConfigEntry(key="password", type=ConfigEntryType.SECURE_STRING, required=True)
 REGION_ENTRY = ConfigEntry(
     key="region", type=ConfigEntryType.STRING, required=True, default_value="eu"
+)
+USE_PROXY_ENTRY = ConfigEntry(key="use_proxy", type=ConfigEntryType.BOOLEAN, default_value=False)
+# required with no default to fall back on, so only the gate keeps it satisfiable
+PROXY_HOST_ENTRY = ConfigEntry(
+    key="proxy_host", type=ConfigEntryType.STRING, required=True, depends_on=USE_PROXY_ENTRY.key
 )
 
 
@@ -341,6 +347,64 @@ async def test_form_validation_errors(flow_mass: MusicAssistant) -> None:
     assert finish_step.type == FlowStepType.FINISH
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
     assert raw_conf["setup_data"]["port"] == 8095
+
+
+async def test_gated_required_entry_does_not_block_submit(flow_mass: MusicAssistant) -> None:
+    """A required entry behind an unmet dependency renders disabled, so it may stay empty."""
+    submitted: dict[str, ConfigValueType] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        submitted.update(await session.form([USE_PROXY_ENTRY, PROXY_HOST_ENTRY]))
+        await session.finish(submitted)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": False})
+    assert finish_step.type == FlowStepType.FINISH
+    assert submitted == {"use_proxy": False, "proxy_host": None}
+
+
+async def test_gated_required_entry_is_demanded_once_its_gate_opens(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Opening the gate in the same submit makes the entry required again."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.finish(await session.form([USE_PROXY_ENTRY, PROXY_HOST_ENTRY]))
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        error_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": True})
+        assert error_step.type == FlowStepType.FORM
+        assert error_step.errors == {"proxy_host": "required"}
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+
+
+async def test_gate_is_read_from_the_submitted_values(flow_mass: MusicAssistant) -> None:
+    """Closing a prefilled gate takes effect wherever the gate sits on the form."""
+    submitted: dict[str, ConfigValueType] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        # gate listed behind what it gates, and prefilled as a reconfigure run would
+        submitted.update(
+            await session.form([PROXY_HOST_ENTRY, replace(USE_PROXY_ENTRY, value=True)])
+        )
+        await session.finish(submitted)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": False})
+    assert finish_step.type == FlowStepType.FINISH
+    assert submitted == {"use_proxy": False, "proxy_host": None}
 
 
 async def test_submit_returns_next_form_step(flow_mass: MusicAssistant) -> None:

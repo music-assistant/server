@@ -131,7 +131,7 @@ async def test_setup_publishes_dialable_addresses_after_fallback(
     config.update({CONF_BIND_IP: UNBINDABLE_IP, CONF_BIND_PORT: port})
 
     with patch(
-        "music_assistant.controllers.webserver.controller.get_ip_addresses",
+        "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
         AsyncMock(return_value=ALL_ADDRESSES),
     ):
         await booted_controller.setup(config)

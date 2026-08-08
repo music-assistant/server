@@ -2,14 +2,12 @@
 
 import json
 import pathlib
-from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.library import TidalLibraryManager
@@ -20,43 +18,6 @@ FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "v2"
 def _load_doc(name: str) -> JsonApiDocument:
     with open(FIXTURES_DIR / name) as f:
         return JsonApiDocument(json.load(f))
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.api = AsyncMock()
-    provider.api.get.return_value = {"items": []}
-    provider.api.paginate = MagicMock()
-
-    # Configure async iterator for paginate
-    async def async_iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any]:
-        for item in provider.api.paginate.return_value:
-            yield item
-
-    provider.api.paginate.side_effect = async_iter
-    provider.api.paginate.return_value = []
-
-    provider.logger = Mock()
-
-    def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=provider.instance_id,
-            name=name,
-        )
-
-    provider.get_item_mapping.side_effect = get_item_mapping
-
-    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
-    provider.resolve_live_track_id = AsyncMock(return_value=None)
-
-    return provider
 
 
 @pytest.fixture

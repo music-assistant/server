@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -73,6 +74,16 @@ def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, A
 
     out = _analysis_with_bands(*_levels(f_low_out), duration=240.0)
     inc = _analysis_with_bands(*_levels(f_low_in), duration=240.0)
+    return out, inc
+
+
+def _mastered_fade_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
+    """Build a -14dB frozen-spectrum ramp from media 210s, mirroring test_generators.py's fixture."""
+    t = np.linspace(0.0, 240.0, 1800)
+    gain_db = np.where(t < 210.0, 0.0, -(t - 210.0) / 30.0 * 14.0)
+    band = (0.3 * 10.0 ** (gain_db / 20.0)).astype(np.float32)
+    out = _analysis_with_bands(band, band, band, band, duration=240.0)
+    inc = _analysis(120.0, duration=240.0)
     return out, inc
 
 
@@ -174,6 +185,53 @@ class TestFinalizeCarriesMetrics:
         plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
 
         assert plan.metrics == candidate.metrics
+
+
+class TestFinalizeChoosesFadeoutCurve:
+    """The crossfade degrades to ``nofade`` only when the overlap sits fully inside a mastered fade."""
+
+    def _candidate(self, ctx: TransitionContext) -> Candidate:
+        factory = CandidateFactory(ctx, LOGGER)
+        candidate = factory.build(CandidateSpec(tier=ctx.tier, bars=1, anchor_s=None, entry_s=None))
+        assert candidate is not None  # the 1-bar rung always yields a candidate
+        return candidate
+
+    def test_overlap_entirely_inside_the_fade_uses_nofade(self) -> None:
+        """A crossfade that starts after the fade onset and runs to the audible end gets nofade."""
+        out, inc = _mastered_fade_pair()
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is not None
+        candidate = self._candidate(ctx)
+        plan = replace(candidate.plan, fade_out_window=44.0, crossfade_duration=20.0)
+        candidate = replace(candidate, plan=plan)
+
+        new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert new_plan.fadeout_curve == "nofade"
+
+    def test_no_detected_fade_keeps_qsin(self) -> None:
+        """Without a detected mastered fade, the crossfade curve stays the qsin default."""
+        out, inc = _rich_pair()
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is None
+        candidate = self._candidate(ctx)
+
+        new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert new_plan.fadeout_curve == "qsin"
+
+    def test_overlap_straddling_the_fade_onset_keeps_qsin(self) -> None:
+        """A crossfade that starts before the fade onset (flat-then-fade) cannot use nofade."""
+        out, inc = _mastered_fade_pair()
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is not None
+        candidate = self._candidate(ctx)
+        plan = replace(candidate.plan, fade_out_window=44.0, crossfade_duration=30.0)
+        candidate = replace(candidate, plan=plan)
+
+        new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert new_plan.fadeout_curve == "qsin"
 
 
 class TestFinalizeDipGuardBehavior:

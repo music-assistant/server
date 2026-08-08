@@ -3,12 +3,11 @@
 import json
 import pathlib
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
-import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import RetriesExhausted
-from music_assistant_models.media_items import ItemMapping, Playlist
+from music_assistant_models.media_items import Playlist
 
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.media import TidalMediaManager
@@ -24,37 +23,6 @@ def _load_raw(name: str) -> dict[str, Any]:
 
 def _load_doc(name: str) -> JsonApiDocument:
     return JsonApiDocument(_load_raw(name))
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.country_code = "US"
-    provider.api = AsyncMock()
-    provider.api.get.return_value = {}
-    provider.logger = Mock()
-
-    def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=provider.instance_id,
-            name=name,
-        )
-
-    provider.get_item_mapping.side_effect = get_item_mapping
-
-    return provider
-
-
-@pytest.fixture
-def media_manager(provider_mock: Mock) -> TidalMediaManager:
-    """Return a TidalMediaManager instance."""
-    return TidalMediaManager(provider_mock)
 
 
 async def test_search(media_manager: TidalMediaManager, provider_mock: Mock) -> None:

@@ -15,7 +15,11 @@ from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGE
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
@@ -65,21 +69,25 @@ class Provider:
         """
         Return the (options) config entries to configure this provider instance.
 
-        Called only for an existing (loaded) instance: read the current values via
-        ``self.config``/``self.get_config_value`` and the capabilities via
-        ``self.supported_features``. One-time setup input is collected by the setup flow
-        (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION`` entries for
-        one-shot buttons and handle their presses in ``handle_config_action``.
+        Resolved on every load - before ``handle_async_init`` - as well as whenever the
+        options page is opened, so this may not read state that async init assigns. Read
+        the current values via ``self.config``/``self.get_config_value`` and the
+        capabilities via ``self.supported_features``. One-time setup input is collected by
+        the setup flow (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION``
+        entries for one-shot buttons and handle their presses in ``handle_config_action``.
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
         Run the one-shot side effect for a pressed action button from this provider's options.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        provider declares. Raise to report failure to the caller. Return None when there
-        is nothing to re-render; returning config entries re-renders the options page
+        provider declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning config entries re-renders the options page
         with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
@@ -87,7 +95,12 @@ class Provider:
         raise ActionUnavailable(f"Unknown action: {action}")
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """
+        Handle async initialization of the provider.
+
+        Runs after ``get_config_entries`` was already resolved, so state assigned here
+        is not available to it.
+        """
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -129,7 +142,9 @@ class Provider:
                 self.domain,
                 self.instance_id,
             )
-            task_id = f"provider_reload_{self.instance_id}"
+            # armed under the load path's task id so any (re)load starting before it fires
+            # cancels it
+            task_id = f"load_provider_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:

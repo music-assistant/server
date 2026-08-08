@@ -27,13 +27,13 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
-    AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES,
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
@@ -42,8 +42,10 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
+    default_buffer_depth,
     generate_active_remote_id,
     get_cli_binary,
+    get_decoded_property,
     serialize_txt_records,
 )
 
@@ -121,6 +123,10 @@ class AirPlayStream:
         # wait watches it so a process that died (for example on a rejected
         # password) fails right away instead of running out its timeout.
         self._process_ended = asyncio.Event()
+        # Whether the binary reported the end of the stream itself ([STATUS] eof
+        # or its idle timeout) instead of dying. Both leave the process gone and
+        # `running` reading False, so this is what tells the two apart.
+        self.ended_cleanly: bool = False
         # Structured fatal failure the binary reported before exiting; stays
         # None when it exited without reporting one.
         self._connect_error: CliError | None = None
@@ -828,24 +834,22 @@ class AirPlayStream:
         # the daemon publishing its clock there is nothing to attach to, and a
         # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            device_fv = str(
-                (airplay_info.decoded_properties.get("fv") if airplay_info else None) or ""
-            )
-            if device_fv.startswith(AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES):
-                # This receiver would render silence at any PTP anchor; NTP
-                # timing keeps it audible and still anchored to our clock. A
-                # mixed group is coherent: this member follows the session
-                # timeline over NTP while the others follow it over PTP.
-                args += ["--no-ptp"]
-                self.player.logger.debug(
-                    "Using NTP timing for %s: firmware %s never renders a PTP-timed stream",
-                    self.player.display_name,
-                    device_fv,
+            # Deeper receiver queue for devices whose pipeline starves at the
+            # stock depth. The stored value wins; Automatic (0) resolves
+            # through the same device-family table that seeds the config
+            # entry default, so selecting it never downgrades a device.
+            depth_ms = cast("int", self.player.config.get_value(CONF_BUFFER_DEPTH) or 0)
+            if not depth_ms:
+                depth_ms = default_buffer_depth(
+                    self.player.device_info.manufacturer or "",
+                    self.player.device_info.model or "",
+                    get_decoded_property(airplay_info, "fv") if airplay_info else None,
                 )
-            else:
-                shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
-                if shared_ptp:
-                    args += ["--ptp-shared"]
+            if depth_ms:
+                args += ["--latency", str(depth_ms)]
+            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
+            if shared_ptp:
+                args += ["--ptp-shared"]
 
         # Local interface binding
         target_ip = str(self.player.device_info.ip_address)
@@ -1100,14 +1104,13 @@ class AirPlayStream:
         """
         player = self.player
         logger = player.logger
-        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
             if self._handle_status_line(line):
-                expected_eof = True
+                self.ended_cleanly = True
                 break
             # Routine binary output is verbose-only so it never floods a user's log, but
             # its own diagnostics (a failed socket bind, a missing receiver clock) are the
@@ -1127,7 +1130,7 @@ class AirPlayStream:
         if not self._stopped and not self._stopping:
             self._stopped = True
             try:
-                if not expected_eof:
+                if not self.ended_cleanly:
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )

@@ -80,6 +80,13 @@ class PlayerProvider(Provider):
     @property
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
-        return self.mass.players.all_players(
-            provider_filter=self.instance_id, return_protocol_players=True
+        # a provider owns these players, so it always sees all of them - narrowing this
+        # to what some user happens to see corrupts the provider's own bookkeeping, such
+        # as the grouping options it derives from this list. Note this still hides
+        # disabled and still-initializing players; teardown needs those too and therefore
+        # walks the registry itself (see mass.unload_provider).
+        return list(
+            self.mass.players.iter_players(
+                provider_filter=self.instance_id, return_protocol_players=True
+            )
         )

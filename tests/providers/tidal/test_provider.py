@@ -10,6 +10,7 @@ from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
 from music_assistant.providers.tidal.provider import TidalProvider
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def mass_mock() -> Mock:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
+    use_real_create_task(mass)
     return mass
 
 

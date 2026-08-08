@@ -8,7 +8,7 @@ import ipaddress
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -37,6 +37,7 @@ from .constants import (
     ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
@@ -56,6 +57,8 @@ from .constants import (
     StreamingProtocol,
 )
 from .helpers import (
+    default_buffer_depth,
+    get_decoded_property,
     is_apple_device,
     is_macos_device,
     player_id_to_mac_address,
@@ -329,6 +332,33 @@ class AirPlayPlayer(Player):
                 category="protocol_generic",
                 advanced=True,
             ),
+            # Receiver-queue depth presets, capped at 1750 - the receiver's
+            # standard 2 s buffer minus the delivery margin; deeper would
+            # overflow it. The default comes from the device-family table, and
+            # Automatic resolves through that same table at stream time, so
+            # selecting it never downgrades an affected device.
+            ConfigEntry(
+                key=CONF_BUFFER_DEPTH,
+                type=ConfigEntryType.INTEGER,
+                options=[
+                    ConfigValueOption(0),
+                    ConfigValueOption(500),
+                    ConfigValueOption(750),
+                    ConfigValueOption(1000),
+                    ConfigValueOption(1500),
+                    ConfigValueOption(1750),
+                ],
+                default_value=default_buffer_depth(
+                    self.device_info.manufacturer or "",
+                    self.device_info.model or "",
+                    get_decoded_property(self.airplay_discovery_info, "fv")
+                    if self.airplay_discovery_info
+                    else None,
+                ),
+                category="protocol_generic",
+                advanced=True,
+                requires_reload=True,
+            ),
         ]
 
         return base_entries
@@ -355,8 +385,8 @@ class AirPlayPlayer(Player):
             elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
                 self.player_id
             ):
-                # Sendspin bridge active: trigger full bridge cleanup
-                # which stops streaming, kills the CLI, and cancels writer tasks
+                # Sendspin bridge active: it tears the transport down straight
+                # away and takes the player out of the Sendspin session
                 pass
             elif self.stream and self.stream.running:
                 # Fallback: stop protocol directly
@@ -977,6 +1007,9 @@ class AirPlayPlayer(Player):
                 entered_value = str(values[field_key])
                 credentials = await pairing.finish_pairing(pin=entered_value)
             except PlayerCommandFailed as err:
+                # leave a default-level trace: the flow swallows the error into
+                # the re-served form, which support logs otherwise never show
+                self.logger.warning("Pairing with %s failed: %s", self.display_name, err)
                 errors = {"base": err.translation_key or str(err)}
                 continue
             finally:

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueType,
     CoreConfig,
@@ -149,12 +150,15 @@ class CoreConfigMixin:
         )
 
     @api_command("config/core/invoke_action", required_scope=Scope.CONFIG_CORE_WRITE)
-    async def invoke_core_config_action(self, domain: str, action: str) -> list[ConfigEntry]:
+    async def invoke_core_config_action(
+        self, domain: str, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult:
         """
         Run a one-shot action button from a core module's config.
 
-        An empty list means the action ran with nothing to re-render; a non-empty list
-        holds the entries the config form should re-render with.
+        A ``ConfigActionResult`` holds the outcome to report to the user; an empty list
+        means the action ran with nothing to report; a non-empty list holds the entries
+        the config form should re-render with.
 
         :param domain: The core controller domain.
         :param action: The action id of the pressed button.
@@ -162,6 +166,9 @@ class CoreConfigMixin:
         controller: CoreController = getattr(self.mass, domain)
         if (result := await controller.handle_config_action(action)) is None:
             return []
+        if isinstance(result, ConfigActionResult):
+            result.translation_owner = result.translation_owner or f"core.{domain}"
+            return result
         return await self._resolve_core_config_entries(domain, result)
 
     @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)

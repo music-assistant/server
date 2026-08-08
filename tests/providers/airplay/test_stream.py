@@ -23,6 +23,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     AirPlayRemoteCommand,
@@ -46,6 +47,8 @@ def _make_player() -> MagicMock:
     player.volume_level = 40
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
+    player.device_info.manufacturer = "Acme, Inc."
+    player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.state.active_group = None
@@ -292,26 +295,44 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_broken_ptp_firmware_routes_to_ntp() -> None:
+async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     """
-    Old-LinkPlay platform firmware gets --no-ptp instead of the shared clock.
+    LinkPlay-family devices get the deep receiver queue from the family table.
 
-    These receivers advertise SupportsPTP but render silence at any PTP anchor
-    (Edifier MS50A), so the stream routes them to NTP timing. The newer LinkPlay
-    platform (WiiM, fv without the Linkplay token) renders PTP fine and must
-    keep the shared clock.
+    Their pipeline starves at the stock depth - fully once the device is also
+    master of a native multiroom group - so the table maps them to 1750 ms.
+    Both platform generations must match: the newer names Linkplay as
+    manufacturer, the older only marks the platform in fv under OEM brands.
     """
     player = _make_player()
+    player.device_info.manufacturer = "Linkplay Technology Inc."
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1750"
+    assert "--ptp-shared" in args
+
+    # Old platform: OEM brand, the Linkplay token only in fv.
+    player = _make_player()
+    player.device_info.manufacturer = "Edifier Inc"
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert "--no-ptp" in args
-    assert "--ptp-shared" not in args
+    assert _arg_value(args, "--latency") == "1750"
 
+    # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()
-    player.airplay_discovery_info.decoded_properties["fv"] = "p20.4.8.814756"
     args = await _build_args(player)
-    assert "--no-ptp" not in args
-    assert "--ptp-shared" in args
+    assert "--latency" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_buffer_depth_config_overrides_auto() -> None:
+    """A configured buffer depth wins over the device-family default."""
+    player = _make_player()
+    player.device_info.manufacturer = "Linkplay Technology Inc."
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: 1500 if key == CONF_BUFFER_DEPTH else default
+    )
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1500"
 
 
 @pytest.mark.asyncio

@@ -298,6 +298,18 @@ def fake_event_emitter(mock_mass: MagicMock) -> Any:
 
 
 @pytest.fixture
+def library_server(mock_mass: Any) -> Any:
+    """Build a root FastMCP with only the library sub-server mounted."""
+    from fastmcp import FastMCP
+
+    from music_assistant.providers.fastmcp_server.tools.library import build_library_server
+
+    mcp = FastMCP(name="t")
+    mcp.mount(build_library_server(mock_mass), namespace="library")
+    return mcp
+
+
+@pytest.fixture
 def mounted_queue(mock_mass: Any) -> Any:
     """Build a root FastMCP with the queue sub-server mounted, no confirmation gate."""
     from fastmcp import FastMCP

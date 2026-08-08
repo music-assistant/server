@@ -10,21 +10,6 @@ from music_assistant.providers.tidal.playlist import TidalPlaylistManager
 
 
 @pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.user.profile_name = "Some User"
-    provider.auth.user.user_name = "someuser"
-    provider.api = AsyncMock()
-    provider.logger = Mock()
-    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
-    return provider
-
-
-@pytest.fixture
 def playlist_manager(provider_mock: Mock) -> TidalPlaylistManager:
     """Return a TidalPlaylistManager instance."""
     return TidalPlaylistManager(provider_mock)
@@ -39,7 +24,7 @@ async def test_create_playlist(playlist_manager: TidalPlaylistManager, provider_
     assert playlist.item_id == "pl1"
     # A freshly created playlist is forced editable/owned regardless of the echo.
     assert playlist.is_editable is True
-    assert playlist.owner == "Some User"
+    assert playlist.owner == "Test User"
     assert next(iter(playlist.provider_mappings)).is_unique is True
     provider_mock.api.post.assert_called_with(
         "users/12345/playlists",

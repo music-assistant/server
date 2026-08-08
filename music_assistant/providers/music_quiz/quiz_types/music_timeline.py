@@ -17,12 +17,12 @@ from music_assistant_models.media_items import Artist, ItemMapping, Track
 from music_assistant.helpers.compare import compare_artist
 from music_assistant.helpers.json import json_dumps
 from music_assistant.providers.music_quiz.ai_distractors import (
-    AI_QUERY_TIMEOUT_SECONDS,
     AIDistractorResponse,
     bounded_ai_context,
     parse_ai_distractor_response,
     request_ai_distractors,
 )
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -295,7 +295,10 @@ class MusicTimelineQuizType(QuizType):
 
         async def _rescue_track(track: Track) -> None:
             async with semaphore:
-                dated_track = await self._musicbrainz_dated_track(track)
+                # this batch shares one budget and one 10 requests per 10 seconds allowance, so
+                # every track gets the single lookup that answers what this pass is for: can
+                # the track be dated at all. entries are cross-checked one at a time instead
+                dated_track, _ = await self._musicbrainz_dated_track(track, cross_check=False)
             if dated_track.uri is not None and self._track_is_eligible(dated_track):
                 eligible_tracks[dated_track.uri] = dated_track
 
@@ -313,7 +316,7 @@ class MusicTimelineQuizType(QuizType):
         existing_ids: set[str] | None = None,
     ) -> TimelineEntry:
         """Create a stable timeline entry from an eligible track."""
-        track = await self._musicbrainz_dated_track(track)
+        track, _ = await self._musicbrainz_dated_track(track)
         release_year = self._release_year(track)
         if release_year is None or not track.uri or not track.artist_str:
             raise InvalidDataError("Music Timeline track is missing required timeline metadata")

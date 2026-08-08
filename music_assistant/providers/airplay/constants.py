@@ -105,14 +105,22 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
-# Firmware families that advertise SupportsPTP but never render a PTP-timed
-# stream: the receiver runs the full PTP delay exchange yet stays silent at any
-# anchor (verified on the Edifier MS50A), while NTP timing plays fine - Apple
-# senders end up on non-PTP timing with these devices too. Matched as a prefix
-# of the _airplay fv record; a firmware update changes that string, so a fixed
-# generation gets PTP again automatically (the newer LinkPlay platform, e.g.
-# WiiM Pro on p20.4.x, renders PTP correctly and must not match).
-AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES: Final[tuple[str, ...]] = ("p20.Linkplay.",)
+# Default receiver buffer depth per device family: (manufacturer wildcard,
+# model wildcard, firmware wildcard) -> depth in ms, matched case-insensitively
+# in order, first match wins; unmatched devices stay on Automatic (the binary's
+# stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
+# behind a perfectly healthy session - and need the full 1750 ms once the
+# device is also master of a native multiroom group, at the cost of slower
+# warm seeks. Extend the table as field reports identify more starving devices.
+AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
+    # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
+    ("linkplay*", "*", "*", 1750),
+    # The older LinkPlay platform ships under OEM brands (Edifier, ...) but
+    # marks the platform in its firmware string.
+    ("*", "*", "p20.linkplay.*", 1750),
+)
+# Per-player override of the splice receiver-queue depth in ms (0 = automatic).
+CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
 # Nothing holds that ack back, so the window only has to cover the command's trip
 # down the pipe and the answer coming back - unlike a join's ack below, which is
