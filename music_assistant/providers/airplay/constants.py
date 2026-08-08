@@ -210,6 +210,12 @@ AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
 AIRPLAY_ARTWORK_SIZE: Final[int] = 512
+# How long a track-change metadata push waits for that render, so the artwork
+# can ride the SENDMETA bundle and the receiver rewrites its now-playing state
+# once instead of twice (bare replace, then artwork). A render that misses the
+# budget is not abandoned: it keeps running and is delivered with the
+# stand-alone ARTWORK command once it completes.
+AIRPLAY_ARTWORK_RENDER_TIMEOUT: Final[float] = 1.5
 EXTERNAL_ARTWORK_PATH_PREFIX: Final[str] = "external_artwork"
 
 # Per-protocol credential storage keys

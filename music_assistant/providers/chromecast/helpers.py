@@ -5,12 +5,14 @@ from __future__ import annotations
 import threading
 import time
 import urllib.error
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from ipaddress import IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
+from pychromecast.models import HostServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
     from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
-    from pychromecast.models import CastInfo, HostServiceInfo, MDNSServiceInfo
+    from pychromecast.models import CastInfo, MDNSServiceInfo
     from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
     from zeroconf import Zeroconf
 
@@ -243,6 +245,34 @@ def get_mac_address(
     except urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError:
         pass
     return None
+
+
+def without_ipv6_host_services(cast_info: CastInfo) -> CastInfo:
+    """
+    Return the cast info without the host services pychromecast cannot connect to.
+
+    Returns the given cast info unchanged when there is nothing to drop.
+
+    :param cast_info: Cast info as reported by discovery.
+    """
+    # pychromecast connects over AF_INET, so a native IPv6 address never resolves.
+    # IPv4-mapped addresses do, so those are kept.
+    reachable: set[HostServiceInfo | MDNSServiceInfo] = set()
+    for service in cast_info.services:
+        if isinstance(service, HostServiceInfo):
+            try:
+                address = ip_address(service.host)
+            except ValueError:
+                # a hostname instead of an IP literal, left for pychromecast to resolve
+                address = None
+            if isinstance(address, IPv6Address) and address.ipv4_mapped is None:
+                continue
+        reachable.add(service)
+    # keep the original services when none are reachable, so the socket client can
+    # still pick up the IPv4 address once discovery reports it
+    if not reachable or reachable == cast_info.services:
+        return cast_info
+    return replace(cast_info, services=reachable)
 
 
 class CastStatusListener:

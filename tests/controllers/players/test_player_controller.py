@@ -54,7 +54,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.models.player_provider import PlayerProvider
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockPlayer, MockProvider, create_mock_config
 
 
 def _player_config_stub(
@@ -756,6 +756,252 @@ class TestUnregisterCleanup:
         asyncio.run(controller.unregister("nonexistent"))
 
         assert "set_members_other" in controller._player_command_locks
+
+
+class TestRegisterUnregisterRace:
+    """Test registration that is interrupted by an unregister of the same player."""
+
+    @staticmethod
+    def _stub_register_calls(mock_mass: MagicMock) -> None:
+        """Stub the awaited mass calls made during register/unregister."""
+        # registration reads config keys with differently typed defaults (mapping for the
+        # player config store, str | None for the cached MAC addresses)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.cache.get = AsyncMock(return_value=None)
+        mock_mass.config.get_player_config = AsyncMock(return_value=create_mock_config("Player 1"))
+        mock_mass.player_queues.on_player_register = AsyncMock()
+        mock_mass.player_queues.on_player_remove = MagicMock()
+
+    @staticmethod
+    def _player_added_signalled(mock_mass: MagicMock) -> bool:
+        """Return True if a PLAYER_ADDED event was signalled."""
+        return any(
+            call_args.args and call_args.args[0] == EventType.PLAYER_ADDED
+            for call_args in mock_mass.signal_event.call_args_list
+        )
+
+    async def test_register_aborts_when_unregistered_during_config_load(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player unregistered while its config loads is not announced as added."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway(player_id: str) -> MagicMock:
+            # stands in for a provider unload or device disconnect landing
+            # while register awaits the player config
+            await controller.unregister(player_id)
+            return create_mock_config("Player 1")
+
+        mock_mass.config.get_player_config = AsyncMock(side_effect=_unregister_midway)
+        config_hook = AsyncMock()
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", config_hook),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+        assert not player.initialized.is_set()
+        # setup stops right away: the provider hook must not run on a player
+        # whose on_unload already ran
+        config_hook.assert_not_called()
+        mock_mass.player_queues.on_player_register.assert_not_called()
+        assert not self._player_added_signalled(mock_mass)
+
+    async def test_register_aborts_when_unregistered_during_config_hook(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player unregistered while its on_config_updated hook runs is not announced."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway() -> None:
+            await controller.unregister("player_1")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", AsyncMock(side_effect=_unregister_midway)),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+        assert not player.initialized.is_set()
+        mock_mass.player_queues.on_player_register.assert_not_called()
+        assert not self._player_added_signalled(mock_mass)
+
+    async def test_register_drops_queue_recreated_after_unregister(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A queue restored after the unregister already removed it is dropped again."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        events: list[str] = []
+
+        async def _unregister_midway(registering_player: MockPlayer) -> None:
+            # on_player_register restores the queue from cache before storing it, so an
+            # unregister can land in between and have its cleanup undone
+            await controller.unregister(registering_player.player_id)
+            events.append("queue_created")
+
+        def _track_removal(*_args: object, **_kwargs: object) -> None:
+            events.append("queue_removed")
+
+        mock_mass.player_queues.on_player_remove = MagicMock(side_effect=_track_removal)
+        mock_mass.player_queues.on_player_register = AsyncMock(side_effect=_unregister_midway)
+
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+        # the queue recreated for the removed player must be cleaned up again
+        assert events == ["queue_removed", "queue_created", "queue_removed"]
+
+    async def test_register_or_update_marks_replacement_initialized(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Replacing a registered player carries the initialized state to the new object."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+
+        await controller.register_or_update(replacement)
+
+        assert controller._players["player_1"] is replacement
+        assert replacement.initialized.is_set()
+
+    async def test_register_or_update_hands_config_to_replacement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A replacement instance inherits the config of the player it takes over."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        resolved_config = create_mock_config("Player 1")
+        existing.set_config(resolved_config)
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+        config_hook = AsyncMock()
+
+        with patch.object(replacement, "on_config_updated", config_hook):
+            await controller.register_or_update(replacement)
+
+        # without the resolved config the replacement would read defaults for every
+        # config backed setting (group members, flow mode, visibility, ...)
+        assert replacement.config is resolved_config
+        config_hook.assert_awaited_once()
+
+    async def test_register_or_update_aborts_when_replacement_is_unregistered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A replacement unregistered while its config hook runs is not marked ready."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        existing.set_config(create_mock_config("Player 1"))
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway() -> None:
+            await controller.unregister("player_1")
+
+        with patch.object(
+            replacement, "on_config_updated", AsyncMock(side_effect=_unregister_midway)
+        ):
+            await controller.register_or_update(replacement)
+
+        assert "player_1" not in controller._players
+        assert not replacement.initialized.is_set()
+
+    async def test_register_or_update_leaves_same_instance_untouched(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Re-announcing the same instance does not re-run its config hook."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player.set_initialized()
+        controller._players = {"player_1": player}
+        config_hook = AsyncMock()
+
+        with patch.object(player, "on_config_updated", config_hook):
+            await controller.register_or_update(player)
+
+        assert controller._players["player_1"] is player
+        config_hook.assert_not_called()
+
+    async def test_register_or_update_waits_for_inflight_register(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player is never swapped out while register() is still setting it up."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+        release = asyncio.Event()
+        registering = asyncio.Event()
+
+        async def _blocked_config(*_args: object) -> MagicMock:
+            registering.set()
+            await release.wait()
+            return create_mock_config("Player 1")
+
+        mock_mass.config.get_player_config = AsyncMock(side_effect=_blocked_config)
+
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            register_task = asyncio.create_task(controller.register(player))
+            # only proceed once register() is provably inside its critical section
+            await registering.wait()
+            update_task = asyncio.create_task(controller.register_or_update(replacement))
+            await _yield_to_loop()
+
+            # register() is still in flight, so the replacement must not be swapped in yet
+            assert controller._players["player_1"] is player
+            assert not update_task.done()
+
+            release.set()
+            await register_task
+            await update_task
+
+        assert controller._players["player_1"] is replacement
+        assert player.initialized.is_set()
+        assert replacement.initialized.is_set()
+
+
+async def _yield_to_loop() -> None:
+    """Give other pending tasks a chance to run up to their next suspension point."""
+    for _ in range(5):
+        await asyncio.sleep(0)
 
 
 def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
@@ -3083,6 +3329,37 @@ class TestRemovePlayerControl:
         controller.remove_player_control("switch.gone")
 
         mock_mass.loop.call_soon.assert_not_called()
+
+
+class _FailingTeardownPlayer(MockPlayer):
+    """Player whose provider fails to release it."""
+
+    unloaded = False
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        self.unloaded = True
+        msg = "device is gone"
+        raise RuntimeError(msg)
+
+
+class TestUnregisterTeardown:
+    """Test that a failing player teardown stays contained."""
+
+    async def test_failing_on_unload_still_unregisters_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a provider raising while releasing its player does not break unregister."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player = _FailingTeardownPlayer(provider, "boom", "Boom")
+        controller._players = {"boom": player}
+
+        await controller.unregister("boom")
+
+        assert "boom" not in controller._players
+        assert player.unloaded
 
 
 if __name__ == "__main__":

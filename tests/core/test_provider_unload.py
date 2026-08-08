@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.enums import EventType, MediaType, ProviderType
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderManifest
 
@@ -246,3 +246,124 @@ async def test_unload_provider_unregisters_hidden_players(
         (mock_call.args[0], mock_call.kwargs["permanent"])
         for mock_call in mass_minimal.player_queues.on_player_remove.call_args_list
     } == {(player_id, is_removed) for player_id in provider_player_ids}
+
+
+class _TeardownProvider(PlayerProvider):
+    """Player provider that records whether its own unload ran."""
+
+    unloaded = False
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload of the provider."""
+        self.unloaded = True
+
+
+class _TeardownPlayer(Player):
+    """Player that records its teardown and optionally fails it."""
+
+    def __init__(self, provider: PlayerProvider, player_id: str, fails: bool = False) -> None:
+        """
+        Initialize the player.
+
+        :param provider: Player provider this player belongs to.
+        :param player_id: ID of the player.
+        :param fails: Raise from on_unload to simulate a provider that fails to release it.
+        """
+        super().__init__(provider, player_id)
+        self._attr_name = player_id
+        self._attr_available = True
+        self._fails = fails
+        self.unloaded = False
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        self.unloaded = True
+        if self._fails:
+            msg = "device is gone"
+            raise RuntimeError(msg)
+
+
+def _setup_player_provider(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_player_id: str,
+) -> tuple[_TeardownProvider, list[_TeardownPlayer], list[EventType]]:
+    """
+    Wire a minimal mass with one player provider owning three registered players.
+
+    :param mass: Minimal MusicAssistant instance to wire up.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param failing_player_id: ID of the player whose on_unload must raise.
+    :return: The provider, its players (in registration order) and the recorded event types.
+    """
+    monkeypatch.setattr(
+        mass, "music", MagicMock(unschedule_provider_sync=AsyncMock()), raising=False
+    )
+    monkeypatch.setattr(mass, "player_queues", MagicMock(), raising=False)
+    monkeypatch.setattr(mass, "_update_available_providers_cache", AsyncMock())
+    monkeypatch.setattr(mass.discovery, "on_provider_unload", MagicMock())
+    signalled: list[EventType] = []
+    monkeypatch.setattr(
+        mass, "signal_event", lambda event, *_args, **_kwargs: signalled.append(event)
+    )
+    monkeypatch.setattr(mass, "players", PlayerController(mass), raising=False)
+
+    provider = _TeardownProvider(
+        mass,
+        manifest=ProviderManifest(
+            type=ProviderType.PLAYER,
+            domain="test_player_provider",
+            name="Test player provider",
+            description="Test player provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=ProviderConfig(
+            values={},
+            type=ProviderType.PLAYER,
+            domain="test_player_provider",
+            instance_id="test_player_provider--instance",
+            name="Test player provider",
+        ),
+    )
+    mass._providers[provider.instance_id] = provider
+
+    players = [
+        _TeardownPlayer(provider, player_id, fails=player_id == failing_player_id)
+        for player_id in ("player_a", "player_b", "player_c")
+    ]
+    for player in players:
+        mass.players._players[player.player_id] = player
+        player.set_initialized()
+    return provider, players, signalled
+
+
+async def test_failing_player_teardown_does_not_strand_the_others(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player that fails to release must not block the rest of the provider unload."""
+    provider, players, signalled = _setup_player_provider(mass_minimal, monkeypatch, "player_a")
+
+    await mass_minimal.unload_provider(provider.instance_id)
+
+    assert all(player.unloaded for player in players)
+    assert mass_minimal.players._players == {}
+    assert provider.unloaded
+    assert provider.instance_id not in mass_minimal._providers
+    assert EventType.PROVIDERS_UPDATED in signalled
+
+
+async def test_failing_unregister_still_deregisters_the_provider(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unregister that raises must still leave the provider deregistered and signalled."""
+    provider, _players, signalled = _setup_player_provider(mass_minimal, monkeypatch, "player_a")
+    monkeypatch.setattr(
+        mass_minimal.players, "unregister", AsyncMock(side_effect=RuntimeError("teardown blew up"))
+    )
+
+    await mass_minimal.unload_provider(provider.instance_id)
+
+    assert provider.instance_id not in mass_minimal._providers
+    assert EventType.PROVIDERS_UPDATED in signalled
