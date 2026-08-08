@@ -43,22 +43,14 @@ def mass() -> AsyncMock:
     """Return a mocked MusicAssistant instance with a mockable HTTP session."""
     ma = AsyncMock()
     ma.http_session = MagicMock()
+    ma.config = MagicMock()
     return ma
 
 
 @pytest.fixture
 def provider(mass: AsyncMock) -> OpenAICompatibleProvider:
     """Return an OpenAICompatibleProvider with mocked dependencies and no models selected."""
-    manifest = MagicMock()
-    manifest.domain = "openai_compatible"
-    config = MagicMock()
-    config.values = {}
-    config.instance_id = INSTANCE_ID
-    config.get_value = MagicMock(return_value="GLOBAL")
-    prov = OpenAICompatibleProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    prov._base_url = BASE_URL
-    prov._api_key = ""
-    return prov
+    return _build_provider(mass, {"base_url": BASE_URL})
 
 
 async def test_list_models_returns_sorted_ids(mass: AsyncMock) -> None:
@@ -272,22 +264,25 @@ def test_error_detail_truncates_overlong_messages() -> None:
     assert result == long_message[: helpers.MAX_ERROR_DETAIL_CHARS]
 
 
-async def test_handle_async_init_strips_trailing_slash_from_base_url() -> None:
+def test_base_url_strips_trailing_slash() -> None:
     """Every request path is built by appending to the stored base URL."""
     provider = _provider_for_setup({"base_url": "https://api.example.com/v1/"})
 
-    await provider.handle_async_init()
-
     assert provider._base_url == "https://api.example.com/v1"
 
 
-async def test_handle_async_init_strips_whitespace_from_base_url() -> None:
+def test_base_url_strips_whitespace() -> None:
     """Whitespace around a stored base URL is stripped."""
     provider = _provider_for_setup({"base_url": "  https://api.example.com/v1  "})
 
-    await provider.handle_async_init()
-
     assert provider._base_url == "https://api.example.com/v1"
+
+
+async def test_handle_async_init_accepts_a_configured_base_url() -> None:
+    """A usable endpoint must pass the init check, whatever shape the address has."""
+    provider = _provider_for_setup({"base_url": "http://localhost:11434/v1"})
+
+    await provider.handle_async_init()
 
 
 async def test_handle_async_init_raises_when_base_url_missing() -> None:
@@ -306,20 +301,16 @@ async def test_handle_async_init_raises_when_base_url_blank() -> None:
         await provider.handle_async_init()
 
 
-async def test_handle_async_init_defaults_missing_api_key_to_empty_string() -> None:
+def test_api_key_defaults_to_empty_string_when_not_stored() -> None:
     """No stored key means the no-auth local-server case, not None or the text "None"."""
     provider = _provider_for_setup({"base_url": BASE_URL})
-
-    await provider.handle_async_init()
 
     assert provider._api_key == ""
 
 
-async def test_handle_async_init_keeps_the_stored_api_key() -> None:
-    """A stored key is used once decrypted, with surrounding whitespace removed."""
+def test_api_key_comes_from_setup_data_and_is_stripped() -> None:
+    """The key is only stored in setup_data, and surrounding whitespace is removed."""
     provider = _provider_for_setup({"base_url": BASE_URL, "api_key": "  sk-secret  "})
-
-    await provider.handle_async_init()
 
     assert provider._api_key == "sk-secret"
 
@@ -594,6 +585,23 @@ async def test_get_config_entries_survives_an_endpoint_without_a_listing(
     assert [option.value for option in models_entry.options] == ["typed-by-hand"]
 
 
+async def test_get_config_entries_reaches_the_endpoint_without_async_init(
+    provider: OpenAICompatibleProvider, mass: AsyncMock
+) -> None:
+    """Loading resolves the config entries before async init, so they must not depend on it."""
+    _configure_models(provider, [])
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"id": "fresh-model"}]}))
+    )
+
+    # deliberately no handle_async_init(): mass._load_provider only runs it afterwards
+    entries = await provider.get_config_entries()
+
+    assert mass.http_session.request.call_args.args[1] == f"{BASE_URL}/models"
+    models_entry = next(entry for entry in entries if entry.key == CONF_MODELS)
+    assert [option.value for option in models_entry.options] == ["fresh-model"]
+
+
 def _response_cm(*, response: MagicMock | None = None, exc: Exception | None = None) -> MagicMock:
     """Build a fake async context manager mimicking aiohttp's session.request()."""
     cm = MagicMock()
@@ -623,6 +631,11 @@ def _provider_for_setup(setup_data: dict[str, Any]) -> OpenAICompatibleProvider:
     mass = AsyncMock()
     mass.http_session = MagicMock()
     mass.config = MagicMock()
+    return _build_provider(mass, setup_data)
+
+
+def _build_provider(mass: AsyncMock, setup_data: dict[str, Any]) -> OpenAICompatibleProvider:
+    """Build a provider on the given mass, backed by the given setup_data."""
     mass.config.get = MagicMock(return_value=dict(setup_data))
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     manifest = MagicMock()
