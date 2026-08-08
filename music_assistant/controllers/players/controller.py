@@ -1420,56 +1420,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             if not player.state.enabled:
                 return
 
-            conf_base = f"{CONF_PLAYERS}/{player_id}/values"
             if player.type not in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
-                # Save the original MAC reported by the provider (before ARP enrichment)
-                reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-
-                # Try to use cached ARP MAC from config for fast matching on restart.
-                # This allows protocol linking to work immediately even if ARP is slow/fails.
-                cached_arp_mac: str | None = self.mass.config.get(
-                    f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
-                )
-                if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
-                    player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
-
-                # Enrich device MAC address via ARP if needed
-                # (handles invalid MACs, locally-administered MACs, and missing MACs)
-                await enrich_device_mac_address(player.device_info, self.logger)
-
-                # Cache the resolved MAC for fast matching on subsequent restarts
-                current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-                if (
-                    current_mac
-                    and is_valid_mac_address(current_mac)
-                    and current_mac != cached_arp_mac
-                ):
-                    self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
-
-                # Store original reported MAC if it differs from the resolved MAC.
-                # This enables multi-MAC matching for devices with multiple interfaces
-                # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
-                # protocol reports the other.
-                if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
-                    if reported_mac.upper() != current_mac.upper():
-                        player.extra_data["reported_mac"] = reported_mac
-                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
-                    else:
-                        # Provider's reported MAC matches the resolved MAC; clear any stale
-                        # stored reported MAC to avoid false-positive multi-MAC matches.
-                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
-                elif not reported_mac or not is_valid_mac_address(reported_mac):
-                    # Restore reported MAC from config on restart only when the provider
-                    # did not supply a usable MAC address.
-                    cached_reported_mac: str | None = self.mass.config.get(
-                        f"{conf_base}/{CONF_REPORTED_MAC}", None
-                    )
-                    if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
-                        if current_mac and cached_reported_mac.upper() == current_mac.upper():
-                            # Cached value matches the resolved MAC; clear stale entry.
-                            self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
-                        else:
-                            player.extra_data["reported_mac"] = cached_reported_mac
+                await self._resolve_mac_addresses(player)
 
             # restore 'fake' power state from cache if available.
             # Group players intentionally do NOT restore their fake-power
@@ -1506,12 +1458,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             player.update_state(signal_event=False)
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
+            if self._registration_aborted(player):
+                return
             player.set_config(player_config)
             # update state again now that config is loaded
             player.update_state(signal_event=False)
             self._save_underlying_player_id(player)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
+            if self._registration_aborted(player):
+                return
 
             # Handle protocol linking
             self._evaluate_protocol_links(player)
@@ -1532,6 +1488,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # register playerqueue for this player (if not a protocol player)
             if player.state.type != PlayerType.PROTOCOL:
                 await self.mass.player_queues.on_player_register(player)
+                if self._registration_aborted(player):
+                    # the queue restore outlived the unregister that already cleaned it up,
+                    # so drop the queue we just recreated for a player that is gone
+                    self.mass.player_queues.on_player_remove(player_id, permanent=False)
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
@@ -1542,15 +1502,28 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         if self.mass.closing:
             return
 
-        if player.player_id in self._players:
-            self._players[player.player_id] = player
-            player.update_state()
-            # the derived-transport edge may have been set/revoked after the
-            # initial registration (e.g. via a bridge claim)
-            self._save_underlying_player_id(player)
-            # Also schedule update when replacing existing player
-            self._schedule_update_all_players()
-            return
+        # the register lock ensures a replacement is never swapped in while register()
+        # is still setting the player up
+        async with self._register_lock:
+            if (existing := self._players.get(player.player_id)) is not None:
+                self._players[player.player_id] = player
+                if existing is not player:
+                    # a fresh instance starts out with a base config only, so it needs
+                    # the config the registration resolved before it can be used
+                    player.set_config(existing.config)
+                    await player.on_config_updated()
+                    if self._registration_aborted(player):
+                        return
+                # the replacement takes over the identity of an already registered
+                # player, so it must be marked initialized as well
+                player.set_initialized()
+                player.update_state()
+                # the derived-transport edge may have been set/revoked after the
+                # initial registration (e.g. via a bridge claim)
+                self._save_underlying_player_id(player)
+                # Also schedule update when replacing existing player
+                self._schedule_update_all_players()
+                return
 
         await self.register(player)
 
@@ -2243,6 +2216,75 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
+
+    async def _resolve_mac_addresses(self, player: Player) -> None:
+        """
+        Resolve and persist the MAC addresses used to match the player against protocols.
+
+        :param player: The player to resolve the MAC address(es) for.
+        """
+        conf_base = f"{CONF_PLAYERS}/{player.player_id}/values"
+        # Save the original MAC reported by the provider (before ARP enrichment)
+        reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+
+        # Try to use cached ARP MAC from config for fast matching on restart.
+        # This allows protocol linking to work immediately even if ARP is slow/fails.
+        cached_arp_mac: str | None = self.mass.config.get(
+            f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
+        )
+        if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
+            player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+
+        # Enrich device MAC address via ARP if needed
+        # (handles invalid MACs, locally-administered MACs, and missing MACs)
+        await enrich_device_mac_address(player.device_info, self.logger)
+
+        # Cache the resolved MAC for fast matching on subsequent restarts
+        current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+        if current_mac and is_valid_mac_address(current_mac) and current_mac != cached_arp_mac:
+            self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
+
+        # Store original reported MAC if it differs from the resolved MAC.
+        # This enables multi-MAC matching for devices with multiple interfaces
+        # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
+        # protocol reports the other.
+        if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+            if reported_mac.upper() != current_mac.upper():
+                player.extra_data["reported_mac"] = reported_mac
+                self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
+            else:
+                # Provider's reported MAC matches the resolved MAC; clear any stale
+                # stored reported MAC to avoid false-positive multi-MAC matches.
+                self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+        elif not reported_mac or not is_valid_mac_address(reported_mac):
+            # Restore reported MAC from config on restart only when the provider
+            # did not supply a usable MAC address.
+            cached_reported_mac: str | None = self.mass.config.get(
+                f"{conf_base}/{CONF_REPORTED_MAC}", None
+            )
+            if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
+                if current_mac and cached_reported_mac.upper() == current_mac.upper():
+                    # Cached value matches the resolved MAC; clear stale entry.
+                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                else:
+                    player.extra_data["reported_mac"] = cached_reported_mac
+
+    def _registration_aborted(self, player: Player) -> bool:
+        """
+        Return True if the given player is no longer the registered player for its ID.
+
+        :param player: The player that is in the process of being registered.
+        """
+        # registration awaits provider I/O while the player is already in the registry,
+        # so an unregister (e.g. a provider unload or a device disconnect) can drop or
+        # replace it in the meantime, after which registration must stop
+        if self._players.get(player.player_id) is player:
+            return False
+        self.logger.debug(
+            "Registration of player %s aborted: it was unregistered while setting up",
+            player.player_id,
+        )
+        return True
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """
