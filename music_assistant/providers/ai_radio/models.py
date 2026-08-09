@@ -37,6 +37,22 @@ class PlannedSection:
 
 
 @dataclass(slots=True)
+class DJQueueState:
+    """State container for one sticky queue DJ."""
+
+    queue_id: str
+    host_id: str
+    dj_session_id: str
+    clip_counter: int = 0
+    songs_consumed: int = 0
+    minutes_consumed: float = 0.0
+    last_planned_item_id: str | None = None
+    history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
+    replan_pending: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+
+
+@dataclass(slots=True)
 class SessionState:
     """State container for an AI Radio run."""
 

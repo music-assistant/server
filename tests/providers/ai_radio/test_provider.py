@@ -80,6 +80,7 @@ def provider(tmp_path: Path) -> AIRadioProvider:
     instance._station_lock = asyncio.Lock()
     instance._stations = {}
     instance._hosts = {}
+    instance._dj_queues = {}
     instance._hosts_file = tmp_path / "hosts.json"
     instance._sections = {item["id"]: item for item in instance._default_sections_template()}
     return instance

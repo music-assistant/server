@@ -33,7 +33,8 @@ from .constants import (
 )
 from .helpers import utc_now_iso
 from .hosts import AIRadioHostsMixin
-from .models import SessionState
+from .models import DJQueueState, SessionState
+from .queue_dj import AIRadioQueueDJMixin
 from .rendering import AIRadioRenderMixin
 from .runtime import AIRadioRuntimeMixin
 from .storage import AIRadioStorageMixin
@@ -55,7 +56,12 @@ async def setup(
 
 
 class AIRadioProvider(
-    AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioHostsMixin, AIRadioStorageMixin, PluginProvider
+    AIRadioRuntimeMixin,
+    AIRadioRenderMixin,
+    AIRadioHostsMixin,
+    AIRadioQueueDJMixin,
+    AIRadioStorageMixin,
+    PluginProvider,
 ):
     """Implementation of the AI Radio plugin provider."""
 
@@ -77,10 +83,13 @@ class AIRadioProvider(
         self._stations: dict[str, dict[str, Any]] = {}
         self._sections: dict[str, dict[str, Any]] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
+        self._dj_queues: dict[str, DJQueueState] = {}
+        self._dj_lock = asyncio.Lock()
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"
         self._hosts_file = self._storage_dir / "hosts.json"
+        self._dj_file = self._storage_dir / "queue_dj.json"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -94,6 +103,7 @@ class AIRadioProvider(
         await self._load_sections()
         await self._load_hosts()
         await self._load_stations()
+        await self._load_queue_dj()
         await self._wait_for_engines()
         self.logger.info(
             "AI Radio initialized for instance '%s' with %d stations, %d hosts and %d sections",
@@ -126,13 +136,18 @@ class AIRadioProvider(
             ("ai_radio/start", self.start_run),
             ("ai_radio/stop", self.stop_run),
             ("ai_radio/status", self.get_status),
+            ("ai_radio/queue_dj/set", self.set_queue_dj),
+            ("ai_radio/queue_dj/status", self.get_queue_dj_status),
         )
         for command, handler in api_handlers:
-            required_scope = (
-                Scope.CONFIG_PROVIDERS_READ
-                if command.endswith(("/list", "/get", "/template", "/validate", "/status"))
-                else Scope.CONFIG_PROVIDERS_WRITE
-            )
+            if command == "ai_radio/queue_dj/set":
+                required_scope = Scope.QUEUES_CONTROL
+            else:
+                required_scope = (
+                    Scope.CONFIG_PROVIDERS_READ
+                    if command.endswith(("/list", "/get", "/template", "/validate", "/status"))
+                    else Scope.CONFIG_PROVIDERS_WRITE
+                )
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
@@ -289,6 +304,14 @@ class AIRadioProvider(
                 raise InvalidDataError(
                     f"Host '{host_id}' is used by stations: {used_list}. "
                     "Remove it from those stations first."
+                )
+            dj_users = sorted(
+                queue_id for queue_id, state in self._dj_queues.items() if state.host_id == host_id
+            )
+            if dj_users:
+                raise InvalidDataError(
+                    f"Host '{host_id}' is the active DJ on queues: {', '.join(dj_users)}. "
+                    "Disable the DJ there first."
                 )
             self._hosts.pop(host_id)
             await self._write_hosts()
