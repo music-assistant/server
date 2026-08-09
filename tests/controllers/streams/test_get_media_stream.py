@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -128,11 +128,27 @@ async def _drain(gen: AsyncGenerator[bytes]) -> None:
         pass
 
 
-async def _fake_multi_file_stream(
-    _streamdetails: StreamDetails, _seek_position: int = 0
-) -> AsyncGenerator[bytes]:
-    """Stand in for the concat stream so no ffmpeg or temp file is needed."""
-    yield b""
+def _recording_multi_file_stream() -> tuple[Any, list[int]]:
+    """
+    Build a stand-in for the concat stream plus the list of seek positions it received.
+
+    Avoids a real ffmpeg process and temp file while still proving the seek was
+    handed off to the source rather than applied through the -ss argument.
+    """
+    received_seeks: list[int] = []
+
+    async def _empty_stream() -> AsyncGenerator[bytes]:
+        yield b""
+
+    # record on call rather than on first iteration: the FFMpeg double never
+    # consumes the generator it is handed, so its body would never run
+    def _fake_stream(
+        _streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        received_seeks.append(seek_position)
+        return _empty_stream()
+
+    return _fake_stream, received_seeks
 
 
 class _StallingFFMpeg(_FakeFFMpeg):
@@ -333,7 +349,8 @@ async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
     monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
     streamdetails = _multi_part_streamdetails()
     audio = _make_audio_controller()
-    monkeypatch.setattr(audio, "get_multi_file_stream", _fake_multi_file_stream)
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
 
@@ -341,20 +358,49 @@ async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
 
 
 @pytest.mark.asyncio
-async def test_get_media_stream_keeps_duration_when_seek_is_delegated(
+async def test_get_media_stream_keeps_duration_when_multi_file_seek_is_delegated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resuming a multi-file audiobook must not shrink its duration to the remainder."""
     monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
     streamdetails = _multi_part_streamdetails()
     audio = _make_audio_controller()
-    # get_multi_file_stream consumes the seek itself, which clears the local seek
-    # position before the duration writeback runs at the end of the stream.
-    monkeypatch.setattr(audio, "get_multi_file_stream", _fake_multi_file_stream)
+    fake_stream, received_seeks = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=1800))
 
+    # the concat stream consumes the seek itself, which clears the local seek
+    # position before the duration writeback runs at the end of the stream
+    assert received_seeks == [1800]
     assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_provider_seek_is_delegated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A seekable provider stream must not shrink its duration to the remainder either."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
+    streamdetails = StreamDetails(
+        provider="test_provider",
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.OGG),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.CUSTOM,
+        duration=240,
+        can_seek=True,
+        allow_seek=True,
+    )
+    audio = _make_audio_controller()
+    provider = cast("MagicMock", audio.mass).get_provider.return_value
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=90))
+
+    # a provider that can seek receives the position and the local one is cleared,
+    # so only the remaining audio reaches ffmpeg
+    provider.get_audio_stream.assert_called_once_with(streamdetails, seek_position=90)
+    assert streamdetails.duration == 240
 
 
 @pytest.mark.asyncio
