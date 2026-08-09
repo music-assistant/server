@@ -25,8 +25,8 @@ from music_assistant_models.player import (
 )
 
 from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
-    CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
     create_sample_rates_config_entry,
 )
 from music_assistant.models.player import Player, PlayerMedia
@@ -212,7 +212,6 @@ class BoseSoundTouchPlayer(Player):
             await avt_set_url(self.mass.http_session, self, player_media=media)
             await avt_play(self.mass.http_session, self)
             self._attr_poll_interval = PLAYBACK_POLL_INTERVAL
-            self.update_state()
 
     async def stop(self) -> None:
         """Stop command."""
@@ -320,7 +319,7 @@ class BoseSoundTouchPlayer(Player):
 
         default_entries = [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
-            CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
+            CONF_ENTRY_FLOW_MODE,
             create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
         ]
         return base_entries + default_entries
