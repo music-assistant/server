@@ -339,6 +339,12 @@ class AIRadioProvider(
         if player.enabled is False:
             raise InvalidDataError(f"Target player is disabled: {player_id}")
 
+        host_id = str(station.get("host_id") or "")
+        host = self._hosts.get(host_id)
+        if host is None:
+            raise InvalidDataError(f"Station references unknown host: {host_id}")
+        program = self._build_program(station, deepcopy(host))
+
         # the run guards and the session insert must stay one critical section, or a future
         # await between them would let concurrent callers slip past the concurrency limits
         async with self._session_lock:
@@ -364,7 +370,7 @@ class AIRadioProvider(
             self._sessions[session_id] = session
             self._prune_finished_sessions()
             session.task = self.mass.create_task(
-                self._run_session(session_id, station),
+                self._run_session(session_id, program),
                 task_id=f"ai_radio_session_{session_id}",
             )
         self.logger.debug(

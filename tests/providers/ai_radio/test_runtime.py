@@ -7,6 +7,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -26,6 +27,7 @@ from music_assistant_models.media_items import ProviderMapping, Track
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_SESSION_ID,
@@ -33,6 +35,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
+    CONF_WEATHER_PROVIDER,
     TTS_PRONUNCIATION_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
@@ -58,6 +61,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
+        self._sections: dict[str, dict[str, Any]] = {}
         self.config = cast("Any", StubConfig())
         self.instance_id = "ai_radio_test"
         self.domain = "ai_radio"
@@ -66,6 +70,21 @@ class DummyRuntime(AIRadioRuntimeMixin):
     def get_setup_value(self, key: str, default: Any = None) -> Any:
         """Return the stubbed setup flow value for key, or default when absent."""
         return self._setup_values.get(key, default)
+
+    def _materialize_sections(
+        self, section_ids: list[str], sections_map: dict[str, dict[str, Any]] | None = None
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Resolve section ids against self._sections, mirroring the storage mixin."""
+        source = self._sections if sections_map is None else sections_map
+        sections: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for section_id in section_ids:
+            section = source.get(section_id)
+            if section is None:
+                missing.append(section_id)
+                continue
+            sections.append(deepcopy(section))
+        return sections, missing
 
 
 class FailingRuntime(DummyRuntime):
@@ -222,9 +241,17 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
             }
         ],
         "section_order": [],
-        "general": {"weather_provider": "unsupported_provider"},
     }
-    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    runtime.config = cast(
+        "Any",
+        StubConfig(
+            {
+                "weather_city": "Berlin",
+                "weather_country": "DE",
+                CONF_WEATHER_PROVIDER: "unsupported_provider",
+            }
+        ),
+    )
 
     with caplog.at_level(logging.WARNING):
         tokens = await runtime._prepare_runtime_tokens(station)
@@ -245,7 +272,6 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
             }
         ],
         "section_order": [],
-        "general": {"weather_provider": "open_meteo"},
     }
     runtime.config = cast("Any", StubConfig({"weather_city": "", "weather_country": "DE"}))
 
@@ -360,7 +386,7 @@ async def test_generate_text_wraps_not_connected_error() -> None:
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
@@ -390,7 +416,7 @@ async def test_generate_text_fails_the_section_when_the_engine_stalls(
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
@@ -411,7 +437,7 @@ async def test_generate_text_reports_an_engine_side_timeout_as_a_query_failure()
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
@@ -431,7 +457,7 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
     )
 
     await runtime._generate_text(
-        station={"general": {"instructions": "test"}},
+        instructions="test",
         prompt="test prompt",
         web_mode="disabled",
     )
@@ -662,7 +688,7 @@ def test_compose_queue_items_places_clips_at_planned_indices() -> None:
     items = runtime._compose_queue_items(
         queue_id="player_a",
         session=SessionState(session_id="sess", station_id="st"),
-        station={"id": "st"},
+        program={"id": "st"},
         tracks=tracks,
         sections=sections,
     )
@@ -686,6 +712,69 @@ def test_compose_queue_items_places_clips_at_planned_indices() -> None:
     assert "ai_radio_section_name" not in intro.extra_attributes
     # track items carry no AI Radio state
     assert items[1].extra_attributes == {}
+
+
+def test_build_program_merges_host_into_station() -> None:
+    """The merged program carries the host's persona, sections and section_order."""
+    runtime = DummyRuntime()
+    runtime._sections = {
+        "Song_Transition": {
+            "id": "Song_Transition",
+            "name": "Song Transition",
+            "type": "ai_text",
+            "prompt": "Prompt",
+            "web_search": "disabled",
+        }
+    }
+    host = {
+        "id": "rick",
+        "name": "Rick",
+        "instructions": "Persona.",
+        "tts_engine": "engine-1",
+        "section_ids": ["Song_Transition"],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]}],
+        "merge_section_id": "",
+    }
+    station = {
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "p1",
+        "source_playlist_provider": "library",
+        "default_player_id": "",
+        "max_duration_minutes": 0.0,
+        "shuffle_source_tracks": True,
+        "host_id": "rick",
+    }
+
+    program = runtime._build_program(station, host)
+
+    assert program["instructions"] == "Persona."
+    assert program["tts_engine"] == "engine-1"
+    assert [s["id"] for s in program["sections"]] == ["Song_Transition"]
+    assert program["section_order"] == host["section_order"]
+    assert program["source_playlist_id"] == "p1"
+
+
+def test_clip_item_carries_host_id() -> None:
+    """A planned clip's queue item stamps both the station id and the host id."""
+    runtime = DummyRuntime()
+    section = PlannedSection(
+        order=0,
+        clip_id="sess_000",
+        section_id="Song_Transition",
+        section_name="Song Transition",
+        when="between_songs",
+        insert_at_index=1,
+        prompt="p",
+        max_chars=0,
+        web_search_mode="disabled",
+    )
+    program = {"id": "station_a", "host_id": "rick"}
+
+    item = runtime._section_to_clip_item("queue-1", "sess", program, section)
+
+    assert item.extra_attributes[ATTR_HOST_ID] == "rick"
+    assert item.extra_attributes[ATTR_SESSION_ID] == "sess"
 
 
 async def test_get_ai_engine_requires_a_configured_selection() -> None:

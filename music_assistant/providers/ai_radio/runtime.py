@@ -36,6 +36,7 @@ from music_assistant.helpers.uri import create_uri
 
 from .constants import (
     AI_QUERY_TIMEOUT_SECONDS,
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_SESSION_ID,
@@ -46,6 +47,8 @@ from .constants import (
     CONF_TTS_ENGINE,
     CONF_WEATHER_CITY,
     CONF_WEATHER_COUNTRY,
+    CONF_WEATHER_PROVIDER,
+    CONF_WEATHER_TIMEOUT,
     DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
@@ -107,7 +110,24 @@ class AIRadioRuntimeMixin:
             **details,
         }
 
-    async def _run_session(self, session_id: str, station: dict[str, Any]) -> None:
+    def _build_program(self, station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
+        """Merge a station and its host into the dict the planner consumes."""
+        sections, missing = self._materialize_sections(list(host.get("section_ids", [])))
+        if missing:
+            raise MusicAssistantError(
+                f"Host references unknown sections: {', '.join(sorted(set(missing)))}"
+            )
+        return {
+            **deepcopy(station),
+            "host_id": str(host.get("id", "")),
+            "instructions": str(host.get("instructions", "")),
+            "tts_engine": str(host.get("tts_engine", "")),
+            "sections": sections,
+            "section_order": deepcopy(host.get("section_order", [])),
+            "merge_section_id": str(host.get("merge_section_id", "")),
+        }
+
+    async def _run_session(self, session_id: str, program: dict[str, Any]) -> None:
         """Run one session in the background."""
         session = self._sessions[session_id]
         session.started_at = utc_now_iso()
@@ -117,7 +137,7 @@ class AIRadioRuntimeMixin:
             session.station_id,
         )
         try:
-            result = await self._run_show(session, station)
+            result = await self._run_show(session, program)
             session.result = result
             queue_stopped = result.get("ended_reason") == "queue_stopped"
             session.status = "stopped" if queue_stopped else "completed"
@@ -145,28 +165,28 @@ class AIRadioRuntimeMixin:
     async def _run_show(
         self,
         session: SessionState,
-        station: dict[str, Any],
+        program: dict[str, Any],
     ) -> dict[str, Any]:
         """Plan and queue the whole show in one pass, then start playback."""
-        station = deepcopy(station)
+        program = deepcopy(program)
         self.logger.debug(
             "Show starting for station '%s' (%s)",
-            station.get("name", "AI Radio"),
-            station.get("id", ""),
+            program.get("name", "AI Radio"),
+            program.get("id", ""),
         )
         self._set_session_progress(session, "fetch_source_tracks")
         # runtime_tokens only feeds the require_placeholders_present guards below; its
         # resolved text is discarded here and re-fetched fresh when each clip renders
-        runtime_tokens = await self._prepare_runtime_tokens(station)
-        player_id = str(station.get("default_player_id") or "").strip()
+        runtime_tokens = await self._prepare_runtime_tokens(program)
+        player_id = str(program.get("default_player_id") or "").strip()
         if not player_id:
             raise MusicAssistantError("AI Radio requires a target player")
         if not self.mass.players.get_player(player_id):
             raise MusicAssistantError(f"Unknown target player: {player_id}")
 
-        tracks, playlist_name = await self._fetch_source_tracks(station)
-        tracks = self._apply_source_shuffle(tracks, station)
-        tracks = self._apply_track_duration_limit(tracks, station)
+        tracks, playlist_name = await self._fetch_source_tracks(program)
+        tracks = self._apply_source_shuffle(tracks, program)
+        tracks = self._apply_track_duration_limit(tracks, program)
         if not tracks:
             raise MusicAssistantError("No source tracks available after applying station limits")
 
@@ -194,7 +214,7 @@ class AIRadioRuntimeMixin:
         planned_sections, _history = self._plan_sections(
             session_id=session.session_id,
             tracks=tracks,
-            station=station,
+            station=program,
             track_index_offset=0,
             minute_offset=0.0,
             history_state={},
@@ -204,7 +224,7 @@ class AIRadioRuntimeMixin:
         queue_items = self._compose_queue_items(
             queue_id=queue_id,
             session=session,
-            station=station,
+            program=program,
             tracks=tracks,
             sections=planned_sections,
         )
@@ -736,7 +756,7 @@ class AIRadioRuntimeMixin:
         self,
         queue_id: str,
         session: SessionState,
-        station: dict[str, Any],
+        program: dict[str, Any],
         tracks: list[dict[str, Any]],
         sections: list[PlannedSection],
     ) -> list[QueueItem]:
@@ -748,18 +768,19 @@ class AIRadioRuntimeMixin:
 
         :param queue_id: The queue the items are built for.
         :param session: The session that owns the show.
-        :param station: The station profile being played.
+        :param program: The station+host program being played.
         :param tracks: The normalized source tracks, in play order.
         :param sections: The planned sections to interleave between them.
         """
         sections_by_index: dict[int, list[PlannedSection]] = defaultdict(list)
         for item in sections:
             sections_by_index[item.insert_at_index].append(item)
-        station_id = str(station.get("id") or "")
         items: list[QueueItem] = []
         for index in range(len(tracks) + 1):
             for section in sorted(sections_by_index.get(index, []), key=lambda item: item.order):
-                items.append(self._section_to_clip_item(queue_id, session, station_id, section))
+                items.append(
+                    self._section_to_clip_item(queue_id, session.session_id, program, section)
+                )
             if index < len(tracks) and (media_item := tracks[index].get("media_item")) is not None:
                 items.append(build_queue_item(queue_id, media_item))
         return items
@@ -767,8 +788,8 @@ class AIRadioRuntimeMixin:
     def _section_to_clip_item(
         self,
         queue_id: str,
-        session: SessionState,
-        station_id: str,
+        session_id: str,
+        program: dict[str, Any],
         section: PlannedSection,
     ) -> QueueItem:
         """Build the queue item for a not-yet-rendered clip."""
@@ -798,8 +819,9 @@ class AIRadioRuntimeMixin:
         # the section name already travels as the item's own name, so it is not duplicated here
         queue_item.extra_attributes.update(
             {
-                ATTR_SESSION_ID: session.session_id,
-                ATTR_STATION_ID: station_id,
+                ATTR_SESSION_ID: session_id,
+                ATTR_STATION_ID: str(program.get("id") or ""),
+                ATTR_HOST_ID: str(program.get("host_id") or ""),
                 ATTR_PROMPT: section.prompt,
                 ATTR_MAX_CHARS: section.max_chars,
                 ATTR_WEB_SEARCH_MODE: section.web_search_mode,
@@ -812,16 +834,17 @@ class AIRadioRuntimeMixin:
         """Return the explicit AI Radio playlist cover image path."""
         return str(Path(__file__).with_name("air.png"))
 
-    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+    async def _prepare_runtime_tokens(self, program: dict[str, Any]) -> dict[str, str]:
         """Prepare runtime tokens (including weather placeholders) for one run."""
         runtime_tokens: dict[str, str] = {}
 
-        if not self._station_uses_weather_placeholders(station):
+        if not self._program_uses_weather_placeholders(program):
             return runtime_tokens
 
-        general = cast("dict[str, Any]", station.get("general", {}))
         weather_provider = (
-            str(general.get("weather_provider") or DEFAULT_WEATHER_PROVIDER).strip().lower()
+            str(self.config.get_value(CONF_WEATHER_PROVIDER) or DEFAULT_WEATHER_PROVIDER)
+            .strip()
+            .lower()
         )
         if weather_provider in {"", "none", "disabled", "off"}:
             return runtime_tokens
@@ -840,10 +863,8 @@ class AIRadioRuntimeMixin:
             )
             return runtime_tokens
 
-        timeout_seconds = max(
-            5,
-            coerce_int(general.get("weather_timeout_seconds"), DEFAULT_WEATHER_TIMEOUT_SECONDS),
-        )
+        configured_timeout = self.config.get_value(CONF_WEATHER_TIMEOUT)
+        timeout_seconds = max(5, coerce_int(configured_timeout, DEFAULT_WEATHER_TIMEOUT_SECONDS))
         try:
             weather_hourly, weather_daily = await self._fetch_open_meteo_weather(
                 city=city,
@@ -865,15 +886,15 @@ class AIRadioRuntimeMixin:
             runtime_tokens["<weather_daily>"] = weather_daily
         return runtime_tokens
 
-    def _station_uses_weather_placeholders(self, station: dict[str, Any]) -> bool:
-        """Return whether the station references weather placeholders."""
+    def _program_uses_weather_placeholders(self, program: dict[str, Any]) -> bool:
+        """Return whether the program references weather placeholders."""
         weather_tokens = ("<weather_hourly>", "<weather_daily>")
-        for section in station.get("sections", []):
+        for section in program.get("sections", []):
             prompt = str(section.get("prompt", ""))
             if any(token in prompt for token in weather_tokens):
                 return True
 
-        for rule in station.get("section_order", []):
+        for rule in program.get("section_order", []):
             flow = rule.get("flow", [])
             for item in flow:
                 optional = item.get("OPTIONAL")
@@ -1134,10 +1155,9 @@ class AIRadioRuntimeMixin:
             )
         return mode
 
-    async def _generate_text(self, station: dict[str, Any], prompt: str, web_mode: str) -> str:
+    async def _generate_text(self, instructions: str, prompt: str, web_mode: str) -> str:
         """Generate one section text using the configured AI engine."""
-        general = cast("dict[str, Any]", station.get("general", {}))
-        instructions = str(general.get("instructions") or DEFAULT_LLM_INSTRUCTIONS).strip()
+        instructions = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
         query_parts: list[str] = []
         if instructions:
             query_parts.append(f"Program instructions:\n{instructions}")

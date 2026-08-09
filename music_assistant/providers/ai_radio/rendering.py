@@ -20,6 +20,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.tags import async_parse_tags
 
 from .constants import (
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
@@ -49,6 +50,7 @@ class AIRadioRenderMixin:
         mass: MusicAssistant
         logger: logging.Logger
         _stations: dict[str, dict[str, Any]]
+        _hosts: dict[str, dict[str, Any]]
         _sessions: dict[str, SessionState]
 
     _render_locks: dict[str, asyncio.Lock]
@@ -147,12 +149,16 @@ class AIRadioRenderMixin:
         resolved = prompt
         for key, value in deferred.items():
             resolved = resolved.replace(key, value)
+        host = self._hosts.get(str(attributes.get(ATTR_HOST_ID) or "")) or {}
+        instructions = str(host.get("instructions") or "")
         max_chars = int(attributes.get(ATTR_MAX_CHARS) or 0)
         web_mode = str(attributes.get(ATTR_WEB_SEARCH_MODE) or "disabled")
         try:
             text = cast(
                 "str",
-                await self._generate_text(station=station, prompt=resolved, web_mode=web_mode),
+                await self._generate_text(
+                    instructions=instructions, prompt=resolved, web_mode=web_mode
+                ),
             )
         except Exception as err:
             self.logger.warning(
@@ -167,11 +173,11 @@ class AIRadioRenderMixin:
         )
         return text
 
-    async def _resolve_deferred_placeholders(self, station: dict[str, Any]) -> dict[str, str]:
+    async def _resolve_deferred_placeholders(self, program: dict[str, Any]) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
-        values.update(await self._prepare_runtime_tokens(station))
+        values.update(await self._prepare_runtime_tokens(program))
         return values
 
     async def _mint_clip_media(

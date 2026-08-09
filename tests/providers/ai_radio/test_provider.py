@@ -240,8 +240,11 @@ async def test_start_run_prunes_oldest_finished_sessions() -> None:
             "source_playlist_id": "1",
             "source_playlist_provider": "library",
             "default_player_id": "living_room",
+            "host_id": "host_a",
         }
     }
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
     provider.mass = cast(
         "Any",
         SimpleNamespace(
@@ -338,13 +341,17 @@ async def test_concurrent_start_run_calls_respect_the_run_limit() -> None:
             "id": "station_a",
             "name": "Station A",
             "default_player_id": "living_room",
+            "host_id": "host_a",
         },
         "station_b": {
             "id": "station_b",
             "name": "Station B",
             "default_player_id": "living_room",
+            "host_id": "host_a",
         },
     }
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
     provider.mass = cast(
         "Any",
         SimpleNamespace(

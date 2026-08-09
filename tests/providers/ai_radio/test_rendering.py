@@ -46,6 +46,7 @@ class DummyRenderer(AIRadioRenderMixin):
         self._stations: dict[str, dict[str, Any]] = {
             "st": {"id": "st", "general": {"instructions": "be warm"}}
         }
+        self._hosts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
         self.weather_calls = 0
@@ -54,7 +55,7 @@ class DummyRenderer(AIRadioRenderMixin):
     def _configured_now(self) -> Any:
         return __import__("datetime").datetime(2026, 7, 30, 18, 30)
 
-    async def _generate_text(self, station: dict[str, Any], prompt: str, web_mode: str) -> str:
+    async def _generate_text(self, instructions: str, prompt: str, web_mode: str) -> str:
         # a real suspension point so concurrent callers actually interleave under
         # asyncio.gather, otherwise the lock in get_stream_details is never exercised
         await asyncio.sleep(0)
