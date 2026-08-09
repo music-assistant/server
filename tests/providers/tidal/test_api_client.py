@@ -15,22 +15,6 @@ from music_assistant.providers.tidal.api_client import TidalAPIClient
 
 
 @pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.auth = AsyncMock()
-    provider.auth.ensure_valid_token.return_value = True
-    provider.auth.access_token = "token"
-    provider.auth.session_id = "session"
-    provider.auth.country_code = "US"
-    provider.mass = Mock()
-    provider.mass.http_session = AsyncMock()
-    provider.mass.metadata.locale = "en_US"
-    provider.logger = Mock()
-    return provider
-
-
-@pytest.fixture
 def api_client(provider_mock: Mock) -> TidalAPIClient:
     """Return a TidalAPIClient instance."""
     return TidalAPIClient(provider_mock)

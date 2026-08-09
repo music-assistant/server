@@ -19,10 +19,10 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnsupportedSystemError,
 )
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries

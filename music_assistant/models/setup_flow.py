@@ -293,7 +293,7 @@ class SetupSession:
         step's countdown and the engine deadline cannot drift. On the deadline
         StepExpiredError is raised here and the awaitable is cancelled - this also
         cancels a pre-existing Task (cancellation propagates through the await);
-        wrap work in ``asyncio.shield`` if it must survive the deadline.
+        pass ``join_task(task)`` (helpers.util) if a task must survive the deadline.
 
         :param awaitable: The work/wait to perform while the progress step shows.
         :param step_id: Stable slug identifying this step (also the i18n key segment).

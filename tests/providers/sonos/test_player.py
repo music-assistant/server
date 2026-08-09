@@ -2,33 +2,14 @@
 
 import asyncio
 import logging
-import threading
-from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
 from aiosonos.exceptions import CannotConnect
-from music_assistant_models.enums import CoreState
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.sonos.player import SonosPlayer
-
-
-@pytest.fixture
-async def timer_mass() -> AsyncGenerator[MusicAssistant]:
-    """Create a bare MusicAssistant exposing the real task/timer machinery."""
-    mass = object.__new__(MusicAssistant)
-    mass.loop = asyncio.get_running_loop()
-    mass.loop_thread_id = threading.get_ident()
-    mass._tracked_timers = {}
-    mass._tracked_tasks = {}
-    mass._state = CoreState.RUNNING
-    yield mass
-    for handle in mass._tracked_timers.values():
-        handle.cancel()
-    for task in mass._tracked_tasks.values():
-        task.cancel()
 
 
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:

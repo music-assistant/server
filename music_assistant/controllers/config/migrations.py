@@ -330,8 +330,9 @@ _LEGACY_ICON_MAP: dict[str, str] = {
 # "hue_username", the scrobblers under "_username", Open Subsonic its url under "baseURL").
 # Notes on the non-obvious entries:
 # - the filesystem providers' "content_type" is also surfaced by get_config_entries, but
-#   only as a read-only LABEL mirror (UI_ONLY, never persisted back to values), so moving
-#   it to setup_data is safe and required (it is read via get_provider_setup_value).
+#   only as a read-only mirror that carries the setup value as its default (so it is never
+#   persisted back to values), so moving it to setup_data is safe and required (it is read
+#   via get_provider_setup_value).
 # - hass "url"/"token"/"verify_ssl": on a Home Assistant add-on these come from fixed
 #   (hidden) config entries whose values equal what a stored copy would hold, so moving a
 #   stored copy is a harmless no-op there while restoring normal installs.

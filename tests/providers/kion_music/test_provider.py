@@ -90,10 +90,10 @@ async def test_regular_playlist_fetch_is_shared_between_callers(
     assert mock_client.get_playlist.await_count == 1
 
 
-async def test_my_mix_fetch_runs_for_every_caller(
+async def test_my_mix_fetch_is_shared_between_callers(
     cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
 ) -> None:
-    """Every My Mix caller runs its own fetch, so the rotor cursor keeps advancing."""
+    """Concurrent My Mix callers share one fetch, so the rotor advances once."""
     provider, mock_client = cached_provider
     gate = asyncio.Event()
 
@@ -110,4 +110,4 @@ async def test_my_mix_fetch_runs_for_every_caller(
     gate.set()
 
     assert await asyncio.gather(*tasks) == [[], [], []]
-    assert mock_client.get_my_wave_tracks.await_count == 3
+    assert mock_client.get_my_wave_tracks.await_count == 1
