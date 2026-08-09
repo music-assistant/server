@@ -451,6 +451,9 @@ class StreamsAudio:
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
         extra_input_args = streamdetails.extra_input_args or []
+        # the branches below zero out seek_position where the seek is delegated to the
+        # source itself, so keep the requested position for the duration writeback
+        requested_seek_position = seek_position
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -641,8 +644,9 @@ class StreamsAudio:
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration
-            if finished and not seek_position and seconds_received:
+            # store accurate duration, but only for a playthrough from the very start:
+            # a seeked stream yields the remaining audio, not the item's full length
+            if finished and not requested_seek_position and seconds_received:
                 streamdetails.duration = int(seconds_received)
 
             logger.log(
