@@ -334,9 +334,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         Artist_type can be omitted for in-library artists.
         Collapse collections only works for in library items.
         """
-        if collapse_collections and not in_library_only:
-            self.logger.warning("Collapsing of collections is only available for in-library items.")
-            in_library_only = True
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
             return []
@@ -371,7 +368,13 @@ class ArtistsController(MediaControllerBase[Artist]):
             return result
         # return all (unique) items from all providers
         # initialize unique_ids with db_items to prevent duplicates
-        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_ids: set[str] = set()
+        for item in db_items:
+            if isinstance(item, Audiobook):
+                unique_ids.add(f"{item.name}.{item.version}")
+            else:
+                for collection_item in item.items:
+                    unique_ids.add(f"{collection_item.name}.{collection_item.version}")
         unique_providers = self.mass.music.get_unique_providers()
         audiobook_method = (
             self.get_provider_author_audiobooks
