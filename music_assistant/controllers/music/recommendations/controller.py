@@ -17,8 +17,6 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
 
-from .library import library_items, library_rows
-
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
         BrowseFolder,
@@ -57,7 +55,6 @@ class RecommendationsController:
             self.mass.get_providers_supporting_feature(ProviderFeature.RECOMMENDATIONS)
         )
         rows_per_source: list[list[RecommendationFolder]] = [
-            library_rows(),
             *await asyncio.gather(
                 *[
                     self._provider_rows(
@@ -76,12 +73,10 @@ class RecommendationsController:
         """
         Get the items for a single recommendation row.
 
-        :param provider: The provider instance id owning the row, or "library" for builtin rows.
+        :param provider: The provider instance id owning the row.
         :param item_id: The item_id of the row, as returned by the recommendations listing.
         """
         try:
-            if provider == "library":
-                return await library_items(self.mass, item_id)
             prov = self.mass.get_provider(provider)
             # re-apply the user provider filter the rows listing applies, so a user
             # can not fetch items from a music provider an admin has restricted them from
