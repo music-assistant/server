@@ -6,10 +6,11 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 
 from music_assistant.providers.ai_radio.constants import (
@@ -521,6 +522,36 @@ async def test_injection_rereads_a_guard_that_moved_during_the_pass(tmp_path: Pa
     queues = dummy.player_queues
     assert len(queues.loads) == 1
     assert queues.loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+
+
+async def test_replan_keeps_state_when_the_queue_is_not_registered_yet(tmp_path: Path) -> None:
+    """A queue that has not registered yet is not treated as a vanished queue."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    # the boot-time replan runs before on_player_register created the queue
+    dummy.player_queues._queue = FakeQueue("some-other-queue", None, None)
+    dummy._dj_file.write_text("untouched")
+
+    await dummy._replan_queue("queue-1")
+
+    assert "queue-1" in dummy._dj_queues
+    assert dummy._dj_file.read_text() == "untouched"
+
+
+async def test_queue_added_event_replans_an_armed_queue(tmp_path: Path) -> None:
+    """A queue registering after the provider loaded resumes injection on its own."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    dummy.player_queues._queue = FakeQueue("some-other-queue", None, None)
+    await dummy._replan_queue("queue-1")
+    assert dummy.player_queues.loads == []
+
+    dummy.player_queues._queue = FakeQueue("queue-1", 0, 0)
+    await dummy._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ADDED, object_id="queue-1"))
+    )
+    await asyncio.gather(*dummy.mass.tasks)
+
+    assert len(dummy.player_queues.loads) == 2
 
 
 async def test_dj_clip_is_sound_effect_media_type(tmp_path: Path) -> None:

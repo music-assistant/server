@@ -157,7 +157,11 @@ class AIRadioProvider(
         self._unregister_handles.append(
             self.mass.subscribe(
                 self._on_dj_queue_event,
-                (EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+                (
+                    EventType.QUEUE_ADDED,
+                    EventType.QUEUE_ITEMS_UPDATED,
+                    EventType.PLAYER_REMOVED,
+                ),
             )
         )
         # resume injection on the queues that were armed before this (re)start, without

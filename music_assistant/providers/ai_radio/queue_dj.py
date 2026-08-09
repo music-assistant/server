@@ -183,10 +183,10 @@ class AIRadioQueueDJMixin:
             state.replan_pending = False
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
-                async with self._dj_lock:
-                    self._dj_queues.pop(queue_id, None)
-                    await self._write_queue_dj()
-                self.logger.debug("Dropped queue DJ for vanished queue %s", queue_id)
+                # an unknown queue is usually one that has not registered yet (players
+                # appear seconds after this provider loads), so the state is kept and the
+                # QUEUE_ADDED event resumes injection. PLAYER_REMOVED is what drops it.
+                self.logger.debug("Queue %s is not registered (yet), skipping replan", queue_id)
                 return
             items = self._dj_queue_items(queue_id)
             guard_index = self._dj_guard_index(queue)
