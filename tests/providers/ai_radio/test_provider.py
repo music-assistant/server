@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -69,6 +70,19 @@ def _make_dynamic_provider(player_obj: object | None, default_player_id: str) ->
         ),
     )
     return provider
+
+
+@pytest.fixture
+def provider(tmp_path: Path) -> AIRadioProvider:
+    """Build a minimal AIRadioProvider instance for host/station CRUD tests."""
+    instance = AIRadioProvider.__new__(AIRadioProvider)
+    instance.logger = logging.getLogger("test.ai_radio.provider")
+    instance._station_lock = asyncio.Lock()
+    instance._stations = {}
+    instance._hosts = {}
+    instance._hosts_file = tmp_path / "hosts.json"
+    instance._sections = {item["id"]: item for item in instance._default_sections_template()}
+    return instance
 
 
 def test_resolve_session_for_stop_by_session_id() -> None:
@@ -275,6 +289,37 @@ async def test_validate_station_does_not_mutate_shared_sections() -> None:
     assert normalized["host_id"] == "host_a"
     assert provider._sections == {}
     assert provider._hosts == {"host_a": {"id": "host_a", "name": "Host A"}}
+
+
+@pytest.mark.asyncio
+async def test_host_crud_roundtrip(provider: Any) -> None:
+    """Create, list, fetch and delete a host through the public CRUD API."""
+    template = await provider.host_template()
+    saved = await provider.save_host(template)
+    assert saved["id"] == "default_host"
+    assert [h["id"] for h in await provider.list_hosts()] == ["default_host"]
+    fetched = await provider.get_host("default_host")
+    assert fetched["name"] == saved["name"]
+    await provider.delete_host("default_host")
+    assert await provider.list_hosts() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_host_refuses_when_station_references_it(provider: Any) -> None:
+    """Refuse to delete a host that a station still references."""
+    saved = await provider.save_host(await provider.host_template())
+    provider._stations["station_a"] = {
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "p1",
+        "source_playlist_provider": "library",
+        "default_player_id": "",
+        "max_duration_minutes": 0.0,
+        "shuffle_source_tracks": True,
+        "host_id": saved["id"],
+    }
+    with pytest.raises(InvalidDataError):
+        await provider.delete_host(saved["id"])
 
 
 @pytest.mark.asyncio

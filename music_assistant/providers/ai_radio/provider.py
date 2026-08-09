@@ -14,6 +14,7 @@ from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.helpers.plugin_engines import (
+    get_tts_engines,
     select_ai_engine,
     select_tts_engine,
 )
@@ -31,6 +32,7 @@ from .constants import (
     TRANSLATION_OWNER,
 )
 from .helpers import utc_now_iso
+from .hosts import AIRadioHostsMixin
 from .models import SessionState
 from .rendering import AIRadioRenderMixin
 from .runtime import AIRadioRuntimeMixin
@@ -52,7 +54,9 @@ async def setup(
     return AIRadioProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMixin, PluginProvider):
+class AIRadioProvider(
+    AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioHostsMixin, AIRadioStorageMixin, PluginProvider
+):
     """Implementation of the AI Radio plugin provider."""
 
     def __init__(
@@ -72,9 +76,11 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         self._sessions: dict[str, SessionState] = {}
         self._stations: dict[str, dict[str, Any]] = {}
         self._sections: dict[str, dict[str, Any]] = {}
+        self._hosts: dict[str, dict[str, Any]] = {}
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"
+        self._hosts_file = self._storage_dir / "hosts.json"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -86,12 +92,14 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         """Handle async initialization of the provider."""
         await asyncio.to_thread(self._storage_dir.mkdir, parents=True, exist_ok=True)
         await self._load_sections()
+        await self._load_hosts()
         await self._load_stations()
         await self._wait_for_engines()
         self.logger.info(
-            "AI Radio initialized for instance '%s' with %d stations and %d sections",
+            "AI Radio initialized for instance '%s' with %d stations, %d hosts and %d sections",
             self.instance_id,
             len(self._stations),
+            len(self._hosts),
             len(self._sections),
         )
 
@@ -109,6 +117,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
             ("ai_radio/sections/save", self.save_section),
             ("ai_radio/sections/delete", self.delete_section),
             ("ai_radio/sections/template", self.section_template),
+            ("ai_radio/hosts/list", self.list_hosts),
+            ("ai_radio/hosts/get", self.get_host),
+            ("ai_radio/hosts/save", self.save_host),
+            ("ai_radio/hosts/delete", self.delete_host),
+            ("ai_radio/hosts/template", self.host_template),
+            ("ai_radio/engines/tts/list", self.list_tts_engines),
             ("ai_radio/start", self.start_run),
             ("ai_radio/stop", self.stop_run),
             ("ai_radio/status", self.get_status),
@@ -218,16 +232,16 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         async with self._station_lock:
             if section_id not in self._sections:
                 raise KeyError(f"Unknown section id: {section_id}")
-            used_by = [
-                station["id"]
-                for station in self._stations.values()
-                if section_id in station.get("section_ids", [])
-            ]
+            used_by = sorted(
+                host["id"]
+                for host in self._hosts.values()
+                if section_id in host.get("section_ids", [])
+            )
             if used_by:
-                used_list = ", ".join(sorted(used_by))
+                used_list = ", ".join(used_by)
                 raise InvalidDataError(
-                    f"Section '{section_id}' is used by stations: {used_list}. "
-                    "Remove it from those stations first."
+                    f"Section '{section_id}' is used by hosts: {used_list}. "
+                    "Remove it from those hosts first."
                 )
             self._sections.pop(section_id)
             await self._write_sections()
@@ -237,6 +251,57 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         """Return default section template."""
         defaults = self._default_sections_template()
         return deepcopy(defaults[0])
+
+    async def list_hosts(self) -> list[dict[str, Any]]:
+        """Return all configured AI Radio hosts."""
+        return sorted(
+            (deepcopy(host) for host in self._hosts.values()),
+            key=lambda host: host["name"],
+        )
+
+    async def get_host(self, host_id: str) -> dict[str, Any]:
+        """Return one host by id."""
+        if host_id not in self._hosts:
+            raise KeyError(f"Unknown host id: {host_id}")
+        return deepcopy(self._hosts[host_id])
+
+    async def save_host(self, host: dict[str, Any]) -> dict[str, Any]:
+        """Create or update a host."""
+        normalized = self._normalize_host(deepcopy(host))
+        async with self._station_lock:
+            self._hosts[normalized["id"]] = normalized
+            await self._write_hosts()
+        self.logger.info("AI Radio host saved: %s (%s)", normalized["id"], normalized["name"])
+        return deepcopy(normalized)
+
+    async def delete_host(self, host_id: str) -> None:
+        """Delete a host when unused by stations."""
+        async with self._station_lock:
+            if host_id not in self._hosts:
+                raise KeyError(f"Unknown host id: {host_id}")
+            used_by = [
+                station["id"]
+                for station in self._stations.values()
+                if station.get("host_id") == host_id
+            ]
+            if used_by:
+                used_list = ", ".join(sorted(used_by))
+                raise InvalidDataError(
+                    f"Host '{host_id}' is used by stations: {used_list}. "
+                    "Remove it from those stations first."
+                )
+            self._hosts.pop(host_id)
+            await self._write_hosts()
+        self.logger.info("AI Radio host deleted: %s", host_id)
+
+    async def host_template(self) -> dict[str, Any]:
+        """Return a default host template."""
+        return self._default_host_template()
+
+    async def list_tts_engines(self) -> list[dict[str, str]]:
+        """Return the available TTS engines for host voice selection."""
+        engines = await get_tts_engines(self.mass)
+        return [{"uid": engine.uid, "name": engine.name} for engine in engines]
 
     async def start_run(
         self,
