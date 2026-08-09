@@ -70,6 +70,14 @@ def patch_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> type[_FakeFFMpeg]:
     return _FakeFFMpeg
 
 
+@pytest.fixture
+def patch_two_minute_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> type[_TwoMinuteFFMpeg]:
+    """Swap the real FFMpeg for the fake that emits a fixed amount of audio."""
+    _TwoMinuteFFMpeg.last_instance = None
+    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
+    return _TwoMinuteFFMpeg
+
+
 def _make_audio_controller() -> StreamsAudio:
     """Build a StreamsAudio with just enough mass scaffolding to run get_media_stream."""
     audio = StreamsAudio(MagicMock())
@@ -345,9 +353,9 @@ async def test_get_media_stream_writes_back_codec_when_no_decoded_format() -> No
 @pytest.mark.asyncio
 async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
     monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
 ) -> None:
     """A multi-file item streamed from the start gets its measured duration stored."""
-    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
     streamdetails = _multi_part_streamdetails()
     audio = _make_audio_controller()
     fake_stream, _ = _recording_multi_file_stream()
@@ -355,15 +363,15 @@ async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
 
-    assert streamdetails.duration == _TwoMinuteFFMpeg.seconds_emitted
+    assert streamdetails.duration == patch_two_minute_ffmpeg.seconds_emitted
 
 
 @pytest.mark.asyncio
 async def test_get_media_stream_keeps_duration_when_multi_file_seek_is_delegated(
     monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
 ) -> None:
     """Resuming a multi-file audiobook must not shrink its duration to the remainder."""
-    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
     streamdetails = _multi_part_streamdetails()
     audio = _make_audio_controller()
     fake_stream, received_seeks = _recording_multi_file_stream()
@@ -374,17 +382,16 @@ async def test_get_media_stream_keeps_duration_when_multi_file_seek_is_delegated
     # the concat stream consumes the seek itself, which clears the local seek
     # position before the duration writeback runs at the end of the stream
     assert received_seeks == [1800]
-    assert _TwoMinuteFFMpeg.last_instance is not None
-    assert "-ss" not in (_TwoMinuteFFMpeg.last_instance.extra_input_args or [])
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" not in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
     assert streamdetails.duration == 3600
 
 
 @pytest.mark.asyncio
 async def test_get_media_stream_keeps_duration_when_provider_seek_is_delegated(
-    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
 ) -> None:
     """A seekable provider stream must not shrink its duration to the remainder either."""
-    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
     streamdetails = StreamDetails(
         provider="test_provider",
         item_id="track-1",
@@ -403,8 +410,8 @@ async def test_get_media_stream_keeps_duration_when_provider_seek_is_delegated(
     # a provider that can seek receives the position and the local one is cleared,
     # so only the remaining audio reaches ffmpeg
     provider.get_audio_stream.assert_called_once_with(streamdetails, seek_position=90)
-    assert _TwoMinuteFFMpeg.last_instance is not None
-    assert "-ss" not in (_TwoMinuteFFMpeg.last_instance.extra_input_args or [])
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" not in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
     assert streamdetails.duration == 240
 
 
