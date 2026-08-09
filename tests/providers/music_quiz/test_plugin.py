@@ -5014,6 +5014,19 @@ async def test_create_game_rejected_while_game_active() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_game_rejected_while_active_does_not_resolve_join_url() -> None:
+    """A rejected create_game call must not rotate the join code of the running game."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    cast("AsyncMock", plugin._get_join_url).reset_mock()
+
+    with pytest.raises(MusicQuizGameActiveError):
+        await plugin.create_game(source_uris=["library://playlist/2"])
+
+    cast("AsyncMock", plugin._get_join_url).assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_create_game_replaces_finished_game() -> None:
     """Creating a new game over a finished one starts fresh."""
     plugin = _create_plugin()

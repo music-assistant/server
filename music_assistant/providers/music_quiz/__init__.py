@@ -425,15 +425,15 @@ class MusicQuizPlugin(PluginProvider):
             )
         )
         quiz_type_class.validate_config(game_config)
-        # resolved before the game goes live so every public-state broadcast, including
-        # the very first lobby one a cast dashboard renders its QR from, carries it
-        self._join_url = await self._get_join_url()
         async with self._game_lock:
             if self._game is not None and self._game.phase in (
                 MusicQuizPhase.ANSWERING,
                 MusicQuizPhase.REVEAL,
             ):
                 raise MusicQuizGameActiveError("A Music Quiz game is already in progress")
+            # resolved before the game goes live so every public-state broadcast, including
+            # the very first lobby one a cast dashboard renders its QR from, carries it
+            self._join_url = await self._get_join_url()
             game = MusicQuizGame(
                 config=game_config,
                 quiz_type=quiz_type,
