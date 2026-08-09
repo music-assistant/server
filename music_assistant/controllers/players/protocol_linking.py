@@ -1543,9 +1543,6 @@ class ProtocolLinkingMixin:
             # since disabled/inactive protocols may only exist in the cached parent data.
             all_protocol_ids = set(self._get_known_protocol_ids(player))
             for protocol_id in all_protocol_ids:
-                # Clear cached parent ID in config so protocol won't try to
-                # restore a link to the deleted player on next restart
-                self._clear_protocol_parent_id(protocol_id)
                 if protocol_player := self.get_player(protocol_id):
                     # Protocol player is available: clear parent and schedule re-evaluation
                     # so it can be matched to a new parent or a new universal player
@@ -1556,6 +1553,9 @@ class ProtocolLinkingMixin:
                     )
                     self._detach_protocol_child(protocol_player)
                 else:
+                    # Clear cached parent ID in config so protocol won't try to
+                    # restore a link to the deleted player on next restart
+                    self._clear_protocol_parent_id(protocol_id)
                     # Protocol player is not registered yet — it may still be
                     # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
                     # its config as that would cause a KeyError when it finishes
@@ -1581,11 +1581,11 @@ class ProtocolLinkingMixin:
             if protocol_player.state.type != PlayerType.PROTOCOL:
                 continue
             # a protocol player waiting for a parent that never registered only has
-            # the link in its config, so match on both the live and the cached parent
-            if parent_id not in (
-                protocol_player.protocol_parent_id,
-                self._get_cached_protocol_parent_id(protocol_player.player_id),
-            ):
+            # the link in its config, so fall back to the cached parent
+            linked_parent_id = protocol_player.protocol_parent_id or (
+                self._get_cached_protocol_parent_id(protocol_player.player_id)
+            )
+            if linked_parent_id != parent_id:
                 continue
             self.logger.debug(
                 "Player %s removed - scheduling evaluation for protocol %s",
