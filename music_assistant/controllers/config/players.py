@@ -56,7 +56,6 @@ from music_assistant.constants import (
     CONF_HIDE_IN_UI,
     CONF_ICON,
     CONF_MUTE_CONTROL,
-    CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -523,7 +522,6 @@ class PlayerConfigMixin:
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
         player_config = self.get(conf_key)
         if not player_config:
             msg = f"Player configuration for {player_id} does not exist"
@@ -538,10 +536,8 @@ class PlayerConfigMixin:
             # tell the player manager to remove the player if its lingering around
             # set permanent to false otherwise we end up in an infinite loop
             await self.mass.players.unregister(player_id, permanent=False)
-        # remove the actual config if all of the above passed
-        self.remove(conf_key)
-        # Also remove the DSP config if it exists
-        self.remove(dsp_conf_key)
+        # all of the above passed, so wipe the config (incl. DSP and linked protocol players)
+        self.mass.players.delete_player_config(player_id)
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""

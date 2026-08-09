@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import CrossfadeMode
+from music_assistant_models.enums import CrossfadeMode, PlayerType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
@@ -614,6 +614,13 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # because BluOS only plays back correctly on the forced content length profile.
     # TODO: remove after 2.12 release
     if _migrate_bluesound_http_profile(data):
+        changed = True
+
+    # Drop disabled protocol player configs that lost their parent player: the device they
+    # belong to can never register again while such a config lingers, and it is not shown
+    # in the UI so there is no way to enable it again.
+    # TODO: remove after 2.12 release
+    if _migrate_orphaned_disabled_protocol_configs(data):
         changed = True
 
     return changed
@@ -1407,6 +1414,41 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
     return changed
+
+
+def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
+    """
+    Remove disabled protocol player configs that no longer have a parent player.
+
+    A protocol player is only ever presented as part of its parent player, so a disabled
+    config that outlived its parent keeps the device from registering again while offering
+    no way to enable it.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    orphaned: list[str] = []
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if player_cfg.get("player_type") != PlayerType.PROTOCOL:
+            continue
+        if player_cfg.get("enabled", True):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        parent_id = player_values.get(CONF_PROTOCOL_PARENT_ID)
+        if not parent_id or parent_id in all_player_configs:
+            continue
+        orphaned.append(player_id)
+    dsp_configs = data.get(CONF_PLAYER_DSP)
+    for player_id in orphaned:
+        del all_player_configs[player_id]
+        if isinstance(dsp_configs, dict):
+            dsp_configs.pop(player_id, None)
+        LOGGER.warning("Removed orphaned player configuration %s", player_id)
+    return bool(orphaned)
 
 
 def _migrate_bose_soundtouch_presets(data: dict[str, Any]) -> bool:

@@ -1640,12 +1640,20 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         Permanently delete a player's configuration.
 
         Should only be called for players that are not registered by the player controller.
+        The config of a linked protocol player is wiped along with it, so the device
+        returns as a brand new player once it is discovered again. Protocol players that
+        are still registered or that already moved to another parent keep their config.
         """
-        # we simply permanently delete the player by wiping its config
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
-        for key in (conf_key, dsp_conf_key):
-            self.mass.config.remove(key)
+        player_ids = [
+            protocol_id
+            for protocol_id in self._get_cached_protocol_ids(player_id)
+            if self.get_player(protocol_id) is None
+            and self._get_cached_protocol_parent_id(protocol_id) == player_id
+        ]
+        player_ids.append(player_id)
+        for pid in player_ids:
+            for key in (f"{CONF_PLAYERS}/{pid}", f"{CONF_PLAYER_DSP}/{pid}"):
+                self.mass.config.remove(key)
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
