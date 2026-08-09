@@ -11,6 +11,10 @@
     "gain_db": {
       "label": "Gain (dB)",
       "description": "Boosts the loudness/spectrum/peak values before sending, since the analysis is calibrated against a theoretical full-scale signal that typical program material -- especially a loudness-normalized radio stream -- rarely gets close to. Increase if the WLED effect looks dim or flat and never reaches full brightness/range; decrease if it's pinned at maximum."
+    },
+    "scaling_mode": {
+      "label": "Scaling mode",
+      "description": "Perceptual curve applied to loudness/spectrum values before sending, matching WLED's own built-in FFT scaling options. Square Root: balanced, a good default. Linear: highest contrast between quiet and loud, easily saturates. Logarithmic: gentlest, lifts quiet content the most. There's no single correct choice -- it depends on the music and the effect you're driving, same as picking a mode on a real WLED device."
     }
   },
   "manifest": {

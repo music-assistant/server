@@ -7,6 +7,7 @@ from typing import Final
 CONF_PORT: Final[str] = "port"
 CONF_LATENCY_MS: Final[str] = "latency_ms"
 CONF_GAIN_DB: Final[str] = "gain_db"
+CONF_SCALING_MODE: Final[str] = "scaling_mode"
 
 DEFAULT_PORT: Final[int] = 11988
 DEFAULT_LATENCY_MS: Final[int] = 100
@@ -14,12 +15,12 @@ DEFAULT_LATENCY_MS: Final[int] = 100
 # wave, which typical program material (especially loudness-normalized radio
 # streams) never approaches -- without a gain boost, everything sits
 # compressed low in the 0-255 range WLED expects. Applied as a proper
-# amplitude-domain multiplier (see packet._dbu16_to_amplitude), so it boosts
-# real signal without lifting true silence off the floor. Most of the
-# perceptual "make quiet content visible" work is now done by
-# packet.PERCEPTUAL_GAMMA, so this stays modest to avoid the two compounding
-# into an overdriven result; this default is a starting point, not a
-# calibrated value -- needs on-device tuning.
+# amplitude-domain multiplier (see packet._amplitude_from_dbu16), so it
+# boosts real signal without lifting true silence off the floor. Most of the
+# perceptual "make quiet content visible" work is now done by the scaling
+# curve (see packet.ScalingMode), so this stays modest to avoid the two
+# compounding into an overdriven result; this default is a starting point,
+# not a calibrated value -- needs on-device tuning.
 DEFAULT_GAIN_DB: Final[float] = 6.0
 
 # WLED always listens on this fixed multicast group; only the port varies
@@ -42,6 +43,11 @@ SPECTRUM_BINS: Final[int] = 16
 SPECTRUM_SCALE: Final = "log"
 SPECTRUM_F_MIN: Final[int] = 43
 SPECTRUM_F_MAX: Final[int] = 9259
+
+# Matches WLED's own three built-in FFTScalingMode curves (see packet.ScalingMode) --
+# first entry is the default. There's no single "correct" one; which looks best
+# depends on music style and taste, same as on a real WLED device.
+SCALING_MODES: Final[tuple[str, ...]] = ("square_root", "linear", "logarithmic")
 
 # Onset strength (0-255, see ExtractedFrame.peak) below this is not reported
 # as a WLED samplePeak hit.

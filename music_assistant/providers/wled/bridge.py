@@ -40,7 +40,13 @@ from .constants import (
     SPECTRUM_SCALE,
     WLED_MULTICAST_GROUP,
 )
-from .packet import loudness_to_sample, pack_audio_sync_packet, spectrum_to_fft_result
+from .packet import (
+    DEFAULT_SCALING_MODE,
+    fft_magnitude_from_amplitude,
+    loudness_to_sample,
+    pack_audio_sync_packet,
+    spectrum_to_fft_result,
+)
 
 if TYPE_CHECKING:
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
@@ -48,6 +54,7 @@ if TYPE_CHECKING:
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
+    from .packet import ScalingMode
     from .provider import WledProvider
 
 _SEND_PERIOD_S = 1.0 / SEND_RATE_HZ
@@ -69,6 +76,7 @@ class WledBridge:
         port: int,
         sendspin_server: SendspinServer,
         gain_db: float = DEFAULT_GAIN_DB,
+        scaling_mode: ScalingMode = DEFAULT_SCALING_MODE,
     ) -> None:
         """
         Initialize the bridge.
@@ -78,7 +86,8 @@ class WledBridge:
             same port as their own audioSyncPort.
         :param sendspin_server: The local Sendspin server to register with.
         :param gain_db: Gain boost applied to loudness/spectrum/peak values
-            before converting to WLED's scale (see apply_gain_db).
+            before converting to WLED's scale (see packet._amplitude_from_dbu16).
+        :param scaling_mode: Perceptual curve to apply (see packet.ScalingMode).
         """
         self.provider = provider
         self.mass = provider.mass
@@ -92,6 +101,7 @@ class WledBridge:
         self._render_handle: asyncio.TimerHandle | None = None
         self._latency_us: int = DEFAULT_LATENCY_MS * 1000
         self._gain_db: float = gain_db
+        self._scaling_mode: ScalingMode = scaling_mode
 
         # Bounded as a backstop against unbounded growth if draining ever stalls
         # (e.g. an exception in a render tick) -- a few seconds at the visualizer
@@ -171,12 +181,19 @@ class WledBridge:
             self._transport = None
         self.logger.debug("WLED sync zone stopped on port %d", self.port)
 
-    def update_settings(self, latency_ms: int | None = None, gain_db: float | None = None) -> None:
+    def update_settings(
+        self,
+        latency_ms: int | None = None,
+        gain_db: float | None = None,
+        scaling_mode: ScalingMode | None = None,
+    ) -> None:
         """Update bridge settings without restarting the bridge."""
         if latency_ms is not None:
             self._latency_us = latency_ms * 1000
         if gain_db is not None:
             self._gain_db = gain_db
+        if scaling_mode is not None:
+            self._scaling_mode = scaling_mode
 
     def _on_external_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle playback dialing this client. Nothing to do beyond logging."""
@@ -233,13 +250,19 @@ class WledBridge:
             # maxlen alone isn't a substitute for actually consuming them.
             self._drain_pending(now_us)
             if self._transport is not None:
-                sample = loudness_to_sample(self._latest_loudness, self._gain_db)
+                sample = loudness_to_sample(
+                    self._latest_loudness, self._gain_db, self._scaling_mode
+                )
                 packet = pack_audio_sync_packet(
                     sample_raw=sample,
                     sample_smth=sample,
                     sample_peak=self._peak_pending,
-                    fft_result=spectrum_to_fft_result(self._latest_spectrum, self._gain_db),
-                    fft_magnitude=loudness_to_sample(self._latest_f_peak_amp, self._gain_db),
+                    fft_result=spectrum_to_fft_result(
+                        self._latest_spectrum, self._gain_db, self._scaling_mode
+                    ),
+                    fft_magnitude=fft_magnitude_from_amplitude(
+                        self._latest_f_peak_amp, self._gain_db
+                    ),
                     fft_major_peak=float(self._latest_f_peak_freq),
                 )
                 self._transport.sendto(packet)
@@ -282,13 +305,20 @@ class WledBridgeManager:
         sendspin_prov = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
         return sendspin_prov.server_api if sendspin_prov else None
 
-    async def start(self, port: int, gain_db: float = DEFAULT_GAIN_DB) -> None:
+    async def start(
+        self,
+        port: int,
+        gain_db: float = DEFAULT_GAIN_DB,
+        scaling_mode: ScalingMode = DEFAULT_SCALING_MODE,
+    ) -> None:
         """Start the bridge for this instance's configured port."""
         server = self.sendspin_server
         if server is None:
             self.logger.warning("Sendspin provider not available, WLED sync inactive")
             return
-        self._bridge = WledBridge(self.provider, port, server, gain_db=gain_db)
+        self._bridge = WledBridge(
+            self.provider, port, server, gain_db=gain_db, scaling_mode=scaling_mode
+        )
         await self._bridge.start()
 
     async def stop(self) -> None:
@@ -298,7 +328,14 @@ class WledBridgeManager:
                 await self._bridge.stop()
             self._bridge = None
 
-    def update_settings(self, latency_ms: int | None = None, gain_db: float | None = None) -> None:
+    def update_settings(
+        self,
+        latency_ms: int | None = None,
+        gain_db: float | None = None,
+        scaling_mode: ScalingMode | None = None,
+    ) -> None:
         """Update settings on the active bridge without restarting it."""
         if self._bridge is not None:
-            self._bridge.update_settings(latency_ms=latency_ms, gain_db=gain_db)
+            self._bridge.update_settings(
+                latency_ms=latency_ms, gain_db=gain_db, scaling_mode=scaling_mode
+            )

@@ -2321,6 +2321,8 @@
   "provider.wled.config_entries.latency_ms.label": "Sync latency (ms)",
   "provider.wled.config_entries.port.description": "UDP port for this sync zone. This is not a device address -- it identifies a group of WLED devices, not one specific device. On each WLED device you want in this zone, set the matching port under Usermods > Audio Reactive > Sync Settings > 'UDP Sound Sync Port', and enable 'Receive'. Use a different port for each independent zone (e.g. 11988, 11989, ...) so they don't interfere with each other.",
   "provider.wled.config_entries.port.label": "Zone port",
+  "provider.wled.config_entries.scaling_mode.description": "Perceptual curve applied to loudness/spectrum values before sending, matching WLED's own built-in FFT scaling options. Square Root: balanced, a good default. Linear: highest contrast between quiet and loud, easily saturates. Logarithmic: gentlest, lifts quiet content the most. There's no single correct choice -- it depends on the music and the effect you're driving, same as picking a mode on a real WLED device.",
+  "provider.wled.config_entries.scaling_mode.label": "Scaling mode",
   "provider.wled.manifest.description": "Drive WLED's built-in audio-reactive effects from music played by Music Assistant.",
   "provider.yandex_music.config_entries.base_url.description": "API endpoint base URL. Only change if Yandex Music changes their API endpoint. Default: {0}",
   "provider.yandex_music.config_entries.base_url.label": "API Base URL",
