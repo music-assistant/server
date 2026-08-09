@@ -29,7 +29,8 @@ The public game state is guest-safe by construction. Common state contains:
   ``include_similar_music`` and public player progress. ``auto_start_at`` contains
   the authoritative replay deadline while a lobby countdown is active.
   ``preparing`` is true while a reset loads the sources and first round of the
-  next run. Private player IDs never appear in broadcasts. Trivia additionally
+  next run. ``join_url`` is included once resolved and omitted until then.
+  Private player IDs never appear in broadcasts. Trivia additionally
   exposes its canonical ``language`` and ``play_reveal_audio`` setting.
 - answering rounds expose common timing and question fields plus a strategy
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
@@ -623,7 +624,7 @@ class MusicQuizPlugin(PluginProvider):
             self._signal_game_updated()
             return {
                 "player_id": player.player_id,
-                "state": _player_state(game, player, answer_type, self._join_url),
+                "state": _player_state(game, player, answer_type, join_url=self._join_url),
             }
 
     async def get_player_state(self, player_id: str) -> dict[str, Any]:
@@ -636,7 +637,7 @@ class MusicQuizPlugin(PluginProvider):
             game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
             self._refresh_player_presence(player)
-            return _player_state(game, player, answer_type, self._join_url)
+            return _player_state(game, player, answer_type, join_url=self._join_url)
 
     async def get_public_state(self) -> dict[str, Any] | None:
         """
@@ -652,7 +653,7 @@ class MusicQuizPlugin(PluginProvider):
             if self._game is None:
                 return None
             game, _, answer_type = self._require_game_strategies()
-            return _public_state(game, answer_type, self._join_url)
+            return _public_state(game, answer_type, join_url=self._join_url)
 
     async def heartbeat(self, player_id: str) -> bool:
         """
@@ -722,14 +723,14 @@ class MusicQuizPlugin(PluginProvider):
             # a repeat ready is a no-op: it cannot newly satisfy the all-ready
             # check, so return current state without re-broadcasting
             if game.phase != MusicQuizPhase.REVEAL or player.ready:
-                return _player_state(game, player, answer_type, self._join_url)
+                return _player_state(game, player, answer_type, join_url=self._join_url)
             mark_player_ready(game, player.player_id)
             # advance early when every player is ready for the next round
             if are_active_players_ready(game):
                 await self._advance_from_reveal()
             else:
                 self._signal_game_updated()
-            return _player_state(game, player, answer_type, self._join_url)
+            return _player_state(game, player, answer_type, join_url=self._join_url)
 
     async def listen_in(self, web_player_id: str) -> None:
         """
@@ -843,7 +844,7 @@ class MusicQuizPlugin(PluginProvider):
             self._do_reveal(completed=True)
         else:
             self._signal_game_updated()
-        return _player_state(game, player, answer_type, self._join_url)
+        return _player_state(game, player, answer_type, join_url=self._join_url)
 
     async def _host_state(self) -> dict[str, Any]:
         """Return the host-visible state of the current game."""
@@ -852,7 +853,7 @@ class MusicQuizPlugin(PluginProvider):
             **_public_state(game, answer_type),
             "created_at": game.created_at,
             "sources": [source.to_dict() for source in game.sources],
-            "join_url": await self._get_join_url(),
+            "join_url": self._join_url or await self._get_join_url(),
             "rounds": [_host_round(game_round, answer_type) for game_round in game.rounds],
             "playback": _playback_summary(game),
         }
@@ -872,9 +873,8 @@ class MusicQuizPlugin(PluginProvider):
         if self._game is None:
             return
         game, _, answer_type = self._require_game_strategies()
-        self.signal_provider_event(
-            {"event": "game_updated", "state": _public_state(game, answer_type, self._join_url)}
-        )
+        state = _public_state(game, answer_type, join_url=self._join_url)
+        self.signal_provider_event({"event": "game_updated", "state": state})
 
     async def _resolve_sources(self, source_uris: list[str]) -> list[MusicQuizSource]:
         """Resolve configured source URIs into host-visible source metadata."""
@@ -2126,6 +2126,7 @@ def _host_round(
 def _public_state(
     game: MusicQuizGame,
     answer_type: QuizAnswerType,
+    *,
     join_url: str | None = None,
 ) -> dict[str, Any]:
     """Return the guest-safe public game state (see the module docstring)."""
@@ -2204,6 +2205,7 @@ def _player_state(
     game: MusicQuizGame,
     player: MusicQuizPlayer,
     answer_type: QuizAnswerType,
+    *,
     join_url: str | None = None,
 ) -> dict[str, Any]:
     """Return the personalized (still guest-safe) game state for a player."""
@@ -2223,4 +2225,4 @@ def _player_state(
             revealed=revealed,
         ),
     }
-    return {**_public_state(game, answer_type, join_url), "you": you}
+    return {**_public_state(game, answer_type, join_url=join_url), "you": you}
