@@ -166,9 +166,11 @@ class AIRadioQueueDJMixin:
                 await self._replan_queue(queue_id)
             except Exception:
                 # clearing the request keeps a later event able to schedule a fresh task,
-                # and returning keeps a permanently failing host from hot-looping here
+                # and returning keeps a permanently failing host from hot-looping here.
+                # a re-arm mid-pass swapped in a new state, so clear the live one
                 self.logger.exception("Queue DJ replan failed for %s", queue_id)
-                state.replan_pending = False
+                if (live_state := self._dj_queues.get(queue_id)) is not None:
+                    live_state.replan_pending = False
                 return
 
     async def _replan_queue(self, queue_id: str) -> None:

@@ -780,7 +780,7 @@ async def test_unload_cancels_an_in_flight_queue_dj_replan() -> None:
     await provider.unload()
 
     with pytest.raises(asyncio.CancelledError):
-        await replan_task
+        await asyncio.wait_for(replan_task, timeout=5)
 
 
 async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_wait(

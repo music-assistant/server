@@ -455,6 +455,35 @@ async def test_failing_pass_leaves_the_dj_schedulable(tmp_path: Path) -> None:
     assert len(dummy.player_queues.loads) == 2
 
 
+async def test_failing_pass_clears_the_state_the_queue_was_rearmed_with(tmp_path: Path) -> None:
+    """A re-arm during a failing pass must leave the new state schedulable, not the old one."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    old_state = dummy._dj_queues["queue-1"]
+    working_build_program = dummy._build_program
+
+    def _failing_build_program(_station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
+        # set_queue_dj re-arms the queue mid-pass and latches the fresh state's request
+        # onto the still running task
+        dummy._arm_dj_state("queue-1", host["id"])
+        dummy._schedule_replan("queue-1")
+        raise MusicAssistantError("misconfigured host")
+
+    dummy._build_program = _failing_build_program  # type: ignore[method-assign]
+    dummy._schedule_replan("queue-1")
+    await asyncio.gather(*dummy.mass.tasks)
+
+    new_state = dummy._dj_queues["queue-1"]
+    assert new_state is not old_state
+    assert new_state.replan_pending is False
+
+    dummy._build_program = working_build_program  # type: ignore[method-assign]
+    dummy._schedule_replan("queue-1")
+    await asyncio.gather(*dummy.mass.tasks)
+
+    assert len(dummy.player_queues.loads) == 2
+
+
 async def test_unloading_provider_schedules_no_replans(tmp_path: Path) -> None:
     """An unloading provider starts no new replan work."""
     dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
