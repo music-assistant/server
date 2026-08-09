@@ -1116,8 +1116,7 @@ class ProtocolLinkingMixin:
         """
         Move the per-queue settings of a replaced universal player to its replacement.
 
-        Queue ids equal player ids. The queue config is not covered by the
-        permanent unregister cleanup, so the source entry is removed here.
+        Queue ids equal player ids, so the source entry is removed once it is carried over.
 
         :param universal_id: Player id of the obsolete universal player.
         :param native_id: Player id of the native player that replaces it.
