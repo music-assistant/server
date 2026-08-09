@@ -403,7 +403,9 @@ class DashboardController(CoreController):
                 raise InvalidCommand(msg)
             return f"/now-playing?{urlencode({'player': player_id}, safe=ROUTE_SAFE_CHARS)}"
         if dashboard == DashboardType.MUSIC_QUIZ:
-            return "/music-quiz"
+            # the viewer-only kiosk view: the host page needs USERS_INVITE, which a
+            # dashboard viewer never has
+            return "/music-quiz/dashboard"
         msg = f"Unsupported dashboard type: {dashboard}"
         raise InvalidCommand(msg)
 
