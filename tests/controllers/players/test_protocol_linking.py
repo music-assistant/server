@@ -8523,9 +8523,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, native_parent_id
         )
         mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
 
         # Each protocol's parent_id is restored to the disabled native parent
         parent_restorations = {
@@ -8620,9 +8617,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, "native_a"
         )
         mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
 
     @pytest.mark.asyncio
     async def test_restore_native_claims_carries_config_and_deletes_wrapper(
@@ -8712,9 +8706,7 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         # the wrapper's own config entries are all gone
         assert universal_id not in players_tree
         # cached queue state of the wrapper is purged as well
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
+        mock_mass.player_queues.purge_saved_queue.assert_called_once_with(universal_id)
         # the wrapper itself is not registered as a player
         assert universal_id not in controller._players
         for task in scheduled_tasks:

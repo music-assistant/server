@@ -1,27 +1,47 @@
 """
-Regression tests for removing a player config with linked protocol players.
+Regression tests for the cleanup that runs when a player is removed.
 
 Reproduces the case where a player is first disabled and then removed: disabling
 cascades to the linked protocol players, so none of them is registered anymore when
 the removal comes in. The leftover (disabled) protocol config is not shown anywhere
-and keeps the device from ever registering again.
+and keeps the device from ever registering again, and the leftover queue settings and
+queue state are silently inherited by a device that returns under the same player id.
 
 Also covers the mirrored case where the player being removed is not registered (e.g.
 its provider was unloaded) while one of its protocol players still is: that protocol
 player must be detached from the removed player instead of keeping a dead parent link.
 """
 
+import logging
 from collections.abc import Callable, Generator
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerType
+from music_assistant_models.enums import (
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+    ProviderType,
+)
 
-from music_assistant.constants import CONF_PLAYER_DSP, CONF_PLAYERS, CONF_PROTOCOL_PARENT_ID
+from music_assistant.constants import (
+    CONF_PLAYER_DSP,
+    CONF_PLAYER_QUEUES,
+    CONF_PLAYERS,
+    CONF_PROTOCOL_PARENT_ID,
+)
+from music_assistant.controllers.player_queues.constants import (
+    CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+    CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+)
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import DeviceInfo, Player
 
 PARENT_ID = "up_esp32"
 PROTOCOL_ID = "spb_esp32"
+PLAYER_ID = "test_player_1"
 
 
 class StubProtocolPlayer:
@@ -97,6 +117,91 @@ def _store_configs(mass: MusicAssistant, enabled: bool) -> None:
         },
     )
     mass.config.set(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}", {"enabled": True})
+
+
+def _store_player_config(mass: MusicAssistant, player_id: str, enabled: bool = False) -> None:
+    """Store a plain player config with customised queue settings."""
+    mass.config.set(
+        f"{CONF_PLAYERS}/{player_id}",
+        {
+            "player_id": player_id,
+            "provider": "test_provider",
+            "player_type": "player",
+            "enabled": enabled,
+            "values": {},
+        },
+    )
+    mass.config.set(
+        f"{CONF_PLAYER_QUEUES}/{player_id}",
+        {"queue_id": player_id, "values": {"crossfade_duration": 9}},
+    )
+
+
+async def _store_queue_cache(mass: MusicAssistant, player_id: str) -> None:
+    """Store cached queue state and items for the given player."""
+    for category in (CACHE_CATEGORY_PLAYER_QUEUE_STATE, CACHE_CATEGORY_PLAYER_QUEUE_ITEMS):
+        await mass.cache.set(
+            key=player_id,
+            data={"queue_id": player_id},
+            provider="player_queues",
+            category=category,
+            persistent=True,
+        )
+
+
+async def _get_queue_cache(mass: MusicAssistant, player_id: str) -> list[object]:
+    """Return the cached queue state and items for the given player."""
+    return [
+        await mass.cache.get(key=player_id, provider="player_queues", category=category)
+        for category in (CACHE_CATEGORY_PLAYER_QUEUE_STATE, CACHE_CATEGORY_PLAYER_QUEUE_ITEMS)
+    ]
+
+
+class _TestProvider:
+    """Minimal PlayerProvider stand-in that supports removing its players."""
+
+    def __init__(self, mass: MusicAssistant) -> None:
+        """Initialize the test provider."""
+        self.mass = mass
+        self.domain = "test_provider"
+        self.instance_id = "test_provider"
+        self.name = "Test Provider"
+        self.available = True
+        self.logger = logging.getLogger("test.test_provider")
+        self.manifest = MagicMock()
+        self.manifest.domain = self.domain
+        self.manifest.name = self.name
+        self.manifest.type = ProviderType.PLAYER
+        self.type = ProviderType.PLAYER
+
+    def check_feature(self, feature: ProviderFeature) -> None:
+        """Accept every feature check."""
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove the player, like a real provider does."""
+        await self.mass.players.unregister(player_id, permanent=True)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider (nothing to clean up)."""
+
+
+class _TestPlayer(Player):
+    """Minimal player stand-in."""
+
+    def __init__(self, provider: _TestProvider, player_id: str) -> None:
+        """Initialize the test player."""
+        super().__init__(provider, player_id)  # type: ignore[arg-type]
+        self._attr_name = "Test Player"
+        self._attr_type = PlayerType.PLAYER
+        self._attr_available = True
+        self._attr_powered = True
+        self._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
+        self._attr_device_info = DeviceInfo(model="Test Model", manufacturer="Test Manufacturer")
+        self._cache.clear()
+        self.update_state(signal_event=False)
+
+    async def stop(self) -> None:
+        """Stop playback - required abstract method."""
 
 
 async def test_remove_wipes_unregistered_protocol_configs(mass: MusicAssistant) -> None:
@@ -194,3 +299,84 @@ async def test_remove_leaves_unrelated_protocol_player_alone(
 
     assert protocol_player.protocol_parent_id == "cast_1"
     assert not _pop_scheduled_evaluation(mass)
+
+
+async def test_remove_config_wipes_queue_config(mass: MusicAssistant) -> None:
+    """Removing the config of an unregistered player also wipes its queue settings."""
+    _store_player_config(mass, PLAYER_ID)
+    await _store_queue_cache(mass, PLAYER_ID)
+
+    await mass.config.remove_player_config(PLAYER_ID)
+
+    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
+    assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
+
+
+async def test_remove_player_wipes_queue_config(mass: MusicAssistant) -> None:
+    """Removing an unregistered player also wipes its queue settings."""
+    _store_player_config(mass, PLAYER_ID)
+    await _store_queue_cache(mass, PLAYER_ID)
+
+    await mass.players.remove(PLAYER_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is None
+    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
+    assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
+
+
+async def test_remove_registered_player_wipes_queue_config(mass: MusicAssistant) -> None:
+    """Removing a registered player also wipes its queue settings and state."""
+    _store_player_config(mass, PLAYER_ID, enabled=True)
+    provider = _TestProvider(mass)
+    player = _TestPlayer(provider, PLAYER_ID)
+    mass.players._players[PLAYER_ID] = player
+    await mass.player_queues.on_player_register(player)
+    await _store_queue_cache(mass, PLAYER_ID)
+
+    await mass.config.remove_player_config(PLAYER_ID)
+
+    assert mass.players.get_player(PLAYER_ID) is None
+    assert mass.player_queues.get(PLAYER_ID) is None
+    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is None
+    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
+    assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
+
+
+async def test_remove_wipes_queue_config_of_linked_protocol_player(
+    mass: MusicAssistant,
+) -> None:
+    """The queue settings of a wiped protocol player config go along with it."""
+    _store_configs(mass, enabled=False)
+    mass.config.set(
+        f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}",
+        {"queue_id": PROTOCOL_ID, "values": {"crossfade_duration": 9}},
+    )
+    await _store_queue_cache(mass, PROTOCOL_ID)
+
+    await mass.config.remove_player_config(PARENT_ID)
+
+    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}") is None
+    assert await _get_queue_cache(mass, PROTOCOL_ID) == [None, None]
+
+
+async def test_remove_keeps_queue_config_of_registered_protocol_player(
+    mass: MusicAssistant,
+    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
+) -> None:
+    """A protocol player that keeps its config also keeps its queue settings and state."""
+    _store_configs(mass, enabled=True)
+    mass.config.set(
+        f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}",
+        {"queue_id": PROTOCOL_ID, "values": {"crossfade_duration": 9}},
+    )
+    await _store_queue_cache(mass, PROTOCOL_ID)
+    register_protocol_player(PARENT_ID)
+
+    mass.players.delete_player_config(PARENT_ID)
+
+    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}") is not None
+    assert await _get_queue_cache(mass, PROTOCOL_ID) == [
+        {"queue_id": PROTOCOL_ID},
+        {"queue_id": PROTOCOL_ID},
+    ]
+    _pop_scheduled_evaluation(mass)

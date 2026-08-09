@@ -84,6 +84,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PROTOCOL_PARENT_ID,
@@ -1637,9 +1638,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     def delete_player_config(self, player_id: str) -> None:
         """
-        Permanently delete a player's configuration.
+        Permanently delete a player's configuration, including its DSP and queue settings.
 
-        Only wipes the stored configuration, the player itself is not unregistered.
+        The saved queue of a player that is no longer registered is dropped along with it,
+        so a device that returns under the same id starts out fresh. The player itself is
+        not unregistered.
         The config of a linked protocol player is wiped along with it, so the device
         returns as a brand new player once it is discovered again. Protocol players that
         are still registered or that already moved to another parent keep their config;
@@ -1654,8 +1657,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         ]
         player_ids.append(player_id)
         for pid in player_ids:
-            for key in (f"{CONF_PLAYERS}/{pid}", f"{CONF_PLAYER_DSP}/{pid}"):
+            for key in (
+                f"{CONF_PLAYERS}/{pid}",
+                f"{CONF_PLAYER_DSP}/{pid}",
+                f"{CONF_PLAYER_QUEUES}/{pid}",
+            ):
                 self.mass.config.remove(key)
+            if self.get_player(pid) is None:
+                self.mass.player_queues.purge_saved_queue(pid)
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
