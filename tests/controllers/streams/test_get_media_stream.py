@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -88,6 +88,9 @@ def _make_pcm_format() -> AudioFormat:
     )
 
 
+_PCM_SAMPLE_SIZE = _make_pcm_format().pcm_sample_size
+
+
 def _make_streamdetails(
     *,
     audio_format: AudioFormat,
@@ -125,6 +128,13 @@ async def _drain(gen: AsyncGenerator[bytes]) -> None:
         pass
 
 
+async def _fake_multi_file_stream(
+    _streamdetails: StreamDetails, _seek_position: int = 0
+) -> AsyncGenerator[bytes]:
+    """Stand in for the concat stream so no ffmpeg or temp file is needed."""
+    yield b""
+
+
 class _StallingFFMpeg(_FakeFFMpeg):
     """FFMpeg double whose read never produces a chunk (frozen source)."""
 
@@ -139,6 +149,33 @@ class _SlowConsumerFFMpeg(_FakeFFMpeg):
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
         for _ in range(3):
             yield b"\x00\x01" * 256
+
+
+class _TwoMinuteFFMpeg(_FakeFFMpeg):
+    """FFMpeg double that emits exactly two minutes of PCM at the format below."""
+
+    seconds_emitted = 120
+
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        yield b"\x00" * (_PCM_SAMPLE_SIZE * self.seconds_emitted)
+
+
+def _multi_part_streamdetails() -> StreamDetails:
+    """Build StreamDetails for a multi-file audiobook of two 30 minute parts."""
+    return StreamDetails(
+        provider="test_provider",
+        item_id="audiobook-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.AUDIOBOOK,
+        stream_type=StreamType.HTTP,
+        path=[
+            MultiPartPath(path="http://test.invalid/part-1.mp3", duration=1800),
+            MultiPartPath(path="http://test.invalid/part-2.mp3", duration=1800),
+        ],
+        duration=3600,
+        can_seek=True,
+        allow_seek=True,
+    )
 
 
 def _flac_streamdetails() -> StreamDetails:
@@ -286,6 +323,38 @@ async def test_get_media_stream_writes_back_codec_when_no_decoded_format() -> No
     # decoded format that AudioFormat is the same object as streamdetails.audio_format,
     # so the controller's writeback path is exercised end-to-end.
     assert streamdetails.audio_format.codec_type is ContentType.FLAC
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A multi-file item streamed from the start gets its measured duration stored."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    monkeypatch.setattr(audio, "get_multi_file_stream", _fake_multi_file_stream)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == _TwoMinuteFFMpeg.seconds_emitted
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_seek_is_delegated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resuming a multi-file audiobook must not shrink its duration to the remainder."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    # get_multi_file_stream consumes the seek itself, which clears the local seek
+    # position before the duration writeback runs at the end of the stream.
+    monkeypatch.setattr(audio, "get_multi_file_stream", _fake_multi_file_stream)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=1800))
+
+    assert streamdetails.duration == 3600
 
 
 @pytest.mark.asyncio
