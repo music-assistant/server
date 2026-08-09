@@ -40,7 +40,7 @@ getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.3.0
 hue-entertainment==0.1.2
-huggingface-hub==1.22.0
+huggingface-hub==1.26.1
 ibroadcastaio==0.8.0
 ifaddr==0.2.0
 kaldi-native-fbank==1.22.3
@@ -99,7 +99,7 @@ torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
 transformers==5.14.1
-usearch==2.25.3
+usearch==2.26.0
 uv>=0.8.0
 websocket-client==1.9.0
 wiim==0.1.5

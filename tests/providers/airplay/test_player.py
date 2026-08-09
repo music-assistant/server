@@ -762,13 +762,13 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     mock_update.assert_called_once()
 
 
-def test_sync_volume_level_uses_parent_volume_without_native_parent(
+def test_sync_volume_level_uses_parent_volume_when_control_is_self(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """Keep existing behavior for protocol parents without native volume control."""
+    """Pull the parent volume when the parent's volume control is this player."""
     parent = MagicMock()
     parent.state.volume_level = 42
-    parent.volume_control = None
+    parent.volume_control = "test_player"
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48
@@ -785,6 +785,58 @@ def test_sync_volume_level_uses_parent_volume_without_native_parent(
     mock_update.assert_called_once()
 
 
+def test_sync_volume_level_uses_parent_volume_via_bridge_control(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Pull the parent volume when the volume control is a bridge riding on this player."""
+    parent = MagicMock()
+    parent.state.volume_level = 42
+    parent.volume_control = "sendspin_bridge"
+    bridge = MagicMock()
+    bridge.underlying_player_id = "test_player"
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "sendspin_bridge": bridge,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 42
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id,
+        CONF_STORED_VOLUME,
+        42,
+    )
+    mock_update.assert_called_once()
+
+
+def test_sync_volume_level_unity_gain_when_other_control_owns_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Play at unity gain when the parent volume is owned by another (hardware) control."""
+    parent = MagicMock()
+    parent.state.volume_level = 30
+    parent.volume_control = "dlna_player"
+    dlna_player = MagicMock()
+    dlna_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "dlna_player": dlna_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 100
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_called_once()
+
+
 def test_sync_volume_level_ignores_parent_volume_zero(
     airplay_player: AirPlayPlayer,
 ) -> None:
@@ -797,7 +849,7 @@ def test_sync_volume_level_ignores_parent_volume_zero(
     """
     parent = MagicMock()
     parent.state.volume_level = 0
-    parent.volume_control = None
+    parent.volume_control = "test_player"
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48

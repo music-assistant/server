@@ -385,8 +385,7 @@ class OpenSonicProvider(MusicProvider):
             tr = []
             for entry in answer.song:
                 self._set_loudness(entry)
-                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-                tr.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+                tr.append(parse_track(self.logger, self.instance_id, entry))
         else:
             tr = []
 
@@ -720,8 +719,7 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+            tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
     @use_cache(3600 * 3)  # cache for 3 hours

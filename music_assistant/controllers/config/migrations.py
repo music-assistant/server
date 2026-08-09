@@ -616,6 +616,13 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_bluesound_http_profile(data):
         changed = True
 
+    # Drop disabled protocol player configs that lost their parent player: the device they
+    # belong to can never register again while such a config lingers, and it is not shown
+    # in the UI so there is no way to enable it again.
+    # TODO: remove after 2.12 release
+    if _migrate_orphaned_disabled_protocol_configs(data):
+        changed = True
+
     return changed
 
 
@@ -1407,6 +1414,53 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
     return changed
+
+
+def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
+    """
+    Remove disabled protocol player configs that no longer belong to a player.
+
+    A protocol player is only ever presented as part of the player that owns it, so a
+    disabled config that outlived its owner keeps the device from registering again while
+    offering no way to enable it.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    linked_ids: set[str] = set()
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
+            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
+    orphaned: list[str] = []
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if player_cfg.get("player_type") != "protocol":
+            continue
+        if player_cfg.get("enabled", True):
+            continue
+        # a player owns a protocol player from either side of the link
+        if player_id in linked_ids:
+            continue
+        player_values = player_cfg.get("values")
+        parent_id = (
+            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
+        )
+        if parent_id in all_player_configs:
+            continue
+        orphaned.append(player_id)
+    dsp_configs = data.get(CONF_PLAYER_DSP)
+    for player_id in orphaned:
+        del all_player_configs[player_id]
+        if isinstance(dsp_configs, dict):
+            dsp_configs.pop(player_id, None)
+        LOGGER.warning("Removed orphaned player configuration %s", player_id)
+    return bool(orphaned)
 
 
 def _migrate_bose_soundtouch_presets(data: dict[str, Any]) -> bool:

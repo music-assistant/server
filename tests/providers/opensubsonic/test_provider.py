@@ -30,6 +30,17 @@ def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
     return tasks, Mock(side_effect=_schedule)
 
 
+def _force_cache_miss(provider: OpenSonicProvider) -> list[asyncio.Future[Any]]:
+    """Make a @use_cache method run its body, capturing the background store task."""
+    tasks, task_mock = _make_task_capturer()
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(None, False, False)
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    provider.mass.create_task = task_mock  # type: ignore[method-assign]
+    return tasks
+
+
 def _make_sonic_item(
     *,
     item_id: str = "tr-1",
@@ -376,14 +387,7 @@ async def test_get_playlist_tracks_avoids_per_track_metadata_fetch(
     provider.conn.get_lyrics = AsyncMock()
     provider.conn.get_lyrics_by_song_id = AsyncMock()
 
-    # force a cache miss so the real method body runs, and capture the background
-    # store task so its coroutine is awaited rather than left pending
-    tasks, task_mock = _make_task_capturer()
-    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
-        return_value=(None, False, False)
-    )
-    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
-    provider.mass.create_task = task_mock  # type: ignore[method-assign]
+    tasks = _force_cache_miss(provider)
 
     # parse_track has its own coverage in test_parsers; isolate the fetch behaviour here
     monkeypatch.setattr(
@@ -399,5 +403,68 @@ async def test_get_playlist_tracks_avoids_per_track_metadata_fetch(
     provider.conn.get_playlist.assert_awaited_once_with("pl-1")
     provider.conn.get_album.assert_not_awaited()
     provider.conn.get_album_info2.assert_not_awaited()
+    provider.conn.get_lyrics.assert_not_awaited()
+    provider.conn.get_lyrics_by_song_id.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# search / get_artist_toptracks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_avoids_per_track_lyrics_fetch(
+    provider: OpenSonicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Searching must not fetch lyrics per hit (avoids N+1 requests)."""
+    answer = Mock()
+    answer.artist = None
+    answer.album = None
+    answer.song = [_make_sonic_item(item_id=f"tr-{i}") for i in range(3)]
+
+    provider.conn = Mock()
+    provider.conn.search3 = AsyncMock(return_value=answer)
+    provider.conn.get_lyrics = AsyncMock()
+    provider.conn.get_lyrics_by_song_id = AsyncMock()
+
+    tasks = _force_cache_miss(provider)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.parse_track",
+        _parse_track_stub,
+    )
+
+    result = await provider.search("query", [MediaType.TRACK], limit=3)
+    await asyncio.gather(*tasks)
+
+    assert len(result.tracks) == 3
+    provider.conn.search3.assert_awaited_once()
+    provider.conn.get_lyrics.assert_not_awaited()
+    provider.conn.get_lyrics_by_song_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_artist_toptracks_avoids_per_track_lyrics_fetch(
+    provider: OpenSonicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opening an artist must not fetch lyrics per top track."""
+    provider.conn = Mock()
+    provider.conn.get_artist = AsyncMock(return_value=Mock(name="an-artist"))
+    provider.conn.get_top_songs = AsyncMock(
+        return_value=[_make_sonic_item(item_id=f"tr-{i}") for i in range(3)]
+    )
+    provider.conn.get_lyrics = AsyncMock()
+    provider.conn.get_lyrics_by_song_id = AsyncMock()
+
+    tasks = _force_cache_miss(provider)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.parse_track",
+        _parse_track_stub,
+    )
+
+    result = await provider.get_artist_toptracks("ar-1")
+    await asyncio.gather(*tasks)
+
+    assert len(result) == 3
+    provider.conn.get_top_songs.assert_awaited_once()
     provider.conn.get_lyrics.assert_not_awaited()
     provider.conn.get_lyrics_by_song_id.assert_not_awaited()
