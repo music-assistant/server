@@ -1639,7 +1639,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         Permanently delete a player's configuration.
 
-        Should only be called for players that are not registered by the player controller.
+        Only wipes the stored configuration, the player itself is not unregistered.
         The config of a linked protocol player is wiped along with it, so the device
         returns as a brand new player once it is discovered again. Protocol players that
         are still registered or that already moved to another parent keep their config.

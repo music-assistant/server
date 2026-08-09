@@ -1418,15 +1418,24 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
 
 def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
     """
-    Remove disabled protocol player configs that no longer have a parent player.
+    Remove disabled protocol player configs that no longer belong to a player.
 
-    A protocol player is only ever presented as part of its parent player, so a disabled
-    config that outlived its parent keeps the device from registering again while offering
-    no way to enable it.
+    A protocol player is only ever presented as part of the player that owns it, so a
+    disabled config that outlived its owner keeps the device from registering again while
+    offering no way to enable it.
     """
     all_player_configs = data.get(CONF_PLAYERS, {})
     if not isinstance(all_player_configs, dict):
         return False
+    linked_ids: set[str] = set()
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
+            linked_ids.update(cached_ids)
     orphaned: list[str] = []
     for player_id, player_cfg in all_player_configs.items():
         if not isinstance(player_cfg, dict):
@@ -1435,11 +1444,14 @@ def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
             continue
         if player_cfg.get("enabled", True):
             continue
-        player_values = player_cfg.get("values")
-        if not isinstance(player_values, dict):
+        # a player owns a protocol player from either side of the link
+        if player_id in linked_ids:
             continue
-        parent_id = player_values.get(CONF_PROTOCOL_PARENT_ID)
-        if not parent_id or parent_id in all_player_configs:
+        player_values = player_cfg.get("values")
+        parent_id = (
+            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
+        )
+        if parent_id in all_player_configs:
             continue
         orphaned.append(player_id)
     dsp_configs = data.get(CONF_PLAYER_DSP)

@@ -1109,6 +1109,29 @@ def _orphaned_protocol_data() -> dict[str, Any]:
                 "enabled": False,
                 "values": {"protocol_parent_id": "up_kitchen"},
             },
+            # only the parent side of the link survived
+            "ap_office": {
+                "player_id": "ap_office",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": False,
+                "values": {},
+            },
+            "cast_office": {
+                "player_id": "cast_office",
+                "provider": "chromecast",
+                "player_type": "player",
+                "enabled": True,
+                "values": {"linked_protocol_ids": ["ap_office"]},
+            },
+            # neither side of the link survived
+            "ap_ghost": {
+                "player_id": "ap_ghost",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": False,
+                "values": {},
+            },
             "up_kitchen": {
                 "player_id": "up_kitchen",
                 "provider": "universal_player",
@@ -1127,9 +1150,11 @@ def test_migrate_orphaned_disabled_protocol_configs() -> None:
     assert _migrate_orphaned_disabled_protocol_configs(data) is True
     assert "spb_esp32" not in data["players"]
     assert "spb_esp32" not in data["player_dsp"]
-    # the protocol player that still has its (disabled) parent is left alone
+    assert "ap_ghost" not in data["players"]
+    # protocol players that are still owned by a player are left alone
     assert "spb_kitchen" in data["players"]
     assert "spb_kitchen" in data["player_dsp"]
+    assert "ap_office" in data["players"]
     assert _migrate_orphaned_disabled_protocol_configs(data) is False
 
 
@@ -1137,6 +1162,7 @@ def test_migrate_orphaned_disabled_protocol_configs_keeps_enabled_players() -> N
     """An enabled protocol player is kept: it can register and find a new parent."""
     data = _orphaned_protocol_data()
     data["players"]["spb_esp32"]["enabled"] = True
+    data["players"]["ap_ghost"]["enabled"] = True
     assert _migrate_orphaned_disabled_protocol_configs(data) is False
     assert "spb_esp32" in data["players"]
 
@@ -1146,7 +1172,7 @@ def test_migrate_orphaned_disabled_protocol_configs_tolerates_malformed_data() -
     data: dict[str, Any] = {
         "players": {
             "p1": "not-a-dict",
-            "p2": {"player_id": "p2", "player_type": "protocol", "enabled": False, "values": None},
+            "p2": {"player_id": "p2", "player_type": "player", "enabled": False, "values": None},
             "p3": {"player_id": "p3", "player_type": "player", "enabled": False, "values": {}},
         }
     }
