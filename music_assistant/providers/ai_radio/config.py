@@ -15,6 +15,10 @@ from .constants import (
     CONF_TIMEZONE,
     CONF_WEATHER_CITY,
     CONF_WEATHER_COUNTRY,
+    CONF_WEATHER_PROVIDER,
+    CONF_WEATHER_TIMEOUT,
+    DEFAULT_WEATHER_PROVIDER,
+    DEFAULT_WEATHER_TIMEOUT_SECONDS,
 )
 
 if TYPE_CHECKING:
@@ -52,5 +56,21 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             options=country_options,
             default_value=region if region in country_codes else "",
+        ),
+        ConfigEntry(
+            key=CONF_WEATHER_PROVIDER,
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(value="open_meteo"),
+                ConfigValueOption(value="disabled"),
+            ],
+            default_value=DEFAULT_WEATHER_PROVIDER,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WEATHER_TIMEOUT,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_WEATHER_TIMEOUT_SECONDS,
+            advanced=True,
         ),
     )

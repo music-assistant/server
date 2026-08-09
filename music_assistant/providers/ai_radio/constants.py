@@ -9,6 +9,8 @@ CONF_TTS_ENGINE = "tts_engine"
 CONF_TIMEZONE = "timezone"
 CONF_WEATHER_CITY = "weather_city"
 CONF_WEATHER_COUNTRY = "weather_country"
+CONF_WEATHER_PROVIDER = "weather_provider"
+CONF_WEATHER_TIMEOUT = "weather_timeout_seconds"
 
 # providers load concurrently, so the plugin supplying the engines may still be
 # loading when AI Radio initializes: wait this long for it before giving up
@@ -73,6 +75,9 @@ ATTR_PROMPT = "ai_radio_prompt"
 ATTR_MAX_CHARS = "ai_radio_max_chars"
 ATTR_WEB_SEARCH_MODE = "ai_radio_web_search_mode"
 ATTR_RENDERED_TEXT = "ai_radio_rendered_text"
+ATTR_HOST_ID = "ai_radio_host_id"
+ATTR_QUEUE_DJ = "ai_radio_queue_dj"
+ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays

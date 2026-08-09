@@ -36,7 +36,7 @@ def test_optional_entries_use_the_advanced_flag_not_the_advanced_category() -> N
     for entry in entries:
         assert entry.category != "advanced", f"{entry.key} uses the deprecated advanced category"
     advanced = {entry.key for entry in entries if entry.advanced}
-    assert advanced == {"timezone"}
+    assert advanced == {"timezone", "weather_provider", "weather_timeout_seconds"}
 
 
 def test_weather_country_is_a_dropdown_defaulting_to_the_server_region() -> None:
@@ -47,6 +47,23 @@ def test_weather_country_is_a_dropdown_defaulting_to_the_server_region() -> None
     assert entry.default_value == "NL"
     assert entry.options
     assert any(option.value == "NL" for option in entry.options)
+
+
+def test_config_entries_include_weather_provider_and_timeout() -> None:
+    """Weather provider selection and its request timeout are advanced provider options."""
+    mass = _make_mass("http://localhost:8095")
+
+    entries = asyncio.run(get_config_entries(mass))
+
+    keys = {entry.key for entry in entries}
+    assert "weather_provider" in keys
+    assert "weather_timeout_seconds" in keys
+    provider_entry = next(e for e in entries if e.key == "weather_provider")
+    assert provider_entry.default_value == "open_meteo"
+    assert provider_entry.advanced is True
+    timeout_entry = next(e for e in entries if e.key == "weather_timeout_seconds")
+    assert timeout_entry.default_value == 20
+    assert timeout_entry.advanced is True
 
 
 def test_provider_instance_exposes_the_same_config_entries() -> None:
