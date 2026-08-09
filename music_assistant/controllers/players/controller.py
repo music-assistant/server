@@ -1642,8 +1642,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         Only wipes the stored configuration, the player itself is not unregistered.
         The config of a linked protocol player is wiped along with it, so the device
         returns as a brand new player once it is discovered again. Protocol players that
-        are still registered or that already moved to another parent keep their config.
+        are still registered or that already moved to another parent keep their config;
+        registered ones are detached from the removed player and re-evaluated.
         """
+        self._detach_protocol_children(player_id)
         player_ids = [
             protocol_id
             for protocol_id in self.mass.config.get(CONF_PLAYERS, {})
