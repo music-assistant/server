@@ -1766,7 +1766,6 @@
   "provider.pandora.config_entries.takeover_stream.label": "Take over stream",
   "provider.pandora.config_entries.username.description": "Your Pandora username or email address",
   "provider.pandora.manifest.description": "Pandora is a music and podcast streaming service that creates personalized radio stations based on your favorite songs and artists.",
-  "provider.pandora.media.radio.pandora_station.name": "Pandora Station {0}",
   "provider.pandora.setup_flow.user.description": "Enter the username (or email address) and password of your Pandora account.",
   "provider.pandora.setup_flow.user.title": "Sign in to Pandora",
   "provider.party.config_categories.guest_features": "Guest Features",

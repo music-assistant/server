@@ -15,10 +15,10 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-# Supported Features - Pandora is primarily a radio service
+# Supported Features - stations are exposed as dynamic playlists
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
-    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
 }
 
 
