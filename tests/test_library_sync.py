@@ -811,6 +811,7 @@ def mock_controller() -> Mock:
     """Create a mock MediaControllerBase for set_provider_mappings tests."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.media_type = MediaType.ALBUM
+    ctrl.logger = Mock()
     ctrl.mass = Mock()
     ctrl.mass.music.database.delete = AsyncMock()
     ctrl.mass.music.database.upsert_many = AsyncMock()
@@ -832,6 +833,20 @@ async def test_set_provider_mappings_overwrite_deletes_and_reinserts(
 
     mock_controller.mass.music.database.delete.assert_called_once()
     mock_controller.mass.music.database.upsert_many.assert_called_once()
+
+
+async def test_set_provider_mappings_overwrite_keeps_existing_when_empty(
+    mock_controller: Mock,
+) -> None:
+    """
+    Test that overwrite=True with no mappings leaves the existing mappings untouched.
+
+    :param mock_controller: Mock MediaControllerBase instance.
+    """
+    await mock_controller.set_provider_mappings(1, [], overwrite=True)
+
+    mock_controller.mass.music.database.delete.assert_not_called()
+    mock_controller.mass.music.database.upsert_many.assert_not_called()
 
 
 async def test_set_provider_mappings_upsert_preserves_null_in_library(

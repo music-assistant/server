@@ -1206,13 +1206,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> None:
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
-        if overwrite:
-            # on overwrite, clear the provider_mappings table first
-            # this is done for filesystem provider changing the path (and thus item_id)
-            await self.mass.music.database.delete(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": self.media_type.value, "item_id": db_id},
-            )
         prov_map_objs: list[dict[str, Any]] = []
         for provider_mapping in provider_mappings:
             prov_map_obj = {
@@ -1228,6 +1221,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             prov_map_objs.append(prov_map_obj)
+        if not prov_map_objs:
+            # an item without any provider mapping can not be played or resolved,
+            # so never wipe the existing rows when there is nothing to replace them with
+            if overwrite:
+                self.logger.warning(
+                    "Ignoring request to clear all provider mappings of %s %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        if overwrite:
+            # on overwrite, clear the provider_mappings table first
+            # this is done for filesystem provider changing the path (and thus item_id)
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
         await self.mass.music.database.upsert_many(
             DB_TABLE_PROVIDER_MAPPINGS,
             prov_map_objs,
