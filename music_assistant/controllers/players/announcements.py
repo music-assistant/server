@@ -258,8 +258,9 @@ class AnnouncementsMixin:
                         player.state.name,
                         url,
                     )
-                announcement_volume = self.get_announcement_volume(player_id, volume_level)
-                await announce_player.play_announcement(announcement, announcement_volume)
+                await self._play_native_announcement(
+                    player, announce_player, announcement, volume_level
+                )
                 return
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
@@ -320,6 +321,42 @@ class AnnouncementsMixin:
             )
             volume_level = min(int(announce_volume_max), volume_level)
         return None if volume_level is None else int(volume_level)
+
+    async def _play_native_announcement(
+        self,
+        player: Player,
+        announce_player: Player,
+        announcement: PlayerMedia,
+        volume_level: int | None,
+    ) -> None:
+        """
+        Hand an announcement to a player that plays it natively.
+
+        :param player: The player the announcement is played on.
+        :param announce_player: The player (or linked protocol) that plays the announcement.
+        :param announcement: The announcement to play.
+        :param volume_level: Optional volume level override for the announcement.
+        """
+        # an announcement is always meant to be heard, so a deliberate mute is lifted for
+        # its duration. this happens before the announcement volume is resolved below,
+        # since a fake mute control parks the player at volume 0 to mute it.
+        # in case of a (sync) group, this covers all child players.
+        muted_players = [
+            muted_player
+            for member_id in player.state.group_members or (player.player_id,)
+            if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
+        ]
+        async with TaskManager(self.mass) as tg:
+            for muted_player in muted_players:
+                tg.create_task(self._set_announcement_mute(muted_player, False))
+        try:
+            announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
+            await announce_player.play_announcement(announcement, announcement_volume)
+        finally:
+            # the provider only returns once the announcement finished playing
+            async with TaskManager(self.mass) as tg:
+                for muted_player in muted_players:
+                    tg.create_task(self._set_announcement_mute(muted_player, True))
 
     async def _play_announcement(
         self,

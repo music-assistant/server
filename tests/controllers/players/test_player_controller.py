@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -82,6 +82,28 @@ def _player_config_stub(
         return default
 
     return _conf
+
+
+def _announcement() -> PlayerMedia:
+    """Return the announcement to play."""
+    return PlayerMedia(
+        uri="http://ma/announcement/player_1.mp3",
+        media_type=MediaType.ANNOUNCEMENT,
+        title="Announcement",
+        duration=3,
+    )
+
+
+def _mute_natively(player: MockPlayer) -> AsyncMock:
+    """Give the player a native mute control, mute it and return its mute handler."""
+    player._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+    player._attr_volume_muted = True
+    mute_mock = AsyncMock(side_effect=lambda muted: setattr(player, "_attr_volume_muted", muted))
+    player.volume_mute = mute_mock  # type: ignore[method-assign]
+    player._cache.clear()
+    player.update_state(force_update=True, signal_event=False)
+    assert player.state.volume_muted is True
+    return mute_mock
 
 
 @pytest.fixture
@@ -2888,37 +2910,13 @@ class TestPlayAnnouncementRestore:
         assert player.state.active_group == group.player_id
         return group
 
-    @staticmethod
-    def _announcement() -> PlayerMedia:
-        """Return the announcement to play."""
-        return PlayerMedia(
-            uri="http://ma/announcement/player_1.mp3",
-            media_type=MediaType.ANNOUNCEMENT,
-            title="Announcement",
-            duration=3,
-        )
-
-    @staticmethod
-    def _mute_natively(player: MockPlayer) -> AsyncMock:
-        """Give the player a native mute control, mute it and return its mute handler."""
-        player._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
-        player._attr_volume_muted = True
-        mute_mock = AsyncMock(
-            side_effect=lambda muted: setattr(player, "_attr_volume_muted", muted)
-        )
-        player.volume_mute = mute_mock  # type: ignore[method-assign]
-        player._cache.clear()
-        player.update_state(force_update=True, signal_event=False)
-        assert player.state.volume_muted is True
-        return mute_mock
-
     async def test_previous_playback_is_restored(self, mock_mass: MagicMock) -> None:
         """Content that was playing before the announcement is resumed afterwards."""
         controller, player, resume_mock = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         resume_mock.assert_awaited_once()
 
@@ -2929,7 +2927,7 @@ class TestPlayAnnouncementRestore:
             PlayerMedia(uri="http://ma/announcement/x.mp3", media_type=MediaType.ANNOUNCEMENT),
         )
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         resume_mock.assert_not_awaited()
 
@@ -2949,7 +2947,7 @@ class TestPlayAnnouncementRestore:
         )
 
         with pytest.raises(PlayerCommandFailed):
-            await controller._play_announcement(player, self._announcement())
+            await controller._play_announcement(player, _announcement())
 
         assert volume_mock.call_args_list == [call("player_1", 80), call("player_1", 20)]
 
@@ -2967,7 +2965,7 @@ class TestPlayAnnouncementRestore:
         volume_mock = AsyncMock()
         controller._handle_cmd_volume_set = volume_mock  # type: ignore[method-assign]
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         assert volume_mock.call_args_list == [call("player_1", 0), call("player_1", 20)]
 
@@ -2978,7 +2976,7 @@ class TestPlayAnnouncementRestore:
         controller, player, resume_mock = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
-        announcement = self._announcement()
+        announcement = _announcement()
         announcement.duration = None
 
         # an unknown length waits for the player to report it finished instead of failing
@@ -3000,7 +2998,7 @@ class TestPlayAnnouncementRestore:
         )
 
         with pytest.raises(PlayerCommandFailed):
-            await controller._play_announcement(player, self._announcement())
+            await controller._play_announcement(player, _announcement())
 
         assert group.set_members.await_args_list == [
             call(player_ids_to_remove=["player_1"]),
@@ -3025,7 +3023,7 @@ class TestPlayAnnouncementRestore:
         )
 
         with pytest.raises(PlayerCommandFailed, match="player went away"):
-            await controller._play_announcement(player, self._announcement())
+            await controller._play_announcement(player, _announcement())
 
     async def test_group_without_set_members_is_the_one_powered_off(
         self, mock_mass: MagicMock
@@ -3040,7 +3038,7 @@ class TestPlayAnnouncementRestore:
         play_mock = AsyncMock()
         controller.cmd_play = play_mock  # type: ignore[method-assign]
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         # the group is switched off for the announcement and restarted afterwards
         power_mock.assert_awaited_once_with("group_1", False)
@@ -3059,7 +3057,7 @@ class TestPlayAnnouncementRestore:
         assert player.state.power_control == PLAYER_CONTROL_NONE
         group.set_members = AsyncMock()  # type: ignore[method-assign]
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         assert group.set_members.await_args_list == [
             call(player_ids_to_remove=["player_1"]),
@@ -3071,9 +3069,9 @@ class TestPlayAnnouncementRestore:
         controller, player, _ = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
-        mute_mock = self._mute_natively(player)
+        mute_mock = _mute_natively(player)
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
@@ -3087,10 +3085,10 @@ class TestPlayAnnouncementRestore:
         controller, player, _ = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
-        mute_mock = self._mute_natively(player)
+        mute_mock = _mute_natively(player)
         assert player.state.volume_control == PLAYER_CONTROL_NONE
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
@@ -3117,10 +3115,10 @@ class TestPlayAnnouncementRestore:
         group.set_members = set_members  # type: ignore[method-assign]
         player.extra_data[ATTR_MUTE_LOCK] = True
         recorder = MagicMock()
-        recorder.attach_mock(self._mute_natively(player), "mute")
+        recorder.attach_mock(_mute_natively(player), "mute")
         recorder.attach_mock(set_members, "set_members")
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         assert recorder.mock_calls == [
             call.set_members(player_ids_to_remove=["player_1"]),
@@ -3136,13 +3134,13 @@ class TestPlayAnnouncementRestore:
         controller, player, _ = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
-        mute_mock = self._mute_natively(player)
+        mute_mock = _mute_natively(player)
         player._attr_volume_muted = False
         player._cache.clear()
         player.update_state(force_update=True, signal_event=False)
         mute_mock.reset_mock()
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         mute_mock.assert_not_awaited()
 
@@ -3151,13 +3149,13 @@ class TestPlayAnnouncementRestore:
         controller, player, _ = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
-        mute_mock = self._mute_natively(player)
+        mute_mock = _mute_natively(player)
         controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
             side_effect=PlayerCommandFailed("player went away")
         )
 
         with pytest.raises(PlayerCommandFailed):
-            await controller._play_announcement(player, self._announcement())
+            await controller._play_announcement(player, _announcement())
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
@@ -3172,12 +3170,12 @@ class TestPlayAnnouncementRestore:
         controller._players["player_2"] = member
         member.set_initialized()
         leader._attr_group_members = ["player_1", "player_2"]
-        mute_mocks = {player.player_id: self._mute_natively(player) for player in (leader, member)}
+        mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
         # both members were muted while grouped, so both hold a mute lock
         for player in (leader, member):
             player.extra_data[ATTR_MUTE_LOCK] = True
 
-        await controller._play_announcement(leader, self._announcement())
+        await controller._play_announcement(leader, _announcement())
 
         for player_id, mute_mock in mute_mocks.items():
             assert mute_mock.await_args_list == [call(False), call(True)], player_id
@@ -3207,7 +3205,7 @@ class TestPlayAnnouncementRestore:
         assert player.state.volume_muted is True
         controller.get_announcement_volume = MagicMock(return_value=80)  # type: ignore[method-assign]
 
-        await controller._play_announcement(player, self._announcement())
+        await controller._play_announcement(player, _announcement())
 
         # unmute to 40, announce at 80, restore 40 and park back on 0 for the fake mute
         assert volume_set.await_args_list == [
@@ -3217,6 +3215,118 @@ class TestPlayAnnouncementRestore:
             call(40),
             call(0),
         ]
+        assert player.state.volume_muted is True
+        assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
+
+
+class TestPlayNativeAnnouncement:
+    """Test the mute handling around an announcement that a player plays natively."""
+
+    def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """Create a controller and a player with native announcement support."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        player._cache.clear()
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        # the mute commands are dispatched through the TaskManager,
+        # so background tasks must actually run in these tests
+        mock_mass.create_task = MagicMock(
+            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
+        )
+        controller.get_announcement_volume = MagicMock(return_value=None)  # type: ignore[method-assign]
+        announce_mock = AsyncMock()
+        player.play_announcement = announce_mock  # type: ignore[method-assign]
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        return controller, player, announce_mock
+
+    async def test_muted_player_is_unmuted_and_muted_back(self, mock_mass: MagicMock) -> None:
+        """A muted player hears the announcement and is muted again afterwards."""
+        controller, player, announce_mock = self._make_player(mock_mass)
+        mute_mock = _mute_natively(player)
+
+        await controller._play_native_announcement(player, player, _announcement(), None)
+
+        assert mute_mock.await_args_list == [call(False), call(True)]
+        announce_mock.assert_awaited_once()
+
+    async def test_unmuted_player_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player that was not muted is never sent a mute command."""
+        controller, player, _ = self._make_player(mock_mass)
+        mute_mock = _mute_natively(player)
+        player._attr_volume_muted = False
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        mute_mock.reset_mock()
+
+        await controller._play_native_announcement(player, player, _announcement(), None)
+
+        mute_mock.assert_not_awaited()
+
+    async def test_mute_is_restored_when_the_provider_fails(self, mock_mass: MagicMock) -> None:
+        """A failing announcement never leaves the player unmuted."""
+        controller, player, announce_mock = self._make_player(mock_mass)
+        mute_mock = _mute_natively(player)
+        announce_mock.side_effect = PlayerCommandFailed("player went away")
+
+        with pytest.raises(PlayerCommandFailed):
+            await controller._play_native_announcement(player, player, _announcement(), None)
+
+        assert mute_mock.await_args_list == [call(False), call(True)]
+
+    async def test_muted_sync_group_members_all_hear_the_announcement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Every member of a muted sync group is unmuted, keeping its mute lock."""
+        controller, leader, _ = self._make_player(mock_mass)
+        member = MockPlayer(cast("MockProvider", leader.provider), "player_2", "Player 2")
+        controller._players["player_2"] = member
+        member.set_initialized()
+        leader._attr_group_members = ["player_1", "player_2"]
+        mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
+        # both members were muted while grouped, so both hold a mute lock
+        for player in (leader, member):
+            player.extra_data[ATTR_MUTE_LOCK] = True
+
+        await controller._play_native_announcement(leader, leader, _announcement(), None)
+
+        for player_id, mute_mock in mute_mocks.items():
+            assert mute_mock.await_args_list == [call(False), call(True)], player_id
+            assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+
+    async def test_fake_muted_player_announces_at_its_real_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The announcement volume is resolved after the unmute, not from the parked zero."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        controller, player, announce_mock = self._make_player(mock_mass)
+
+        def _apply_volume(volume: int) -> None:
+            player._attr_volume_level = volume
+            player.update_state(signal_event=False)
+
+        player._attr_volume_level = 40
+        volume_set = AsyncMock(side_effect=_apply_volume)
+        player.volume_set = volume_set  # type: ignore[method-assign]
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        await controller.cmd_volume_mute("player_1", True)
+        assert player.state.volume_muted is True
+        # stand in for the configured strategy, which reads the volume of the player
+        controller.get_announcement_volume = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda _player_id, _volume_level: player.state.volume_level
+        )
+
+        await controller._play_native_announcement(player, player, _announcement(), None)
+
+        assert announce_mock.await_args == call(ANY, 40)
+        # unmute to 40 for the announcement, park back on 0 for the fake mute
+        assert volume_set.await_args_list == [call(0), call(40), call(0)]
         assert player.state.volume_muted is True
         assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
 
