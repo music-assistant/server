@@ -9,7 +9,7 @@ and keeps the device from ever registering again.
 
 from unittest.mock import MagicMock
 
-from music_assistant.constants import CONF_PLAYER_DSP, CONF_PLAYERS
+from music_assistant.constants import CONF_PLAYER_DSP, CONF_PLAYERS, CONF_PROTOCOL_PARENT_ID
 from music_assistant.mass import MusicAssistant
 
 PARENT_ID = "up_esp32"
@@ -35,7 +35,7 @@ def _store_configs(mass: MusicAssistant, enabled: bool) -> None:
             "provider": "sendspin",
             "player_type": "protocol",
             "enabled": enabled,
-            "values": {"protocol_parent_id": PARENT_ID},
+            "values": {CONF_PROTOCOL_PARENT_ID: PARENT_ID},
         },
     )
     mass.config.set(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}", {"enabled": True})
@@ -52,10 +52,22 @@ async def test_remove_wipes_unregistered_protocol_configs(mass: MusicAssistant) 
     assert mass.config.get(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}") is None
 
 
+async def test_remove_wipes_protocol_configs_with_a_half_broken_link(
+    mass: MusicAssistant,
+) -> None:
+    """A protocol player is wiped by its own parent reference, not by the parent's list."""
+    _store_configs(mass, enabled=False)
+    mass.config.set(f"{CONF_PLAYERS}/{PARENT_ID}/values/linked_protocol_ids", [])
+
+    await mass.config.remove_player_config(PARENT_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
+
+
 async def test_remove_keeps_reparented_protocol_configs(mass: MusicAssistant) -> None:
     """A protocol player that already moved to another parent keeps its config."""
     _store_configs(mass, enabled=True)
-    mass.config.set(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/protocol_parent_id", "cast_1")
+    mass.config.set(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}", "cast_1")
 
     mass.players.delete_player_config(PARENT_ID)
 

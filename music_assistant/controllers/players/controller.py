@@ -1646,9 +1646,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         player_ids = [
             protocol_id
-            for protocol_id in self._get_cached_protocol_ids(player_id)
-            if self.get_player(protocol_id) is None
-            and self._get_cached_protocol_parent_id(protocol_id) == player_id
+            for protocol_id in self.mass.config.get(CONF_PLAYERS, {})
+            if self._get_cached_protocol_parent_id(protocol_id) == player_id
+            and self.get_player(protocol_id) is None
         ]
         player_ids.append(player_id)
         for pid in player_ids:

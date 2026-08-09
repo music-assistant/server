@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import CrossfadeMode, PlayerType
+from music_assistant_models.enums import CrossfadeMode
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
@@ -1431,7 +1431,7 @@ def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
     for player_id, player_cfg in all_player_configs.items():
         if not isinstance(player_cfg, dict):
             continue
-        if player_cfg.get("player_type") != PlayerType.PROTOCOL:
+        if player_cfg.get("player_type") != "protocol":
             continue
         if player_cfg.get("enabled", True):
             continue
