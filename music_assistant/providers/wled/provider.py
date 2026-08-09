@@ -76,7 +76,11 @@ class WledProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_PORT,
                 type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_PORT,
+                # setup_flow.py picks a free port before creation and stores it via
+                # session.finish() (setup_data, not values) -- pull that in as the
+                # default so a freshly-created instance reflects the port the user
+                # actually chose/confirmed, not always the hardcoded default.
+                default_value=self.get_setup_value(CONF_PORT, DEFAULT_PORT),
                 range=(1024, 65535),
                 category="settings",
             ),

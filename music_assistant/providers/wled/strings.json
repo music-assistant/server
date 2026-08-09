@@ -17,6 +17,12 @@
       "description": "Perceptual curve applied to loudness/spectrum values before sending, matching WLED's own built-in FFT scaling options. Square Root: balanced, a good default. Linear: highest contrast between quiet and loud, easily saturates. Logarithmic: gentlest, lifts quiet content the most. There's no single correct choice -- it depends on the music and the effect you're driving, same as picking a mode on a real WLED device."
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Add WLED sync zone",
+      "description": "Pick a UDP port to identify this sync zone (pre-filled with the next unused one). WLED devices join by setting this same port as their own audioSyncPort under Usermods > Audio Reactive > Sync Settings."
+    }
+  },
   "manifest": {
     "description": "Drive WLED's built-in audio-reactive effects from music played by Music Assistant."
   }
