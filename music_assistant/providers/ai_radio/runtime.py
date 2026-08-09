@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import logging
 import random
+import time
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -84,8 +85,16 @@ if TYPE_CHECKING:
     from music_assistant.models.plugin import AIEngine, TTSEngine
 
 
+# the sticky queue DJ re-plans on every queue change, so an uncached forecast lookup would
+# add two HTTP round trips to each one. Weather does not move meaningfully within this window
+WEATHER_TOKENS_CACHE_SECONDS = 300
+
+
 class AIRadioRuntimeMixin:
     """Mixin with all runtime logic for AI Radio runs."""
+
+    # (fetched_at, tokens) of the last weather lookup, shared by the show and DJ paths
+    _weather_tokens_cache: tuple[float, dict[str, str]] | None = None
 
     if TYPE_CHECKING:
         mass: MusicAssistant
@@ -841,6 +850,17 @@ class AIRadioRuntimeMixin:
         return await self._prepare_weather_tokens()
 
     async def _prepare_weather_tokens(self) -> dict[str, str]:
+        """Return the weather placeholder tokens, fetching them at most once per cache window."""
+        cached = self._weather_tokens_cache
+        if cached is not None and (time.monotonic() - cached[0]) < WEATHER_TOKENS_CACHE_SECONDS:
+            return dict(cached[1])
+        tokens = await self._fetch_weather_tokens()
+        # failed and disabled lookups are cached too, so a broken forecast source cannot
+        # put its timeout in front of every replan pass
+        self._weather_tokens_cache = (time.monotonic(), tokens)
+        return dict(tokens)
+
+    async def _fetch_weather_tokens(self) -> dict[str, str]:
         """Fetch and format weather placeholder tokens from the configured provider."""
         runtime_tokens: dict[str, str] = {}
 

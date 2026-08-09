@@ -26,6 +26,7 @@ from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
+from music_assistant.providers.ai_radio import runtime as runtime_module
 from music_assistant.providers.ai_radio.constants import (
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
@@ -258,6 +259,64 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
 
     assert tokens == {}
     assert any("Unsupported weather provider" in message for message in caplog.messages)
+
+
+def _weather_program() -> dict[str, Any]:
+    """Return a program whose only section references the hourly weather token."""
+    return {
+        "sections": [
+            {
+                "id": "Weather_Short",
+                "type": "ai_text",
+                "prompt": "Forecast: <weather_hourly>",
+            }
+        ],
+        "section_order": [],
+    }
+
+
+def _count_weather_fetches(runtime: DummyRuntime) -> list[str]:
+    """Replace the forecast lookup with a stub and return the list it records into."""
+    fetches: list[str] = []
+
+    async def _fetch(city: str, **_kwargs: Any) -> tuple[str, str]:
+        fetches.append(city)
+        return "12 degrees", "mild"
+
+    runtime._fetch_open_meteo_weather = _fetch  # type: ignore[method-assign, assignment]
+    return fetches
+
+
+async def test_prepare_runtime_tokens_reuses_the_cached_weather_within_the_ttl() -> None:
+    """A second pass inside the cache window reuses the tokens instead of refetching."""
+    runtime = DummyRuntime()
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    fetches = _count_weather_fetches(runtime)
+
+    first = await runtime._prepare_runtime_tokens(_weather_program())
+    second = await runtime._prepare_runtime_tokens(_weather_program())
+
+    assert first == {"<weather_hourly>": "12 degrees", "<weather_daily>": "mild"}
+    assert second == first
+    assert fetches == ["Berlin"]
+
+
+async def test_prepare_runtime_tokens_refetches_the_weather_once_the_ttl_expired() -> None:
+    """An expired cache entry is refetched rather than served stale forever."""
+    runtime = DummyRuntime()
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    fetches = _count_weather_fetches(runtime)
+
+    await runtime._prepare_runtime_tokens(_weather_program())
+    assert runtime._weather_tokens_cache is not None
+    fetched_at, tokens = runtime._weather_tokens_cache
+    runtime._weather_tokens_cache = (
+        fetched_at - runtime_module.WEATHER_TOKENS_CACHE_SECONDS - 1,
+        tokens,
+    )
+    await runtime._prepare_runtime_tokens(_weather_program())
+
+    assert fetches == ["Berlin", "Berlin"]
 
 
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
