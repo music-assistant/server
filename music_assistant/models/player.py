@@ -132,7 +132,7 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # config-derived cached properties (propcache keys in Player._cache); these are
 # only invalidated by set_config, all other cached properties (including those
 # defined by player implementations) are invalidated on every update_state call
-_CONFIG_CACHED_PROPS = frozenset({"icon", "hide_in_ui", "expose_to_ha"})
+_CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
 
 _DEFAULT_ICONS_BY_PROVIDER = {
     "airplay": "airplay",
@@ -163,7 +163,7 @@ _DEFAULT_ICON_MATCHES = (
     ("wiim", ("wiim",)),
     ("soundbar", ("sound bar", "soundbar")),
     ("tv", (" tv", "smarttv", "television")),
-    ("monitor", ("monitor", "web browser")),
+    ("monitor", ("web browser",)),
     ("laptop", ("laptop", "notebook")),
     ("smartphone", ("iphone", "mobile application", "smartphone")),
     ("tablet", ("ipad", "tablet")),
@@ -190,6 +190,8 @@ def _get_default_player_icon(
     """
     if player_type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
         return "speakers"
+    if player_type_icon := _DEFAULT_ICONS_BY_PLAYER_TYPE.get(player_type):
+        return player_type_icon
 
     if manufacturer.casefold().startswith("apple") and model.casefold().startswith(("imac", "mac")):
         return "mac"
@@ -201,7 +203,7 @@ def _get_default_player_icon(
 
     if provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain):
         return provider_icon
-    return _DEFAULT_ICONS_BY_PLAYER_TYPE.get(player_type, "speaker")
+    return "speaker"
 
 
 def _reconcile_position_anchor(
@@ -1431,9 +1433,10 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        # players without an icon config entry (e.g. protocol players) serve the fallback id
-        icon = self._config.get_value(CONF_ENTRY_PLAYER_ICON.key)
-        return cast("str", icon or self.default_icon)
+        icon = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_ENTRY_PLAYER_ICON.key
+        )
+        return icon if isinstance(icon, str) and icon else self.default_icon
 
     @cached_property
     @final
