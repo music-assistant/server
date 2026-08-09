@@ -234,6 +234,10 @@ class AIRadioQueueDJMixin:
             ]
             program = self._build_program({"id": "", "name": f"AI DJ {host['name']}"}, host)
             runtime_tokens = await self._prepare_runtime_tokens(program)
+            if self._dj_queues.get(queue_id) is not state:
+                # a switch or disable replaced this queue's state while the fetch above
+                # was in flight, so the session this pass planned for is gone
+                return
             planned, history = self._plan_sections(
                 session_id=state.dj_session_id,
                 tracks=window_tracks,
@@ -254,6 +258,10 @@ class AIRadioQueueDJMixin:
                     target=window_tracks[section.insert_at_index],
                     section=section,
                 )
+                if self._dj_queues.get(queue_id) is not state:
+                    # same race caught mid-loop: one clip may already have landed for the
+                    # replaced session, the rest must not follow it in
+                    return
             # only the newest events matter to the guards (the last one for min_gap_songs,
             # a 60 minute window for max_per_60min), so the tail is dropped
             state.history = {

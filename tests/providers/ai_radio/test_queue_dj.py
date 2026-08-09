@@ -580,6 +580,32 @@ async def test_injection_rereads_a_guard_that_moved_during_the_pass(tmp_path: Pa
     assert queues.loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
 
 
+async def test_stale_pass_inserts_nothing_after_a_mid_pass_dj_switch(tmp_path: Path) -> None:
+    """A pass that resumes after set_queue_dj replaced its state must not insert clips."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    old_state = dummy._dj_queues["queue-1"]
+    prepare_runtime_tokens = dummy._prepare_runtime_tokens
+
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    dummy._hosts["daisy"] = daisy
+
+    async def _switch_mid_pass(program: dict[str, Any]) -> dict[str, str]:
+        # stands in for set_queue_dj swapping this queue to another host while the
+        # in-flight pass is still awaiting a slow runtime token fetch
+        dummy._arm_dj_state("queue-1", "daisy")
+        return await prepare_runtime_tokens(program)
+
+    dummy._prepare_runtime_tokens = _switch_mid_pass  # type: ignore[method-assign]
+    await dummy._replan_queue("queue-1")
+
+    assert dummy.player_queues.loads == []
+    new_state = dummy._dj_queues["queue-1"]
+    assert new_state is not old_state
+    assert new_state.last_planned_item_id is None
+
+
 async def test_replan_yields_the_queue_to_a_running_show(tmp_path: Path) -> None:
     """A show owning the queue plans its own breaks, so the sticky DJ stays out of it."""
     dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
