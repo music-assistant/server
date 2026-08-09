@@ -3246,12 +3246,17 @@ class TestPlayNativeAnnouncement:
     async def test_muted_player_is_unmuted_and_muted_back(self, mock_mass: MagicMock) -> None:
         """A muted player hears the announcement and is muted again afterwards."""
         controller, player, announce_mock = self._make_player(mock_mass)
-        mute_mock = _mute_natively(player)
+        recorder = MagicMock()
+        recorder.attach_mock(_mute_natively(player), "mute")
+        recorder.attach_mock(announce_mock, "announce")
 
         await controller._play_native_announcement(player, player, _announcement(), None)
 
-        assert mute_mock.await_args_list == [call(False), call(True)]
-        announce_mock.assert_awaited_once()
+        assert recorder.mock_calls == [
+            call.mute(False),
+            call.announce(ANY, None),
+            call.mute(True),
+        ]
 
     async def test_unmuted_player_is_left_alone(self, mock_mass: MagicMock) -> None:
         """A player that was not muted is never sent a mute command."""

@@ -346,10 +346,10 @@ class AnnouncementsMixin:
             for member_id in player.state.group_members or (player.player_id,)
             if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
         ]
-        async with TaskManager(self.mass) as tg:
-            for muted_player in muted_players:
-                tg.create_task(self._set_announcement_mute(muted_player, False))
         try:
+            async with TaskManager(self.mass) as tg:
+                for muted_player in muted_players:
+                    tg.create_task(self._set_announcement_mute(muted_player, False))
             announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
             await announce_player.play_announcement(announcement, announcement_volume)
         finally:
