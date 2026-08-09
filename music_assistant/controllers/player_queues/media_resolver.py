@@ -40,6 +40,7 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
 from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
@@ -495,26 +496,21 @@ class MediaResolver:
                 return next_book
         return None
 
-    async def get_author_narrator_audiobooks(self, author_narrator: Artist) -> list[Audiobook]:
+    async def get_author_narrator_audiobooks(
+        self, author_narrator: Artist, userid: str | None
+    ) -> list[Audiobook]:
         """
         Return audiobooks to play of a given artist.
 
         If all books are played, enqueue all of them. If not, enqueue books in a collection's order
         if they are part of a collection.
         """
-        if author_narrator.provider != "library":
-            _author_narrator = await self.mass.music.artists.get_library_item_by_prov_id(
-                author_narrator.item_id, author_narrator.provider
+        audiobooks: UniqueList[Audiobook] = UniqueList([])
+        async with ImpersonatedUser(self.mass, user=userid):
+            # ensure we get the position status on the current user
+            all_audiobooks = await self.mass.music.artists.audiobooks(
+                author_narrator.item_id, author_narrator.provider, author_narrator.artist_type
             )
-            if _author_narrator is None:
-                raise MediaNotFoundError(
-                    f"Author/ narrator {author_narrator.name} is not part of the library."
-                )
-            author_narrator = _author_narrator
-        audiobooks: list[Audiobook] = []
-        all_audiobooks = await self.mass.music.artists.get_library_author_narrator_audiobooks(
-            author_narrator.item_id, author_narrator.artist_type
-        )
         for book in all_audiobooks:
             # do not use get_resume_position here, as an artist may potentially have a lot of audiobooks,
             # resulting in many API calls.
@@ -522,34 +518,57 @@ class MediaResolver:
                 continue
             audiobooks.append(book)
         if len(audiobooks) == 0:
-            audiobooks = all_audiobooks
+            audiobooks = UniqueList(all_audiobooks)
 
         # treat books part of a collection separately by keeping the collections order
-        collections: set[MediaCollection[Audiobook]] = set()
-        books_with_collection: set[Audiobook] = set()
+        collections: list[MediaCollection[Audiobook]] = []
+        collection_item_ids: list[str] = []
+
+        books_with_collection: dict[str, set[str]] = {}  # book_item_id: {collection_ids}
         for book in audiobooks:
             for media_item_collection in book.metadata.collections or []:
+                collection_item_id = get_collection_item_id(
+                    media_item_collection.title, MediaType.AUDIOBOOK
+                )
+                if collection_item_id not in collection_item_ids:
+                    collection_item_ids.append(collection_item_id)
+                entry = books_with_collection.get(book.item_id, set())
+                entry.add(collection_item_id)
+                books_with_collection[book.item_id] = entry
+        async with ImpersonatedUser(self.mass, user=userid):
+            for collection_item_id in collection_item_ids:
                 try:
-                    collection = await self.mass.music.audiobooks.get_collection(
-                        get_collection_item_id(media_item_collection.title, MediaType.AUDIOBOOK)
-                    )
-                    collections.add(collection)
-                    books_with_collection.add(book)
+                    collection = await self.mass.music.audiobooks.get_collection(collection_item_id)
+                    collections.append(collection)
                 except MediaNotFoundError:
+                    # Remove invalid collection everywhere
+                    for book_collections in books_with_collection.values():
+                        book_collections.discard(collection_item_id)
                     continue
+        # ensure, that books with collection only holds books which have a verified collection
+        books_with_collection = {
+            book_item_id: collection_ids
+            for book_item_id, collection_ids in books_with_collection.items()
+            if collection_ids
+        }
 
         # remove books which are part of a collection
-        audiobooks = list(set(audiobooks).difference(books_with_collection))
+        audiobooks = UniqueList(
+            [book for book in audiobooks if book.item_id not in books_with_collection]
+        )
         # enqueue books which are part of a collection in the collection's order, however, as a collection
         # may have books of different artists, only enqueue the books which belong to the artist.
         # if a book happens to be part of multiple collections, only enqueue once
         books_with_collection_sorted: list[Audiobook] = []
         for collection in collections:
             for book in collection.items:
-                if book in books_with_collection and book not in books_with_collection_sorted:
+                if (
+                    book.item_id in books_with_collection
+                    and book not in books_with_collection_sorted
+                ):
                     books_with_collection_sorted.append(book)
 
-        return audiobooks + books_with_collection_sorted
+        return list(audiobooks) + books_with_collection_sorted
 
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
@@ -674,7 +693,7 @@ class MediaResolver:
             media_item = cast("Artist", media_item)
             artist_items: list[Audiobook] | list[Track]
             if media_item.artist_type in [ArtistType.AUTHOR, ArtistType.NARRATOR]:
-                artist_items = await self.get_author_narrator_audiobooks(media_item)
+                artist_items = await self.get_author_narrator_audiobooks(media_item, userid)
             else:
                 artist_items = await self.get_artist_tracks(media_item)
             self._mark_container_played(media_item, artist_items, userid, queue_id)
