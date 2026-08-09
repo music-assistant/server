@@ -5,15 +5,57 @@ Reproduces the case where a player is first disabled and then removed: disabling
 cascades to the linked protocol players, so none of them is registered anymore when
 the removal comes in. The leftover (disabled) protocol config is not shown anywhere
 and keeps the device from ever registering again.
+
+Also covers the mirrored case where the player being removed is not registered (e.g.
+its provider was unloaded) while one of its protocol players still is: that protocol
+player must be detached from the removed player instead of keeping a dead parent link.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+from music_assistant_models.enums import PlayerType
 
 from music_assistant.constants import CONF_PLAYER_DSP, CONF_PLAYERS, CONF_PROTOCOL_PARENT_ID
 from music_assistant.mass import MusicAssistant
 
 PARENT_ID = "up_esp32"
 PROTOCOL_ID = "spb_esp32"
+
+
+class StubProtocolPlayer:
+    """Minimal stand-in for a registered protocol player."""
+
+    def __init__(self, parent_id: str | None) -> None:
+        """Initialize the stub with the given (live) protocol parent."""
+        self.player_id = PROTOCOL_ID
+        self.state = SimpleNamespace(type=PlayerType.PROTOCOL)
+        self.protocol_parent_id = parent_id
+        self.refreshed = False
+        self.sleep_timer_expires_at = None
+
+    def set_protocol_parent_id(self, parent_id: str | None) -> None:
+        """Set the live protocol parent."""
+        self.protocol_parent_id = parent_id
+
+    def refresh_state(self) -> None:
+        """Record that the state was refreshed."""
+        self.refreshed = True
+
+
+def _register_protocol_player(mass: MusicAssistant, parent_id: str | None) -> StubProtocolPlayer:
+    """Register a stub protocol player on the player controller."""
+    protocol_player = StubProtocolPlayer(parent_id)
+    mass.players._players[PROTOCOL_ID] = protocol_player  # type: ignore[assignment]
+    return protocol_player
+
+
+def _pop_scheduled_evaluation(mass: MusicAssistant) -> bool:
+    """Return True if a protocol evaluation is pending for the protocol player."""
+    if handle := mass.players._pending_protocol_evaluations.pop(PROTOCOL_ID, None):
+        handle.cancel()
+        return True
+    return False
 
 
 def _store_configs(mass: MusicAssistant, enabled: bool) -> None:
@@ -85,3 +127,48 @@ async def test_remove_keeps_registered_protocol_configs(mass: MusicAssistant) ->
     assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
     assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is not None
     assert mass.config.get(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}") is not None
+
+
+async def test_remove_detaches_registered_protocol_player(mass: MusicAssistant) -> None:
+    """Removing an unregistered parent detaches its still registered protocol player."""
+    _store_configs(mass, enabled=True)
+    protocol_player = _register_protocol_player(mass, parent_id=PARENT_ID)
+
+    await mass.config.remove_player_config(PARENT_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
+    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is not None
+    assert protocol_player.protocol_parent_id is None
+    assert protocol_player.refreshed
+    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}") is None
+    assert _pop_scheduled_evaluation(mass)
+
+
+async def test_remove_detaches_protocol_player_waiting_for_its_parent(
+    mass: MusicAssistant,
+) -> None:
+    """A protocol player that only has the parent link in its config is detached too."""
+    _store_configs(mass, enabled=True)
+    protocol_player = _register_protocol_player(mass, parent_id=None)
+
+    await mass.config.remove_player_config(PARENT_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}") is None
+    assert protocol_player.protocol_parent_id is None
+    assert _pop_scheduled_evaluation(mass)
+
+
+async def test_remove_leaves_unrelated_protocol_player_alone(mass: MusicAssistant) -> None:
+    """A protocol player of another parent keeps its link when a player is removed."""
+    _store_configs(mass, enabled=True)
+    mass.config.set(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}", "cast_1")
+    protocol_player = _register_protocol_player(mass, parent_id="cast_1")
+
+    mass.players.delete_player_config(PARENT_ID)
+
+    assert protocol_player.protocol_parent_id == "cast_1"
+    assert (
+        mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}")
+        == "cast_1"
+    )
+    assert not _pop_scheduled_evaluation(mass)
