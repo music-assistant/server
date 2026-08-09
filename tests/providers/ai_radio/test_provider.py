@@ -10,6 +10,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -309,6 +310,20 @@ async def test_host_crud_roundtrip(provider: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_section_leaves_the_stations_file_alone(provider: Any, tmp_path: Path) -> None:
+    """Sections no longer live inside stations, so saving one must not rewrite them."""
+    provider._sections_file = tmp_path / "sections.json"
+    provider._stations_file = tmp_path / "stations.json"
+    provider._stations_file.write_text("untouched")
+
+    await provider.save_section(
+        {"id": "New_Section", "name": "New Section", "type": "ai_text", "prompt": "Say something"}
+    )
+
+    assert "New_Section" in provider._sections
+    assert provider._stations_file.read_text() == "untouched"
+
+
 async def test_delete_host_refuses_when_station_references_it(provider: Any) -> None:
     """Refuse to delete a host that a station still references."""
     saved = await provider.save_host(await provider.host_template())
@@ -741,6 +756,24 @@ async def test_loaded_in_mass_watches_the_loaded_providers() -> None:
     await provider.unload()
 
     assert subscribers == []
+
+
+async def test_queue_dj_commands_are_registered_as_queue_control() -> None:
+    """Reading and arming the queue DJ menu are both queue-scoped, not provider config."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+
+    await provider.loaded_in_mass()
+
+    scopes = {
+        call.args[0]: call.kwargs["required_scope"]
+        for call in cast("Any", provider.mass).register_api_command.call_args_list
+    }
+    assert scopes["ai_radio/queue_dj/set"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/queue_dj/status"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/status"] == Scope.CONFIG_PROVIDERS_READ
 
 
 async def test_unload_cancels_an_in_flight_engine_recheck() -> None:

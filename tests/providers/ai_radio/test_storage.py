@@ -272,6 +272,48 @@ def test_write_json_file_round_trips_non_ascii_content_as_utf8(
     assert json.loads(target.read_bytes().decode("utf-8")) == payload
 
 
+def _record_write(writes: list[str], name: str) -> Any:
+    """Return a persistence stub that records that it was called."""
+
+    async def _write() -> None:
+        writes.append(name)
+
+    return _write
+
+
+def test_load_stations_v3_skips_the_migration_and_rewrites_nothing(tmp_path: Any) -> None:
+    """A file already at v3 loads as-is, inventing no hosts and rewriting no file."""
+    stations_file = tmp_path / "stations.json"
+    payload = {
+        "version": 3,
+        "stations": [
+            {
+                "id": "station_a",
+                "name": "Station A",
+                "source_playlist_id": "playlist-1",
+                "host_id": "rick",
+            }
+        ],
+    }
+    stations_file.write_text(json.dumps(payload))
+
+    storage = DummyStorage()
+    storage._stations_file = stations_file
+    storage._sections_file = tmp_path / "sections.json"
+    storage._hosts = {"rick": {"id": "rick", "name": "Rick"}}
+    writes: list[str] = []
+    for name in ("_write_stations", "_write_sections", "_write_hosts"):
+        setattr(storage, name, _record_write(writes, name))
+
+    asyncio.run(storage._load_stations())
+
+    assert list(storage._stations) == ["station_a"]
+    assert storage._stations["station_a"]["host_id"] == "rick"
+    assert list(storage._hosts) == ["rick"]
+    assert writes == []
+    assert json.loads(stations_file.read_text()) == payload
+
+
 def test_normalize_station_v3_requires_known_host() -> None:
     """Reject stations that reference a host that does not exist."""
     dummy = DummyStorage()

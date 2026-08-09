@@ -416,7 +416,7 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=station,
+        program=station,
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -565,7 +565,7 @@ def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
     )
 
     static, deferred = runtime._resolve_placeholders(
-        station={},
+        program={},
         tracks=tracks,
         slot=slot,
         runtime_tokens={"<weather_hourly>": "12 degrees"},
@@ -603,7 +603,7 @@ def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=station,
+        program=station,
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -660,7 +660,7 @@ def test_plan_sections_suppresses_section_when_required_placeholder_is_missing()
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=_weather_guarded_station(),
+        program=_weather_guarded_station(),
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -683,7 +683,7 @@ def test_plan_sections_includes_section_when_required_placeholder_is_present() -
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=_weather_guarded_station(),
+        program=_weather_guarded_station(),
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},

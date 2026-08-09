@@ -140,7 +140,9 @@ class AIRadioProvider(
             ("ai_radio/queue_dj/status", self.get_queue_dj_status),
         )
         for command, handler in api_handlers:
-            if command == "ai_radio/queue_dj/set":
+            # the queue DJ menu is queue state, not provider config: a client allowed to
+            # arm it must also be allowed to read back what is armed
+            if command.startswith("ai_radio/queue_dj/"):
                 required_scope = Scope.QUEUES_CONTROL
             else:
                 required_scope = (
@@ -255,12 +257,11 @@ class AIRadioProvider(
             normalized = self._normalize_section(section)
             self._sections[normalized["id"]] = normalized
             await self._write_sections()
-            await self._write_stations()
         self.logger.info("AI Radio section saved: %s", normalized["id"])
         return deepcopy(normalized)
 
     async def delete_section(self, section_id: str) -> None:
-        """Delete a shared section when unused by stations."""
+        """Delete a shared section when no host uses it."""
         async with self._station_lock:
             if section_id not in self._sections:
                 raise KeyError(f"Unknown section id: {section_id}")
@@ -307,7 +308,7 @@ class AIRadioProvider(
         return deepcopy(normalized)
 
     async def delete_host(self, host_id: str) -> None:
-        """Delete a host when unused by stations."""
+        """Delete a host when no station uses it and it is not the active DJ on a queue."""
         async with self._station_lock:
             if host_id not in self._hosts:
                 raise KeyError(f"Unknown host id: {host_id}")

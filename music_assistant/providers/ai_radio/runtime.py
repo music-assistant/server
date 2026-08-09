@@ -223,7 +223,7 @@ class AIRadioRuntimeMixin:
         planned_sections, _history = self._plan_sections(
             session_id=session.session_id,
             tracks=tracks,
-            station=program,
+            program=program,
             track_index_offset=0,
             minute_offset=0.0,
             history_state={},
@@ -504,7 +504,7 @@ class AIRadioRuntimeMixin:
         self,
         session_id: str,
         tracks: list[dict[str, Any]],
-        station: dict[str, Any],
+        program: dict[str, Any],
         track_index_offset: int,
         minute_offset: float,
         history_state: dict[str, list[tuple[int, float]]],
@@ -512,8 +512,8 @@ class AIRadioRuntimeMixin:
         runtime_tokens: dict[str, str],
     ) -> tuple[list[PlannedSection], dict[str, list[tuple[int, float]]]]:
         """Evaluate section rules and produce planning entries."""
-        sections = station.get("sections", [])
-        section_order = station.get("section_order", [])
+        sections = program.get("sections", [])
+        section_order = program.get("section_order", [])
         if not isinstance(sections, list) or not sections:
             raise MusicAssistantError("Station has no sections configured")
         if not isinstance(section_order, list) or not section_order:
@@ -546,7 +546,7 @@ class AIRadioRuntimeMixin:
             if not matching_rules:
                 continue
             static, deferred = self._resolve_placeholders(
-                station=station,
+                program=program,
                 tracks=tracks,
                 slot=slot,
                 runtime_tokens=runtime_tokens,
@@ -608,7 +608,7 @@ class AIRadioRuntimeMixin:
                         selected.append((section_id, slot, static))
                         register_event(section_id, slot)
 
-        merge_section_id = str(station.get("merge_section_id", "")).strip()
+        merge_section_id = str(program.get("merge_section_id", "")).strip()
         meta_section = section_by_id.get(merge_section_id) if merge_section_id else None
         grouped: dict[str, list[tuple[str, Slot, dict[str, str]]]] = defaultdict(list)
         for item in selected:
@@ -1123,7 +1123,7 @@ class AIRadioRuntimeMixin:
 
     def _resolve_placeholders(
         self,
-        station: dict[str, Any],
+        program: dict[str, Any],
         tracks: list[dict[str, Any]],
         slot: Slot,
         runtime_tokens: dict[str, str],
@@ -1131,7 +1131,7 @@ class AIRadioRuntimeMixin:
         """
         Resolve placeholders for one slot, split by when they are substituted.
 
-        :param station: The station profile being planned.
+        :param program: The station+host program being planned.
         :param tracks: The track list the slot indexes into.
         :param slot: The insertion slot being filled.
         :param runtime_tokens: Weather tokens fetched for this run.

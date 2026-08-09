@@ -231,7 +231,7 @@ class AIRadioQueueDJMixin:
             planned, history = self._plan_sections(
                 session_id=state.dj_session_id,
                 tracks=window_tracks,
-                station=program,
+                program=program,
                 track_index_offset=state.songs_before_window,
                 minute_offset=state.minutes_before_window,
                 history_state=state.history,
