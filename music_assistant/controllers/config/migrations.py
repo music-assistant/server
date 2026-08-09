@@ -1435,7 +1435,7 @@ def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
         if not isinstance(player_values, dict):
             continue
         if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
-            linked_ids.update(cached_ids)
+            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
     orphaned: list[str] = []
     for player_id, player_cfg in all_player_configs.items():
         if not isinstance(player_cfg, dict):
