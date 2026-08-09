@@ -173,7 +173,8 @@ class _TwoMinuteFFMpeg(_FakeFFMpeg):
     seconds_emitted = 120
 
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
-        yield b"\x00" * (_PCM_SAMPLE_SIZE * self.seconds_emitted)
+        for _ in range(self.seconds_emitted):
+            yield b"\x00" * _PCM_SAMPLE_SIZE
 
 
 def _multi_part_streamdetails() -> StreamDetails:
