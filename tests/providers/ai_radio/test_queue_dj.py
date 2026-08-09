@@ -331,7 +331,7 @@ async def test_replan_inserts_clip_between_upcoming_tracks(tmp_path: Path) -> No
     state = dummy._dj_queues["queue-1"]
     assert state.clip_counter == 2
     assert state.last_planned_item_id == tracks[3].queue_item_id
-    assert state.songs_consumed == 1
+    assert state.songs_before_window == 1
 
 
 async def test_replan_skips_gaps_that_already_have_a_clip(tmp_path: Path) -> None:
@@ -415,10 +415,32 @@ async def test_min_gap_songs_guard_holds_across_passes(tmp_path: Path) -> None:
     assert len(queues.loads) == 1
     assert queues.loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[2].queue_item_id
 
-    queues._items.extend([_track(4), _track(5)])
+    extra = [_track(4), _track(5)]
+    queues._items.extend(extra)
     await dummy._replan_queue("queue-1")
 
-    assert len(queues.loads) == 1
+    # the clip announced track 2, so the next one may land no earlier than track 5
+    assert len(queues.loads) == 2
+    assert queues.loads[1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == extra[1].queue_item_id
+
+
+async def test_planning_axis_stays_anchored_to_real_queue_positions(tmp_path: Path) -> None:
+    """Growing the queue tail must not rewind the song axis the guards count on."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    # the window opened on track 1, so track 0 is the only song behind it
+    assert state.songs_before_window == 1
+    assert [song for song, _minute in state.history["Song_Transition"]] == [2, 3]
+
+    dummy.player_queues._items.extend([_track(4), _track(5)])
+    await dummy._replan_queue("queue-1")
+
+    # the window now reopens on track 3, with tracks 0-2 behind it
+    assert state.songs_before_window == 3
+    assert [song for song, _minute in state.history["Song_Transition"]] == [2, 3, 4, 5]
 
 
 async def test_scheduled_replan_serves_requests_landing_during_a_pass(tmp_path: Path) -> None:

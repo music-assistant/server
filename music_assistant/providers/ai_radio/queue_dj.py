@@ -193,21 +193,17 @@ class AIRadioQueueDJMixin:
             if self._repair_dj_clips(queue_id, items, guard_index):
                 items = self._dj_queue_items(queue_id)
 
-            music_behind = [
-                item
-                for item in items[: guard_index + 1]
-                if not item.extra_attributes.get(ATTR_QUEUE_DJ)
-            ]
-            # recomputed absolutely every pass, so a cleared or replaced queue self-corrects
-            state.songs_consumed = len(music_behind)
-            state.minutes_consumed = (
-                sum(item.duration or FALLBACK_TRACK_SECONDS for item in music_behind) / 60.0
-            )
-
             window = self._dj_window(items, guard_index, state.last_planned_item_id)
             if len(window) < 2:
                 state.last_planned_item_id = window[-1].queue_item_id if window else None
                 return
+            # the planner counts songs and minutes from the first window track, so the
+            # offsets have to be measured to that same point or the axis shifts between
+            # passes and the OPTIONAL guards compare positions that never line up.
+            # recomputed absolutely every pass, so a cleared or replaced queue self-corrects
+            state.songs_before_window, state.minutes_before_window = self._dj_window_offsets(
+                items, window[0].queue_item_id
+            )
             host = self._hosts.get(state.host_id)
             if host is None:
                 self.logger.warning(
@@ -227,8 +223,8 @@ class AIRadioQueueDJMixin:
                 session_id=state.dj_session_id,
                 tracks=window_tracks,
                 station=program,
-                track_index_offset=state.songs_consumed,
-                minute_offset=state.minutes_consumed,
+                track_index_offset=state.songs_before_window,
+                minute_offset=state.minutes_before_window,
                 history_state=state.history,
                 allowed_slot_when=["between_songs"],
                 runtime_tokens=runtime_tokens,
@@ -339,6 +335,17 @@ class AIRadioQueueDJMixin:
                     # the marker itself is kept as the anchor of the gap behind it
                     return upcoming[position:]
         return upcoming
+
+    def _dj_window_offsets(self, items: list[QueueItem], window_start_id: str) -> tuple[int, float]:
+        """Return the songs and minutes of music playing before the first window track."""
+        behind = []
+        for item in items:
+            if item.queue_item_id == window_start_id:
+                break
+            if not item.extra_attributes.get(ATTR_QUEUE_DJ):
+                behind.append(item)
+        minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
+        return len(behind), minutes
 
     def _dj_queue_items(self, queue_id: str) -> list[QueueItem]:
         """Return all items of a queue."""

@@ -44,8 +44,8 @@ class DJQueueState:
     host_id: str
     dj_session_id: str
     clip_counter: int = 0
-    songs_consumed: int = 0
-    minutes_consumed: float = 0.0
+    songs_before_window: int = 0
+    minutes_before_window: float = 0.0
     last_planned_item_id: str | None = None
     history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
     replan_pending: bool = False
