@@ -2345,6 +2345,63 @@ async def test_concurrent_metadata_updates_only_send_latest_artwork() -> None:
 
 
 @pytest.mark.asyncio
+async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
+    """Alternating URL forms of the same imageproxy image send artwork only once."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    def make_metadata(image_url: str) -> MagicMock:
+        return MagicMock(
+            corrected_elapsed_time=0,
+            queue_item_id="item-1",
+            title="Track",
+            artist="Artist",
+            album="Album",
+            duration=180,
+            image_url=image_url,
+        )
+
+    # the queue session builds the image URL on the stream server base, the
+    # player state on the webserver base - same image id behind both forms
+    image_id = "ab" * 32
+    other_image_id = "cd" * 32
+    session_media = make_metadata(
+        f"http://192.168.1.5:8097/imageproxy/{image_id}?size=512&fmt=jpeg"
+    )
+    state_media = make_metadata(f"http://192.168.1.5:8095/imageproxy/{image_id}?size=512&fmt=png")
+    other_image_media = make_metadata(
+        f"http://192.168.1.5:8095/imageproxy/{other_image_id}?size=512&fmt=png"
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value="/cache/thumb.jpg",
+        ) as prepare_artwork,
+    ):
+        await stream.send_metadata(None, session_media)
+        generation_after_first_send = stream._metadata_generation
+        # the post-START push (session media) and the media-updated push
+        # (player state) alternate on every seek
+        await stream.send_metadata(None, state_media)
+        await stream.send_metadata(None, session_media)
+        assert stream._metadata_generation == generation_after_first_send
+        await stream.send_metadata(None, other_image_media)
+
+    commands = [call.args[0].decode() for call in write_command.await_args_list]
+    bundled = [command for command in commands if "ARTWORKFILE=" in command]
+    resends = [command for command in commands if command.startswith("ARTWORK=")]
+    assert len(bundled) == 1
+    assert resends == ["ARTWORK=/cache/thumb.jpg\n"]
+    assert prepare_artwork.await_count == 2
+    assert stream._metadata_artwork_checksum == other_image_id
+
+
+@pytest.mark.asyncio
 async def test_metadata_revert_resends_text_after_superseded_artwork() -> None:
     """Reverting while artwork renders restores the previously displayed track text."""
     player = _make_player()
