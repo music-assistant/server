@@ -54,6 +54,8 @@ def _controller(queue_item: QueueItem) -> tuple[StreamsController, dict[str, Any
 
     The queue itself is absent, which keeps the request on the non-flow (single item)
     branch: crossfade and audio overlay both need a queue to force flow mode.
+
+    :param queue_item: The item the controller resolves the stream request to.
     """
     mass = MagicMock()
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
@@ -72,8 +74,8 @@ def _controller(queue_item: QueueItem) -> tuple[StreamsController, dict[str, Any
 
 
 @pytest.mark.parametrize("seek_position", [1800, 0])
-def test_single_item_stream_starts_at_the_seek_position(seek_position: int) -> None:
-    """A resumed (or seeked) item is served from its seek position, not from the start."""
+def test_single_item_stream_forwards_the_seek_position(seek_position: int) -> None:
+    """A resumed (or seeked) item is streamed from its seek position, not from the start."""
     queue_item = _queue_item(seek_position)
     controller, call_kwargs = _controller(queue_item)
 
