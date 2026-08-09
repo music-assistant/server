@@ -72,6 +72,9 @@ class DummyRuntime(AIRadioRuntimeMixin):
         """Return the stubbed setup flow value for key, or default when absent."""
         return self._setup_values.get(key, default)
 
+    def _schedule_replan(self, queue_id: str) -> None:
+        """No-op stand-in for the queue DJ mixin's replan scheduling."""
+
     def _materialize_sections(
         self, section_ids: list[str], sections_map: dict[str, dict[str, Any]] | None = None
     ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -228,6 +231,27 @@ async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> No
 
     assert session.status == "stopped"
     assert any("AI Radio run cancelled" in message for message in caplog.messages)
+
+
+async def test_run_session_reschedules_a_replan_for_the_session_queue() -> None:
+    """Re-arm the queue DJ for the session's queue once its show session ends."""
+
+    class ReplanTrackingRuntime(FailingRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.replanned_queue_ids: list[str] = []
+
+        def _schedule_replan(self, queue_id: str) -> None:
+            self.replanned_queue_ids.append(queue_id)
+
+    runtime = ReplanTrackingRuntime()
+    session = SessionState(session_id="s4", station_id="station_d")
+    session.queue_id = "queue_1"
+    runtime._sessions[session.session_id] = session
+
+    await runtime._run_session(session.session_id, {"id": "station_d"})
+
+    assert runtime.replanned_queue_ids == ["queue_1"]
 
 
 async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: Any) -> None:

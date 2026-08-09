@@ -105,6 +105,9 @@ class AIRadioRuntimeMixin:
         def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
             """Return a value collected by this provider's setup flow."""
 
+        def _schedule_replan(self, queue_id: str) -> None:
+            """Request a replan pass for the given queue."""
+
     def _set_session_progress(
         self,
         session: SessionState,
@@ -170,6 +173,10 @@ class AIRadioRuntimeMixin:
             self.logger.exception("AI Radio session failed: %s", err)
         finally:
             session.ended_at = utc_now_iso()
+            # a show session blocks queue DJ replans while it runs, so ending it must
+            # re-arm the DJ itself instead of waiting on the next queue change
+            if session.queue_id:
+                self._schedule_replan(session.queue_id)
 
     async def _run_show(
         self,
