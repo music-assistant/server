@@ -232,6 +232,7 @@ class MockProvider:
         self.manifest = MagicMock()
         self.manifest.name = f"Mock {domain} Provider"
         self.mass = mass or MagicMock()
+        self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
 
 
