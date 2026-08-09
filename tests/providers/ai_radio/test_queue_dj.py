@@ -405,6 +405,39 @@ async def test_disable_removes_pending_clips_only(tmp_path: Path) -> None:
     assert dummy.player_queues.deleted == [pending_clip.queue_item_id]
 
 
+async def test_switching_host_removes_old_hosts_pending_clips(tmp_path: Path) -> None:
+    """Switching the sticky DJ to a new host clears the old host's unplayed clips."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    old_state = dummy._dj_queues["queue-1"]
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    old_clip_ids = {
+        item.queue_item_id
+        for item in queues.items("queue-1")
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    }
+    assert old_clip_ids  # sanity: rick's clips actually landed
+
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    daisy["name"] = "Daisy"
+    dummy._hosts["daisy"] = daisy
+
+    await dummy.set_queue_dj("queue-1", "daisy")
+    await asyncio.gather(*dummy.mass.tasks)
+
+    # rick's pending clips were removed rather than left to render under his persona
+    assert old_clip_ids <= set(queues.deleted)
+    remaining_dj_clips = [
+        item for item in queues.items("queue-1") if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    ]
+    assert remaining_dj_clips
+    for clip in remaining_dj_clips:
+        assert clip.extra_attributes[ATTR_HOST_ID] == "daisy"
+        assert clip.extra_attributes[ATTR_SESSION_ID] != old_state.dj_session_id
+
+
 async def test_min_gap_songs_guard_holds_across_passes(tmp_path: Path) -> None:
     """Carry the section history across passes so a min_gap_songs guard keeps holding."""
     tracks = [_track(index) for index in range(4)]

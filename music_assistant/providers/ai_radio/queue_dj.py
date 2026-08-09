@@ -61,6 +61,7 @@ class AIRadioQueueDJMixin:
         if not queue_id:
             raise InvalidDataError("queue_id is required")
         async with self._dj_lock:
+            previous_state = self._dj_queues.get(queue_id)
             if host_id is None:
                 state = self._dj_queues.pop(queue_id, None)
                 await self._write_queue_dj()
@@ -76,6 +77,11 @@ class AIRadioQueueDJMixin:
             if state is not None:
                 await self._remove_pending_dj_clips(queue_id, state.dj_session_id)
         else:
+            if previous_state is not None:
+                # a previous session's pending clips still carry its host's persona and
+                # voice, so they have to go before the replan can plant the new host's
+                # clips into the gaps they freed up
+                await self._remove_pending_dj_clips(queue_id, previous_state.dj_session_id)
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
 
