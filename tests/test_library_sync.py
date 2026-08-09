@@ -847,6 +847,20 @@ async def test_set_provider_mappings_overwrite_keeps_existing_when_empty(
 
     mock_controller.mass.music.database.delete.assert_not_called()
     mock_controller.mass.music.database.upsert_many.assert_not_called()
+    mock_controller.logger.warning.assert_called_once()
+
+
+async def test_set_provider_mappings_no_mappings_is_noop(mock_controller: Mock) -> None:
+    """
+    Test that an empty mappings set without overwrite writes nothing.
+
+    :param mock_controller: Mock MediaControllerBase instance.
+    """
+    await mock_controller.set_provider_mappings(1, [], overwrite=False)
+
+    mock_controller.mass.music.database.delete.assert_not_called()
+    mock_controller.mass.music.database.upsert_many.assert_not_called()
+    mock_controller.logger.warning.assert_not_called()
 
 
 async def test_set_provider_mappings_upsert_preserves_null_in_library(

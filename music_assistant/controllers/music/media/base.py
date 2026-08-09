@@ -1204,7 +1204,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_mappings: Iterable[ProviderMapping],
         overwrite: bool = False,
     ) -> None:
-        """Update the provider_items table for the media item."""
+        """
+        Update the provider_mappings table for the media item.
+
+        An empty set of mappings never clears the stored rows: an item without any
+        mapping can not be played or resolved.
+        """
         db_id = int(item_id)  # ensure integer
         prov_map_objs: list[dict[str, Any]] = []
         for provider_mapping in provider_mappings:
@@ -1222,11 +1227,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     prov_map_obj[key] = value
             prov_map_objs.append(prov_map_obj)
         if not prov_map_objs:
-            # an item without any provider mapping can not be played or resolved,
-            # so never wipe the existing rows when there is nothing to replace them with
             if overwrite:
+                # a caller asking to replace all mappings with none is a bug,
+                # so keep the stored rows and make the attempt visible
                 self.logger.warning(
-                    "Ignoring request to clear all provider mappings of %s %s",
+                    "Ignoring request to clear all provider mappings of %s item id %s",
                     self.media_type.value,
                     db_id,
                 )
