@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, NamedTuple
 
 from .constants import MediaPlayerEntityFeature, parse_supported_features
@@ -11,6 +12,9 @@ if TYPE_CHECKING:
 
     from hass_client.models import State
 
+# Home Assistant entity IDs are a domain and an object ID, both lowercase, joined by a dot
+ENTITY_ID_PATTERN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+
 
 class ControlCapabilities(NamedTuple):
     """The player control roles a Home Assistant entity can serve."""
@@ -18,6 +22,15 @@ class ControlCapabilities(NamedTuple):
     power: bool = False
     volume: bool = False
     mute: bool = False
+
+
+def is_entity_id(value: str) -> bool:
+    """
+    Return whether the given value has the shape of a Home Assistant entity ID.
+
+    :param value: The value to inspect.
+    """
+    return bool(ENTITY_ID_PATTERN.match(value))
 
 
 def get_control_capabilities(state: State, logger: logging.Logger) -> ControlCapabilities:

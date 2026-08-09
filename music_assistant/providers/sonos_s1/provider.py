@@ -17,7 +17,12 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUBSCRIPTION_TIMEOUT
+from .constants import (
+    CONF_HOUSEHOLD_ID,
+    CONF_NETWORK_SCAN,
+    DISCOVERY_INTERVAL,
+    SUBSCRIPTION_TIMEOUT,
+)
 from .player import SonosPlayer
 
 
@@ -25,11 +30,12 @@ class SonosPlayerProvider(PlayerProvider):
     """Sonos S1 Player Provider for legacy Sonos speakers."""
 
     _discovery_running: bool = False
-    _discovery_reschedule_timer: asyncio.TimerHandle | None = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
+        self._discovery_task_id: str = f"sonos_s1_discovery_{self.instance_id}"
+        self._unloaded: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -71,9 +77,13 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        if self._discovery_reschedule_timer:
-            self._discovery_reschedule_timer.cancel()
-            self._discovery_reschedule_timer = None
+        # a discovery already running in its worker thread cannot be interrupted, so the
+        # flag is what stops it from arming a new reschedule once it resumes
+        self._unloaded = True
+        # a reschedule that already fired lives on as a task under the same id,
+        # so both are needed to cover the pending and the running case
+        self.mass.cancel_timer(self._discovery_task_id)
+        self.mass.cancel_task(self._discovery_task_id)
         # await any in-progress discovery
         while self._discovery_running:
             await asyncio.sleep(0.5)
@@ -142,33 +152,51 @@ class SonosPlayerProvider(PlayerProvider):
 
         await asyncio.to_thread(do_discover)
 
-        def reschedule() -> None:
-            self._discovery_reschedule_timer = None
-            self.mass.create_task(self.discover_players())
-
-        # reschedule self once finished
-        self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
+        if self._unloaded:
+            return
+        # reschedule self once finished, replacing any reschedule already armed
+        self.mass.call_later(
+            DISCOVERY_INTERVAL, self.discover_players, task_id=self._discovery_task_id
+        )
 
     async def _setup_player(self, soco: SoCo) -> None:
         """Set up a discovered Sonos player."""
-        player_id = soco.uid
+
+        def _read_uid() -> str:
+            """Read the unique id of the speaker (NOT async friendly)."""
+            return cast("str", soco.uid)
+
+        def _interrogate() -> tuple[bool, bool]:
+            """Read whether the speaker is visible and has a fixed volume (NOT async friendly)."""
+            if not soco.is_visible:
+                # a bridge or the follower of a stereo pair is never registered
+                return False, False
+            # Ensure speaker info is available during setup
+            if not soco.speaker_info:
+                soco.get_speaker_info(True, timeout=7)
+            fixed_volume: bool = soco.fixed_volume
+            # SonosPlayer reads these while it is constructed; the zone group lookup
+            # behind player_name is only cached briefly, so resolve them last
+            _ = soco.household_id
+            _ = soco.player_name
+            return True, fixed_volume
+
+        player_id = await asyncio.to_thread(_read_uid)
 
         if existing := cast("SonosPlayer", self.mass.players.get_player(player_id=player_id)):
             if existing.soco.ip_address != soco.ip_address:
-                existing.update_ip(soco.ip_address)
-            return
-        if not soco.is_visible:
+                await existing.update_ip(soco)
             return
         enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return
+        is_visible, fixed_volume = await asyncio.to_thread(_interrogate)
+        if not is_visible:
+            return
         try:
-            # Ensure speaker info is available during setup
-            if not soco.speaker_info:
-                soco.get_speaker_info(True, timeout=7)
             sonos_player = SonosPlayer(self, soco)
-            if not soco.fixed_volume:
+            if not fixed_volume:
                 sonos_player._attr_supported_features = {
                     *sonos_player._attr_supported_features,
                     PlayerFeature.VOLUME_SET,

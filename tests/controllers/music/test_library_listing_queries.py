@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -39,7 +40,6 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.music.media.base import MediaControllerBase
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
 pytestmark = pytest.mark.asyncio

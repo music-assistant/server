@@ -186,10 +186,10 @@ async def test_regular_playlist_fetch_is_shared_between_callers(
     assert mock_client.get_playlist.await_count == 1
 
 
-async def test_my_wave_fetch_runs_for_every_caller(
+async def test_my_wave_fetch_is_shared_between_callers(
     cached_provider: tuple[YandexMusicProvider, mock.AsyncMock],
 ) -> None:
-    """Every My Wave caller runs its own fetch, so the rotor cursor keeps advancing."""
+    """Concurrent My Wave callers share one fetch, so the rotor advances once."""
     provider, _ = cached_provider
     gate = asyncio.Event()
 
@@ -207,7 +207,7 @@ async def test_my_wave_fetch_runs_for_every_caller(
     gate.set()
 
     assert await asyncio.gather(*tasks) == [[], [], []]
-    assert fetch_batch.await_count == 3
+    assert fetch_batch.await_count == 1
 
 
 # -- M11: unload() must clear every per-session cache -------------------------

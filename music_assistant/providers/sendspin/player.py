@@ -72,7 +72,7 @@ from PIL import Image
 
 from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import is_valid_mac_address, join_task
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 
@@ -200,6 +200,8 @@ _MANAGEMENT_ACTIONS = {
 PAIR_GESTURE_TIMEOUT = 120.0
 # Seconds the setup flow waits for pairing to complete after the PIN is submitted.
 PAIR_CONFIRM_TIMEOUT = 30.0
+# Seconds a Cast-bridged member gets to report its Sendspin app ready.
+CAST_APP_READY_TIMEOUT = 30.0
 
 # Terminal pairing-error slugs that map to a dedicated setup_flow.abort reason;
 # anything else falls back to the generic "pairing_failed" abort.
@@ -880,10 +882,10 @@ class SendspinBasePlayer(Player):
                     continue
                 task = pin_session.task
                 if task is not None and not task.done():
-                    # Shield the pairing task: the step deadline must not cancel it.
+                    # Join the pairing task: the step deadline must not cancel it.
                     with suppress(StepExpiredError):
                         await session.progress_until(
-                            asyncio.shield(task),
+                            join_task(task),
                             step_id="confirming",
                             text="confirming",
                             expires_in=PAIR_CONFIRM_TIMEOUT,
@@ -1332,7 +1334,7 @@ class SendspinPlayer(SendspinBasePlayer):
         if cast_app_ready is None:
             return
         try:
-            await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=30.0)
+            await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=CAST_APP_READY_TIMEOUT)
         except BaseException as exc:
             if not cast_app_ready.done():
                 cast_app_ready.cancel()
@@ -1450,19 +1452,25 @@ class SendspinPlayer(SendspinBasePlayer):
                 await self.api.group.add_client(member_player.api)
 
             if pending_cast:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*(asyncio.shield(f) for _, f in pending_cast)),
-                        timeout=30.0,
-                    )
-                except TimeoutError:
-                    stuck = [m.display_name for m, f in pending_cast if not f.done()]
+                # asyncio.wait leaves the futures untouched: the stuck list below needs
+                # them intact, and a waiter that adopts them makes asyncio report a member
+                # failing afterwards to the loop exception handler as well
+                await asyncio.wait(
+                    [f for _, f in pending_cast],
+                    timeout=CAST_APP_READY_TIMEOUT,
+                    return_when=asyncio.FIRST_EXCEPTION,
+                )
+                for _, ready in pending_cast:
+                    if ready.done():
+                        # a member's own failure outranks the readiness timeout
+                        ready.result()
+                if stuck := [m.display_name for m, f in pending_cast if not f.done()]:
                     raise PlayerCommandFailed(
                         f"Cast app on {', '.join(stuck)} did not report ready within 30s",
                         translation_key="cast_app_members_not_ready",
                         translation_owner=self.translation_owner,
                         translation_args=[", ".join(stuck)],
-                    ) from None
+                    )
         except BaseException:
             # Roll back Cast members we just added so a failed group operation
             # doesn't leave dead members in the Sendspin group.
