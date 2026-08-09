@@ -45,8 +45,8 @@ _DEFAULT_ICON_MATCHES = (
 def get_default_player_icon(
     player_type: PlayerType,
     provider_domain: str,
-    manufacturer: str,
-    model: str,
+    manufacturer: str | None,
+    model: str | None,
 ) -> str:
     """
     Return the most appropriate default icon for a player.
@@ -61,10 +61,12 @@ def get_default_player_icon(
     if player_type_icon := _DEFAULT_ICONS_BY_PLAYER_TYPE.get(player_type):
         return player_type_icon
 
-    if manufacturer.casefold().startswith("apple") and model.casefold().startswith(("imac", "mac")):
+    manufacturer_name = (manufacturer or "").casefold()
+    model_name = (model or "").casefold()
+    if manufacturer_name.startswith("apple") and model_name.startswith(("imac", "mac")):
         return "mac"
 
-    device_description = f"{manufacturer} {model}".casefold()
+    device_description = f"{manufacturer_name} {model_name}"
     for icon, matches in _DEFAULT_ICON_MATCHES:
         if any(match in device_description for match in matches):
             return icon

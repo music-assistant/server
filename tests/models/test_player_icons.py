@@ -8,6 +8,7 @@ from music_assistant_models.enums import PlayerType
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_ICON, CONF_PLAYERS
+from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.mass import MusicAssistant
 from tests.common import MockPlayer, MockProvider
 
@@ -69,6 +70,11 @@ def test_default_player_icon(
     player._cache.clear()
 
     assert player.icon == expected
+
+
+def test_default_player_icon_tolerates_missing_device_metadata() -> None:
+    """Missing metadata on restored players falls back safely."""
+    assert get_default_player_icon(PlayerType.PLAYER, "test", None, None) == "speaker"
 
 
 def test_explicit_player_icon_overrides_default() -> None:
