@@ -33,8 +33,8 @@ def _tracks(count: int = 4, prefix: str = "S") -> list[dict[str, Any]]:
 
 
 def _fragment(**kwargs: Any) -> PandoraFragment:
-    """Build a fragment of four tracks fetched at NOW, overridable by keyword."""
-    fragment = PandoraFragment(tracks=_tracks(), fetched_at=NOW)
+    """Build a fragment of four tracks last active at NOW, overridable by keyword."""
+    fragment = PandoraFragment(tracks=_tracks(), last_activity_at=NOW)
     for key, value in kwargs.items():
         setattr(fragment, key, value)
     return fragment
@@ -63,11 +63,23 @@ def test_resolved_unspent_fragment_withholds() -> None:
     assert next_fragment_action(fragment, NOW) is FragmentAction.WITHHOLD
 
 
-def test_resolved_unspent_fragment_withholds_even_when_old() -> None:
-    """Staleness must never re-open the gate on a fragment that is being streamed."""
+def test_abandoned_playback_recovers_after_the_stale_window() -> None:
+    """Stopping mid-fragment must not strand the station on WITHHOLD forever."""
     fragment = _fragment(resolved=True)
     later = NOW + FRAGMENT_STALE_SECONDS + 1
-    assert next_fragment_action(fragment, later) is FragmentAction.WITHHOLD
+    assert next_fragment_action(fragment, later) is FragmentAction.FETCH
+
+
+def test_active_playback_keeps_the_gate_shut_across_tracks() -> None:
+    """Each resolution refreshes activity, so a playing station never trips staleness."""
+    fragment = _fragment()
+    # tracks resolved a few minutes apart, as the stream feeder would during playback
+    for index, offset in enumerate((0, 300, 600, 900)[:3]):
+        fragment.mark_resolved(f"S{index}", NOW + offset)
+        assert next_fragment_action(fragment, NOW + offset) is FragmentAction.WITHHOLD
+    # 900s since the fragment was fetched, but only 300s since the last resolution:
+    # a fetched-at clock would wrongly call this abandoned, a last-activity clock does not
+    assert next_fragment_action(fragment, NOW + 900) is FragmentAction.WITHHOLD
 
 
 def test_spent_fragment_advances() -> None:
@@ -79,7 +91,7 @@ def test_spent_fragment_advances() -> None:
 def test_mark_resolved_last_track_spends_fragment() -> None:
     """Resolving the final track opens the gate."""
     fragment = _fragment()
-    fragment.mark_resolved("S3")
+    fragment.mark_resolved("S3", NOW)
     assert fragment.resolved is True
     assert fragment.spent is True
 
@@ -87,17 +99,28 @@ def test_mark_resolved_last_track_spends_fragment() -> None:
 def test_mark_resolved_earlier_track_does_not_spend() -> None:
     """Resolving a non-final track marks the fragment live but keeps the gate shut."""
     fragment = _fragment()
-    fragment.mark_resolved("S1")
+    fragment.mark_resolved("S1", NOW)
     assert fragment.resolved is True
     assert fragment.spent is False
 
 
-def test_mark_resolved_unknown_track_is_a_noop() -> None:
-    """An id from an older fragment must not flip this fragment's flags."""
+def test_mark_resolved_refreshes_activity() -> None:
+    """Resolving a track restarts the staleness clock."""
     fragment = _fragment()
-    fragment.mark_resolved("nope")
+    later = NOW + FRAGMENT_STALE_SECONDS - 1
+    fragment.mark_resolved("S1", later)
+    assert fragment.last_activity_at == later
+    assert fragment.is_stale(later + FRAGMENT_STALE_SECONDS - 1) is False
+    assert fragment.is_stale(later + FRAGMENT_STALE_SECONDS + 1) is True
+
+
+def test_mark_resolved_unknown_track_is_a_noop() -> None:
+    """An id from an older fragment must not flip this fragment's flags or clock."""
+    fragment = _fragment()
+    fragment.mark_resolved("nope", NOW + 100)
     assert fragment.resolved is False
     assert fragment.spent is False
+    assert fragment.last_activity_at == NOW
 
 
 def test_find_returns_track_by_music_id() -> None:
@@ -109,12 +132,14 @@ def test_find_returns_track_by_music_id() -> None:
     assert fragment.find("missing") is None
 
 
-def test_is_stale_only_applies_to_unresolved_fragments() -> None:
-    """A fragment someone streamed from is never considered stale."""
+def test_is_stale_measures_time_since_last_activity() -> None:
+    """Staleness applies to resolved and unresolved fragments alike."""
     later = NOW + FRAGMENT_STALE_SECONDS + 1
     assert _fragment().is_stale(later) is True
-    assert _fragment(resolved=True).is_stale(later) is False
+    assert _fragment(resolved=True).is_stale(later) is True
     assert _fragment().is_stale(NOW) is False
+    # exactly at the boundary is not yet stale
+    assert _fragment().is_stale(NOW + FRAGMENT_STALE_SECONDS) is False
 
 
 def test_session_current_is_the_newest_fragment() -> None:

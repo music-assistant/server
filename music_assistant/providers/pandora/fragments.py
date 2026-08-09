@@ -35,7 +35,7 @@ class PandoraFragment:
     """One Pandora playlist fragment: the tracks whose audio URLs are live together."""
 
     tracks: list[dict[str, Any]]
-    fetched_at: float
+    last_activity_at: float
     resolved: bool = False
     spent: bool = False
 
@@ -43,17 +43,18 @@ class PandoraFragment:
         """Return the raw track data for the given Pandora musicId, if this fragment holds it."""
         return next((track for track in self.tracks if track.get("musicId") == music_id), None)
 
-    def mark_resolved(self, music_id: str) -> None:
+    def mark_resolved(self, music_id: str, now: float) -> None:
         """Record that the given track has been handed to the audio pipeline."""
         if self.find(music_id) is None:
             return
         self.resolved = True
+        self.last_activity_at = now
         if self.tracks and self.tracks[-1].get("musicId") == music_id:
             self.spent = True
 
     def is_stale(self, now: float) -> bool:
-        """Return whether this fragment was never streamed from and has aged out."""
-        return not self.resolved and (now - self.fetched_at) > FRAGMENT_STALE_SECONDS
+        """Return whether nothing has been streamed from this fragment recently."""
+        return (now - self.last_activity_at) > FRAGMENT_STALE_SECONDS
 
 
 @dataclass
@@ -73,7 +74,7 @@ class PandoraStationSession:
 
     def add_fragment(self, tracks: list[dict[str, Any]], now: float) -> PandoraFragment:
         """Retain a freshly fetched fragment as the station's live one."""
-        fragment = PandoraFragment(tracks=tracks, fetched_at=now)
+        fragment = PandoraFragment(tracks=tracks, last_activity_at=now)
         self.fragments.append(fragment)
         return fragment
 
@@ -94,10 +95,11 @@ def next_fragment_action(fragment: PandoraFragment | None, now: float) -> Fragme
     """
     if fragment is None:
         return FragmentAction.FETCH
+    if fragment.spent or fragment.is_stale(now):
+        # played through, or abandoned long enough that its URLs are no longer worth serving
+        return FragmentAction.FETCH
     if not fragment.resolved:
-        # nobody is streaming from it: safe either to hand out again or to replace
-        return FragmentAction.FETCH if fragment.is_stale(now) else FragmentAction.REUSE
-    if not fragment.spent:
-        # URLs are live and pending playback; fetching now would invalidate them
-        return FragmentAction.WITHHOLD
-    return FragmentAction.FETCH
+        # fetched but never streamed from (e.g. a browse): hand the same batch out again
+        return FragmentAction.REUSE
+    # URLs are live and pending playback; fetching now would invalidate them
+    return FragmentAction.WITHHOLD
