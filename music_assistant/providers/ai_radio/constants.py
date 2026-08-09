@@ -14,6 +14,14 @@ CONF_WEATHER_COUNTRY = "weather_country"
 # loading when AI Radio initializes: wait this long for it before giving up
 ENGINE_DISCOVERY_TIMEOUT = 30
 
+# grace period for an engine that disappears while AI Radio is loaded. Generous enough
+# to sit out a Home Assistant restart, so a running show is not torn down for it
+ENGINE_RECHECK_GRACE = 300
+
+# how long to wait before reloading after an engine stayed missing, matching the
+# cadence the load path uses for its own retries
+ENGINE_RETRY_DELAY = 120
+
 TRANSLATION_OWNER = "provider.ai_radio"
 
 DEFAULT_LLM_INSTRUCTIONS = (
@@ -30,6 +38,12 @@ MAX_FINISHED_SESSIONS = 20
 
 # a show whose playback never starts within this window is declared failed
 SHOW_START_TIMEOUT_SECONDS = 300
+
+# last-resort guards so a wedged engine fails the clip instead of hanging the session.
+# Kept above the deadlines the engines apply themselves (120s in the OpenAI-compatible
+# providers), so their own, more specific error is the one that surfaces.
+AI_QUERY_TIMEOUT_SECONDS = 180
+TTS_QUERY_TIMEOUT_SECONDS = 180
 
 SUPPORTED_FEATURES: set[Any] = set()
 EMPTY_SECTION_ID = "EMPTY_SECTION"

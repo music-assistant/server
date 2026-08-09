@@ -13,12 +13,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -51,7 +52,9 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
 )
 from music_assistant.controllers.players import PlayerController
-from tests.common import MockPlayer, MockProvider
+from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+from music_assistant.models.player_provider import PlayerProvider
+from tests.common import MockPlayer, MockProvider, create_mock_config
 
 
 def _player_config_stub(
@@ -76,7 +79,7 @@ def _player_config_stub(
     def _conf(_player_id: str, key: str, default: object = None) -> object:
         if key in config:
             return config[key]
-        return default if default is not None else "auto"
+        return default
 
     return _conf
 
@@ -102,12 +105,6 @@ def mock_mass() -> MagicMock:
 def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
-
-
-@pytest.fixture
-def provider(mock_mass: MagicMock) -> MockProvider:
-    """Create a mock provider."""
-    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
 
 
 class TestSetMembersValidation:
@@ -309,6 +306,58 @@ class TestPlayerAvailability:
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
 
 
+def _group_with_member(
+    mock_mass: MagicMock, *, initialize_group: bool = True
+) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+    """
+    Build a controller holding one group player with a single member.
+
+    :param mock_mass: The mocked MusicAssistant instance to attach the controller to.
+    :param initialize_group: Whether the group player is marked as fully registered.
+
+    :return: The controller, the group player and its member.
+    """
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+    group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+    member = MockPlayer(provider, "member", "Member")
+
+    controller._players = {"group": group_player, "member": member}
+    mock_mass.players = controller
+
+    group_player._attr_group_members = ["member"]
+    member.initialized.set()
+    if initialize_group:
+        group_player.initialized.set()
+    for player in (group_player, member):
+        player.update_state(signal_event=False)
+    return controller, group_player, member
+
+
+@contextlib.contextmanager
+def _restricted_user(visible_player_ids: list[str]) -> Iterator[None]:
+    """
+    Run the wrapped block as a non-admin user that may only see the given players.
+
+    :param visible_player_ids: The player ids the user is allowed to see.
+    """
+    # the contextvar is copied into the task an API command runs in, so it stays
+    # live for everything that command reaches, internal bookkeeping included
+    token = current_user.set(
+        User(
+            user_id="user_1",
+            username="restricted",
+            role=UserRole.USER,
+            player_filter=visible_player_ids,
+        )
+    )
+    try:
+        yield
+    finally:
+        current_user.reset(token)
+
+
 class TestStateForwarding:
     """Test forwarding of player state changes to related players."""
 
@@ -366,6 +415,179 @@ class TestStateForwarding:
             changed_values,
         )
         on_sync_parent_updated.assert_not_called()
+
+    def test_sync_leader_updates_also_reach_its_group_player(self, mock_mass: MagicMock) -> None:
+        """A sync leader must notify its group player as well as its own sync children."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        leader = MockPlayer(provider, "leader", "Leader")
+        follower = MockPlayer(provider, "follower", "Follower")
+
+        controller._players = {"group": group_player, "leader": leader, "follower": follower}
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["leader", "follower"]
+        leader._attr_group_members = ["leader", "follower"]
+        for player in (group_player, leader, follower):
+            # _get_player_groups only considers players the controller finished registering
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with (
+            patch.object(group_player, "on_group_member_updated") as on_group_member_updated,
+            patch.object(follower, "on_sync_parent_updated") as on_sync_parent_updated,
+        ):
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            controller._forward_state_update(leader, changed_values)
+
+        on_group_member_updated.assert_called_once_with(leader, changed_values)
+        on_sync_parent_updated.assert_called_once_with(leader, changed_values)
+
+    def test_group_player_is_notified_under_restricted_user_context(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The fan-out must not be narrowed by the user that triggered the update."""
+        controller, group_player, member = _group_with_member(mock_mass)
+
+        with _restricted_user(["member"]):
+            assert group_player not in controller.all_players()
+            with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+                changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+                controller._forward_state_update(member, changed_values)
+
+        on_group_member_updated.assert_called_once_with(member, changed_values)
+
+    def test_unavailable_group_player_is_still_notified(self, mock_mass: MagicMock) -> None:
+        """A group player mirrors its members, so it must update while unavailable too."""
+        controller, group_player, member = _group_with_member(mock_mass)
+        group_player._attr_available = False
+        group_player.update_state(signal_event=False)
+        assert group_player.state.available is False
+
+        with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            controller._forward_state_update(member, changed_values)
+
+        on_group_member_updated.assert_called_once_with(member, changed_values)
+
+    def test_disabled_group_player_is_not_notified(self, mock_mass: MagicMock) -> None:
+        """A disabled player takes no part, unlike one that is merely unavailable."""
+        controller, group_player, member = _group_with_member(mock_mass)
+        group_player._config.enabled = False
+        group_player.update_state(signal_event=False, force_update=True)
+        assert group_player.state.enabled is False
+
+        with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+            controller._forward_state_update(
+                member, {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            )
+
+        on_group_member_updated.assert_not_called()
+
+    def test_uninitialized_group_player_is_not_notified(self, mock_mass: MagicMock) -> None:
+        """A player the controller is still registering is not fully set up yet."""
+        controller, group_player, member = _group_with_member(mock_mass, initialize_group=False)
+
+        with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+            controller._forward_state_update(
+                member, {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            )
+
+        on_group_member_updated.assert_not_called()
+
+
+class TestUnscopedPlayerLookups:
+    """Derived player state must not depend on who triggered the recalculation."""
+
+    def test_iter_players_ignores_the_user_filter(self, mock_mass: MagicMock) -> None:
+        """iter_players is the internal view: every registered player, no user filter."""
+        controller, group_player, member = _group_with_member(mock_mass)
+
+        with _restricted_user(["member"]):
+            assert controller.all_players() == [member]
+            assert set(controller.iter_players()) == {group_player, member}
+
+    def test_provider_filter_still_ignores_the_user_filter(self, mock_mass: MagicMock) -> None:
+        """A lookup scoped to one provider must still ignore the user filter."""
+        controller, group_player, member = _group_with_member(mock_mass)
+
+        with _restricted_user(["member"]):
+            found = set(controller.iter_players(provider_filter="test"))
+
+        assert found == {group_player, member}
+
+    def test_provider_sees_all_of_its_own_players(self, mock_mass: MagicMock) -> None:
+        """A provider owns its players, so a user filter must never hide them from it."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        plain = MockPlayer(provider, "plain", "Plain")
+        # a protocol player id is picked from a list that hides protocol players, so it
+        # is never in a user's filter - the whole set used to disappear for any non-admin
+        protocol = MockPlayer(provider, "protocol", "Protocol", player_type=PlayerType.PROTOCOL)
+        controller._players = {"plain": plain, "protocol": protocol}
+        mock_mass.players = controller
+        for player in (plain, protocol):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with _restricted_user(["plain"]):
+            owned = set(PlayerProvider.players.fget(provider))  # type: ignore[attr-defined]
+
+        assert owned == {plain, protocol}
+
+    def test_active_group_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
+        """A member must still know its group when the triggering user cannot see it."""
+        _controller, group_player, member = _group_with_member(mock_mass)
+        group_player._attr_group_members = ["member"]
+        group_player._attr_powered = True
+        group_player.update_state(signal_event=False)
+
+        with _restricted_user(["member"]):
+            member.update_state(signal_event=False, force_update=True)
+            assert member.state.active_group == "group"
+
+    def test_synced_to_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
+        """A follower must still resolve its sync leader across a user filter."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        follower = MockPlayer(provider, "follower", "Follower")
+        controller._players = {"leader": leader, "follower": follower}
+        mock_mass.players = controller
+
+        leader._attr_group_members = ["leader", "follower"]
+        for player in (leader, follower):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with _restricted_user(["follower"]):
+            follower.update_state(signal_event=False, force_update=True)
+            assert follower.state.synced_to == "leader"
+
+    def test_can_group_with_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
+        """Expanding a provider id into players must not drop players the user cannot see."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        mock_mass.get_provider.return_value = provider
+
+        player_a = MockPlayer(provider, "player_a", "Player A")
+        player_b = MockPlayer(provider, "player_b", "Player B")
+        controller._players = {"player_a": player_a, "player_b": player_b}
+        mock_mass.players = controller
+
+        # a provider instance id stands for "every player of that provider"
+        player_a._attr_can_group_with = {"test"}
+        for player in (player_a, player_b):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with _restricted_user(["player_a"]):
+            player_a.update_state(signal_event=False, force_update=True)
+            assert "player_b" in player_a.state.can_group_with
 
 
 class TestSleepTimer:
@@ -536,6 +758,252 @@ class TestUnregisterCleanup:
         assert "set_members_other" in controller._player_command_locks
 
 
+class TestRegisterUnregisterRace:
+    """Test registration that is interrupted by an unregister of the same player."""
+
+    @staticmethod
+    def _stub_register_calls(mock_mass: MagicMock) -> None:
+        """Stub the awaited mass calls made during register/unregister."""
+        # registration reads config keys with differently typed defaults (mapping for the
+        # player config store, str | None for the cached MAC addresses)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.cache.get = AsyncMock(return_value=None)
+        mock_mass.config.get_player_config = AsyncMock(return_value=create_mock_config("Player 1"))
+        mock_mass.player_queues.on_player_register = AsyncMock()
+        mock_mass.player_queues.on_player_remove = MagicMock()
+
+    @staticmethod
+    def _player_added_signalled(mock_mass: MagicMock) -> bool:
+        """Return True if a PLAYER_ADDED event was signalled."""
+        return any(
+            call_args.args and call_args.args[0] == EventType.PLAYER_ADDED
+            for call_args in mock_mass.signal_event.call_args_list
+        )
+
+    async def test_register_aborts_when_unregistered_during_config_load(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player unregistered while its config loads is not announced as added."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway(player_id: str) -> MagicMock:
+            # stands in for a provider unload or device disconnect landing
+            # while register awaits the player config
+            await controller.unregister(player_id)
+            return create_mock_config("Player 1")
+
+        mock_mass.config.get_player_config = AsyncMock(side_effect=_unregister_midway)
+        config_hook = AsyncMock()
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", config_hook),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+        assert not player.initialized.is_set()
+        # setup stops right away: the provider hook must not run on a player
+        # whose on_unload already ran
+        config_hook.assert_not_called()
+        mock_mass.player_queues.on_player_register.assert_not_called()
+        assert not self._player_added_signalled(mock_mass)
+
+    async def test_register_aborts_when_unregistered_during_config_hook(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player unregistered while its on_config_updated hook runs is not announced."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway() -> None:
+            await controller.unregister("player_1")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", AsyncMock(side_effect=_unregister_midway)),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+        assert not player.initialized.is_set()
+        mock_mass.player_queues.on_player_register.assert_not_called()
+        assert not self._player_added_signalled(mock_mass)
+
+    async def test_register_drops_queue_recreated_after_unregister(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A queue restored after the unregister already removed it is dropped again."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        events: list[str] = []
+
+        async def _unregister_midway(registering_player: MockPlayer) -> None:
+            # on_player_register restores the queue from cache before storing it, so an
+            # unregister can land in between and have its cleanup undone
+            await controller.unregister(registering_player.player_id)
+            events.append("queue_created")
+
+        def _track_removal(*_args: object, **_kwargs: object) -> None:
+            events.append("queue_removed")
+
+        mock_mass.player_queues.on_player_remove = MagicMock(side_effect=_track_removal)
+        mock_mass.player_queues.on_player_register = AsyncMock(side_effect=_unregister_midway)
+
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+        # the queue recreated for the removed player must be cleaned up again
+        assert events == ["queue_removed", "queue_created", "queue_removed"]
+
+    async def test_register_or_update_marks_replacement_initialized(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Replacing a registered player carries the initialized state to the new object."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+
+        await controller.register_or_update(replacement)
+
+        assert controller._players["player_1"] is replacement
+        assert replacement.initialized.is_set()
+
+    async def test_register_or_update_hands_config_to_replacement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A replacement instance inherits the config of the player it takes over."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        resolved_config = create_mock_config("Player 1")
+        existing.set_config(resolved_config)
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+        config_hook = AsyncMock()
+
+        with patch.object(replacement, "on_config_updated", config_hook):
+            await controller.register_or_update(replacement)
+
+        # without the resolved config the replacement would read defaults for every
+        # config backed setting (group members, flow mode, visibility, ...)
+        assert replacement.config is resolved_config
+        config_hook.assert_awaited_once()
+
+    async def test_register_or_update_aborts_when_replacement_is_unregistered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A replacement unregistered while its config hook runs is not marked ready."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        existing = MockPlayer(provider, "player_1", "Player 1")
+        existing.set_config(create_mock_config("Player 1"))
+        existing.set_initialized()
+        controller._players = {"player_1": existing}
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_midway() -> None:
+            await controller.unregister("player_1")
+
+        with patch.object(
+            replacement, "on_config_updated", AsyncMock(side_effect=_unregister_midway)
+        ):
+            await controller.register_or_update(replacement)
+
+        assert "player_1" not in controller._players
+        assert not replacement.initialized.is_set()
+
+    async def test_register_or_update_leaves_same_instance_untouched(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Re-announcing the same instance does not re-run its config hook."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player.set_initialized()
+        controller._players = {"player_1": player}
+        config_hook = AsyncMock()
+
+        with patch.object(player, "on_config_updated", config_hook):
+            await controller.register_or_update(player)
+
+        assert controller._players["player_1"] is player
+        config_hook.assert_not_called()
+
+    async def test_register_or_update_waits_for_inflight_register(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player is never swapped out while register() is still setting it up."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        replacement = MockPlayer(provider, "player_1", "Player 1")
+        release = asyncio.Event()
+        registering = asyncio.Event()
+
+        async def _blocked_config(*_args: object) -> MagicMock:
+            registering.set()
+            await release.wait()
+            return create_mock_config("Player 1")
+
+        mock_mass.config.get_player_config = AsyncMock(side_effect=_blocked_config)
+
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            register_task = asyncio.create_task(controller.register(player))
+            # only proceed once register() is provably inside its critical section
+            await registering.wait()
+            update_task = asyncio.create_task(controller.register_or_update(replacement))
+            await _yield_to_loop()
+
+            # register() is still in flight, so the replacement must not be swapped in yet
+            assert controller._players["player_1"] is player
+            assert not update_task.done()
+
+            release.set()
+            await register_task
+            await update_task
+
+        assert controller._players["player_1"] is replacement
+        assert player.initialized.is_set()
+        assert replacement.initialized.is_set()
+
+
+async def _yield_to_loop() -> None:
+    """Give other pending tasks a chance to run up to their next suspension point."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
 def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
     """
     Configure get_raw_player_config_value to return ``value`` for the play-media override key.
@@ -551,7 +1019,7 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
             return value
         if callable(original):
             return original(player_id, key, default)
-        return default if default is not None else "auto"
+        return default
 
     mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
 
@@ -1166,7 +1634,7 @@ class TestVolumeScalingOnRedirect:
             if key == "max_volume":
                 # user-facing player caps at 50, the protocol player has no limits of its own
                 return 50 if player_id == "user_player" else 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
 
@@ -1435,8 +1903,15 @@ class TestEnforceVolumeLimits:
 class TestFakeMuteControl:
     """Fake mute must report the muted state and restore the volume on unmute."""
 
-    def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
-        """Build a controller with a single player using fake mute control."""
+    def _make_player(
+        self, mock_mass: MagicMock, volume_level: int | None = 40
+    ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """
+        Build a controller with a single player using fake mute control.
+
+        :param mock_mass: the mocked MusicAssistant instance.
+        :param volume_level: initial volume level of the player, None if unknown.
+        """
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
@@ -1447,7 +1922,7 @@ class TestFakeMuteControl:
         mock_mass.players = controller
         mock_mass.player_queues.get = MagicMock(return_value=None)
         player.set_initialized()
-        player._attr_volume_level = 40
+        player._attr_volume_level = volume_level
         # let the mocked native volume control behave like a real device
         volume_set = AsyncMock(
             side_effect=lambda volume: setattr(player, "_attr_volume_level", volume)
@@ -1486,6 +1961,34 @@ class TestFakeMuteControl:
         await controller.cmd_volume_mute("player_1", False)
         volume_set.assert_awaited_with(40)
 
+    async def test_unmute_with_unknown_previous_volume(self, mock_mass: MagicMock) -> None:
+        """Unmuting a player whose volume was unknown at mute time restores a low volume."""
+        controller, player, volume_set = self._make_player(mock_mass, volume_level=None)
+
+        await controller.cmd_volume_mute("player_1", True)
+        assert player.extra_data[ATTR_PREVIOUS_VOLUME] is None
+
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_awaited_with(1)
+        player.update_state()
+        assert player.state.volume_muted is False
+
+    async def test_unmute_of_unmuted_player_keeps_volume(self, mock_mass: MagicMock) -> None:
+        """An unmute command for a player that is not muted may not touch the volume."""
+        controller, player, volume_set = self._make_player(mock_mass, volume_level=50)
+
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_not_awaited()
+        assert player.state.volume_level == 50
+
+    async def test_unmute_restores_a_stored_zero_volume(self, mock_mass: MagicMock) -> None:
+        """A player that was already silent stays silent after mute and unmute."""
+        controller, _player, volume_set = self._make_player(mock_mass, volume_level=0)
+
+        await controller.cmd_volume_mute("player_1", True)
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_awaited_with(0)
+
     async def test_volume_set_clears_fake_mute(self, mock_mass: MagicMock) -> None:
         """A regular volume change while fake muted implies an unmute."""
         controller, player, _volume_set = self._make_player(mock_mass)
@@ -1500,6 +2003,123 @@ class TestFakeMuteControl:
         unmuted_state = player.state
         assert unmuted_state.volume_muted is False
         assert unmuted_state.volume_level == 25
+
+
+class TestFakeMuteInGroup:
+    """A fake muted player in a group follows the mute lock, just like a native mute."""
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, *, member_mute_control: str = PLAYER_CONTROL_FAKE
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader synced to one member.
+
+        :param member_mute_control: Mute control of the member, the leader always uses fake mute.
+        """
+
+        def _conf(player_id: str, key: str, default: object = None) -> object:
+            if key == CONF_MUTE_CONTROL and player_id == "member":
+                return member_mute_control
+            return _player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})(
+                player_id, key, default
+            )
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = 50
+            # let the mocked native volume control behave like a real device
+            player.volume_set = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda volume, _player=player: setattr(
+                    _player, "_attr_volume_level", volume
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second pass, so the group volume of the leader accounts for its member
+        for player in players.values():
+            player.update_state(signal_event=False)
+        return controller, players
+
+    async def test_group_volume_keeps_a_muted_pair_muted(self, mock_mass: MagicMock) -> None:
+        """A group volume change may not bring a muted fake mute pair back to life."""
+        controller, players = self._make_synced_pair(mock_mass)
+        await controller.cmd_group_volume_mute("leader", True)
+
+        await controller.cmd_group_volume("leader", 30)
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_muted is True
+            assert player.state.volume_level == 0
+
+    async def test_group_volume_down_keeps_a_muted_member_muted(self, mock_mass: MagicMock) -> None:
+        """Turning a group down leaves a single muted member silent, at its own volume."""
+        controller, players = self._make_synced_pair(mock_mass)
+        await controller.cmd_volume_mute("member", True)
+        # let the group volume of the leader account for the muted member
+        players["leader"].update_state(signal_event=False)
+
+        await controller.cmd_group_volume("leader", 25)
+
+        for player in players.values():
+            player.update_state()
+        member_state = players["member"].state
+        assert member_state.volume_muted is True
+        assert member_state.volume_level == 0
+        # the player that is not muted follows the group volume as usual
+        assert players["leader"].state.volume_level == 25
+        # unmuting brings the member back at the volume it had before it was muted
+        await controller.cmd_volume_mute("member", False)
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 50
+
+    async def test_unmute_restores_the_volume_from_before_the_mute(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group volume change while muted may not alter the volume to restore."""
+        controller, players = self._make_synced_pair(mock_mass)
+        await controller.cmd_group_volume_mute("leader", True)
+        await controller.cmd_group_volume("leader", 30)
+
+        await controller.cmd_group_volume_mute("leader", False)
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_muted is False
+            assert player.state.volume_level == 50
+
+    async def test_group_volume_keeps_a_mixed_pair_muted(self, mock_mass: MagicMock) -> None:
+        """Members with a different mute control stay muted alike on a group volume change."""
+        controller, players = self._make_synced_pair(
+            mock_mass, member_mute_control=PLAYER_CONTROL_NATIVE
+        )
+        mute = AsyncMock(
+            side_effect=lambda muted: setattr(players["member"], "_attr_volume_muted", muted)
+        )
+        players["member"].volume_mute = mute  # type: ignore[method-assign]
+        await controller.cmd_group_volume_mute("leader", True)
+
+        await controller.cmd_group_volume("leader", 30)
+
+        mute.assert_awaited_once_with(True)
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_muted is True
 
 
 class TestMuteControlGuard:
@@ -1627,6 +2247,47 @@ class TestMuteControlGuard:
             await controller.cmd_volume_mute("player_1", False)
         assert ATTR_MUTE_LOCK not in player.extra_data
 
+    async def test_failed_mute_sets_no_mute_lock(self, mock_mass: MagicMock) -> None:
+        """A grouped player whose mute command failed is not left holding a mute lock."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=False,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        player.state.synced_to = "leader"
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert ATTR_MUTE_LOCK not in player.extra_data
+
+    async def test_failed_mute_keeps_existing_mute_lock(self, mock_mass: MagicMock) -> None:
+        """A failed mute leaves the lock of an earlier successful mute in place."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=False,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        player.state.synced_to = "leader"
+        player.extra_data[ATTR_MUTE_LOCK] = True
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert player.extra_data[ATTR_MUTE_LOCK] is True
+
 
 class TestGroupMuteMemberFilter:
     """Group mute skips members that have no mute control of their own."""
@@ -1651,6 +2312,328 @@ class TestGroupMuteMemberFilter:
 
         await controller.cmd_group_volume_mute("leader", True)
         leader_mute.assert_awaited_once_with(True)
+
+
+class TestGroupPlayerMuteRedirect:
+    """A mute command on a group player is handled at group level."""
+
+    def _setup(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+        """Build a controller with a group player holding a single mute capable member."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        group._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+        group._attr_group_members = ["member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+        controller._players = {"group": group, "member": member}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in (group, member):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        return controller, group, member
+
+    async def test_mute_on_group_player_is_forwarded_to_members(self, mock_mass: MagicMock) -> None:
+        """A group player has no mute of its own, so the members must be muted instead."""
+        controller, _group, member = self._setup(mock_mass)
+        member_mute = AsyncMock()
+        member.volume_mute = member_mute  # type: ignore[method-assign]
+
+        await controller.cmd_volume_mute("group", True)
+
+        member_mute.assert_awaited_once_with(True)
+
+    async def test_mute_on_group_player_without_own_mute_control(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group that has no mute control of its own must still mute its members."""
+        controller, group, member = self._setup(mock_mass)
+        group._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        group._cache.clear()
+        group.update_state(signal_event=False)
+        assert group.mute_control == PLAYER_CONTROL_NONE
+        member_mute = AsyncMock()
+        member.volume_mute = member_mute  # type: ignore[method-assign]
+
+        await controller.cmd_volume_mute("group", True)
+
+        member_mute.assert_awaited_once_with(True)
+
+    async def test_mute_on_group_player_without_mute_capable_members(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group whose members cannot mute must not raise, just like group mute itself."""
+        controller, _group, member = self._setup(mock_mass)
+        member._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        member._cache.clear()
+        member.update_state(signal_event=False)
+
+        await controller.cmd_volume_mute("group", True)
+
+
+class TestGroupMuteOnNonGroupPlayer:
+    """A group mute command works on any player, just like the group volume command."""
+
+    def _setup(
+        self, mock_mass: MagicMock, *members: str
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """Build a controller with a mute capable leader synced to the given members."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", *members):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = 50
+            players[player_id] = player
+        if members:
+            # the leader is not listed as its own member here, so the tests also cover
+            # that a sync leader is injected into its own final group_members
+            players["leader"]._attr_group_members = list(members)
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        return controller, players
+
+    def _stub_mutes(self, players: dict[str, MockPlayer]) -> dict[str, AsyncMock]:
+        """Replace the native mute command of every given player with a mock."""
+        mutes: dict[str, AsyncMock] = {}
+        for player_id, player in players.items():
+            mutes[player_id] = AsyncMock()
+            player.volume_mute = mutes[player_id]  # type: ignore[method-assign]
+        return mutes
+
+    async def test_group_mute_on_synced_member_redirects_to_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member of a sync group mutes the whole group through its sync leader."""
+        controller, players = self._setup(mock_mass, "member")
+        assert players["member"].state.synced_to == "leader"
+        mutes = self._stub_mutes(players)
+
+        await controller.cmd_group_volume_mute("member", True)
+
+        mutes["leader"].assert_awaited_once_with(True)
+        mutes["member"].assert_awaited_once_with(True)
+        assert ATTR_MUTE_LOCK in players["member"].extra_data
+
+    async def test_group_mute_on_sync_leader_mutes_the_leader_once(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A sync leader is part of its own member list, so it must be muted only once."""
+        controller, players = self._setup(mock_mass, "member")
+        mutes = self._stub_mutes(players)
+
+        await controller.cmd_group_volume_mute("leader", True)
+
+        mutes["leader"].assert_awaited_once_with(True)
+        mutes["member"].assert_awaited_once_with(True)
+
+    async def test_group_mute_on_plain_player_mutes_that_player(self, mock_mass: MagicMock) -> None:
+        """A player that is not grouped at all is muted as a normal player."""
+        controller, players = self._setup(mock_mass)
+        mutes = self._stub_mutes(players)
+
+        await controller.cmd_group_volume_mute("leader", True)
+
+        mutes["leader"].assert_awaited_once_with(True)
+
+    async def test_group_mute_on_plain_player_without_mute_control(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A plain player that cannot mute reports that, just like a normal mute command."""
+        controller, players = self._setup(mock_mass)
+        players["leader"]._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        players["leader"]._cache.clear()
+        players["leader"].update_state(signal_event=False)
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_group_volume_mute("leader", True)
+
+    async def test_group_unmute_on_synced_member_redirects_to_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Unmuting through a member clears the mute (and mute lock) of every group member."""
+        controller, players = self._setup(mock_mass, "member")
+        mutes = self._stub_mutes(players)
+        players["member"].extra_data[ATTR_MUTE_LOCK] = True
+
+        await controller.cmd_group_volume_mute("member", False)
+
+        mutes["leader"].assert_awaited_once_with(False)
+        mutes["member"].assert_awaited_once_with(False)
+        assert ATTR_MUTE_LOCK not in players["member"].extra_data
+
+    async def test_group_mute_locks_the_sync_leader_too(self, mock_mass: MagicMock) -> None:
+        """A sync leader is as much part of the group as its members, so it is locked too."""
+        controller, players = self._setup(mock_mass, "member")
+        self._stub_mutes(players)
+
+        await controller.cmd_group_volume_mute("leader", True)
+
+        assert ATTR_MUTE_LOCK in players["leader"].extra_data
+        assert ATTR_MUTE_LOCK in players["member"].extra_data
+
+    async def test_group_volume_keeps_a_muted_sync_pair_muted(self, mock_mass: MagicMock) -> None:
+        """A group volume change may not half-unmute a muted pair of directly synced players."""
+        controller, players = self._setup(mock_mass, "member")
+        self._stub_mutes(players)
+        await controller.cmd_group_volume_mute("leader", True)
+        # the mock players do not act on the mute command, so reflect it in their state
+        for player in players.values():
+            player._attr_volume_muted = True
+            player.update_state(signal_event=False)
+            player.volume_set = AsyncMock()  # type: ignore[method-assign]
+        # re-stub so only the mute commands of the group volume change are counted
+        mutes = self._stub_mutes(players)
+
+        await controller.cmd_group_volume("leader", 30)
+
+        for mute in mutes.values():
+            mute.assert_not_awaited()
+
+
+class TestMuteLockAfterUngroup:
+    """A mute lock is only honored while the player it belongs to is still grouped."""
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, member_mute_control: str
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader with one synced member.
+
+        :param member_mute_control: Mute control to configure on both players.
+        """
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_MUTE_CONTROL: member_mute_control})
+        )
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = 50
+            player.volume_set = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda volume, _player=player: setattr(
+                    _player, "_attr_volume_level", volume
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        return controller, players
+
+    def _dissolve_group(self, players: dict[str, MockPlayer]) -> None:
+        """Drop the sync group, the way a provider side topology change does."""
+        players["leader"]._attr_group_members = []
+        for player in players.values():
+            player.refresh_state(signal_event=False)
+
+    async def test_fake_muted_player_follows_volume_again(self, mock_mass: MagicMock) -> None:
+        """A fake muted player is no longer forced silent once its group is gone."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_FAKE)
+        await controller.cmd_volume_mute("member", True)
+        self._dissolve_group(players)
+
+        await controller.cmd_volume_set("member", 70)
+
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 70
+        assert players["member"].state.volume_muted is False
+
+    async def test_natively_muted_player_is_unmuted_again(self, mock_mass: MagicMock) -> None:
+        """A natively muted player is auto-unmuted by a volume change once its group is gone."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
+        mute = AsyncMock(
+            side_effect=lambda muted: setattr(players["member"], "_attr_volume_muted", muted)
+        )
+        players["member"].volume_mute = mute  # type: ignore[method-assign]
+        await controller.cmd_volume_mute("member", True)
+        self._dissolve_group(players)
+
+        await controller.cmd_volume_set("member", 70)
+
+        assert mute.await_args_list == [call(True), call(False)]
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 70
+        assert players["member"].state.volume_muted is False
+
+    async def test_still_grouped_player_keeps_its_lock(self, mock_mass: MagicMock) -> None:
+        """A muted player that is still grouped stays silent on a volume change."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_FAKE)
+        await controller.cmd_volume_mute("member", True)
+
+        await controller.cmd_volume_set("member", 70)
+
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 0
+        assert players["member"].state.volume_muted is True
+
+    async def test_protocol_player_follows_the_lock_of_its_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol player inherits the lock of the parent it renders for, group and all."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
+        member = players["member"]
+        protocol_player = MockPlayer(
+            MockProvider("sendspin", instance_id="sendspin", mass=mock_mass),
+            "proto_member",
+            "Member Protocol",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player._attr_supported_features = {
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        protocol_player._attr_volume_muted = True
+        protocol_player.set_protocol_parent_id("member")
+        # an unmute on a protocol player is redirected to the parent it renders for
+        mute = AsyncMock()
+        member.volume_mute = mute  # type: ignore[method-assign]
+        protocol_player.volume_mute = AsyncMock()  # type: ignore[method-assign]
+        protocol_player.volume_set = AsyncMock()  # type: ignore[method-assign]
+        controller._players["proto_member"] = protocol_player
+        member.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="proto_member",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+        protocol_player.set_initialized()
+        protocol_player.update_state(signal_event=False)
+        member.refresh_state(signal_event=False)
+        member.extra_data[ATTR_MUTE_LOCK] = True
+
+        # a group volume change reaches the protocol player through the internal handler
+        await controller._handle_cmd_volume_set("proto_member", 70)
+        mute.assert_not_awaited()
+
+        self._dissolve_group(players)
+        await controller._handle_cmd_volume_set("proto_member", 70)
+
+        mute.assert_awaited_once_with(False)
 
 
 class TestCurrentMediaTimeUpdates:
@@ -1915,6 +2898,20 @@ class TestPlayAnnouncementRestore:
             duration=3,
         )
 
+    @staticmethod
+    def _mute_natively(player: MockPlayer) -> AsyncMock:
+        """Give the player a native mute control, mute it and return its mute handler."""
+        player._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+        player._attr_volume_muted = True
+        mute_mock = AsyncMock(
+            side_effect=lambda muted: setattr(player, "_attr_volume_muted", muted)
+        )
+        player.volume_mute = mute_mock  # type: ignore[method-assign]
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        assert player.state.volume_muted is True
+        return mute_mock
+
     async def test_previous_playback_is_restored(self, mock_mass: MagicMock) -> None:
         """Content that was playing before the announcement is resumed afterwards."""
         controller, player, resume_mock = self._make_player(
@@ -2069,6 +3066,160 @@ class TestPlayAnnouncementRestore:
             call(player_ids_to_add=["player_1"]),
         ]
 
+    async def test_muted_player_is_unmuted_and_muted_back(self, mock_mass: MagicMock) -> None:
+        """A muted player hears the announcement and is muted again afterwards."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        mute_mock = self._mute_natively(player)
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert mute_mock.await_args_list == [call(False), call(True)]
+
+    async def test_player_without_volume_control_is_still_unmuted(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player that can only be muted is unmuted for the announcement all the same."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE})
+        )
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        mute_mock = self._mute_natively(player)
+        assert player.state.volume_control == PLAYER_CONTROL_NONE
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert mute_mock.await_args_list == [call(False), call(True)]
+
+    async def test_mute_is_restored_before_the_player_is_regrouped(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player is handed back to its group already muted, holding on to its mute lock."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        group = self._add_group(controller, player, supports_set_members=True)
+        real_set_members = group.set_members
+
+        async def _set_members(**kwargs: list[str]) -> None:
+            # let the membership really change, so the player is ungrouped while the
+            # announcement plays - just like it is in production. neither player picks
+            # the new membership up on its own here, so publish it on both.
+            await real_set_members(**kwargs)
+            group.update_state(force_update=True, signal_event=False)
+            player._cache.clear()
+            player.update_state(force_update=True, signal_event=False)
+
+        set_members = AsyncMock(side_effect=_set_members)
+        group.set_members = set_members  # type: ignore[method-assign]
+        player.extra_data[ATTR_MUTE_LOCK] = True
+        recorder = MagicMock()
+        recorder.attach_mock(self._mute_natively(player), "mute")
+        recorder.attach_mock(set_members, "set_members")
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert recorder.mock_calls == [
+            call.set_members(player_ids_to_remove=["player_1"]),
+            call.mute(False),
+            call.mute(True),
+            call.set_members(player_ids_to_add=["player_1"]),
+        ]
+        # the lock survives the announcement, so the regroup does not unmute the player
+        assert player.extra_data[ATTR_MUTE_LOCK] is True
+
+    async def test_unmuted_player_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player that was not muted is never sent a mute command."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        mute_mock = self._mute_natively(player)
+        player._attr_volume_muted = False
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        mute_mock.reset_mock()
+
+        await controller._play_announcement(player, self._announcement())
+
+        mute_mock.assert_not_awaited()
+
+    async def test_mute_is_restored_when_playback_fails(self, mock_mass: MagicMock) -> None:
+        """A failing announcement never leaves the player unmuted."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        mute_mock = self._mute_natively(player)
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=PlayerCommandFailed("player went away")
+        )
+
+        with pytest.raises(PlayerCommandFailed):
+            await controller._play_announcement(player, self._announcement())
+
+        assert mute_mock.await_args_list == [call(False), call(True)]
+
+    async def test_muted_sync_group_members_all_hear_the_announcement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Every member of a muted sync group is unmuted, keeping its mute lock."""
+        controller, leader, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        member = MockPlayer(cast("MockProvider", leader.provider), "player_2", "Player 2")
+        controller._players["player_2"] = member
+        member.set_initialized()
+        leader._attr_group_members = ["player_1", "player_2"]
+        mute_mocks = {player.player_id: self._mute_natively(player) for player in (leader, member)}
+        # both members were muted while grouped, so both hold a mute lock
+        for player in (leader, member):
+            player.extra_data[ATTR_MUTE_LOCK] = True
+
+        await controller._play_announcement(leader, self._announcement())
+
+        for player_id, mute_mock in mute_mocks.items():
+            assert mute_mock.await_args_list == [call(False), call(True)], player_id
+            assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+
+    async def test_fake_muted_player_announces_at_its_real_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A fake muted player announces at its real volume, not at the zero it is parked on."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+
+        def _apply_volume(volume: int) -> None:
+            player._attr_volume_level = volume
+            player.update_state(signal_event=False)
+
+        player._attr_volume_level = 40
+        volume_set = AsyncMock(side_effect=_apply_volume)
+        player.volume_set = volume_set  # type: ignore[method-assign]
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        await controller.cmd_volume_mute("player_1", True)
+        assert player.state.volume_muted is True
+        controller.get_announcement_volume = MagicMock(return_value=80)  # type: ignore[method-assign]
+
+        await controller._play_announcement(player, self._announcement())
+
+        # unmute to 40, announce at 80, restore 40 and park back on 0 for the fake mute
+        assert volume_set.await_args_list == [
+            call(0),
+            call(40),
+            call(80),
+            call(40),
+            call(0),
+        ]
+        assert player.state.volume_muted is True
+        assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
+
 
 class TestScheduleActiveOutputProtocolClear:
     """Test the deferred clear of a player's active output protocol."""
@@ -2139,6 +3290,32 @@ class TestRemovePlayerControl:
         assert controller.player_controls() == []
         mock_mass.loop.call_soon.assert_called_once_with(using_control.refresh_state)
 
+    async def test_a_returning_control_is_picked_back_up(self, mock_mass: MagicMock) -> None:
+        """Test that a control removed and registered again re-attaches to its player."""
+        # run the scheduled refresh straight away so each step is observable
+        mock_mass.loop = MagicMock()
+        mock_mass.loop.call_soon.side_effect = lambda callback, *args: callback(*args)
+        mock_mass.config.get_raw_player_config_value.side_effect = _player_config_stub(
+            {CONF_POWER_CONTROL: "switch.amp"}
+        )
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        mock_mass.get_provider.return_value = provider
+        player = MockPlayer(provider, "player", "Player")
+        controller._players = {"player": player}
+        control = PlayerControl(id="switch.amp", provider="test_prov", name="Amp")
+
+        await controller.register_or_update_player_control(control)
+        assert player.state.power_control == "switch.amp"
+
+        # the Home Assistant plugin drops and re-registers its controls around a reload
+        controller.remove_player_control(control.id)
+        assert player.state.power_control == PLAYER_CONTROL_NONE
+
+        await controller.register_or_update_player_control(control)
+        assert player.state.power_control == "switch.amp"
+
     def test_removing_an_unknown_control_does_nothing(self, mock_mass: MagicMock) -> None:
         """Test that removing a control that was never registered is a no-op."""
         mock_mass.loop = MagicMock()
@@ -2152,6 +3329,37 @@ class TestRemovePlayerControl:
         controller.remove_player_control("switch.gone")
 
         mock_mass.loop.call_soon.assert_not_called()
+
+
+class _FailingTeardownPlayer(MockPlayer):
+    """Player whose provider fails to release it."""
+
+    unloaded = False
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        self.unloaded = True
+        msg = "device is gone"
+        raise RuntimeError(msg)
+
+
+class TestUnregisterTeardown:
+    """Test that a failing player teardown stays contained."""
+
+    async def test_failing_on_unload_still_unregisters_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a provider raising while releasing its player does not break unregister."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player = _FailingTeardownPlayer(provider, "boom", "Boom")
+        controller._players = {"boom": player}
+
+        await controller.unregister("boom")
+
+        assert "boom" not in controller._players
+        assert player.unloaded
 
 
 if __name__ == "__main__":

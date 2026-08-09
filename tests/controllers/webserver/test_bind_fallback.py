@@ -65,9 +65,7 @@ async def test_unavailable_bind_ip_falls_back_to_all_interfaces(server: Webserve
     """An address that cannot be bound starts the server on all interfaces instead."""
     port = unused_port()
 
-    await server.setup(
-        bind_ip=UNBINDABLE_IP, bind_port=port, base_url=f"http://{UNBINDABLE_IP}:{port}"
-    )
+    await server.setup(bind_ip=UNBINDABLE_IP, bind_port=port)
 
     assert server.bind_ip is None
     assert server.port == port
@@ -83,7 +81,7 @@ async def test_available_bind_ip_is_reported(server: Webserver) -> None:
     """A bind that succeeded reports the address it is pinned to."""
     port = unused_port()
 
-    await server.setup(bind_ip="127.0.0.1", bind_port=port, base_url=f"http://127.0.0.1:{port}")
+    await server.setup(bind_ip="127.0.0.1", bind_port=port)
 
     assert server.bind_ip == "127.0.0.1"
     assert server.port == port
@@ -93,7 +91,7 @@ async def test_wildcard_bind_ip_is_reported_as_all_interfaces(server: Webserver)
     """A configured wildcard is reported the same way as a fallback: no pinned address."""
     port = unused_port()
 
-    await server.setup(bind_ip="0.0.0.0", bind_port=port, base_url=f"http://0.0.0.0:{port}")
+    await server.setup(bind_ip="0.0.0.0", bind_port=port)
 
     assert server.bind_ip is None
 
@@ -133,7 +131,7 @@ async def test_setup_publishes_dialable_addresses_after_fallback(
     config.update({CONF_BIND_IP: UNBINDABLE_IP, CONF_BIND_PORT: port})
 
     with patch(
-        "music_assistant.controllers.webserver.controller.get_ip_addresses",
+        "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
         AsyncMock(return_value=ALL_ADDRESSES),
     ):
         await booted_controller.setup(config)

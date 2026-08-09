@@ -13,6 +13,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -48,7 +49,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_loads, serialize_to_json

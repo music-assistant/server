@@ -1,6 +1,7 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import contextlib
 import gc
 import socket
 import threading
@@ -8,8 +9,10 @@ import time
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
+import ifaddr
 import pytest
-from music_assistant_models.media_items import Album, ProviderMapping, Track
+from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
 
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
@@ -17,9 +20,9 @@ from music_assistant.helpers.util import (
     guard_single_request,
     import_module_in_thread,
     is_port_in_use,
+    join_task,
     load_provider_module,
     sanitize_http_header_value,
-    select_announce_addresses,
     select_free_port,
 )
 from music_assistant.mass import MusicAssistant
@@ -280,7 +283,8 @@ class TestGetIpAddresses:
     def test_falls_back_to_loopback_without_routable_addresses(self) -> None:
         """With no routable addresses at all, loopback is returned instead of an empty tuple."""
         with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=[]):
-            assert util._enumerate_ip_addresses(include_ipv6=True) == ("127.0.0.1",)
+            assert util._enumerate_ip_addresses(True, False) == ("127.0.0.1",)
+            assert util._enumerate_ip_addresses(True, True) == ("127.0.0.1",)
 
     @pytest.mark.asyncio
     async def test_concurrent_callers_share_a_single_probe(self, enumerate_mock: MagicMock) -> None:
@@ -311,8 +315,8 @@ class TestGetIpAddresses:
         """Once the TTL passed, the next call enumerates the adapters again."""
         await util.get_ip_addresses()
         # age the cached entry beyond the TTL
-        cached_at, addresses = util._ip_addresses_cache[False]
-        util._ip_addresses_cache[False] = (
+        cached_at, addresses = util._ip_addresses_cache[False, False]
+        util._ip_addresses_cache[False, False] = (
             cached_at - util.IP_ADDRESSES_CACHE_TTL - 1,
             addresses,
         )
@@ -323,7 +327,7 @@ class TestGetIpAddresses:
     async def test_cancelled_caller_does_not_break_concurrent_callers(self) -> None:
         """Cancelling one caller must not cancel the shared probe for the others."""
 
-        def slow_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+        def slow_enumerate(_include_ipv6: bool, _publish_candidates_only: bool) -> tuple[str, ...]:
             time.sleep(0.1)
             return ("192.168.1.10",)
 
@@ -346,7 +350,9 @@ class TestGetIpAddresses:
         """A probe failing after a caller gave up is not reported to the loop handler."""
         release = threading.Event()
 
-        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+        def failing_enumerate(
+            _include_ipv6: bool, _publish_candidates_only: bool
+        ) -> tuple[str, ...]:
             release.wait()
             raise OSError("probe failed")
 
@@ -378,7 +384,9 @@ class TestGetIpAddresses:
         """A probe failing with no caller left to receive it is not reported either."""
         release = threading.Event()
 
-        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+        def failing_enumerate(
+            _include_ipv6: bool, _publish_candidates_only: bool
+        ) -> tuple[str, ...]:
             release.wait()
             raise OSError("probe failed")
 
@@ -391,7 +399,7 @@ class TestGetIpAddresses:
         ):
             caller = asyncio.create_task(util.get_ip_addresses())
             await asyncio.sleep(0)
-            probe = util._ip_addresses_pending[False]
+            probe = util._ip_addresses_pending[False, False]
             caller.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await caller
@@ -405,29 +413,132 @@ class TestGetIpAddresses:
         assert reported == []
 
 
-class TestSelectAnnounceAddresses:
-    """select_announce_addresses picks the addresses that are safe to announce."""
+def _adapter(name: str, *ips: str) -> ifaddr.Adapter:
+    """Build an adapter of the given name holding the given IPv4 addresses."""
+    return ifaddr.Adapter(name, name, [ifaddr.IP(ip, 24, name) for ip in ips])
 
-    def test_ipv6_addresses_are_left_out(self) -> None:
-        """A dual-stack host announces its IPv4 addresses only, in their original order."""
-        assert select_announce_addresses(
-            ["192.168.1.10", "fd00::10", "10.0.0.5", "2001:db8::1"]
-        ) == ["192.168.1.10", "10.0.0.5"]
 
-    def test_ipv6_only_host_announces_ipv6(self) -> None:
-        """A host without any IPv4 address falls back to announcing its IPv6 addresses."""
-        assert select_announce_addresses(["fd00::10", "2001:db8::1"]) == [
-            "fd00::10",
-            "2001:db8::1",
-        ]
+@contextlib.contextmanager
+def _fake_adapters(*adapters: ifaddr.Adapter) -> Iterator[None]:
+    """Enumerate the given adapters, with the primary-route probe failing on this host."""
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=list(adapters)),
+        patch("music_assistant.helpers.util.socket.socket") as mock_socket,
+    ):
+        # without a primary route every address is ranked on its prefix alone, so the
+        # outcome does not depend on the network the test host happens to sit on
+        mock_socket.return_value.connect.side_effect = OSError
+        yield
 
-    def test_ipv4_only_host_is_unchanged(self) -> None:
-        """The common IPv4-only host announces exactly what it publishes."""
-        assert select_announce_addresses(["192.168.1.10"]) == ["192.168.1.10"]
 
-    def test_empty_input_yields_no_addresses(self) -> None:
-        """Nothing to publish means nothing to announce."""
-        assert select_announce_addresses([]) == []
+class TestGetPublishIpCandidates:
+    """get_publish_ip_candidates skips the addresses no local network device can reach."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self) -> Iterator[None]:
+        """Run every test against an empty module-level cache."""
+        util._ip_addresses_cache.clear()
+        util._ip_addresses_pending.clear()
+        yield
+        util._ip_addresses_cache.clear()
+        util._ip_addresses_pending.clear()
+
+    @pytest.mark.asyncio
+    async def test_container_and_tunnel_addresses_are_left_out(self) -> None:
+        """A HA OS host publishes its LAN address, not the docker bridges alongside it."""
+        with _fake_adapters(
+            _adapter("end0", "192.168.1.10"),
+            _adapter("hassio", "172.30.32.1"),
+            _adapter("docker0", "172.30.232.1"),
+            _adapter("tailscale0", "100.64.0.1"),
+        ):
+            assert await util.get_publish_ip_candidates() == ("192.168.1.10",)
+
+    @pytest.mark.asyncio
+    async def test_real_lan_bridge_is_kept(self) -> None:
+        """A host whose LAN lives on a bridge (Proxmox, Unraid, OpenWrt) still publishes it."""
+        with _fake_adapters(
+            _adapter("vmbr0", "192.168.1.10"),
+            _adapter("br-lan", "10.0.0.5"),
+            _adapter("br-1a2b3c4d5e6f", "172.18.0.1"),
+        ):
+            assert await util.get_publish_ip_candidates() == ("192.168.1.10", "10.0.0.5")
+
+    @pytest.mark.asyncio
+    async def test_host_behind_a_tunnel_only_still_publishes(self) -> None:
+        """With nothing but a tunnel to offer, that tunnel beats publishing nothing."""
+        with _fake_adapters(_adapter("wg0", "10.6.0.2")):
+            assert await util.get_publish_ip_candidates() == ("10.6.0.2",)
+
+    @pytest.mark.asyncio
+    async def test_unfiltered_lookup_keeps_the_container_addresses(self) -> None:
+        """get_ip_addresses is unaffected: the HA ingress site binds one of those bridges."""
+        with _fake_adapters(
+            _adapter("end0", "192.168.1.10"),
+            _adapter("hassio", "172.30.32.1"),
+        ):
+            assert await util.get_ip_addresses() == ("192.168.1.10", "172.30.32.1")
+            assert await util.get_publish_ip_candidates() == ("192.168.1.10",)
+
+
+class TestJoinTask:
+    """join_task waits for a task without adopting it, so a waiter never cancels the work."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_task_result(self) -> None:
+        """A completed task hands its result to the waiter."""
+        release = asyncio.Event()
+        release.set()
+        task = asyncio.create_task(_gated_task(release, "done"))
+        assert await join_task(task) == "done"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_leaves_the_task_running(self) -> None:
+        """Cancelling one waiter must not disturb the task or the waiters that remain."""
+        release = asyncio.Event()
+        task = asyncio.create_task(_gated_task(release, "done"))
+        waiter_a = asyncio.create_task(join_task(task))
+        waiter_b = asyncio.create_task(join_task(task))
+        await asyncio.sleep(0)
+        waiter_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter_a
+
+        release.set()
+        assert await waiter_b == "done"
+        assert not task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_of_a_failing_task_logs_no_loop_error(self) -> None:
+        """A task failing after a waiter gave up is not reported to the loop handler."""
+        release = asyncio.Event()
+        with collect_loop_errors() as reported:
+            task = asyncio.create_task(_gated_task(release, "done", fail=True))
+            waiter_a = asyncio.create_task(join_task(task))
+            waiter_b = asyncio.create_task(join_task(task))
+            await asyncio.sleep(0)
+            waiter_a.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter_a
+            # release the task only once the cancellation is fully processed, so the failure
+            # reliably lands after the giving-up waiter is gone
+            release.set()
+            with pytest.raises(RuntimeError, match="task failed"):
+                await waiter_b
+
+        assert reported == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_leaves_the_task_running(self) -> None:
+        """Giving up on the timeout raises TimeoutError but keeps the task alive."""
+        release = asyncio.Event()
+        task = asyncio.create_task(_gated_task(release, "done"))
+        with pytest.raises(TimeoutError):
+            await join_task(task, timeout=0.01)
+        assert not task.done()
+
+        release.set()
+        assert await task == "done"
 
 
 class TestSanitizeHttpHeaderValue:
@@ -533,6 +644,120 @@ class TestGuardSingleRequest:
         assert provider.album_calls == 1
         assert provider.track_calls == 1
 
+    @pytest.mark.asyncio
+    async def test_equal_media_item_arguments_share_a_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """Equal media items key the same however their set fields happen to iterate."""
+        caller = _GuardedCaller(mass_minimal)
+        mapping_ids = ("a", "b", "c", "d")
+        calls = [
+            asyncio.create_task(
+                caller.fetch_item("123", fallback=_guarded_album("Album", mapping_ids))
+            ),
+            asyncio.create_task(
+                caller.fetch_item("123", fallback=_guarded_album("Album", mapping_ids[::-1]))
+            ),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == [f"123-{GUARDED_PROVIDER_ID}-False-Album"] * 2
+        assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_media_item_arguments_key_on_their_uri(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """Media items for the same provider item share a request, contents aside."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(
+                caller.fetch_item("123", fallback=_guarded_album("First", ("a", "b")))
+            ),
+            asyncio.create_task(
+                caller.fetch_item("123", fallback=_guarded_album("Second", ("b", "a", "c")))
+            ),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        # both fallbacks describe item 123, so the second caller joins and is answered
+        # with the fallback of the caller that started the request
+        assert await asyncio.gather(*calls) == [f"123-{GUARDED_PROVIDER_ID}-False-First"] * 2
+        assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_item_mapping_and_full_item_get_their_own_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A mapping and a full item for one item resolve differently, so they never share."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(caller.fetch_item("123", fallback=_guarded_album("Album", ("a",)))),
+            asyncio.create_task(caller.fetch_item("123", fallback=_guarded_mapping("Mapping"))),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == [
+            f"123-{GUARDED_PROVIDER_ID}-False-Album",
+            f"123-{GUARDED_PROVIDER_ID}-False-Mapping",
+        ]
+        assert caller.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_calls_spelled_differently_share_a_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """The same call shares a request however its arguments are spelled."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(caller.fetch_item("123")),
+            asyncio.create_task(caller.fetch_item("123", GUARDED_PROVIDER_ID)),
+            asyncio.create_task(
+                caller.fetch_item("123", provider=GUARDED_PROVIDER_ID, force_refresh=False)
+            ),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == [f"123-{GUARDED_PROVIDER_ID}-False-None"] * 3
+        assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_arguments_containing_punctuation_do_not_collide(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """Ids carrying punctuation must not run into the argument that follows them."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(caller.fetch_item("a.b", "c")),
+            asyncio.create_task(caller.fetch_item("a", "b.c")),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == ["a.b-c-False-None", "a-b.c-False-None"]
+        assert caller.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_gets_its_own_request(self, mass_minimal: MusicAssistant) -> None:
+        """A force refresh must issue its own request instead of joining a normal one."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(caller.fetch_item("123")),
+            asyncio.create_task(caller.fetch_item("123", force_refresh=True)),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == [
+            f"123-{GUARDED_PROVIDER_ID}-False-None",
+            f"123-{GUARDED_PROVIDER_ID}-True-None",
+        ]
+        assert caller.calls == 2
+
 
 class _GuardedCaller:
     """Minimal stand-in for a controller exposing a guarded request."""
@@ -553,6 +778,20 @@ class _GuardedCaller:
         self.calls += 1
         await self.release.wait()
         return f"result-{item_id}"
+
+    @guard_single_request
+    async def fetch_item(
+        self,
+        item_id: str,
+        provider: str = GUARDED_PROVIDER_ID,
+        force_refresh: bool = False,
+        fallback: Album | ItemMapping | None = None,
+    ) -> str:
+        """Return the result for the given item id, once released."""
+        self.calls += 1
+        await self.release.wait()
+        # the fallback is echoed so a caller receiving another caller's argument is visible
+        return f"{item_id}-{provider}-{force_refresh}-{fallback.name if fallback else None}"
 
 
 class _GatedMusicProvider(MusicProvider):
@@ -590,6 +829,49 @@ class _GatedMusicProvider(MusicProvider):
             name="Track",
             provider_mappings={_provider_mapping(prov_track_id)},
         )
+
+
+async def _gated_task(release: asyncio.Event, result: str, fail: bool = False) -> str:
+    """
+    Return (or raise) once the given event is set.
+
+    :param release: Event that lets the task complete.
+    :param result: Value to return.
+    :param fail: Raise instead of returning the result.
+    """
+    await release.wait()
+    if fail:
+        raise RuntimeError("task failed")
+    return result
+
+
+def _guarded_album(name: str, mapping_ids: tuple[str, ...]) -> Album:
+    """
+    Build an album on the gated test provider to pass as a fallback argument.
+
+    :param name: The album name.
+    :param mapping_ids: The provider item ids to add as provider mappings.
+    """
+    return Album(
+        item_id="123",
+        provider=GUARDED_PROVIDER_ID,
+        name=name,
+        provider_mappings={_provider_mapping(item_id) for item_id in mapping_ids},
+    )
+
+
+def _guarded_mapping(name: str) -> ItemMapping:
+    """
+    Build an item mapping on the gated test provider to pass as a fallback argument.
+
+    :param name: The item name.
+    """
+    return ItemMapping(
+        media_type=MediaType.ALBUM,
+        item_id="123",
+        provider=GUARDED_PROVIDER_ID,
+        name=name,
+    )
 
 
 def _provider_mapping(item_id: str) -> ProviderMapping:

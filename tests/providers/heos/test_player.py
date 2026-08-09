@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import MediaType
@@ -26,6 +27,17 @@ def _url_stream_now_playing() -> MagicMock:
     now_playing.current_position = None
     now_playing.current_position_updated = None
     now_playing.duration = None
+    return now_playing
+
+
+def _external_now_playing(current_position: int | None, duration: int | None = 245000) -> MagicMock:
+    """HEOS now-playing for an external source, with millisecond progress values."""
+    now_playing = _url_stream_now_playing()
+    now_playing.source_id = 9999
+    now_playing.song = "External Track"
+    now_playing.current_position = current_position
+    now_playing.current_position_updated = datetime(2026, 1, 1, tzinfo=UTC)
+    now_playing.duration = duration
     return now_playing
 
 
@@ -91,3 +103,51 @@ def test_external_source_now_playing_still_updates_media() -> None:
     player._update_player_current_media()
 
     assert player._attr_current_media.title == "External Track"
+
+
+def test_media_position_and_duration_reported_in_seconds() -> None:
+    """HEOS reports milliseconds; the media must carry seconds."""
+    player = _make_player(_external_now_playing(113000))
+    player._attr_active_source = "9999"
+
+    player._update_player_current_media()
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.elapsed_time == 113
+    assert player._attr_current_media.duration == 245
+
+
+def test_media_and_player_position_agree() -> None:
+    """The media-level and player-level positions must use the same unit."""
+    player = _make_player(_external_now_playing(113000))
+    player._attr_active_source = "9999"
+
+    player.set_dynamic_attributes(update_media=True)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.elapsed_time == player._attr_elapsed_time == 113
+
+
+def test_position_zero_is_reported_not_dropped() -> None:
+    """Position 0 is a real position at the start of a track, not a missing one."""
+    player = _make_player(_external_now_playing(0))
+    player._attr_active_source = "9999"
+
+    player.set_dynamic_attributes(update_media=True)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.elapsed_time == 0
+    assert player._attr_elapsed_time == 0
+
+
+def test_missing_progress_stays_none() -> None:
+    """Without progress info, no position or duration is reported."""
+    player = _make_player(_external_now_playing(None, duration=None))
+    player._attr_active_source = "9999"
+
+    player.set_dynamic_attributes(update_media=True)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.elapsed_time is None
+    assert player._attr_current_media.duration is None
+    assert player._attr_elapsed_time is None

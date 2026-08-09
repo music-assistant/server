@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -27,6 +28,7 @@ from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.smart_playlist import (
     CONF_AI_DESCRIPTIONS,
     CONF_AI_ENGINE,
+    MAX_AI_DESCRIPTION_BYTES,
     SmartPlaylistProvider,
 )
 from music_assistant.providers.smart_playlist.helpers import (
@@ -36,6 +38,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     SmartPlaylistRules,
     write_json,
 )
+from tests.common import use_real_create_task
 
 # ---------------------------------------------------------------------------
 # SmartPlaylistRules unit tests
@@ -1106,7 +1109,7 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     mass.storage_path = str(tmp_path)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
-    mass.create_task = MagicMock(side_effect=_swallow_task)
+    use_real_create_task(mass)
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -1124,9 +1127,9 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     result = await plugin.get_playlist_tracks("abc")
     assert len(result) <= DYNAMIC_PLAYLIST_SAMPLE_SIZE
     assert len(result) > 5
-    # Observable behaviour: the wrapped evaluator ran and a store task was scheduled.
+    # Observable behaviour: the wrapped evaluator ran and its result was stored.
     library_mock.assert_awaited()
-    mass.create_task.assert_called_once()
+    mass.cache.set.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1979,6 +1982,44 @@ async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any
 
 
 @pytest.mark.asyncio
+async def test_generate_ai_description_stalled_provider_returns_none(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stalled AI provider gives up instead of leaving the task pending forever."""
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.AI_QUERY_TIMEOUT_SECONDS", 0.01)
+
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.sleep(5)
+        return "A mellow mix for the evening."
+
+    ai_provider = _make_ai_provider()
+    ai_provider.ai_query = AsyncMock(side_effect=_answers_too_late)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
+    caplog.set_level(logging.DEBUG, logger=plugin.logger.name)
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+    assert "no response within" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_reports_a_provider_side_timeout_as_a_failure(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A timeout raised by the provider itself is not reported as our own cap."""
+    ai_provider = _make_ai_provider()
+    ai_provider.ai_query = AsyncMock(side_effect=TimeoutError)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
+    caplog.set_level(logging.DEBUG, logger=plugin.logger.name)
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+    assert "no response within" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: Any) -> None:
     """A failing selection yields no description instead of asking another engine."""
     failing = _make_ai_provider(instance_id="ai--bad")
@@ -2036,6 +2077,40 @@ async def test_disabled_toggle_does_not_schedule_refresh(tmp_path: Any) -> None:
 async def test_generate_ai_description_blank_response_returns_none(tmp_path: Any) -> None:
     """A blank/whitespace AI response is treated as no description."""
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider("   "))
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_oversized_response_returns_none(tmp_path: Any) -> None:
+    """A reply beyond the size cap is discarded."""
+    oversized = "x" * (MAX_AI_DESCRIPTION_BYTES + 1)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(oversized))
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_accepts_a_response_at_the_size_cap(tmp_path: Any) -> None:
+    """A reply exactly at the size cap is still accepted."""
+    at_cap = "x" * MAX_AI_DESCRIPTION_BYTES
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(at_cap))
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result == at_cap
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_measures_the_cap_in_bytes(tmp_path: Any) -> None:
+    """The cap counts utf-8 bytes, so multibyte replies are not measured as characters."""
+    # under the cap as characters, over it as utf-8 bytes
+    multibyte = "あ" * (MAX_AI_DESCRIPTION_BYTES // 2)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(multibyte))
 
     result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
 
@@ -2328,6 +2403,66 @@ async def test_refresh_ai_description_no_provider_uses_fallback(tmp_path: Any) -
     assert "abc" not in plugin._descriptions_store
     written = cast("Any", plugin)._update_playlist_description.await_args.args[1]
     assert written == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
+async def test_refresh_ai_description_oversized_reply_uses_fallback(tmp_path: Any) -> None:
+    """An oversized reply drops the stored text and writes the fallback."""
+    oversized = "x" * (MAX_AI_DESCRIPTION_BYTES + 1)
+    plugin = _make_ai_plugin(tmp_path, ai_provider=_make_ai_provider(oversized))
+    await plugin.handle_async_init()
+    rules = SmartPlaylistRules(favorites_only=True)
+    plugin._rules_store["abc"] = rules
+    plugin._names_store["abc"] = "Name"
+    plugin._descriptions_store["abc"] = "Good text."
+    cast("Any", plugin.mass).music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_make_library_item(plugin, "abc")
+    )
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+
+    await plugin._refresh_ai_description("abc")
+
+    assert "abc" not in plugin._descriptions_store
+    written = cast("Any", plugin)._update_playlist_description.await_args.args[1]
+    assert written == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
+async def test_load_rules_from_disk_drops_an_unusable_description(tmp_path: Any) -> None:
+    """Only a short, textual persisted description is adopted on load."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    await write_json(
+        str(tmp_path / "smart_playlists" / RULES_FILENAME),
+        {
+            # both unusable entries come first, so an entry that raises instead of being
+            # skipped would abort the load and cost the good entry below it
+            "abc": {
+                "name": "Name",
+                "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
+                "ai_description": "x" * (MAX_AI_DESCRIPTION_BYTES + 1),
+            },
+            "def": {
+                "name": "Corrupt",
+                "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
+                "ai_description": {"not": "a string"},
+            },
+            "ghi": {
+                "name": "Other",
+                "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
+                "ai_description": "Short and fine.",
+            },
+        },
+    )
+    plugin._rules_store.clear()
+    plugin._descriptions_store.clear()
+
+    await plugin._load_rules_from_disk()
+
+    assert set(plugin._rules_store) == {"abc", "def", "ghi"}
+    assert "abc" not in plugin._descriptions_store
+    assert "def" not in plugin._descriptions_store
+    assert plugin._descriptions_store["ghi"] == "Short and fine."
 
 
 @pytest.mark.asyncio

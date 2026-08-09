@@ -82,6 +82,11 @@ DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still serv
 CONF_AI_DESCRIPTIONS = "ai_descriptions"
 CONF_AI_ENGINE = "ai_engine"
 DESCRIPTION_PREFIX = "[Smart Playlist] "
+# descriptions are a sentence or two, so this only has to cover a slow local model
+AI_QUERY_TIMEOUT_SECONDS = 60
+# a reply is persisted and served in every playlist listing, so a runaway one is discarded
+# in favour of the rules summary; the cap sits well above the sentence or two we ask for
+MAX_AI_DESCRIPTION_BYTES = 2048
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -1378,7 +1383,8 @@ class SmartPlaylistProvider(PluginProvider):
 
         :param name: The playlist name, included in the prompt for context.
         :param rules: The rules whose summary the description should reflect.
-        :return: The AI-generated description, or None when disabled, unavailable, or on error.
+        :return: The AI-generated description, or None when disabled, unavailable, too large,
+            or on error.
         """
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
@@ -1389,13 +1395,28 @@ class SmartPlaylistProvider(PluginProvider):
         if engine is None:
             return None
         try:
-            response = await engine.provider.ai_query(
-                self._build_ai_prompt(name, rules, locale), engine_id=engine.id
-            )
+            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                response = await engine.provider.ai_query(
+                    self._build_ai_prompt(name, rules, locale), engine_id=engine.id
+                )
         except Exception as exc:
-            self.logger.debug("AI description generation failed for '%s': %s", name, exc)
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            details: str | Exception = (
+                f"no response within {AI_QUERY_TIMEOUT_SECONDS}s"
+                if isinstance(exc, TimeoutError) and query_timeout.expired()
+                else exc
+            )
+            self.logger.debug("AI description generation failed for '%s': %s", name, details)
             return None
-        return response.strip() or None
+        description = response.strip()
+        if len(description.encode("utf-8")) > MAX_AI_DESCRIPTION_BYTES:
+            self.logger.debug(
+                "AI description for '%s' exceeds %d bytes, keeping the rules summary",
+                name,
+                MAX_AI_DESCRIPTION_BYTES,
+            )
+            return None
+        return description or None
 
     def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:
         """Build the prompt asking an AI provider to describe the smart playlist."""
@@ -1417,7 +1438,13 @@ class SmartPlaylistProvider(PluginProvider):
             for playlist_id, entry in data.items():
                 self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
                 self._names_store[playlist_id] = entry.get("name", playlist_id)
-                if description := entry.get("ai_description"):
+                # a description persisted before the size cap existed is dropped here too
+                description = entry.get("ai_description")
+                if (
+                    isinstance(description, str)
+                    and description
+                    and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
+                ):
                     self._descriptions_store[playlist_id] = description
         except Exception as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)
