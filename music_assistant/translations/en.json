@@ -1305,6 +1305,7 @@
   "provider.fully_kiosk.config_entries.use_ssl.label": "Use HTTPS when connecting to the Fully Kiosk API.",
   "provider.fully_kiosk.config_entries.verify_ssl.description": "Disabling verification trusts any certificate (no validation).",
   "provider.fully_kiosk.config_entries.verify_ssl.label": "Verify HTTPS certificates (recommended).",
+  "provider.fully_kiosk.errors.show_dashboard_failed": "Failed to show the dashboard on {0}.",
   "provider.fully_kiosk.manifest.description": "Play audio on Fully Kiosk-enabled displays or Android devices.",
   "provider.fully_kiosk.setup_flow.user.description": "Enter the password configured for the Fully Kiosk REST API on this device.",
   "provider.fully_kiosk.setup_flow.user.title": "Connect to Fully Kiosk",
