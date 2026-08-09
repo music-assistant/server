@@ -219,8 +219,8 @@ class AIRadioProvider(
 
     async def save_section(self, section: dict[str, Any]) -> dict[str, Any]:
         """Create or update a shared section."""
-        normalized = self._normalize_section(section)
         async with self._station_lock:
+            normalized = self._normalize_section(section)
             self._sections[normalized["id"]] = normalized
             await self._write_sections()
             await self._write_stations()
@@ -267,8 +267,8 @@ class AIRadioProvider(
 
     async def save_host(self, host: dict[str, Any]) -> dict[str, Any]:
         """Create or update a host."""
-        normalized = self._normalize_host(deepcopy(host))
         async with self._station_lock:
+            normalized = self._normalize_host(deepcopy(host))
             self._hosts[normalized["id"]] = normalized
             await self._write_hosts()
         self.logger.info("AI Radio host saved: %s (%s)", normalized["id"], normalized["name"])
