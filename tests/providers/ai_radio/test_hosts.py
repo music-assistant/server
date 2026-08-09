@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -100,3 +101,39 @@ def test_default_host_template_is_normalizable() -> None:
     template = dummy._default_host_template()
     normalized = dummy._normalize_host(template)
     assert normalized["merge_section_id"] == "Between_Songs_Smoother"
+
+
+def test_write_and_load_hosts_round_trips_normalized_host(tmp_path: Any) -> None:
+    """Round trip a normalized host through write and load."""
+    sections = {"Song_Transition": _section("Song_Transition")}
+    hosts_file = tmp_path / "hosts.json"
+
+    writer = DummyHosts()
+    writer._sections = sections
+    writer._hosts_file = hosts_file
+    normalized = writer._normalize_host(_host(["Song_Transition"]))
+    writer._hosts = {normalized["id"]: normalized}
+
+    asyncio.run(writer._write_hosts())
+
+    reader = DummyHosts()
+    reader._sections = sections
+    reader._hosts_file = hosts_file
+
+    asyncio.run(reader._load_hosts())
+
+    assert reader._hosts == {normalized["id"]: normalized}
+
+
+def test_load_hosts_recovers_from_invalid_json(tmp_path: Any) -> None:
+    """Continue with no hosts when the hosts file is not valid JSON."""
+    hosts_file = tmp_path / "hosts.json"
+    hosts_file.write_text("{not valid json")
+
+    dummy = DummyHosts()
+    dummy._hosts_file = hosts_file
+
+    asyncio.run(dummy._load_hosts())
+
+    assert dummy._hosts == {}
+    assert hosts_file.read_text() == "{not valid json"

@@ -79,17 +79,20 @@ class AIRadioHostsMixin:
         name = str(host.get("name", "")).strip()
         if not name:
             raise InvalidDataError("Host name is required")
-        if not host_id:
-            raise InvalidDataError("Host id is required")
 
         instructions = str(host.get("instructions") or "").strip() or DEFAULT_LLM_INSTRUCTIONS
         tts_engine = str(host.get("tts_engine") or "").strip()
 
-        section_ids = [
-            str(item).strip()
-            for item in host.get("section_ids", [])
-            if isinstance(item, (str, int)) and str(item).strip()
-        ]
+        section_ids: list[str] = []
+        seen: set[str] = set()
+        for item in host.get("section_ids", []):
+            if not isinstance(item, (str, int)):
+                continue
+            section_id = str(item).strip()
+            if not section_id or section_id in seen:
+                continue
+            seen.add(section_id)
+            section_ids.append(section_id)
         if not section_ids:
             raise InvalidDataError("Host requires at least one section id")
         _sections, missing = self._materialize_sections(section_ids, known_sections)
