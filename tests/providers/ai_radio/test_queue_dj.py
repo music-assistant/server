@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 
 from music_assistant.providers.ai_radio.constants import (
@@ -17,6 +18,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_QUEUE_DJ,
     ATTR_SESSION_ID,
 )
+from music_assistant.providers.ai_radio.models import PlannedSection
 from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
@@ -514,3 +516,22 @@ async def test_injection_rereads_a_guard_that_moved_during_the_pass(tmp_path: Pa
     queues = dummy.player_queues
     assert len(queues.loads) == 1
     assert queues.loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+
+
+async def test_dj_clip_is_sound_effect_media_type(tmp_path: Path) -> None:
+    """A DJ clip's media item is a SoundEffect, the type the dynamic pool exclusions key on."""
+    dummy = _make_replan_dj(tmp_path, [])
+    section = PlannedSection(
+        order=0,
+        clip_id="dj_clip_1",
+        section_id="Song_Transition",
+        section_name="Song Transition",
+        when="between_songs",
+        insert_at_index=0,
+        prompt="",
+        max_chars=200,
+        web_search_mode="disabled",
+    )
+    clip = dummy._section_to_clip_item("queue-1", "sess", {"id": "", "host_id": "rick"}, section)
+    assert clip.media_item is not None
+    assert clip.media_item.media_type == MediaType.SOUND_EFFECT
