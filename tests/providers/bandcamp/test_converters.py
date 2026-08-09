@@ -486,7 +486,7 @@ def test_album_from_discography_item(converters: BandcampConverters) -> None:
     # The collaboration credit differs from Amanda Palmer's own band
     # name — surface it as a synthetic performer scoped to her band so
     # users can navigate to *just* the collab releases.
-    assert artists[0].item_id == "3463798201:amanda-palmer-friends"
+    assert artists[0].item_id == "3463798201:amanda-palmer-and-friends"
     assert result.metadata.images
     assert any("a3547137148_0.jpg" in img.path for img in result.metadata.images)
 
@@ -578,7 +578,9 @@ def test_synthetic_artist_basics(converters: BandcampConverters) -> None:
     assert artist.item_id == "441379041:mortaja"
     assert artist.name == "Mortaja"
     assert artist.provider == "bandcamp_test"
-    # The provider mapping pins the same composite ID, so MA's later
-    # `get_artist(item_id)` call hits our synthetic resolution path.
+    assert artist.uri == "bandcamp_test://artist/441379041:mortaja"
+    # The provider mapping pins the same composite ID and retains the
+    # hosting page URL for navigation.
     mapping = next(iter(artist.provider_mappings))
     assert mapping.item_id == "441379041:mortaja"
+    assert mapping.url == "https://audiophob.bandcamp.com"

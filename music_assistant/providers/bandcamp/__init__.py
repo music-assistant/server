@@ -268,7 +268,7 @@ class BandcampProvider(MusicProvider):
                     results.artists = [*results.artists, await self.get_artist(artist_item_id)]
 
         if synthetic_artists:
-            results.artists = [*results.artists, *synthetic_artists]
+            results.artists = [*results.artists, *synthetic_artists][:limit]
 
         return results
 
@@ -359,13 +359,17 @@ class BandcampProvider(MusicProvider):
         )
         out: dict[str, int | None] = {}
         for slug, result in zip(slugs, raw_results, strict=True):
-            if isinstance(result, BaseException):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
                 self.logger.warning(
                     "performer band lookup failed for %r: %s",
                     names_by_slug[slug],
                     result,
                 )
                 out[slug] = None
+            elif isinstance(result, BaseException):
+                raise result
             else:
                 out[slug] = result
         return out
@@ -412,7 +416,7 @@ class BandcampProvider(MusicProvider):
             self.logger.warning(
                 "Bandcamp autocomplete failed for performer %r: %s", performer_name, error
             )
-            return None
+            raise
         for item in results:
             # Skip labels so a same-named label doesn't masquerade as the band page.
             if (
@@ -574,7 +578,7 @@ class BandcampProvider(MusicProvider):
                     f"Artist {prov_artist_id} not found on Bandcamp"
                 ) from error
             except BandcampRateLimitError as error:
-                raise ResourceTemporarilyUnavailable(
+                raise RateLimited(
                     "Bandcamp rate limit reached", backoff_time=error.retry_after
                 ) from error
             except BandcampAPIError as error:
@@ -611,7 +615,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -643,7 +647,9 @@ class BandcampProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp")
 
         first = matching[0]
-        performer_name = str(first.get("artist_name") or first.get("band_name") or "")
+        performer_name = str(first.get("artist_name") or "")
+        if not performer_name or slugify_performer(performer_name) != performer_slug:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp")
         art_id = first.get("art_id")
         image_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg" if art_id else None
         # The performer doesn't have their own Bandcamp page; surface the
@@ -685,8 +691,7 @@ class BandcampProvider(MusicProvider):
         return [
             item
             for item in items
-            if slugify_performer(str(item.get("artist_name") or item.get("band_name") or ""))
-            == performer_slug
+            if slugify_performer(str(item.get("artist_name") or "")) == performer_slug
         ]
 
     async def _resolve_artist_item_id(
@@ -841,6 +846,24 @@ class BandcampProvider(MusicProvider):
             band_id, performer_slug = parse_artist_id(prov_artist_id)
         except ValueError as error:
             raise InvalidDataError(f"Malformed Bandcamp artist ID: {prov_artist_id}") from error
+
+        if performer_slug is not None:
+            try:
+                api_artist = await self._client.get_artist(band_id)
+            except BandcampNotFoundError as error:
+                raise MediaNotFoundError(
+                    f"Artist {prov_artist_id} albums not found on Bandcamp"
+                ) from error
+            except BandcampRateLimitError as error:
+                raise RateLimited(
+                    "Bandcamp rate limit reached", backoff_time=error.retry_after
+                ) from error
+            except BandcampAPIError as error:
+                raise MediaNotFoundError(
+                    f"Failed to get albums for artist {prov_artist_id}"
+                ) from error
+            if slugify_performer(api_artist.name) == performer_slug:
+                performer_slug = None
 
         try:
             api_discography = await self._fetch_discography(band_id)

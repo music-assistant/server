@@ -24,7 +24,12 @@ class TestSlugifyPerformer:
 
     def test_collapses_repeated_punctuation(self) -> None:
         """Runs of any non-alnum chars collapse into a single separator."""
-        assert slugify_performer("Apollo Brown & OC") == "apollo-brown-oc"
+        assert slugify_performer("Apollo Brown / OC") == "apollo-brown-oc"
+
+    def test_normalizes_ampersand_to_and(self) -> None:
+        """Ampersands use the same identity spelling as the word ``and``."""
+        assert slugify_performer("Apollo Brown & OC") == "apollo-brown-and-oc"
+        assert slugify_performer("Apollo Brown and OC") == "apollo-brown-and-oc"
 
     def test_strips_leading_and_trailing_separators(self) -> None:
         """Leading/trailing separators are removed."""

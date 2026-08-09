@@ -515,7 +515,6 @@ class BandcampConverters:
             item_id=item_id,
             provider=self.instance_id,
             name=performer_name,
-            uri=url,
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,

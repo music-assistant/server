@@ -37,17 +37,17 @@ def slugify_performer(name: str) -> str:
 
     Two performer names compare equal as artists when their slugs match.
     The transform is intentionally lossy — punctuation and case are
-    discarded — so minor variations like ``"&"`` vs ``"and"`` collapse
-    together. Bandcamp's per-album performer field is consistent within a
-    band page in practice, so within-band collisions are rare; cross-band
-    collisions are not a concern because ``band_id`` is part of the key.
+    discarded — and ``"&"`` is normalized to ``"and"``. Bandcamp's
+    per-album performer field is consistent within a band page in practice,
+    so within-band collisions are rare; cross-band collisions are not a
+    concern because ``band_id`` is part of the key.
 
     :param name: Raw performer name from the Bandcamp API.
     :returns: A slug containing only ``[a-z0-9-]`` with no leading or
         trailing hyphens. Empty string if ``name`` has no slug-eligible
         characters.
     """
-    return _SLUG_NON_ALNUM.sub("-", name.lower()).strip("-")
+    return _SLUG_NON_ALNUM.sub("-", name.lower().replace("&", "and")).strip("-")
 
 
 def make_artist_id(band_id: int | str, performer: str | None = None) -> str:

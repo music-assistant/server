@@ -1,5 +1,6 @@
 """Test Bandcamp Provider integration."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import cast
 from unittest.mock import AsyncMock, Mock, call, patch
@@ -26,6 +27,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -206,6 +208,7 @@ def _search_album_mock(
     artist_id: int = 123,
     artist_name: str = "Test Artist",
     album_id: int = 456,
+    artist_url: str = "",
 ) -> Mock:
     """Construct a SearchResultAlbum mock with concrete attribute values."""
     item = Mock(spec=SearchResultAlbum)
@@ -213,20 +216,24 @@ def _search_album_mock(
     item.name = "Album"
     item.artist_id = artist_id
     item.artist_name = artist_name
-    item.artist_url = ""
+    item.artist_url = artist_url
     item.url = ""
     item.image_url = None
     return item
 
 
 def _search_artist_mock(
-    *, artist_id: int = 123, name: str = "Test Artist", is_label: bool = False
+    *,
+    artist_id: int = 123,
+    name: str = "Test Artist",
+    is_label: bool = False,
+    url: str = "",
 ) -> Mock:
     """Construct a SearchResultArtist mock with concrete attribute values."""
     item = Mock(spec=SearchResultArtist)
     item.id = artist_id
     item.name = name
-    item.url = ""
+    item.url = url
     item.image_url = None
     item.tags = None
     item.is_label = is_label
@@ -280,27 +287,53 @@ async def test_search_synthesizes_artists_for_label_releases(
     label_id = 441379041
     # `b` result for the label, plus two `a` results — one by the label
     # itself and one by Mortaja (a performer with no band page).
-    label_band = _search_artist_mock(artist_id=label_id, name="audiophob")
+    label_band = _search_artist_mock(
+        artist_id=label_id, name="audiophob", url="https://audiophob.bandcamp.com"
+    )
     label_album = _search_album_mock(
         artist_id=label_id, artist_name="audiophob", album_id=1198969224
     )
     mortaja_album = _search_album_mock(
-        artist_id=label_id, artist_name="Mortaja", album_id=1938115920
+        artist_id=label_id,
+        artist_name="Mortaja",
+        album_id=1938115920,
+        artist_url="https://audiophob.bandcamp.com",
+    )
+    another_album = _search_album_mock(
+        artist_id=label_id,
+        artist_name="Another Performer",
+        album_id=1938115921,
+        artist_url="https://audiophob.bandcamp.com",
     )
 
     with patch.object(provider._client, "search", new_callable=AsyncMock) as mock_search:
-        mock_search.return_value = [label_band, label_album, mortaja_album]
+        mock_search.return_value = [label_band, label_album, mortaja_album, another_album]
 
         results = await provider.search("Mortaja", [MediaType.ALBUM, MediaType.ARTIST], limit=10)
 
         artist_ids = {a.item_id for a in results.artists}
-        # Real label artist + synthetic Mortaja-on-audiophob.
-        assert artist_ids == {str(label_id), f"{label_id}:mortaja"}
+        # Real label artist + both synthetic performers from audiophob.
+        assert artist_ids == {
+            str(label_id),
+            f"{label_id}:mortaja",
+            f"{label_id}:another-performer",
+        }
+        synthetic = [cast("Artist", artist) for artist in results.artists if ":" in artist.item_id]
+        assert len(synthetic) == 2
+        assert len({artist.uri for artist in synthetic}) == 2
+        assert "https://audiophob.bandcamp.com" not in {artist.uri for artist in synthetic}
+        assert {next(iter(artist.provider_mappings)).url for artist in synthetic} == {
+            "https://audiophob.bandcamp.com"
+        }
 
-        # The album by the label itself should link to the real ID;
-        # the Mortaja album should link to the synthetic.
+        # The album by the label itself should link to the real ID; the
+        # performer albums should link to their respective synthetic IDs.
         album_artist_ids = {next(iter(cast("Album", a).artists)).item_id for a in results.albums}
-        assert album_artist_ids == {str(label_id), f"{label_id}:mortaja"}
+        assert album_artist_ids == {
+            str(label_id),
+            f"{label_id}:mortaja",
+            f"{label_id}:another-performer",
+        }
 
 
 async def test_search_does_not_duplicate_existing_artists(
@@ -425,6 +458,24 @@ async def test_lookup_performer_band_id_caches_negative_result(
         assert mock_search.call_count == 1
         # Sentinel 0 was written for the slug.
         assert cache_data["performer_band_id.mortaja"] == 0
+
+
+async def test_lookup_performer_band_id_does_not_cache_api_errors(
+    provider: BandcampProvider, mass_mock: Mock
+) -> None:
+    """Transient autocomplete failures must not become negative cache entries."""
+    with (
+        patch.object(
+            provider._client,
+            "search",
+            new_callable=AsyncMock,
+            side_effect=BandcampAPIError("temporary failure"),
+        ),
+        pytest.raises(BandcampAPIError, match="temporary failure"),
+    ):
+        await provider._lookup_performer_band_id("Mortaja")
+
+    mass_mock.cache.set.assert_not_awaited()
 
 
 async def test_lookup_performer_band_id_skips_label_results(
@@ -679,10 +730,10 @@ async def test_get_artist_synthetic_builds_from_discography(
 
         assert result.item_id == f"{label_id}:mortaja"
         assert result.name == "Mortaja"
-        # Per-page performers don't have their own Bandcamp page, so the
-        # synthetic carries the hosting band's URL (audiophob), matching
-        # what the search-emission path passes through.
-        assert result.uri == "https://audiophob.bandcamp.com"
+        # The hosting URL is mapping metadata, not synthetic artist identity.
+        assert result.uri == f"bandcamp_test://artist/{label_id}:mortaja"
+        mapping = next(iter(result.provider_mappings))
+        assert mapping.url == "https://audiophob.bandcamp.com"
         # Both API calls happen: band-name lookup didn't match the slug,
         # so we proceeded to look in the discography.
         mock_get_artist.assert_called_once_with(label_id)
@@ -745,11 +796,92 @@ async def test_get_artist_synthetic_band_own_slug_collapses_to_real(
         mock_disco.assert_not_called()
 
 
+async def test_get_artist_albums_owner_slug_collapses_to_real_discography(
+    provider: BandcampProvider,
+) -> None:
+    """A legacy owner-slug ID returns the real band's unfiltered discography."""
+    band_id = 3658985110
+    api_artist = Mock(id=band_id)
+    api_artist.name = "Apollo Brown"
+    discography = [
+        {
+            "item_type": "album",
+            "band_id": band_id,
+            "item_id": 1,
+            "title": "Own Album",
+            "artist_name": None,
+            "band_name": "Apollo Brown",
+        },
+        {
+            "item_type": "album",
+            "band_id": band_id,
+            "item_id": 2,
+            "title": "Another Own Album",
+            "artist_name": "Apollo Brown",
+            "band_name": "Apollo Brown",
+        },
+    ]
+
+    with (
+        patch.object(provider._client, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+        patch.object(
+            provider._client, "get_artist_discography", new_callable=AsyncMock
+        ) as mock_get_discography,
+        patch.object(provider._client, "search", new_callable=AsyncMock) as mock_search,
+    ):
+        mock_get_artist.return_value = api_artist
+        mock_get_discography.return_value = discography
+
+        result = await provider.get_artist_albums(f"{band_id}:apollo-brown")
+
+    assert {album.name for album in result} == {"Own Album", "Another Own Album"}
+    assert all(next(iter(album.artists)).item_id == str(band_id) for album in result)
+    mock_get_artist.assert_awaited_once_with(band_id)
+    mock_get_discography.assert_awaited_once_with(band_id)
+    mock_search.assert_not_awaited()
+
+
+async def test_lookup_performer_band_ids_propagates_cancellation(
+    provider: BandcampProvider,
+) -> None:
+    """Cancellation must not be converted into a failed lookup result."""
+    with (
+        patch.object(
+            provider,
+            "_lookup_performer_band_id",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider._lookup_performer_band_ids_parallel({"mortaja": "Mortaja"})
+
+
+async def test_lookup_performer_band_ids_reraises_other_base_exception(
+    provider: BandcampProvider,
+) -> None:
+    """Non-Exception BaseExceptions must not be treated as band IDs."""
+
+    class TestBaseException(BaseException):
+        pass
+
+    with (
+        patch.object(
+            provider,
+            "_lookup_performer_band_id",
+            new_callable=AsyncMock,
+            side_effect=TestBaseException,
+        ),
+        pytest.raises(TestBaseException),
+    ):
+        await provider._lookup_performer_band_ids_parallel({"mortaja": "Mortaja"})
+
+
 async def test_get_synthetic_artist_rate_limit_at_band_lookup(
     provider: BandcampProvider,
 ) -> None:
     """
-    Rate-limit on the initial band lookup converts to ResourceTemporarilyUnavailable.
+    Rate-limit on the initial band lookup converts to RateLimited.
 
     Tests ``_get_synthetic_artist`` directly to bypass the public method's
     ``@throttle_with_retries`` decorator. The decorator's job is to retry
@@ -760,7 +892,7 @@ async def test_get_synthetic_artist_rate_limit_at_band_lookup(
     band_id = 441379041
     with patch.object(provider._client, "get_artist", new_callable=AsyncMock) as mock_get_artist:
         mock_get_artist.side_effect = BandcampRateLimitError("Rate limited", retry_after=42)
-        with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        with pytest.raises(RateLimited) as exc_info:
             await provider._get_synthetic_artist(f"{band_id}:mortaja", band_id, "mortaja")
         assert exc_info.value.backoff_time == 42
 
@@ -789,7 +921,7 @@ async def test_get_synthetic_artist_rate_limit_at_discography(
     ):
         mock_get_artist.return_value = label_artist
         mock_disco.side_effect = BandcampRateLimitError("Rate limited", retry_after=99)
-        with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        with pytest.raises(RateLimited) as exc_info:
             await provider._get_synthetic_artist(f"{band_id}:mortaja", band_id, "mortaja")
         assert exc_info.value.backoff_time == 99
 
@@ -1160,13 +1292,28 @@ async def test_get_artist_albums_synthetic_id_filters_discography(
         },
     ]
 
-    with patch.object(
-        provider._client, "get_artist_discography", new_callable=AsyncMock
-    ) as mock_get_discography:
+    with (
+        patch.object(
+            provider._client,
+            "get_artist",
+            new_callable=AsyncMock,
+        ) as mock_get_artist,
+        patch.object(
+            provider._client, "get_artist_discography", new_callable=AsyncMock
+        ) as mock_get_discography,
+        patch.object(
+            provider._client, "search", new_callable=AsyncMock, return_value=[]
+        ) as mock_search,
+    ):
+        mock_get_artist.return_value = Mock(id=label_id)
+        mock_get_artist.return_value.name = "audiophob"
         mock_get_discography.return_value = mock_discography
 
         result = await provider.get_artist_albums(f"{label_id}:mortaja")
 
+        mock_get_artist.assert_awaited_once_with(label_id)
+        mock_get_discography.assert_awaited_once_with(label_id)
+        mock_search.assert_awaited_once_with("Mortaja")
         # Only the two Mortaja albums; the Spherical Disrupted entry is filtered out.
         assert {album.name for album in result} == {"Combined Minds", "Bone Chamber"}
         for album in result:
