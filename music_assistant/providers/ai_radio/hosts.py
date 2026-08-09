@@ -184,56 +184,66 @@ class AIRadioHostsMixin:
         legacy_keys = ("general", "sections", "section_ids", "section_order", "merge_section_id")
         seen: dict[str, str] = {}
         for station in stations:
-            for item in station.get("sections", []):
-                if not isinstance(item, dict):
-                    continue
-                normalized_section = self._normalize_section(item)
-                if normalized_section["id"] not in self._sections:
-                    self._sections[normalized_section["id"]] = normalized_section
+            try:
+                for item in station.get("sections", []):
+                    if not isinstance(item, dict):
+                        continue
+                    normalized_section = self._normalize_section(item)
+                    if normalized_section["id"] not in self._sections:
+                        self._sections[normalized_section["id"]] = normalized_section
 
-            general_raw = station.get("general")
-            general = general_raw if isinstance(general_raw, dict) else {}
-            instructions = (
-                str(general.get("instructions") or "").strip() or DEFAULT_LLM_INSTRUCTIONS
-            )
-            section_ids = [
-                str(item).strip() for item in station.get("section_ids", []) if str(item).strip()
-            ]
-            if not section_ids:
+                general_raw = station.get("general")
+                general = general_raw if isinstance(general_raw, dict) else {}
+                instructions = (
+                    str(general.get("instructions") or "").strip() or DEFAULT_LLM_INSTRUCTIONS
+                )
                 section_ids = [
-                    str(item.get("id", "")).strip()
-                    for item in station.get("sections", [])
-                    if isinstance(item, dict) and str(item.get("id", "")).strip()
+                    str(item).strip()
+                    for item in station.get("section_ids", [])
+                    if str(item).strip()
                 ]
-            section_order = station.get("section_order") or []
-            merge_section_id = str(station.get("merge_section_id", "")).strip()
-            fingerprint = json_dumps(
-                {
-                    "instructions": instructions,
-                    "section_ids": section_ids,
-                    "section_order": section_order,
-                    "merge_section_id": merge_section_id,
-                }
-            )
-            if fingerprint in seen:
-                host_id = seen[fingerprint]
-            else:
-                host = self._normalize_host(
+                if not section_ids:
+                    section_ids = [
+                        str(item.get("id", "")).strip()
+                        for item in station.get("sections", [])
+                        if isinstance(item, dict) and str(item.get("id", "")).strip()
+                    ]
+                section_order = station.get("section_order") or []
+                merge_section_id = str(station.get("merge_section_id", "")).strip()
+                fingerprint = json_dumps(
                     {
-                        "id": f"{station.get('name', 'host')}_host",
-                        "name": f"{str(station.get('name', 'Host')).strip()} Host",
                         "instructions": instructions,
                         "section_ids": section_ids,
                         "section_order": section_order,
                         "merge_section_id": merge_section_id,
                     }
                 )
-                # a second distinct persona landing on the same slug must not overwrite the first
-                while host["id"] in self._hosts:
-                    host["id"] = f"{host['id']}_{len(self._hosts)}"
-                self._hosts[host["id"]] = host
-                host_id = host["id"]
-                seen[fingerprint] = host_id
-            station["host_id"] = host_id
-            for key in legacy_keys:
-                station.pop(key, None)
+                if fingerprint in seen:
+                    host_id = seen[fingerprint]
+                else:
+                    host = self._normalize_host(
+                        {
+                            "id": f"{station.get('name', 'host')}_host",
+                            "name": f"{str(station.get('name', 'Host')).strip()} Host",
+                            "instructions": instructions,
+                            "section_ids": section_ids,
+                            "section_order": section_order,
+                            "merge_section_id": merge_section_id,
+                        }
+                    )
+                    # a second distinct persona landing on the same slug must not overwrite
+                    # the first
+                    while host["id"] in self._hosts:
+                        host["id"] = f"{host['id']}_{len(self._hosts)}"
+                    self._hosts[host["id"]] = host
+                    host_id = host["id"]
+                    seen[fingerprint] = host_id
+                station["host_id"] = host_id
+                for key in legacy_keys:
+                    station.pop(key, None)
+            except Exception as err:
+                self.logger.warning(
+                    "Skipping station %s during host migration: %s",
+                    station.get("id") or station.get("name") or "<unknown>",
+                    err,
+                )

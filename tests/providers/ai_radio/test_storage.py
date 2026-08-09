@@ -240,10 +240,12 @@ def test_normalize_station_rejects_non_numeric_numeric_field(field: str) -> None
     """Reject station numeric fields containing non-numeric values."""
     storage = DummyStorage()
     storage._sections = {"Song_Transition": _section("Song_Transition")}
+    storage._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
     station = _station(["Song_Transition"])
+    station["host_id"] = "host_a"
     station[field] = "not-a-number"
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError, match="must be numeric"):
         storage._normalize_station(station)
 
 

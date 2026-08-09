@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -237,3 +238,112 @@ def test_migrate_v2_keeps_distinct_hosts_apart() -> None:
     dummy._migrate_stations_v2_to_v3(stations)
     assert len(dummy._hosts) == 2
     assert stations[0]["host_id"] != stations[1]["host_id"]
+
+
+def test_migrate_v2_renames_host_on_slug_collision() -> None:
+    """Rename the second host's slug when two distinct personas share the same name."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    stations = [
+        _v2_station("station_a", "Same Name", "Persona A."),
+        _v2_station("station_b", "Same Name", "Persona B."),
+    ]
+    dummy._migrate_stations_v2_to_v3(stations)
+    assert len(dummy._hosts) == 2
+    assert stations[0]["host_id"] != stations[1]["host_id"]
+    assert "same_name_host" in dummy._hosts
+    renamed_ids = set(dummy._hosts) - {"same_name_host"}
+    assert len(renamed_ids) == 1
+    assert next(iter(renamed_ids)).startswith("same_name_host_")
+
+
+def test_load_stations_skips_station_that_fails_host_migration(tmp_path: Any) -> None:
+    """Isolate one station's migration failure so the rest of the file still loads."""
+    good_station = _v2_station("station_a", "Morning", "Persona A.")
+    bad_station = _v2_station("station_b", "Evening", "Persona B.")
+    # non-numeric OPTIONAL.chance makes _normalize_host raise during migration
+    bad_station["section_order"] = [
+        {
+            "when": "between_songs",
+            "flow": [{"OPTIONAL": {"section": "Song_Transition", "chance": "invalid"}}],
+        }
+    ]
+    stations_file = tmp_path / "stations.json"
+    stations_file.write_text(json.dumps({"version": 2, "stations": [good_station, bad_station]}))
+
+    dummy = DummyHosts()
+    dummy._stations_file = stations_file
+    dummy._sections_file = tmp_path / "sections.json"
+    dummy._hosts_file = tmp_path / "hosts.json"
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+
+    asyncio.run(dummy._load_stations())
+
+    assert len(dummy._hosts) == 1
+    assert len(dummy._stations) == 1
+    assert next(iter(dummy._stations.values()))["name"] == "Morning"
+
+
+def test_load_stations_migrates_v2_file_on_disk(tmp_path: Any) -> None:
+    """
+    Round-trip a v2 stations file through _load_stations.
+
+    Covers: hosts extracted from embedded personas, stations normalized to v3
+    in memory, hosts.json and stations.json written, embedded sections
+    without a matching section_ids list (fallback derivation) upserted into
+    _sections, and stations.json rewritten exactly once.
+    """
+    v2_station = {
+        "id": "station_a",
+        "name": "Evening Chill",
+        "source_playlist_id": "playlist-1",
+        "source_playlist_provider": "library",
+        "general": {"instructions": "Laid-back host."},
+        # no section_ids: forces the embedded-sections-only fallback
+        "sections": [_section("Song_Transition")],
+        "section_order": [
+            {"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]},
+        ],
+        "merge_section_id": "",
+    }
+    stations_file = tmp_path / "stations.json"
+    stations_file.write_text(json.dumps({"version": 2, "stations": [v2_station]}))
+
+    dummy = DummyHosts()
+    dummy._stations_file = stations_file
+    dummy._sections_file = tmp_path / "sections.json"
+    dummy._hosts_file = tmp_path / "hosts.json"
+
+    asyncio.run(dummy._load_hosts())
+
+    write_calls = 0
+    original_write_stations = dummy._write_stations
+
+    async def _counting_write_stations() -> None:
+        nonlocal write_calls
+        write_calls += 1
+        await original_write_stations()
+
+    dummy._write_stations = _counting_write_stations  # type: ignore[method-assign]
+
+    asyncio.run(dummy._load_stations())
+
+    assert write_calls == 1
+    assert len(dummy._hosts) == 1
+    assert "Song_Transition" in dummy._sections
+
+    host = next(iter(dummy._hosts.values()))
+    assert host["instructions"] == "Laid-back host."
+    assert host["section_ids"] == ["Song_Transition"]
+
+    station = next(iter(dummy._stations.values()))
+    assert station["host_id"] == host["id"]
+    for legacy_key in ("general", "sections", "section_ids", "section_order", "merge_section_id"):
+        assert legacy_key not in station
+
+    assert dummy._hosts_file.exists()
+    hosts_payload = json.loads(dummy._hosts_file.read_text())
+    assert hosts_payload["hosts"][0]["instructions"] == "Laid-back host."
+
+    stations_payload = json.loads(stations_file.read_text())
+    assert stations_payload["version"] == 3
