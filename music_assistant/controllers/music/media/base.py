@@ -26,7 +26,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.helpers import get_global_cache_value
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -56,7 +56,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
 )
-from music_assistant.helpers.compare import compare_media_item, create_safe_string
+from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
@@ -2088,6 +2088,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         {single_extra_order_keys}
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
+                        json_extract(iter_coll.value, '$.search_title') as collection_search_title,
+                        json_extract(iter_coll.value, '$.search_sort_title') as collection_search_sort_title,
                         CASE
                             WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
                             THEN 1
@@ -2109,8 +2111,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SELECT
                 'collection' as type,
                 collection_title as name,
-                replace(lower(collection_title),' ','') as search_name,
-                replace(lower(collection_title),' ','') as search_sort_name,
+                COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
+                COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
                 MAX(timestamp_added) as timestamp_added,
                 MAX(timestamp_modified) as timestamp_modified,
                 MAX(last_played) as last_played,

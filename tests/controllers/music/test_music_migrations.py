@@ -63,6 +63,12 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
         "[external_id_type] TEXT NOT NULL, [external_id] TEXT NOT NULL, "
         "[item_id] INTEGER NOT NULL)"
     )
+    # tests that exercise a specific playlog layout replace this stand-in
+    await db.execute(
+        f"CREATE TABLE {DB_TABLE_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
+        "[playback_speed] REAL NOT NULL DEFAULT 1.0, "
+        "UNIQUE(userid))"
+    )
     await db.commit()
     yield db
     await db.close()
@@ -100,6 +106,7 @@ def _playlog_entry(userid: str, timestamp: int = 100) -> dict[str, object]:
 
 async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
     """Create the playlog table as it exists on pre-userid installs."""
+    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
     # original table layout (schema version <= 22) with the 3-column UNIQUE constraint
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
@@ -129,6 +136,14 @@ async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
         f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
     )
     await database.commit()
+
+
+async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:
+    """Return the column names of the given table."""
+    return {
+        column["name"]
+        for column in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+    }
 
 
 async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
@@ -171,6 +186,7 @@ async def test_migration_leaves_correct_playlog_untouched(
     database: DatabaseConnection,
 ) -> None:
     """A playlog table that already has the 4-column constraint is not rebuilt."""
+    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -273,13 +289,7 @@ async def test_migrate_database_backfills_external_id_lookup(
     # the external_ids columns (and their unusable indexes) are dropped;
     # the lookup table is now the single source of truth
     for table in MEDIA_TABLES:
-        columns = {
-            column["name"]
-            for column in await music.database.get_rows_from_query(
-                f"PRAGMA table_info({table})", limit=0
-            )
-        }
-        assert "external_ids" not in columns
+        assert "external_ids" not in await _table_columns(music.database, table)
     old_indexes = await music.database.get_rows_from_query(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_external_ids_idx'"
     )
@@ -475,3 +485,43 @@ async def test_migration_strips_sound_effect_from_playlists(
     assert rows[2]["supported_mediatypes"] == "corrupt value naming sound_effect"
     # a playlist left with nothing yields an empty list, not NULL (the column is NOT NULL)
     assert json.loads(rows[3]["supported_mediatypes"]) == []
+
+
+async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
+    database: DatabaseConnection,
+) -> None:
+    """A stable database gets the columns its own schema version made it skip."""
+    # the stable branch numbers its schema versions independently: its v43 already has the
+    # 4-column playlog constraint, but never got playback_speed or the playlist translation
+    # columns, which this branch gates behind steps a v43 database no longer runs
+    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [item_id] TEXT NOT NULL,
+            [provider] TEXT NOT NULL,
+            [media_type] TEXT NOT NULL,
+            [name] TEXT NOT NULL,
+            [image] json,
+            [timestamp] INTEGER DEFAULT 0,
+            [fully_played] BOOLEAN,
+            [seconds_played] INTEGER,
+            [userid] TEXT NOT NULL,
+            [queue_id] TEXT,
+            [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+            UNIQUE(item_id, provider, media_type, userid));"""
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=43,
+        create_tables=AsyncMock(),
+    )
+
+    assert {"translation_key", "translation_params"} <= await _table_columns(database, "playlists")
+    assert "playback_speed" in await _table_columns(database, DB_TABLE_PLAYLOG)

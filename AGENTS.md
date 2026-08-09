@@ -57,6 +57,7 @@ Private methods should be at the bottom of the file, public at the top.
 
 - All PRs target `dev` (primary development branch). `stable` is for production releases.
 - PRs labeled `bugfix` + `backport-to-stable` are automatically backported to `stable` — use only for bugs also present in `stable`.
+- Backporting a **schema change** permanently diverges `DB_SCHEMA_VERSION` between the branches and needs an extra dev-side guard migration; see `music_assistant/controllers/music/README.md`.
 
 ## Debugging
 
