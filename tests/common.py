@@ -2,9 +2,11 @@
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Iterator
+from types import MethodType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -133,6 +135,18 @@ def use_ephemeral_server_ports() -> Iterator[None]:
             "music_assistant.controllers.streams.controller.get_ip_addresses",
             AsyncMock(return_value=(LOOPBACK_IP,)),
         ),
+        patch(
+            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.get_ip_addresses",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
     ):
         yield
 
@@ -170,6 +184,32 @@ async def _create_builtin_provider_config_hermetic(
 # Mock classes for testing
 
 
+def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
+    """
+    Give a mocked MusicAssistant the real create_task implementation.
+
+    Needed for any test that lets a `@use_cache` decorated method run, since the
+    decorator awaits the task it gets back to share one fetch between callers.
+
+    :param mass: The mock standing in for the MusicAssistant instance.
+    """
+    mass._tracked_tasks = {}
+    # on an AsyncMock this call would hand back a coroutine that nobody awaits
+    mass.verify_event_loop_thread = MagicMock()  # type: ignore[method-assign]
+    real_create_task = MethodType(MusicAssistant.create_task, mass)
+
+    def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
+        if not (inspect.iscoroutine(target) or inspect.iscoroutinefunction(target)):
+            # tests hand this mocked methods too, which the real one refuses
+            return MagicMock()
+        # resolved per call so this also works from a synchronous fixture
+        mass.loop = asyncio.get_running_loop()
+        return real_create_task(target, *args, **kwargs)
+
+    # kept a mock so tests can still assert on the calls it received
+    mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
 def create_mock_config(name: str) -> MagicMock:
     """Create a mock player config with the given name."""
     config = MagicMock()
@@ -192,7 +232,9 @@ class MockProvider:
         self.manifest = MagicMock()
         self.manifest.name = f"Mock {domain} Provider"
         self.mass = mass or MagicMock()
+        self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
+        self.unloading = False
 
 
 class MockPlayer(Player):

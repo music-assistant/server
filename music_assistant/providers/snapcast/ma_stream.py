@@ -30,7 +30,7 @@ from music_assistant.providers.snapcast.socket_server import SnapcastSocketServe
 
 from .constants import (
     CONTROL_SOCKET_PATH_TEMPLATE,
-    DEFAULT_SNAPCAST_FORMAT,
+    snapcast_sampleformat_query,
 )
 
 if TYPE_CHECKING:
@@ -232,12 +232,13 @@ class SnapcastMAStream:
         take_from = from_player or self._filter_settings_owner
         if not take_from:
             raise RuntimeError("No player provided to read filter settings from.")
+        stream_format = self._provider.stream_audio_format
         output_format = self._get_transport_format()
         self._output_plan = self._mass.streams.audio.get_player_output_plan(
             take_from,
-            DEFAULT_SNAPCAST_FORMAT,
+            stream_format,
             output_format,
-            handoff_format=DEFAULT_SNAPCAST_FORMAT,
+            handoff_format=stream_format,
         )
         self._register_output_plan()
         new_settings = self._output_plan.filter_params
@@ -316,26 +317,28 @@ class SnapcastMAStream:
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
+            stream_format = self._provider.stream_audio_format
             output_format = self._get_transport_format()
             self._output_plan = self._mass.streams.audio.get_player_output_plan(
                 self._filter_settings_owner,
-                DEFAULT_SNAPCAST_FORMAT,
+                stream_format,
                 output_format,
-                handoff_format=DEFAULT_SNAPCAST_FORMAT,
+                handoff_format=stream_format,
             )
             self._register_output_plan()
             self._filter_settings = self._output_plan.filter_params
+        stream_format = self._provider.stream_audio_format
         audio_source = self._mass.streams.get_stream(
             self.media,
-            DEFAULT_SNAPCAST_FORMAT,
+            stream_format,
             self._filter_settings_owner,
             use_flow_stream_buffering=True,
         )
         try:
             async with FFMpeg(
                 audio_input=audio_source,
-                input_format=DEFAULT_SNAPCAST_FORMAT,
-                output_format=DEFAULT_SNAPCAST_FORMAT,
+                input_format=stream_format,
+                output_format=stream_format,
                 filter_params=self._filter_settings or [],
                 audio_output=stream_path,
                 extra_input_args=["-y", "-re"],
@@ -457,6 +460,7 @@ class SnapcastMAStream:
 
     def _get_transport_format(self) -> AudioFormat:
         """Return the format Snapserver sends to its clients."""
+        stream_format = self._provider.stream_audio_format
         if self._provider._use_builtin_server:
             codec_name = str(self._provider._snapcast_server_transport_codec)
         else:
@@ -465,18 +469,19 @@ class SnapcastMAStream:
             query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
             codec_name = str(query_data.get("codec", "") if isinstance(query_data, dict) else "")
         codec_name = codec_name.partition(":")[0].lower()
+        pcm_type = ContentType.PCM_S24LE if stream_format.bit_depth == 24 else ContentType.PCM_S16LE
         content_type, codec_type = {
             "flac": (ContentType.FLAC, ContentType.FLAC),
             "ogg": (ContentType.OGG, ContentType.VORBIS),
             "opus": (ContentType.OPUS, ContentType.OPUS),
-            "pcm": (ContentType.PCM_S16LE, ContentType.PCM_S16LE),
+            "pcm": (pcm_type, pcm_type),
         }.get(codec_name, (ContentType.UNKNOWN, ContentType.UNKNOWN))
         return AudioFormat(
             content_type=content_type,
             codec_type=codec_type,
-            sample_rate=DEFAULT_SNAPCAST_FORMAT.sample_rate,
-            bit_depth=DEFAULT_SNAPCAST_FORMAT.bit_depth,
-            channels=DEFAULT_SNAPCAST_FORMAT.channels,
+            sample_rate=stream_format.sample_rate,
+            bit_depth=stream_format.bit_depth,
+            channels=stream_format.channels,
         )
 
     def _register_output_plan(self) -> None:
@@ -512,6 +517,26 @@ class SnapcastMAStream:
             if getattr(s, "name", None) == name:
                 return s
         return None
+
+    def _stream_matches_configured_format(self, stream: SnapstreamProto) -> bool:
+        """
+        Return whether a snapserver stream uses the configured PCM sample format.
+
+        :param stream: Existing snapserver stream that may be adopted.
+        """
+        expected = self._provider.stream_audio_format
+        expected_sampleformat = f"{expected.sample_rate}:{expected.bit_depth}:{expected.channels}"
+        stream_data = getattr(stream, "_stream", None)
+        uri_data = stream_data.get("uri", {}) if isinstance(stream_data, dict) else {}
+        query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
+        if not isinstance(query_data, dict):
+            return False
+        if str(query_data.get("sampleformat", "")) != expected_sampleformat:
+            return False
+        if expected.bit_depth == 24:
+            packed = str(query_data.get("packed_s24le", "")).lower()
+            return packed in {"1", "true", "yes"}
+        return True
 
     @staticmethod
     def _is_name_collision_error(result: object) -> bool:
@@ -582,9 +607,8 @@ class SnapcastMAStream:
                     break
                 tried_ports.add(port)
                 result = await self._provider._snapserver.stream_add_stream(
-                    # NOTE: setting the sampleformat to something else
-                    # (like 24 bits bit depth) does not seem to work at all!
-                    f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
+                    # 24-bit requires Snapserver packed_s24le support (snapcast/snapcast#1532)
+                    f"tcp://0.0.0.0:{port}?{snapcast_sampleformat_query(self._provider.stream_audio_format)}"
                     f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
                     f"{extra_args}&name={self.stream_name}"
                 )
@@ -603,6 +627,17 @@ class SnapcastMAStream:
                             self._provider._snapserver.synchronize(status)
                         adopted = self._find_local_stream_by_name(self.stream_name)
                     if adopted is not None:
+                        if not self._stream_matches_configured_format(adopted):
+                            self._logger.info(
+                                "Orphaned snapserver stream %s (name=%s) has a different "
+                                "sample format; removing it so it can be recreated",
+                                adopted.identifier,
+                                self.stream_name,
+                            )
+                            await self._provider._snapserver.stream_remove_stream(
+                                adopted.identifier
+                            )
+                            continue
                         self._logger.info(
                             "Adopted orphaned snapserver stream %s (name=%s)",
                             adopted.identifier,

@@ -22,6 +22,7 @@ from music_assistant.models.setup_flow import (
     SetupSession,
     StepExpiredError,
 )
+from music_assistant.providers.sendspin import player as player_module
 from music_assistant.providers.sendspin.constants import (
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
@@ -32,6 +33,7 @@ from music_assistant.providers.sendspin.constants import (
 )
 from music_assistant.providers.sendspin.helpers import SecurityActionError
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
+from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
@@ -278,6 +280,41 @@ async def test_select_method_pin_gesture_submit_success() -> None:
     steps = _published_steps(mass)
     assert [s.step_id for s in steps if s.type == FlowStepType.PROGRESS] == ["awaiting_gesture"]
     assert steps[-1].type == FlowStepType.FINISH
+
+
+async def test_confirming_wait_failure_after_deadline_logs_no_loop_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pairing attempt failing after the confirming step expired is not reported to the loop."""
+    release = asyncio.Event()
+
+    async def _failing_attempt() -> None:
+        await release.wait()
+        raise RuntimeError("refreshing the player failed")
+
+    monkeypatch.setattr(player_module, "PAIR_CONFIRM_TIMEOUT", 0.01)
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    with collect_loop_errors() as reported:
+        flow = asyncio.create_task(player.run_setup_flow(session))
+        await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+        assert provider.session is not None
+        attempt = asyncio.create_task(_failing_attempt())
+        provider.session.task = attempt
+        session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+        # let the attempt fail only once the confirming step has expired and the flow has
+        # moved on, so the failure reliably lands after the flow stopped waiting for it
+        await _wait_for(lambda: session.finished)
+        await flow
+        release.set()
+        with pytest.raises(RuntimeError, match="refreshing the player failed"):
+            await attempt
+
+    assert reported == []
 
 
 async def test_single_pin_method_skips_select() -> None:

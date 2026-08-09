@@ -100,6 +100,8 @@ def parse_playlist(
         mass_playlist.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
+    else:
+        mass_playlist.metadata.images = UniqueList([])
     return mass_playlist
 
 
@@ -142,11 +144,20 @@ def parse_podcast(
         mass_podcast.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=image_url, provider=instance_id)]
         )
+    elif abs_podcast.media.cover_path is None:
+        mass_podcast.metadata.images = UniqueList([])
+
     mass_podcast.metadata.explicit = abs_podcast.media.metadata.explicit
-    if abs_podcast.media.metadata.language is not None:
-        mass_podcast.metadata.languages = UniqueList([abs_podcast.media.metadata.language])
-    if abs_podcast.media.metadata.genres is not None:
-        mass_podcast.metadata.genres = set(abs_podcast.media.metadata.genres)
+    mass_podcast.metadata.languages = (
+        UniqueList([abs_podcast.media.metadata.language])
+        if abs_podcast.media.metadata.language is not None
+        else UniqueList([])
+    )
+    mass_podcast.metadata.genres = (
+        set(abs_podcast.media.metadata.genres)
+        if abs_podcast.media.metadata.genres is not None
+        else set()
+    )
 
     # podcast object has no published_at int, but an iso string
     if abs_podcast.media.metadata.release_date is not None:
@@ -259,16 +270,15 @@ def parse_podcast_episode(
         mass_episode.resume_position_ms = int(media_progress.current_time * 1000)
         mass_episode.fully_played = media_progress.is_finished
 
-    if episode.chapters:
-        mass_episode.metadata.chapters = [
-            MediaItemChapter(
-                position=position,
-                name=chapter.title,
-                start=chapter.start,
-                end=chapter.end,
-            )
-            for position, chapter in enumerate(episode.chapters, 1)
-        ]
+    mass_episode.metadata.chapters = [
+        MediaItemChapter(
+            position=position,
+            name=chapter.title,
+            start=chapter.start,
+            end=chapter.end,
+        )
+        for position, chapter in enumerate(episode.chapters, 1)
+    ]
 
     return mass_episode
 
@@ -306,8 +316,11 @@ def parse_audiobook(
         publisher=abs_audiobook.media.metadata.publisher,
     )
     mass_audiobook.metadata.description = abs_audiobook.media.metadata.description
-    if abs_audiobook.media.metadata.language is not None:
-        mass_audiobook.metadata.languages = UniqueList([abs_audiobook.media.metadata.language])
+    mass_audiobook.metadata.languages = (
+        UniqueList([abs_audiobook.media.metadata.language])
+        if abs_audiobook.media.metadata.language is not None
+        else UniqueList([])
+    )
 
     if abs_audiobook.media.metadata.published_date is not None:
         with suppress(ValueError):
@@ -328,12 +341,13 @@ def parse_audiobook(
                 title=abs_series_sequence.name, sequence=abs_series_sequence.sequence
             )
         )
+    mass_audiobook.metadata.collections = UniqueList(book_series)
 
-    if book_series:
-        mass_audiobook.metadata.collections = UniqueList(book_series)
-
-    if abs_audiobook.media.metadata.genres is not None:
-        mass_audiobook.metadata.genres = set(abs_audiobook.media.metadata.genres)
+    mass_audiobook.metadata.genres = (
+        set(abs_audiobook.media.metadata.genres)
+        if abs_audiobook.media.metadata.genres is not None
+        else set()
+    )
 
     mass_audiobook.metadata.explicit = abs_audiobook.media.metadata.explicit
 
@@ -348,6 +362,8 @@ def parse_audiobook(
         mass_audiobook.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
+    elif abs_audiobook.media.cover_path is None:
+        mass_audiobook.metadata.images = UniqueList([])
 
     # expanded version
     mass_audiobook.authors.set(
@@ -423,6 +439,9 @@ def parse_author(
         mass_artist.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
+    elif isinstance(abs_author, AbsAuthorExpanded) and abs_author.image_path is None:
+        mass_artist.metadata.images = UniqueList([])
+
     return mass_artist
 
 

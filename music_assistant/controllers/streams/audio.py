@@ -42,6 +42,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    ProviderType,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -443,7 +444,12 @@ class StreamsAudio:
         mass = self.mass
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
-        extra_input_args = streamdetails.extra_input_args or []
+        # copy: the args below are appended per call, while the StreamDetails is cached on
+        # the queue item and reused across calls (retry, seek, background analysis)
+        extra_input_args = list(streamdetails.extra_input_args or [])
+        # the branches below zero out seek_position where the seek is delegated to the
+        # source itself, so keep the requested position for the duration writeback
+        requested_seek_position = seek_position
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -647,8 +653,9 @@ class StreamsAudio:
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration
-            if finished and not seek_position and seconds_received:
+            # store accurate duration, but only for a playthrough from the very start:
+            # a seeked stream yields the remaining audio, not the item's full length
+            if finished and not requested_seek_position and seconds_received:
                 streamdetails.duration = int(seconds_received)
 
             logger.log(
@@ -1756,14 +1763,7 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            if (
-                (finished or seconds_streamed >= 90)
-                and streamdetails.media_type != MediaType.AUDIO_SOURCE
-                and (music_prov := self.mass.get_provider(streamdetails.provider))
-            ):
-                if TYPE_CHECKING:
-                    assert isinstance(music_prov, MusicProvider)
-                self.mass.create_task(music_prov.on_streamed(streamdetails))
+            self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -2192,6 +2192,7 @@ class StreamsAudio:
             """Return True if a newer stream session has taken over this queue."""
             return pq_data.session_id != flow_session_id
 
+        queue_exhausted = False
         while True:
             # bail out early if a newer producer has taken over this queue,
             # so we don't append another entry to a stream log we no longer own
@@ -2213,6 +2214,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
+                    queue_exhausted = True
                     break
 
             if self._flow_stream_needs_restart(
@@ -2554,7 +2556,7 @@ class StreamsAudio:
         if not _superseded():
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
-            self.mass.player_queues.queue_buffer_completed(queue.queue_id)
+            self.mass.player_queues.queue_buffer_completed(queue.queue_id, queue_exhausted)
 
     async def get_overlay_mixed_stream(
         self,
@@ -2768,6 +2770,19 @@ class StreamsAudio:
             await writer.wait_closed()
 
     # --- Private methods ---
+
+    def _notify_provider_streamed(
+        self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
+    ) -> None:
+        """Report a (mostly) streamed item back to the provider that owns it."""
+        if not finished and seconds_streamed < 90:
+            return
+        provider = self.mass.get_provider(streamdetails.provider)
+        # plugin providers serve playable items too, but on_streamed is MusicProvider-only
+        if provider is None or provider.type != ProviderType.MUSIC:
+            return
+        music_prov = cast("MusicProvider", provider)
+        self.mass.create_task(music_prov.on_streamed(streamdetails))
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails

@@ -51,6 +51,7 @@ from .constants import (
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
     SHOW_START_TIMEOUT_SECONDS,
+    TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
     WEB_SEARCH_MODE_RANK,
 )
@@ -1140,6 +1141,7 @@ class AIRadioRuntimeMixin:
         query_parts: list[str] = []
         if instructions:
             query_parts.append(f"Program instructions:\n{instructions}")
+        query_parts.append(f"Pronunciation rules:\n{TTS_PRONUNCIATION_INSTRUCTIONS}")
         # stated as a default so a station can still ask for another language in its instructions
         query_parts.append(
             "Unless the program instructions ask for another language, write the output "

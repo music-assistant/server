@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant.helpers.util import join_task
 from music_assistant.models.audio_analysis import AudioAnalysisError
 
 from .provider import Provider
@@ -418,8 +419,8 @@ class AudioAnalysisProvider(Provider):
             semaphore.release()
             raise
         future.add_done_callback(_release)
-        # shield: a cancelled awaiter leaves the thread and its slot held until the work finishes.
-        return await asyncio.shield(future)
+        # join: a cancelled awaiter leaves the thread and its slot held until the work finishes.
+        return await join_task(future)
 
     async def _run_offloaded_timed(
         self, func: Callable[..., _T], /, *args: Any, **kwargs: Any

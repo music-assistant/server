@@ -14,6 +14,14 @@ CONF_WEATHER_COUNTRY = "weather_country"
 # loading when AI Radio initializes: wait this long for it before giving up
 ENGINE_DISCOVERY_TIMEOUT = 30
 
+# grace period for an engine that disappears while AI Radio is loaded. Generous enough
+# to sit out a Home Assistant restart, so a running show is not torn down for it
+ENGINE_RECHECK_GRACE = 300
+
+# how long to wait before reloading after an engine stayed missing, matching the
+# cadence the load path uses for its own retries
+ENGINE_RETRY_DELAY = 120
+
 TRANSLATION_OWNER = "provider.ai_radio"
 
 DEFAULT_LLM_INSTRUCTIONS = (
@@ -22,6 +30,18 @@ DEFAULT_LLM_INSTRUCTIONS = (
     "keep segments concise, avoid bullet-point phrasing, avoid clichés, "
     "mention concrete details when available, and maintain a believable "
     "radio flow between sections."
+)
+# appended to every AI query on top of the station's own instructions: how a name has to be
+# spelled to survive the TTS engine is a pipeline concern, not a per-station style choice
+TTS_PRONUNCIATION_INSTRUCTIONS = (
+    "The output is sent directly to a text-to-speech engine. "
+    "Always write names exactly as they should be spoken aloud. Replace stylized spellings, "
+    "acronyms, abbreviations, and unusual artist or band names with their natural spoken "
+    "equivalents. Never include the original spelling, pronunciation explanation, phonetic "
+    "notation, or both versions. Output only the spoken version. Examples: INXS → In Excess; "
+    "Mi-Sex → My Sex; P!nk → Pink; blink-182 → Blink One Eighty-Two. If a name could be "
+    "mispronounced by the TTS engine, rewrite it into the clearest natural spoken form "
+    "without explaining the change."
 )
 DEFAULT_WEATHER_PROVIDER = "open_meteo"
 DEFAULT_WEATHER_TIMEOUT_SECONDS = 20

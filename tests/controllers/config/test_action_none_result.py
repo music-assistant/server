@@ -15,21 +15,8 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_PROTOCOL_KEY_SPLITTER
-from music_assistant.controllers.config.controller import ConfigController
 
-
-def _controller(mock_mass: MagicMock) -> ConfigController:
-    """
-    Build a bare ConfigController wired to the given mocked mass.
-
-    Mock setup must go through the returned ``mock_mass`` (not ``controller.mass``):
-    ``ConfigController.mass`` is statically typed as ``MusicAssistant``, so reading
-    it back would resolve real (non-mock) attribute/overload types instead of the
-    mock's, even though the object assigned at runtime is the mock.
-    """
-    controller = ConfigController.__new__(ConfigController)
-    controller.mass = mock_mass
-    return controller
+from .helpers import build_bare_config_controller
 
 
 async def test_provider_action_returning_none_yields_empty_list() -> None:
@@ -39,7 +26,7 @@ async def test_provider_action_returning_none_yields_empty_list() -> None:
     provider.domain = "some_provider"
     provider.handle_config_action = AsyncMock(return_value=None)
     mock_mass.get_provider.return_value = provider
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
 
     result = await controller.invoke_provider_config_action("some_instance", "some_action")
 
@@ -54,10 +41,11 @@ async def test_provider_action_returning_entries_still_wraps_them() -> None:
     own_entry = ConfigEntry(key="foo", type=ConfigEntryType.LABEL)
     provider.handle_config_action = AsyncMock(return_value=(own_entry,))
     mock_mass.get_provider.return_value = provider
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
 
     result = await controller.invoke_provider_config_action("some_instance", "some_action")
 
+    assert isinstance(result, list)
     assert any(entry.key == "foo" for entry in result)
     # the server default entries are still appended around the provider's own entry
     assert len(result) > 1
@@ -69,7 +57,7 @@ async def test_core_action_returning_none_yields_empty_list() -> None:
     module = MagicMock()
     module.handle_config_action = AsyncMock(return_value=None)
     mock_mass.some_module = module
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
 
     result = await controller.invoke_core_config_action("some_module", "some_action")
 
@@ -83,10 +71,11 @@ async def test_core_action_returning_entries_still_wraps_them() -> None:
     own_entry = ConfigEntry(key="foo", type=ConfigEntryType.LABEL)
     module.handle_config_action = AsyncMock(return_value=(own_entry,))
     mock_mass.some_module = module
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
 
     result = await controller.invoke_core_config_action("some_module", "some_action")
 
+    assert isinstance(result, list)
     assert any(entry.key == "foo" for entry in result)
     assert len(result) > 1
 
@@ -97,7 +86,7 @@ async def test_player_action_returning_none_yields_empty_list_without_rerender()
     player = MagicMock()
     player.handle_config_action = AsyncMock(return_value=None)
     mock_mass.players.get_player.return_value = player
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
         result = await controller.invoke_player_config_action("player_1", "some_action")
@@ -114,7 +103,7 @@ async def test_player_action_returning_entries_still_rerenders() -> None:
         return_value=[ConfigEntry(key="foo", type=ConfigEntryType.LABEL)]
     )
     mock_mass.players.get_player.return_value = player
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
     rerendered = [ConfigEntry(key="bar", type=ConfigEntryType.LABEL)]
 
     with patch.object(
@@ -137,7 +126,7 @@ async def test_protocol_action_returning_none_yields_empty_list_without_rerender
         "player_1": parent,
         "protocol_1": protocol_player,
     }[player_id]
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
     action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
@@ -162,7 +151,7 @@ async def test_protocol_action_returning_entries_rerenders_the_parent() -> None:
         "player_1": parent,
         "protocol_1": protocol_player,
     }[player_id]
-    controller = _controller(mock_mass)
+    controller = build_bare_config_controller(mock_mass)
     rerendered = [ConfigEntry(key="bar", type=ConfigEntryType.LABEL)]
     action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
 

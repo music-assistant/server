@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
+from soco.exceptions import SoCoException
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
@@ -33,6 +35,7 @@ def _make_soco(uid: str = "RINCON_000E58AAAAAA01400", name: str = "Test Sonos") 
     soco.uid = uid
     soco.household_id = "Sonos_household"
     soco.player_name = name
+    soco._player_name = name
     soco.ip_address = "127.0.0.1"
     soco.speaker_info = {"model_name": "Sonos Play:1"}
     return soco
@@ -117,6 +120,51 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert "library://track/123" not in call_args.kwargs["meta"]
 
 
+class _RecordingSoco:
+    """Minimal soco stand-in that records the thread its speaker query ran on."""
+
+    def __init__(self, actions: list[str]) -> None:
+        self._actions = actions
+        self.query_threads: list[int] = []
+        self.paused = False
+
+    @property
+    def available_actions(self) -> list[str]:
+        """Return the transport actions the speaker currently offers."""
+        self.query_threads.append(threading.get_ident())
+        return self._actions
+
+    def pause(self) -> None:
+        """Pause playback on the speaker."""
+        self.paused = True
+
+
+async def test_pause_queries_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
+    """Asking a speaker whether it can pause must not stall the event loop."""
+    soco = _RecordingSoco(["Play", "Stop", "Pause"])
+    sonos_player.soco = soco
+
+    await sonos_player.pause()
+
+    assert len(soco.query_threads) == 1
+    assert soco.query_threads[0] != threading.get_ident()
+    assert soco.paused
+
+
+async def test_pause_falls_back_to_stop_when_the_speaker_cannot_pause(
+    sonos_player: SonosPlayer,
+) -> None:
+    """A speaker that offers no pause action is stopped instead."""
+    soco = _RecordingSoco(["Play", "Stop"])
+    sonos_player.soco = soco
+
+    with patch.object(sonos_player, "stop", AsyncMock()) as stop:
+        await sonos_player.pause()
+
+    stop.assert_awaited_once()
+    assert not soco.paused
+
+
 def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
     """Make the mocked speaker report the given transport state."""
     sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
@@ -199,6 +247,60 @@ async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssi
     assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
 
 
+async def test_join_failure_names_the_speaker_that_refused(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that refuses to join is named in the failure, not the group leader."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    study.soco.join.side_effect = SoCoException("the speaker refused to join")
+
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
+        await kitchen.set_members(player_ids_to_add=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
+
+
+async def test_grouping_leaves_the_speakers_after_a_failure_untouched(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Speakers joined before a failure keep their poll, the ones after it are never reached."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
+    attic = _make_player(timer_mass, "RINCON_000E58DDDDDD01400", "Attic")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {
+        study.player_id: study,
+        hallway.player_id: hallway,
+        attic.player_id: attic,
+    }.get
+    hallway.soco.join.side_effect = SoCoException("the speaker refused to join")
+
+    with pytest.raises(PlayerCommandFailed, match="Hallway"):
+        await kitchen.set_members(
+            player_ids_to_add=[study.player_id, hallway.player_id, attic.player_id]
+        )
+
+    assert _pending_polls(timer_mass) == [_poll_id(study)]
+    attic.soco.join.assert_not_called()
+
+
+async def test_unjoin_failure_names_the_speaker_that_refused(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that refuses to leave a group is named in the failure, not the group leader."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    study.soco.unjoin.side_effect = SoCoException("the speaker refused to leave")
+
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
+        await kitchen.set_members(player_ids_to_remove=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
+
+
 async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
     """An unloaded speaker is not polled by a command that was still in flight."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
@@ -267,6 +369,210 @@ async def test_unloaded_player_ignores_group_topology_updates(
     update_state.assert_not_called()
 
 
+async def test_on_unload_unsubscribes_from_soco_events(timer_mass: MusicAssistant) -> None:
+    """Unloading a speaker also tears down its soco event subscriptions."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock()
+    player._subscriptions = [subscription]
+
+    await player.on_unload()
+
+    subscription.unsubscribe.assert_awaited_once()
+    assert player._subscriptions == []
+
+
+async def test_on_unload_unsubscribes_even_when_already_unavailable(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Unlike offline(), on_unload() must still tear down an unavailable speaker's events."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock()
+    player._subscriptions = [subscription]
+    player._attr_available = False
+
+    await player.on_unload()
+
+    subscription.unsubscribe.assert_awaited_once()
+    assert player._subscriptions == []
+
+
+async def test_unloaded_player_is_not_resubscribed_by_a_late_poll(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A poll that reaches an unloaded speaker must not subscribe it to events again."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    # the speaker was marked unavailable earlier, so it carries no subscriptions and
+    # unloading it leaves that unavailable state behind for a late poll to act on
+    player._attr_available = False
+    await player.on_unload()
+
+    with patch.object(player, "subscribe", AsyncMock()) as subscribe:
+        await player.poll()
+
+    subscribe.assert_not_called()
+    assert player._attr_available is False
+
+
+async def test_speaker_answering_a_poll_again_is_resubscribed(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that answers a poll after being unavailable is subscribed to events again."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    player._attr_available = False
+
+    with patch.object(player, "subscribe", AsyncMock()) as subscribe:
+        await player.poll()
+
+    subscribe.assert_called_once()
+    assert player._attr_available is True
+
+
+async def test_unloading_mid_subscribe_keeps_no_subscriptions(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker unloaded while subscribing must not keep the subscriptions it created."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_subscribe_target(_target: object, _callback: object) -> None:
+        subscribing.set()
+        await speaker_responds.wait()
+        player._subscriptions.append(MagicMock(unsubscribe=AsyncMock()))
+
+    with patch.object(player, "_subscribe_target", _slow_subscribe_target):
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await subscribing.wait()
+
+        unload_task = asyncio.create_task(player.on_unload())
+        await asyncio.sleep(0)
+        assert not unload_task.done()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(subscribe_task, unload_task)
+
+    assert player._subscriptions == []
+
+
+def _make_rediscovered_soco(ip_address: str = "127.0.0.2") -> MagicMock:
+    """Create the mocked soco device that discovery hands over for a speaker that moved."""
+    soco = _make_soco()
+    soco.ip_address = ip_address
+    return soco
+
+
+async def test_update_ip_talks_to_the_rediscovered_speaker(sonos_player: SonosPlayer) -> None:
+    """A speaker found at another address is reached through the newly discovered device."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(new_soco)
+
+    assert sonos_player.soco is new_soco
+    setup.assert_awaited_once()
+    assert sonos_player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "127.0.0.2"
+
+
+async def test_update_ip_probes_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
+    """Probing the rediscovered speaker must not stall the event loop."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+    probing = threading.Event()
+    probe_may_finish = threading.Event()
+
+    def _blocking_probe(*_args: object, **_kwargs: object) -> None:
+        probing.set()
+        probe_may_finish.wait(5)
+
+    new_soco.renderingControl.GetVolume.side_effect = _blocking_probe
+
+    # a probe held on the event loop would starve this block until it hits the timeout
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        async with asyncio.timeout(2):
+            update = asyncio.create_task(sonos_player.update_ip(new_soco))
+            await asyncio.to_thread(probing.wait, 5)
+            probe_may_finish.set()
+            await update
+
+    setup.assert_awaited_once()
+
+
+async def test_update_ip_marks_the_recovered_speaker_available(sonos_player: SonosPlayer) -> None:
+    """A speaker that answers at its new address counts as reachable again."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+
+    with patch.object(sonos_player, "setup", AsyncMock()):
+        await sonos_player.update_ip(new_soco)
+
+    assert sonos_player.available
+
+
+async def test_update_ip_skips_setup_when_the_new_address_stays_silent(
+    sonos_player: SonosPlayer,
+) -> None:
+    """An unanswered probe leaves the speaker for the regular poll to pick up."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+    new_soco.renderingControl.GetVolume.side_effect = SoCoException("no answer")
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(new_soco)
+
+    setup.assert_not_awaited()
+    assert sonos_player.soco is new_soco
+
+
+async def test_update_ip_leaves_an_unloaded_speaker_alone(sonos_player: SonosPlayer) -> None:
+    """An unloaded speaker must not be reconnected, its subscriptions would leak."""
+    sonos_player._attr_available = False
+    sonos_player._unloaded = True
+    original_soco = sonos_player.soco
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(_make_rediscovered_soco())
+
+    assert sonos_player.soco is original_soco
+    setup.assert_not_awaited()
+
+
+async def test_update_ip_leaves_a_responding_speaker_alone(sonos_player: SonosPlayer) -> None:
+    """A speaker that is still reachable keeps the device it is already talking to."""
+    original_soco = sonos_player.soco
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(_make_rediscovered_soco())
+
+    assert sonos_player.soco is original_soco
+    setup.assert_not_awaited()
+
+
+async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
+    """Reading the initial state of a speaker must not stall the event loop."""
+    cast("MagicMock", sonos_player.mass.players).register_or_update = AsyncMock()
+    reading_threads: list[int] = []
+
+    with (
+        patch.object(
+            sonos_player,
+            "update_groups",
+            lambda: reading_threads.append(threading.get_ident()),
+        ),
+        patch.object(sonos_player, "poll_media"),
+        patch.object(sonos_player, "subscribe", AsyncMock()),
+    ):
+        await sonos_player.setup()
+
+    assert len(reading_threads) == 1
+    assert reading_threads[0] != threading.get_ident()
+
+
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
     """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
     provider = MagicMock()
@@ -302,7 +608,6 @@ async def test_failed_subscribe_marks_the_speaker_offline() -> None:
     await _subscribe_with_failing_speaker(player)
 
     assert player.available is False
-    assert player._subscription_lock is not None
     assert not player._subscription_lock.locked()
 
 
@@ -314,5 +619,66 @@ async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
     with patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target:
         async with asyncio.timeout(5):
             await player.subscribe()
+
+    assert subscribe_target.await_count == len(SUBSCRIPTION_SERVICES)
+
+
+async def test_speaker_taken_offline_mid_subscribe_keeps_no_subscriptions() -> None:
+    """A speaker that goes offline while subscribing must not keep the subscriptions it created."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    subscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_subscribe_target(_target: object, _callback: object) -> None:
+        subscribing.set()
+        await speaker_responds.wait()
+        player._subscriptions.append(MagicMock(unsubscribe=AsyncMock()))
+
+    with (
+        patch.object(player, "_subscribe_target", _slow_subscribe_target),
+        patch.object(player, "update_state"),
+    ):
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await subscribing.wait()
+
+        offline_task = asyncio.create_task(player.offline())
+        await asyncio.sleep(0)
+        assert not offline_task.done()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(subscribe_task, offline_task)
+
+    assert player.available is False
+    assert player._subscriptions == []
+    assert player.missing_subscriptions == SUBSCRIPTION_SERVICES
+
+
+async def test_speaker_going_offline_is_not_resubscribed_halfway() -> None:
+    """No new subscriptions may be created while a speaker is still going offline."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    unsubscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_unsubscribe() -> None:
+        unsubscribing.set()
+        await speaker_responds.wait()
+
+    player._subscriptions = [MagicMock(unsubscribe=_slow_unsubscribe)]
+
+    with (
+        patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target,
+        patch.object(player, "update_state"),
+    ):
+        offline_task = asyncio.create_task(player.offline())
+        await unsubscribing.wait()
+
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await asyncio.sleep(0)
+        subscribe_target.assert_not_called()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(offline_task, subscribe_task)
 
     assert subscribe_target.await_count == len(SUBSCRIPTION_SERVICES)

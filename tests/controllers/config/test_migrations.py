@@ -19,7 +19,9 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
+    _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
+    _migrate_orphaned_disabled_protocol_configs,
     _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
@@ -63,6 +65,41 @@ def test_migrate_output_limiter_noop_when_absent() -> None:
     """Migration reports no change when no player stored the setting."""
     data: dict[str, Any] = {"players": {"p1": {"player_id": "p1", "values": {"flow_mode": True}}}}
     assert _migrate_output_limiter(data) is False
+
+
+def test_migrate_bluesound_http_profile_drops_stored_pick() -> None:
+    """A Bluesound player left on another HTTP profile is returned to the required one."""
+    data: dict[str, Any] = {
+        "players": {
+            "b1": {
+                "provider": "bluesound",
+                "values": {"http_profile": "chunked", "flow_mode": True},
+            },
+            "b2": {"provider": "bluesound--abc1", "values": {"http_profile": "no_content_length"}},
+            "c1": {"provider": "chromecast", "values": {"http_profile": "chunked"}},
+        }
+    }
+    assert _migrate_bluesound_http_profile(data) is True
+    assert data["players"]["b1"]["values"] == {"flow_mode": True}
+    assert data["players"]["b2"]["values"] == {}
+    # other providers still offer the setting, so their pick is left alone
+    assert data["players"]["c1"]["values"] == {"http_profile": "chunked"}
+
+
+def test_migrate_bluesound_http_profile_noop_when_absent() -> None:
+    """Migration reports no change when no Bluesound player stored a profile."""
+    data: dict[str, Any] = {"players": {"b1": {"provider": "bluesound", "values": {}}}}
+    assert _migrate_bluesound_http_profile(data) is False
+
+
+def test_migrate_bluesound_http_profile_noop_when_already_required() -> None:
+    """A player already on the required profile needs no rewrite of the settings."""
+    data: dict[str, Any] = {
+        "players": {
+            "b1": {"provider": "bluesound", "values": {"http_profile": "forced_content_length"}}
+        }
+    }
+    assert _migrate_bluesound_http_profile(data) is False
 
 
 def _airplay_receiver_ghost_data() -> dict[str, Any]:
@@ -1052,3 +1089,92 @@ def test_migrate_player_icons_tolerates_malformed_data() -> None:
     assert _migrate_player_icons(data) is False
     assert data["players"]["p3"]["values"]["icon"] is None
     assert data["players"]["p4"]["values"]["icon"] == 123
+
+
+def _orphaned_protocol_data() -> dict[str, Any]:
+    """Build a config store with a disabled protocol player whose parent was removed."""
+    return {
+        "players": {
+            "spb_esp32": {
+                "player_id": "spb_esp32",
+                "provider": "sendspin",
+                "player_type": "protocol",
+                "enabled": False,
+                "values": {"protocol_parent_id": "up_esp32"},
+            },
+            "spb_kitchen": {
+                "player_id": "spb_kitchen",
+                "provider": "sendspin",
+                "player_type": "protocol",
+                "enabled": False,
+                "values": {"protocol_parent_id": "up_kitchen"},
+            },
+            # only the parent side of the link survived
+            "ap_office": {
+                "player_id": "ap_office",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": False,
+                "values": {},
+            },
+            "cast_office": {
+                "player_id": "cast_office",
+                "provider": "chromecast",
+                "player_type": "player",
+                "enabled": True,
+                "values": {"linked_protocol_ids": ["ap_office"]},
+            },
+            # neither side of the link survived
+            "ap_ghost": {
+                "player_id": "ap_ghost",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": False,
+                "values": {},
+            },
+            "up_kitchen": {
+                "player_id": "up_kitchen",
+                "provider": "universal_player",
+                "player_type": "player",
+                "enabled": False,
+                "values": {"linked_protocol_ids": ["spb_kitchen"]},
+            },
+        },
+        "player_dsp": {"spb_esp32": {"enabled": True}, "spb_kitchen": {"enabled": True}},
+    }
+
+
+def test_migrate_orphaned_disabled_protocol_configs() -> None:
+    """A disabled protocol player without a parent config is dropped, others are kept."""
+    data = _orphaned_protocol_data()
+    assert _migrate_orphaned_disabled_protocol_configs(data) is True
+    assert "spb_esp32" not in data["players"]
+    assert "spb_esp32" not in data["player_dsp"]
+    assert "ap_ghost" not in data["players"]
+    # protocol players that are still owned by a player are left alone
+    assert "spb_kitchen" in data["players"]
+    assert "spb_kitchen" in data["player_dsp"]
+    assert "ap_office" in data["players"]
+    assert _migrate_orphaned_disabled_protocol_configs(data) is False
+
+
+def test_migrate_orphaned_disabled_protocol_configs_keeps_enabled_players() -> None:
+    """An enabled protocol player is kept: it can register and find a new parent."""
+    data = _orphaned_protocol_data()
+    data["players"]["spb_esp32"]["enabled"] = True
+    data["players"]["ap_ghost"]["enabled"] = True
+    assert _migrate_orphaned_disabled_protocol_configs(data) is False
+    assert "spb_esp32" in data["players"]
+
+
+def test_migrate_orphaned_disabled_protocol_configs_tolerates_malformed_data() -> None:
+    """Non-dict player configs/values and non-protocol players are skipped."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": "not-a-dict",
+            "p2": {"player_id": "p2", "player_type": "player", "enabled": False, "values": None},
+            "p3": {"player_id": "p3", "player_type": "player", "enabled": False, "values": {}},
+        }
+    }
+    assert _migrate_orphaned_disabled_protocol_configs(data) is False
+    assert len(data["players"]) == 3

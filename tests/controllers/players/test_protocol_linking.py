@@ -175,7 +175,7 @@ def mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
@@ -1935,7 +1935,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -1966,7 +1966,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -2002,7 +2002,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -2039,7 +2039,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 

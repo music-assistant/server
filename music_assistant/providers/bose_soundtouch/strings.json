@@ -4,12 +4,9 @@
       "label": "Bose SoundTouch app key",
       "description": "Optional. A Bose SoundTouch developer app key enables sending announcements to the speaker as an overlay that ducks the current music and resumes it afterwards. Leave empty to disable native announcements (they then play through the linked playback protocol instead)."
     },
-    "preset_header": {
-      "label": "Preset {0}"
-    },
-    "preset_media_type": {
-      "label": "Preset {0} media type",
-      "description": "Type of media used for this preset's search and playback.",
+    "preset_search_media_type": {
+      "label": "Media type",
+      "description": "Type of media to search.",
       "options": {
         "artist": "Artist",
         "album": "Album",
@@ -21,23 +18,40 @@
         "genre": "Genre"
       }
     },
-    "preset_search": {
-      "label": "Preset {0} search",
-      "description": "Type a search term, then press Search."
+    "preset_search_query": {
+      "label": "Enter your search keywords",
+      "description": "Enter one or more keywords, then press Search."
     },
     "preset_search_action": {
-      "label": "Search preset {0}"
+      "label": "Search"
     },
-    "preset_result_selection": {
-      "label": "Preset {0} result selection"
+    "preset_search_result": {
+      "label": "Result"
     },
-    "preset_select_action": {
-      "label": "Select preset {0}"
+    "preset_search_target": {
+      "label": "Select for preset",
+      "description": "Choose the physical preset that will receive the selected result.",
+      "options": {
+        "select": "Select which preset number to assign",
+        "1": "Preset 1",
+        "2": "Preset 2",
+        "3": "Preset 3",
+        "4": "Preset 4",
+        "5": "Preset 5",
+        "6": "Preset 6"
+      }
+    },
+    "preset_assign_action": {
+      "label": "Assign result to preset {0}"
     },
     "preset_media": {
       "label": "Preset {0} to play",
-      "description": "URI copied from the selected result or manually entered. Pressing this preset button on any of your SoundTouch speakers plays it on that speaker."
+      "description": "Music Assistant URI selected above or entered manually. Format: provider://media_type/identifier. Pressing this preset plays it on the SoundTouch speaker."
     }
+  },
+  "config_categories": {
+    "preset_search": "Search engine preset",
+    "presets": "Presets"
   },
   "manifest": {
     "description": "Control Bose SoundTouch speakers and map their physical preset buttons to Music Assistant content."
