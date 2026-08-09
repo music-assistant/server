@@ -385,10 +385,6 @@ class OpenSonicProvider(MusicProvider):
             tr = []
             for entry in answer.song:
                 self._set_loudness(entry)
-                # No per-track lyrics fetch here: lyrics are resolved on demand via
-                # get_track when a track is actually opened or played. Fetching them
-                # per result turned one search3 call into a serial getLyricsBySongId
-                # per hit, which dominates search time on a remote server.
                 tr.append(parse_track(self.logger, self.instance_id, entry))
         else:
             tr = []
@@ -723,9 +719,6 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            # As in search: lyrics come from get_track on demand, so opening an
-            # artist costs one getTopSongs call rather than one extra request per
-            # track returned.
             tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
