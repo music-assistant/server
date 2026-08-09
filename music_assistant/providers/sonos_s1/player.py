@@ -283,7 +283,6 @@ class SonosPlayer(Player):
         else:
             await self.stop()
 
-    @soco_error()
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -301,14 +300,12 @@ class SonosPlayer(Player):
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
                 if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
-                    await asyncio.to_thread(player_to_remove.soco.unjoin)
-                    player_to_remove.schedule_poll()
+                    await player_to_remove._unjoin()
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
                 if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
-                    await asyncio.to_thread(player_to_add.soco.join, self.soco)
-                    player_to_add.schedule_poll()
+                    await player_to_add._join(self.soco)
 
     def schedule_poll(self) -> None:
         """Read the speaker state back shortly after a command was sent to it."""
@@ -561,6 +558,22 @@ class SonosPlayer(Player):
         if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
+
+    @soco_error()
+    async def _join(self, coordinator: SoCo) -> None:
+        """
+        Join this speaker to the group of the given coordinator.
+
+        :param coordinator: The SoCo instance of the speaker leading the group.
+        """
+        await asyncio.to_thread(self.soco.join, coordinator)
+        self.schedule_poll()
+
+    @soco_error()
+    async def _unjoin(self) -> None:
+        """Remove this speaker from the group it is currently in."""
+        await asyncio.to_thread(self.soco.unjoin)
+        self.schedule_poll()
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

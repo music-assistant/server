@@ -59,7 +59,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.albums import AlbumsController
     from music_assistant.controllers.music.media.artists import ArtistsController
+    from music_assistant.controllers.music.media.audiobooks import AudiobooksController
     from music_assistant.controllers.music.media.playlists import PlaylistController
+    from music_assistant.controllers.music.media.podcasts import PodcastsController
     from music_assistant.controllers.music.media.radio import RadioController
     from music_assistant.controllers.music.media.tracks import TracksController
 
@@ -79,7 +81,8 @@ class MusicDatabaseSetupMixin:
     - mass: MusicAssistant instance
     - logger: logging.Logger instance
     - database: the active DatabaseConnection
-    - the per-media-type controllers (albums, artists, tracks, playlists, radio, genres)
+    - the per-media-type controllers (albums, artists, tracks, playlists, radio,
+      podcasts, audiobooks, genres)
     - close() and start_sync() methods
     """
 
@@ -93,6 +96,8 @@ class MusicDatabaseSetupMixin:
         tracks: TracksController
         playlists: PlaylistController
         radio: RadioController
+        podcasts: PodcastsController
+        audiobooks: AudiobooksController
         genres: GenreController
 
         @property
@@ -121,6 +126,8 @@ class MusicDatabaseSetupMixin:
             self.tracks,
             self.playlists,
             self.radio,
+            self.podcasts,
+            self.audiobooks,
         ):
             update_current_task_progress_text(f"Cleaning {ctrl.media_type.value} library records")
             # Provider mappings where the db item is removed

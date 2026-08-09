@@ -234,7 +234,7 @@ class OpenSonicProvider(MusicProvider):
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == OpenSubsonicExtensions.STRUCTURED_LYRICS:
+                if entry.name == OpenSubsonicExtensions.SONG_LYRICS:
                     self._id_lyrics = True
                 elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
                     self._direct_podcast_episode = True
