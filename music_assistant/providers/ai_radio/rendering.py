@@ -25,7 +25,6 @@ from .constants import (
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
-    ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     DEFERRED_PLACEHOLDERS,
@@ -49,7 +48,6 @@ class AIRadioRenderMixin:
     if TYPE_CHECKING:
         mass: MusicAssistant
         logger: logging.Logger
-        _stations: dict[str, dict[str, Any]]
         _hosts: dict[str, dict[str, Any]]
         _sessions: dict[str, SessionState]
 
@@ -144,8 +142,7 @@ class AIRadioRenderMixin:
     async def _generate_script(self, queue_item: QueueItem, prompt: str, clip_id: str) -> str:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
-        station = self._stations.get(str(attributes.get(ATTR_STATION_ID) or "")) or {}
-        deferred = await self._resolve_deferred_placeholders(station)
+        deferred = await self._resolve_deferred_placeholders(prompt)
         resolved = prompt
         for key, value in deferred.items():
             resolved = resolved.replace(key, value)
@@ -173,19 +170,25 @@ class AIRadioRenderMixin:
         )
         return text
 
-    async def _resolve_deferred_placeholders(self, program: dict[str, Any]) -> dict[str, str]:
+    async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
-        values.update(await self._prepare_runtime_tokens(program))
+        # weather is the only deferred placeholder that costs a network round-trip, so it is
+        # only fetched when the prompt actually references it
+        weather_tokens = ("<weather_hourly>", "<weather_daily>")
+        if any(token in prompt for token in weather_tokens):
+            values.update(await self._prepare_weather_tokens())
         return values
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
     ) -> tuple[str, StreamType, AudioFormat, int | None]:
         """Convert the script to playable audio via the configured TTS engine."""
+        host = self._hosts.get(str(queue_item.extra_attributes.get(ATTR_HOST_ID) or "")) or {}
+        engine_uid = str(host.get("tts_engine") or "") or None
         try:
-            path, stream_type, audio_format = await self._render_tts_media(text)
+            path, stream_type, audio_format = await self._render_tts_media(text, engine_uid)
             # the probe is the first fetch, so a failed render surfaces here and not in playback
             duration = await self._probe_duration(path)
             return path, stream_type, audio_format, duration
@@ -194,9 +197,11 @@ class AIRadioRenderMixin:
             self._record_skip(queue_item, f"TTS failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
 
-    async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+    async def _render_tts_media(
+        self, text: str, engine_uid: str | None = None
+    ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
-        engine = await self._get_tts_engine()
+        engine = await self._get_tts_engine(engine_uid)
         try:
             async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
                 stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)

@@ -22,12 +22,14 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
+    DEFAULT_LLM_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
@@ -43,9 +45,6 @@ class DummyRenderer(AIRadioRenderMixin):
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
         self._sessions: dict[str, Any] = {}
-        self._stations: dict[str, dict[str, Any]] = {
-            "st": {"id": "st", "general": {"instructions": "be warm"}}
-        }
         self._hosts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
@@ -64,11 +63,13 @@ class DummyRenderer(AIRadioRenderMixin):
         self.llm_prompts.append(prompt)
         return "Good evening, it is warm out."
 
-    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+    async def _prepare_weather_tokens(self) -> dict[str, str]:
         self.weather_calls += 1
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
-    async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+    async def _render_tts_media(
+        self, text: str, engine_uid: str | None = None
+    ) -> tuple[str, StreamType, AudioFormat]:
         self.tts_texts.append(text)
         return (
             f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
@@ -282,7 +283,9 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
     """A TTS failure surfaces as missing media and is recorded on the owning session."""
 
     class UnspeakableRenderer(DummyRenderer):
-        async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+        async def _render_tts_media(
+            self, text: str, engine_uid: str | None = None
+        ) -> tuple[str, StreamType, AudioFormat]:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
@@ -361,6 +364,73 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
 
     assert streamdetails.duration is None
     assert renderer._sessions["sess"].skipped_sections == 0
+
+async def test_generate_script_uses_host_instructions() -> None:
+    """The prompt sent to the LLM carries the resolved host's persona instructions."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "instructions": "Persona text.", "tts_engine": ""}}
+    captured: dict[str, str] = {}
+
+    async def fake_generate_text(
+        instructions: str,
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+    ) -> str:
+        captured["instructions"] = instructions
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    text = await renderer._generate_script(item, "p", "clip_1")
+
+    assert text == "script"
+    assert captured["instructions"] == "Persona text."
+
+
+async def test_generate_script_falls_back_to_default_instructions() -> None:
+    """A clip whose host is gone by render time still generates, using the default persona."""
+    renderer = DummyRenderer()
+    renderer._hosts = {}
+    captured: dict[str, str] = {}
+
+    async def fake_generate_text(
+        instructions: str,
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+    ) -> str:
+        # mirrors the empty-to-default fallback the real _generate_text applies (runtime.py)
+        captured["instructions"] = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "gone", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["instructions"] == DEFAULT_LLM_INSTRUCTIONS
+
+
+async def test_resolve_deferred_placeholders_skips_weather_without_token() -> None:
+    """A prompt with no weather placeholder never triggers a weather fetch."""
+    renderer = DummyRenderer()
+
+    values = await renderer._resolve_deferred_placeholders("Just plain text, no tokens.")
+
+    assert renderer.weather_calls == 0
+    assert values["<weather_hourly>"] == ""
+    assert values["<weather_daily>"] == ""
+
+
+async def test_mint_clip_media_resolves_host_tts_engine() -> None:
+    """A clip whose host declares a tts_engine reaches _get_tts_engine with that override."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
+
+    await renderer._mint_clip_media(item, "hello world", "clip_1")
+
+    cast("Any", renderer)._get_tts_engine.assert_awaited_once_with("tts.rick_voice")
 
 
 async def test_render_tts_media_streams_a_url_over_http() -> None:

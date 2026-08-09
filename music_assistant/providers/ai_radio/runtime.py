@@ -836,10 +836,13 @@ class AIRadioRuntimeMixin:
 
     async def _prepare_runtime_tokens(self, program: dict[str, Any]) -> dict[str, str]:
         """Prepare runtime tokens (including weather placeholders) for one run."""
-        runtime_tokens: dict[str, str] = {}
-
         if not self._program_uses_weather_placeholders(program):
-            return runtime_tokens
+            return {}
+        return await self._prepare_weather_tokens()
+
+    async def _prepare_weather_tokens(self) -> dict[str, str]:
+        """Fetch and format weather placeholder tokens from the configured provider."""
+        runtime_tokens: dict[str, str] = {}
 
         weather_provider = (
             str(self.config.get_value(CONF_WEATHER_PROVIDER) or DEFAULT_WEATHER_PROVIDER)
@@ -1240,8 +1243,20 @@ class AIRadioRuntimeMixin:
         except MusicAssistantError as err:
             self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
-    async def _get_tts_engine(self) -> TTSEngine:
-        """Return the engine used for TTS tasks, honouring the configured selection."""
+    async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
+        """
+        Return the engine used for TTS tasks.
+
+        :param engine_uid: A host-specific engine to prefer, falling back to the configured
+            selection when unset or unavailable.
+        """
+        if engine_uid:
+            if engine := await resolve_tts_engine(self.mass, engine_uid):
+                return engine
+            self.logger.warning(
+                "Host TTS engine %s is unavailable, falling back to the provider default",
+                engine_uid,
+            )
         selected = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
         if engine := await resolve_tts_engine(self.mass, selected):
             return engine
