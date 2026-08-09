@@ -336,7 +336,7 @@ async def test_delete_host_refuses_when_it_is_an_active_queue_dj(provider: Any) 
         dj_session_id="dj0123456789",
     )
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError, match="is the active DJ on queues: queue-1"):
         await provider.delete_host(saved["id"])
 
 
@@ -760,6 +760,27 @@ async def test_unload_cancels_an_in_flight_engine_recheck() -> None:
         await recheck_task
     assert provider._unloading is True
     assert errors == []
+
+
+async def test_unload_cancels_an_in_flight_queue_dj_replan() -> None:
+    """Unloading stops replan work that is still running for an armed queue."""
+    provider, _, _ = _make_engine_provider([])
+
+    async def _never_returns() -> None:
+        await asyncio.sleep(3600)
+
+    replan_task = asyncio.ensure_future(_never_returns())
+    provider._dj_queues["queue-1"] = DJQueueState(
+        queue_id="queue-1",
+        host_id="rick",
+        dj_session_id="dj0123456789",
+        task=replan_task,
+    )
+
+    await provider.unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await replan_task
 
 
 async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_wait(

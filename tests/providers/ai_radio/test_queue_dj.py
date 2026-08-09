@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
@@ -178,6 +178,7 @@ class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixi
         self._dj_queues: dict[str, Any] = {}
         self._dj_file = tmp_path / "queue_dj.json"
         self._dj_lock = asyncio.Lock()
+        self._unloading = False
         self.player_queues = FakePlayerQueues(queue, items)
         self.mass = cast("Any", FakeMass(self.player_queues))
 
@@ -424,3 +425,63 @@ async def test_scheduled_replan_serves_requests_landing_during_a_pass(tmp_path: 
 
     assert len(queues.loads) == 2
     assert dummy._dj_queues["queue-1"].replan_pending is False
+
+
+async def test_failing_pass_leaves_the_dj_schedulable(tmp_path: Path) -> None:
+    """A raising pass clears its request, does not retry, and recovers on a later event."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    working_build_program = dummy._build_program
+    attempts: list[str] = []
+
+    def _failing_build_program(_station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
+        attempts.append(host["id"])
+        # an event landing mid-pass re-requests a replan behind the still running task
+        dummy._schedule_replan("queue-1")
+        raise MusicAssistantError("misconfigured host")
+
+    dummy._build_program = _failing_build_program  # type: ignore[method-assign]
+    dummy._schedule_replan("queue-1")
+    await asyncio.gather(*dummy.mass.tasks)
+
+    assert attempts == ["rick"]
+    assert dummy.player_queues.loads == []
+    assert dummy._dj_queues["queue-1"].replan_pending is False
+
+    dummy._build_program = working_build_program  # type: ignore[method-assign]
+    dummy._schedule_replan("queue-1")
+    await asyncio.gather(*dummy.mass.tasks)
+
+    assert len(dummy.player_queues.loads) == 2
+
+
+async def test_unloading_provider_schedules_no_replans(tmp_path: Path) -> None:
+    """An unloading provider starts no new replan work."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    dummy._unloading = True
+
+    dummy._schedule_replan("queue-1")
+
+    assert dummy.mass.tasks == []
+    state = dummy._dj_queues["queue-1"]
+    assert state.replan_pending is False
+    assert state.task is None
+
+
+async def test_injection_rereads_a_guard_that_moved_during_the_pass(tmp_path: Path) -> None:
+    """A guard that advanced while the pass awaited is honoured by the injections."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), current_index=0, index_in_buffer=0)
+    prepare_runtime_tokens = dummy._prepare_runtime_tokens
+
+    async def _slow_prepare(program: dict[str, Any]) -> dict[str, str]:
+        # stands in for a slow token source: the player buffers ahead while we wait
+        dummy.player_queues._queue.index_in_buffer = 1
+        return await prepare_runtime_tokens(program)
+
+    dummy._prepare_runtime_tokens = _slow_prepare  # type: ignore[method-assign]
+    await dummy._replan_queue("queue-1")
+
+    queues = dummy.player_queues
+    assert len(queues.loads) == 1
+    assert queues.loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id

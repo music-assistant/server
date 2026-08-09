@@ -32,6 +32,9 @@ FALLBACK_TRACK_SECONDS = 210
 
 QUEUE_PAGE_SIZE = 500
 
+# per section history cap, generous for the widest guard window (60 minutes)
+HISTORY_EVENTS_PER_SECTION = 50
+
 
 class AIRadioQueueDJMixin:
     """Mixin managing sticky queue DJ state and clip injection."""
@@ -43,6 +46,7 @@ class AIRadioQueueDJMixin:
         _dj_queues: dict[str, DJQueueState]
         _dj_file: Path
         _dj_lock: asyncio.Lock
+        _unloading: bool
 
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
         """
@@ -141,11 +145,13 @@ class AIRadioQueueDJMixin:
 
     def _schedule_replan(self, queue_id: str) -> None:
         """Request a replan pass for the given queue."""
+        if self._unloading:
+            return
         state = self._dj_queues.get(queue_id)
         if state is None or state.replan_pending:
             return
         state.replan_pending = True
-        self.mass.create_task(
+        state.task = self.mass.create_task(
             self._drain_replans(queue_id), task_id=f"ai_radio_dj_replan_{queue_id}"
         )
 
@@ -154,7 +160,16 @@ class AIRadioQueueDJMixin:
         # the inserts of a pass re-fire QUEUE_ITEMS_UPDATED while this task still holds the
         # replan task id, so its follow-up request is served here instead of by a new task
         while (state := self._dj_queues.get(queue_id)) is not None and state.replan_pending:
-            await self._replan_queue(queue_id)
+            if self._unloading:
+                return
+            try:
+                await self._replan_queue(queue_id)
+            except Exception:
+                # clearing the request keeps a later event able to schedule a fresh task,
+                # and returning keeps a permanently failing host from hot-looping here
+                self.logger.exception("Queue DJ replan failed for %s", queue_id)
+                state.replan_pending = False
+                return
 
     async def _replan_queue(self, queue_id: str) -> None:
         """Run one planning, injection and repair pass over a queue."""
@@ -216,7 +231,8 @@ class AIRadioQueueDJMixin:
                 allowed_slot_when=["between_songs"],
                 runtime_tokens=runtime_tokens,
             )
-            # descending, so an earlier insert never shifts a later target index
+            # insert order is not load bearing: every clip resolves its own target index
+            # by item id right before inserting. descending walks back from the queue tail
             for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
                 await self._inject_dj_clip(
                     queue_id=queue_id,
@@ -224,9 +240,13 @@ class AIRadioQueueDJMixin:
                     program=program,
                     target=window_tracks[section.insert_at_index],
                     section=section,
-                    guard_index=guard_index,
                 )
-            state.history = history
+            # only the newest events matter to the guards (the last one for min_gap_songs,
+            # a 60 minute window for max_per_60min), so the tail is dropped
+            state.history = {
+                section_id: events[-HISTORY_EVENTS_PER_SECTION:]
+                for section_id, events in history.items()
+            }
             state.last_planned_item_id = window_tracks[-1]["item_id"]
 
     async def _inject_dj_clip(
@@ -236,9 +256,14 @@ class AIRadioQueueDJMixin:
         program: dict[str, Any],
         target: dict[str, Any],
         section: PlannedSection,
-        guard_index: int,
     ) -> None:
         """Insert one planned clip in front of its target track, unless the gap is unusable."""
+        # both the target position and the guard are re-read here: planning awaits can take
+        # seconds, in which the queue may have been reordered and the player buffered ahead
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        guard_index = self._dj_guard_index(queue)
         target_index = self.mass.player_queues.index_by_id(queue_id, target["item_id"])
         if target_index is None or target_index <= guard_index + 1:
             return
@@ -289,9 +314,8 @@ class AIRadioQueueDJMixin:
             if not item.extra_attributes.get(ATTR_QUEUE_DJ):
                 continue
             successor = items[index + 1] if index + 1 < len(items) else None
-            if (
-                successor is not None
-                and successor.queue_item_id == item.extra_attributes.get(ATTR_GAP_NEXT_ID)
+            if successor is not None and successor.queue_item_id == item.extra_attributes.get(
+                ATTR_GAP_NEXT_ID
             ):
                 continue
             self.mass.player_queues.delete_item(queue_id, item.queue_item_id)

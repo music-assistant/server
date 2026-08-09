@@ -50,6 +50,7 @@ class DJQueueState:
     history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
     replan_pending: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(slots=True)

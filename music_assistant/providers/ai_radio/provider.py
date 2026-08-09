@@ -179,6 +179,9 @@ class AIRadioProvider(
             if session.task and not session.task.done():
                 session.task.cancel()
                 cancelled += 1
+        for state in self._dj_queues.values():
+            if state.task and not state.task.done():
+                state.task.cancel()
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()
