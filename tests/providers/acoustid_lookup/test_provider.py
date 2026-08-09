@@ -129,12 +129,21 @@ class _FakeFingerprinter:
         return b"FAKEFINGERPRINT"
 
 
+class _FakeFingerprintError(Exception):
+    """Stand-in for chromaprint.FingerprintError."""
+
+
 def _install_fake_chromaprint(monkeypatch: pytest.MonkeyPatch, fp: _FakeFingerprinter) -> None:
-    """Patch _create_fingerprinter to return the given fake, started with the session's format."""
+    """
+    Patch _create_fingerprinter to return the given fake, started with the session's format.
+
+    Also registers a stand-in error tuple, mirroring the real fingerprinter setup.
+    """
 
     def fake_create(
-        _self: AcoustidLookupProvider, sample_rate: int, channels: int
+        provider: AcoustidLookupProvider, sample_rate: int, channels: int
     ) -> _FakeFingerprinter:
+        provider._fingerprint_errors = (_FakeFingerprintError,)
         fp.start(int(sample_rate), int(channels))
         return fp
 
@@ -148,10 +157,6 @@ def _install_unidentified_track(provider: AcoustidLookupProvider) -> None:
     cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
         return_value=track
     )
-
-
-class _FakeFingerprintError(Exception):
-    """Stand-in for chromaprint.FingerprintError."""
 
 
 def _install_chromaprint_module(monkeypatch: pytest.MonkeyPatch, *, failing_call: str) -> None:
