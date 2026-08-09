@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import aiofiles
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.helpers.json import async_json_loads
+from music_assistant.helpers.json import async_json_loads, json_dumps
 
 from .constants import DEFAULT_LLM_INSTRUCTIONS
 from .helpers import slugify
@@ -128,13 +128,112 @@ class AIRadioHostsMixin:
         """Return the built-in host template."""
         default_sections = self._default_sections_template()
         default_section_ids = [item["id"] for item in default_sections]
-        station_template = self._default_station_template()
         return {
             "id": "default_host",
             "name": "Default Host",
             "instructions": DEFAULT_LLM_INSTRUCTIONS,
             "tts_engine": "",
             "section_ids": default_section_ids,
-            "section_order": deepcopy(station_template["section_order"]),
+            "section_order": [
+                {"when": "start_of_playlist", "flow": [{"MUST": "Song_Introduction_Start"}]},
+                {
+                    "when": "between_songs",
+                    "flow": [
+                        {
+                            "ALTERNATIVE": {
+                                "choices": [
+                                    {"section": "Song_Transition", "weight": 100},
+                                ]
+                            }
+                        },
+                        {
+                            "OPTIONAL": {
+                                "section": "Weather_Short",
+                                "chance": 0.2,
+                                "guards": {
+                                    "min_gap_songs": 3,
+                                    "max_per_60min": 1,
+                                    "require_placeholders_present": ["<weather_hourly>"],
+                                },
+                            }
+                        },
+                        {
+                            "OPTIONAL": {
+                                "section": "Global_News",
+                                "chance": 0.12,
+                                "guards": {
+                                    "min_gap_songs": 4,
+                                    "max_per_60min": 1,
+                                    "require_placeholders_present": ["<timestamp>"],
+                                },
+                            }
+                        },
+                    ],
+                },
+                {"when": "end_of_playlist", "flow": [{"MUST": "Song_Introduction_End"}]},
+            ],
             "merge_section_id": "Between_Songs_Smoother",
         }
+
+    def _migrate_stations_v2_to_v3(self, stations: list[dict[str, Any]]) -> None:
+        """
+        Extract host profiles out of v2 stations and slim the stations in place.
+
+        :param stations: v2 station dicts, mutated in place to the v3 shape.
+        """
+        legacy_keys = ("general", "sections", "section_ids", "section_order", "merge_section_id")
+        seen: dict[str, str] = {}
+        for station in stations:
+            for item in station.get("sections", []):
+                if not isinstance(item, dict):
+                    continue
+                normalized_section = self._normalize_section(item)
+                if normalized_section["id"] not in self._sections:
+                    self._sections[normalized_section["id"]] = normalized_section
+
+            general_raw = station.get("general")
+            general = general_raw if isinstance(general_raw, dict) else {}
+            instructions = (
+                str(general.get("instructions") or "").strip() or DEFAULT_LLM_INSTRUCTIONS
+            )
+            section_ids = [
+                str(item).strip() for item in station.get("section_ids", []) if str(item).strip()
+            ]
+            if not section_ids:
+                section_ids = [
+                    str(item.get("id", "")).strip()
+                    for item in station.get("sections", [])
+                    if isinstance(item, dict) and str(item.get("id", "")).strip()
+                ]
+            section_order = station.get("section_order") or []
+            merge_section_id = str(station.get("merge_section_id", "")).strip()
+            fingerprint = json_dumps(
+                {
+                    "instructions": instructions,
+                    "section_ids": section_ids,
+                    "section_order": section_order,
+                    "merge_section_id": merge_section_id,
+                }
+            )
+            if fingerprint in seen:
+                host_id = seen[fingerprint]
+            else:
+                host = self._normalize_host(
+                    {
+                        "id": f"{station.get('name', 'host')}_host",
+                        "name": f"{str(station.get('name', 'Host')).strip()} Host",
+                        "instructions": instructions,
+                        "section_ids": section_ids,
+                        "section_order": section_order,
+                        "merge_section_id": merge_section_id,
+                    }
+                )
+                # a second distinct persona landing on the same slug must not overwrite the first
+                while host["id"] in self._hosts:
+                    host["id"] = f"{host['id']}_{len(self._hosts)}"
+                self._hosts[host["id"]] = host
+                host_id = host["id"]
+                seen[fingerprint] = host_id
+            station["host_id"] = host_id
+            for key in legacy_keys:
+                station.pop(key, None)

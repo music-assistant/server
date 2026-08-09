@@ -167,17 +167,8 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         """Create or update a station."""
         station_payload = deepcopy(station)
         async with self._station_lock:
-            # validate against a scratch copy so a rejected station
-            # cannot leave partial section edits behind
-            sections_scratch = deepcopy(self._sections)
-            sections_changed = self._upsert_embedded_sections_from_station(
-                station_payload, sections_scratch
-            )
-            normalized = self._normalize_station(station_payload, sections_scratch)
+            normalized = self._normalize_station(station_payload)
             self._stations[normalized["id"]] = normalized
-            if sections_changed:
-                self._sections = sections_scratch
-                await self._write_sections()
             await self._write_stations()
         self.logger.info("AI Radio station saved: %s (%s)", normalized["id"], normalized["name"])
         return deepcopy(normalized)
@@ -193,12 +184,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
 
     async def validate_station(self, station: dict[str, Any]) -> dict[str, Any]:
         """Validate station payload and return the normalized profile."""
-        station_payload = deepcopy(station)
-        # validation must be side-effect free: resolve embedded sections
-        # against a scratch copy instead of the shared section store
-        sections_scratch = deepcopy(self._sections)
-        self._upsert_embedded_sections_from_station(station_payload, sections_scratch)
-        return self._normalize_station(station_payload, sections_scratch)
+        return self._normalize_station(deepcopy(station))
 
     async def station_template(self) -> dict[str, Any]:
         """Return a default station template."""
@@ -222,7 +208,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         normalized = self._normalize_section(section)
         async with self._station_lock:
             self._sections[normalized["id"]] = normalized
-            self._refresh_station_sections()
             await self._write_sections()
             await self._write_stations()
         self.logger.info("AI Radio section saved: %s", normalized["id"])

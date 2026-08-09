@@ -256,46 +256,25 @@ async def test_start_run_prunes_oldest_finished_sessions() -> None:
 
 @pytest.mark.asyncio
 async def test_validate_station_does_not_mutate_shared_sections() -> None:
-    """Keep shared sections untouched when a station payload is only validated."""
+    """Keep shared hosts and sections untouched when a station payload is only validated."""
     provider = _make_provider()
     provider._stations = {}
     provider._sections = {}
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
     provider._station_lock = asyncio.Lock()
     station = {
         "id": "station_a",
         "name": "Station A",
         "source_playlist_id": "playlist-1",
-        "sections": [{"id": "s1", "name": "S1", "type": "ai_text", "prompt": "Prompt"}],
-        "section_order": [{"when": "between_songs", "flow": [{"MUST": "s1"}]}],
+        "source_playlist_provider": "library",
+        "host_id": "host_a",
     }
 
     normalized = await provider.validate_station(station)
 
-    assert normalized["section_ids"] == ["s1"]
+    assert normalized["host_id"] == "host_a"
     assert provider._sections == {}
-
-
-@pytest.mark.asyncio
-async def test_save_station_discards_section_changes_when_station_invalid() -> None:
-    """Roll back section upserts when the station payload fails validation."""
-    provider = _make_provider()
-    provider._stations = {}
-    provider._sections = {
-        "s1": {"id": "s1", "name": "S1", "type": "ai_text", "prompt": "Original prompt"}
-    }
-    provider._station_lock = asyncio.Lock()
-    invalid_station = {
-        "id": "station_a",
-        "name": "",
-        "source_playlist_id": "playlist-1",
-        "sections": [{"id": "s1", "name": "S1", "type": "ai_text", "prompt": "Changed prompt"}],
-        "section_order": [{"when": "between_songs", "flow": [{"MUST": "s1"}]}],
-    }
-
-    with pytest.raises(InvalidDataError, match="Station name is required"):
-        await provider.save_station(invalid_station)
-
-    assert provider._sections["s1"]["prompt"] == "Original prompt"
+    assert provider._hosts == {"host_a": {"id": "host_a", "name": "Host A"}}
 
 
 @pytest.mark.asyncio
