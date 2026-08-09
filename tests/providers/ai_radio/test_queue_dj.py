@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, cast
 
@@ -109,7 +109,9 @@ class FakeMass:
         self.tasks: list[asyncio.Task[Any]] = []
         self._tasks_by_id: dict[str, asyncio.Task[Any]] = {}
 
-    def create_task(self, target: Any, task_id: str | None = None) -> asyncio.Task[Any]:
+    def create_task(
+        self, target: Coroutine[Any, Any, Any], task_id: str | None = None
+    ) -> asyncio.Task[Any]:
         """Run the given coroutine as a task, deduplicating on task id like mass does."""
         if task_id and (existing := self._tasks_by_id.get(task_id)) and not existing.done():
             target.close()
@@ -149,8 +151,10 @@ class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
         self._dj_lock = asyncio.Lock()
         # the disable path reaches the real clip cleanup, which needs a queue layer;
         # this one holds no queue at all, so cleanup finds nothing to do
-        self.mass = cast(
-            "Any", FakeMass(FakePlayerQueues(FakeQueue("other-queue", None, None), []))
+        # the mixin declares `mass: MusicAssistant`; a fake stands in for tests, so its own
+        # attributes (not MusicAssistant's) are what callers here actually see
+        self.mass: FakeMass = FakeMass(  # type: ignore[assignment]
+            FakePlayerQueues(FakeQueue("other-queue", None, None), [])
         )
 
     def _schedule_replan(self, queue_id: str) -> None:
@@ -182,7 +186,8 @@ class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixi
         self._dj_lock = asyncio.Lock()
         self._unloading = False
         self.player_queues = FakePlayerQueues(queue, items)
-        self.mass = cast("Any", FakeMass(self.player_queues))
+        # see DummyQueueDJ.__init__ for why this needs its own annotation
+        self.mass: FakeMass = FakeMass(self.player_queues)  # type: ignore[assignment]
 
 
 def _transition_section() -> dict[str, Any]:
@@ -442,7 +447,7 @@ async def test_failing_pass_leaves_the_dj_schedulable(tmp_path: Path) -> None:
         dummy._schedule_replan("queue-1")
         raise MusicAssistantError("misconfigured host")
 
-    dummy._build_program = _failing_build_program  # type: ignore[method-assign]
+    dummy._build_program = _failing_build_program  # type: ignore[method-assign, assignment]
     dummy._schedule_replan("queue-1")
     await asyncio.gather(*dummy.mass.tasks)
 
@@ -471,7 +476,7 @@ async def test_failing_pass_clears_the_state_the_queue_was_rearmed_with(tmp_path
         dummy._schedule_replan("queue-1")
         raise MusicAssistantError("misconfigured host")
 
-    dummy._build_program = _failing_build_program  # type: ignore[method-assign]
+    dummy._build_program = _failing_build_program  # type: ignore[method-assign, assignment]
     dummy._schedule_replan("queue-1")
     await asyncio.gather(*dummy.mass.tasks)
 
