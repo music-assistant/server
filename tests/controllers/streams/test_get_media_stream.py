@@ -373,6 +373,8 @@ async def test_get_media_stream_keeps_duration_when_multi_file_seek_is_delegated
     # the concat stream consumes the seek itself, which clears the local seek
     # position before the duration writeback runs at the end of the stream
     assert received_seeks == [1800]
+    assert _TwoMinuteFFMpeg.last_instance is not None
+    assert "-ss" not in (_TwoMinuteFFMpeg.last_instance.extra_input_args or [])
     assert streamdetails.duration == 3600
 
 
@@ -400,6 +402,8 @@ async def test_get_media_stream_keeps_duration_when_provider_seek_is_delegated(
     # a provider that can seek receives the position and the local one is cleared,
     # so only the remaining audio reaches ffmpeg
     provider.get_audio_stream.assert_called_once_with(streamdetails, seek_position=90)
+    assert _TwoMinuteFFMpeg.last_instance is not None
+    assert "-ss" not in (_TwoMinuteFFMpeg.last_instance.extra_input_args or [])
     assert streamdetails.duration == 240
 
 
