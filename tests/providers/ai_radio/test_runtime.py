@@ -834,6 +834,22 @@ async def test_get_tts_engine_refuses_a_configured_engine_that_disappeared() -> 
         await runtime._get_tts_engine()
 
 
+async def test_get_tts_engine_falls_back_to_provider_selection_when_host_uid_is_unresolvable(
+    caplog: Any,
+) -> None:
+    """A host engine_uid that no longer resolves falls back to the provider's TTS selection."""
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, _create_tts_plugin("aa_low", "engine"))
+    )
+
+    with caplog.at_level(logging.WARNING):
+        engine = await runtime._get_tts_engine("gone/engine")
+
+    assert engine.uid == "aa_low/engine"
+    assert any("unavailable" in message for message in caplog.messages)
+
+
 def _show_mass_stub(**handlers: Any) -> SimpleNamespace:
     """
     Build a minimal mass stub for exercising _run_show.

@@ -1244,12 +1244,7 @@ class AIRadioRuntimeMixin:
             self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
     async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
-        """
-        Return the engine used for TTS tasks.
-
-        :param engine_uid: A host-specific engine to prefer, falling back to the configured
-            selection when unset or unavailable.
-        """
+        """Return the engine used for TTS tasks, preferring a host-specific engine_uid."""
         if engine_uid:
             if engine := await resolve_tts_engine(self.mass, engine_uid):
                 return engine
