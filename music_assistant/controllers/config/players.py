@@ -652,6 +652,13 @@ class PlayerConfigMixin:
             # only audio/protocol specific ones
             return []
 
+        icon_entry = deepcopy(
+            CONF_ENTRY_PLAYER_ICON_GROUP
+            if player.state.type == PlayerType.GROUP
+            else CONF_ENTRY_PLAYER_ICON
+        )
+        icon_entry.default_value = player.default_icon
+
         # some base entries for all player types
         # note that these may NOT be playback/audio related
         entries += [
@@ -687,12 +694,12 @@ class PlayerConfigMixin:
         # group-player config entries
         if player.state.type == PlayerType.GROUP:
             entries += [
-                CONF_ENTRY_PLAYER_ICON_GROUP,
+                icon_entry,
             ]
             return entries
         # normal player (or stereo pair) config entries
         entries += [
-            CONF_ENTRY_PLAYER_ICON,
+            icon_entry,
             # add default entries for announce feature
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
             CONF_ENTRY_ANNOUNCE_VOLUME,
