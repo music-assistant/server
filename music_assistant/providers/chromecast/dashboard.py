@@ -44,6 +44,7 @@ class _ActiveDashboardCast:
     """Tracks a dashboard currently showing on a Cast device, to detect it dying externally."""
 
     cast_session_id: str | None
+    listener: _DashboardCastListener
     loss_timer: asyncio.TimerHandle | None = None
 
 
@@ -63,8 +64,6 @@ class ChromecastDashboards:
         # Cast connections opened on-demand for dashboard casting (not registered players)
         self._dashboard_connections: dict[str, pychromecast.Chromecast] = {}
         self._active_casts: dict[str, _ActiveDashboardCast] = {}
-        # device_id -> id(chromecast) already carrying our status/connection listener
-        self._listened_ccs: dict[str, int] = {}
         self._unloaded = False
 
     def register(self, uuid: UUID, cast_info: CastInfo) -> None:
@@ -93,9 +92,7 @@ class ChromecastDashboards:
         if chromecast := self._dashboard_connections.pop(device_id, None):
             # non-blocking: close the socket, the daemon thread exits on its own
             chromecast.disconnect(0)
-        self._cancel_loss_timer(device_id)
-        self._active_casts.pop(device_id, None)
-        self._listened_ccs.pop(device_id, None)
+        self._drop_active_cast(device_id)
 
     async def unload(self) -> None:
         """Unregister all dashboard endpoints and disconnect cached on-demand connections."""
@@ -105,9 +102,7 @@ class ChromecastDashboards:
         self._unregister_callbacks.clear()
 
         for device_id in list(self._active_casts):
-            self._cancel_loss_timer(device_id)
-        self._active_casts.clear()
-        self._listened_ccs.clear()
+            self._drop_active_cast(device_id)
 
         dashboard_connections = list(self._dashboard_connections.values())
         self._dashboard_connections.clear()
@@ -156,14 +151,14 @@ class ChromecastDashboards:
                 translation_args=[chromecast.name],
             ) from err
 
-        self._cancel_loss_timer(device_id)
+        self._drop_active_cast(device_id)
         session_id = chromecast.status.session_id if chromecast.status else None
-        self._active_casts[device_id] = _ActiveDashboardCast(cast_session_id=session_id)
-        if self._listened_ccs.get(device_id) != id(chromecast):
-            listener = _DashboardCastListener(self, device_id)
-            chromecast.register_status_listener(cast("ReceiverStatusListener", listener))
-            chromecast.register_connection_listener(cast("ConnectionStatusListener", listener))
-            self._listened_ccs[device_id] = id(chromecast)
+        listener = _DashboardCastListener(self, device_id)
+        self._active_casts[device_id] = _ActiveDashboardCast(
+            cast_session_id=session_id, listener=listener
+        )
+        chromecast.register_status_listener(cast("ReceiverStatusListener", listener))
+        chromecast.register_connection_listener(cast("ConnectionStatusListener", listener))
 
     async def _on_hide(self, device_id: str) -> None:
         """
@@ -171,8 +166,7 @@ class ChromecastDashboards:
 
         :param device_id: Cast device uuid (as string) to hide the dashboard from.
         """
-        self._cancel_loss_timer(device_id)
-        self._active_casts.pop(device_id, None)
+        self._drop_active_cast(device_id)
 
         chromecast = self._get_existing_chromecast(device_id)
         if chromecast is None:
@@ -263,11 +257,9 @@ class ChromecastDashboards:
 
     def _session_lost(self, device_id: str, reason: str) -> None:
         """Report a dashboard session as lost and drop the on-demand connection, if any."""
-        entry = self._active_casts.pop(device_id, None)
-        if entry is None:
+        if device_id not in self._active_casts:
             return
-        if entry.loss_timer is not None:
-            entry.loss_timer.cancel()
+        self._drop_active_cast(device_id)
         self.mass.dashboard.end_session(f"chromecast_{device_id}", reason)
 
         if chromecast := self._dashboard_connections.pop(device_id, None):
@@ -281,18 +273,38 @@ class ChromecastDashboards:
             entry.loss_timer.cancel()
             entry.loss_timer = None
 
+    def _drop_active_cast(self, device_id: str) -> None:
+        """Stop tracking device_id: cancel its loss timer and invalidate its listener."""
+        entry = self._active_casts.pop(device_id, None)
+        if entry is None:
+            return
+        if entry.loss_timer is not None:
+            entry.loss_timer.cancel()
+        entry.listener.invalidate()
+
 
 class _DashboardCastListener:
-    """Watches a Cast device to detect its dashboard receiver dying externally."""
+    """
+    Watches a Cast device to detect its dashboard receiver dying externally.
+
+    pychromecast has no API to unregister a listener from a Chromecast object,
+    so a superseded listener is invalidated instead: it stays registered but
+    its callbacks become no-ops.
+    """
 
     def __init__(self, dashboards: ChromecastDashboards, device_id: str) -> None:
         """Bind this listener to the dashboards owner and the Cast device it watches."""
         self.dashboards = dashboards
         self.device_id = device_id
+        self._valid = True
+
+    def invalidate(self) -> None:
+        """Stop forwarding callbacks from this listener."""
+        self._valid = False
 
     def new_cast_status(self, status: CastStatus) -> None:
         """Handle updated CastStatus (called from the pychromecast socket thread)."""
-        if self.dashboards.mass.closing:
+        if not self._valid or self.dashboards.mass.closing:
             return
         self.dashboards.mass.loop.call_soon_threadsafe(
             self.dashboards._handle_cast_status, self.device_id, status
@@ -300,7 +312,7 @@ class _DashboardCastListener:
 
     def new_connection_status(self, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus (called from the pychromecast socket thread)."""
-        if self.dashboards.mass.closing:
+        if not self._valid or self.dashboards.mass.closing:
             return
         self.dashboards.mass.loop.call_soon_threadsafe(
             self.dashboards._handle_connection_status, self.device_id, status
