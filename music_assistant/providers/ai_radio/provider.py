@@ -154,6 +154,16 @@ class AIRadioProvider(
         self._unregister_handles.append(
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED)
         )
+        self._unregister_handles.append(
+            self.mass.subscribe(
+                self._on_dj_queue_event,
+                (EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+            )
+        )
+        # resume injection on the queues that were armed before this (re)start, without
+        # waiting for a queue event that a paused or idle queue may never send
+        for queue_id in list(self._dj_queues):
+            self._schedule_replan(queue_id)
         self.logger.info(
             "AI Radio API routes registered (%d handlers)",
             len(api_handlers),

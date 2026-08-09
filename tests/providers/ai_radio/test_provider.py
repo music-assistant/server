@@ -25,7 +25,7 @@ from music_assistant.providers.ai_radio.constants import (
     ENGINE_RETRY_DELAY,
     MAX_FINISHED_SESSIONS,
 )
-from music_assistant.providers.ai_radio.models import SessionState
+from music_assistant.providers.ai_radio.models import DJQueueState, SessionState
 from music_assistant.providers.ai_radio.provider import AIRadioProvider
 
 
@@ -327,6 +327,20 @@ async def test_delete_host_refuses_when_station_references_it(provider: Any) -> 
 
 
 @pytest.mark.asyncio
+async def test_delete_host_refuses_when_it_is_an_active_queue_dj(provider: Any) -> None:
+    """Refuse to delete a host that is the active DJ on a queue."""
+    saved = await provider.save_host(await provider.host_template())
+    provider._dj_queues["queue-1"] = DJQueueState(
+        queue_id="queue-1",
+        host_id=saved["id"],
+        dj_session_id="dj0123456789",
+    )
+
+    with pytest.raises(InvalidDataError):
+        await provider.delete_host(saved["id"])
+
+
+@pytest.mark.asyncio
 async def test_concurrent_start_run_calls_respect_the_run_limit() -> None:
     """
     Concurrent start_run calls must not both get past the concurrency guards.
@@ -475,6 +489,7 @@ def _make_engine_provider(
     )
     provider.mass = cast("Any", mass)
     provider.logger = logging.getLogger("test.ai_radio")
+    provider._dj_queues = {}
     provider._unloading = False
     provider._engine_recheck_task = None
     provider._unregister_handles = []
@@ -712,11 +727,16 @@ async def test_loaded_in_mass_watches_the_loaded_providers() -> None:
 
     await provider.loaded_in_mass()
 
-    assert cast("Any", provider.mass).subscribe.call_args.args == (
+    subscribe_calls = cast("Any", provider.mass).subscribe.call_args_list
+    assert subscribe_calls[0].args == (
         provider._on_providers_updated,
         EventType.PROVIDERS_UPDATED,
     )
-    assert subscribers == [provider._on_providers_updated]
+    assert subscribe_calls[1].args == (
+        provider._on_dj_queue_event,
+        (EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+    )
+    assert subscribers == [provider._on_providers_updated, provider._on_dj_queue_event]
 
     await provider.unload()
 
