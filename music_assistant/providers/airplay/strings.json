@@ -16,9 +16,17 @@
       "label": "Ignore volume reports sent by the device itself",
       "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
     },
-    "hires_playback": {
-      "label": "Enable hi-res (24-bit) playback",
-      "description": "Stream 24-bit audio (44.1/48 kHz) to this device using the native AirPlay 2 flow. \nOnly enable if the device actually renders 24-bit — some devices accept the stream and then play silence. \nKnown to work on Apple TV and HomePod."
+    "buffer_depth": {
+      "label": "Audio buffer depth",
+      "description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips. Automatic picks a default suited to the device.",
+      "options": {
+        "0": "Automatic",
+        "500": "500 ms",
+        "750": "750 ms",
+        "1000": "1000 ms",
+        "1500": "1500 ms",
+        "1750": "1750 ms"
+      }
     },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
@@ -30,60 +38,60 @@
     "pairing_password": {
       "label": "Enter the device password"
     },
-    "finish_pairing_pin": {
-      "label": "Complete {0} pairing with the PIN"
-    },
-    "finish_pairing_password": {
-      "label": "Complete {0} pairing with the password"
-    },
-    "pairing_instructions": {
-      "label": "This device requires {0} pairing before it can be used. Click the button below to start the pairing process."
-    },
-    "start_pairing": {
-      "label": "Start {0} pairing"
-    },
-    "pairing_status": {
-      "label": "Device is paired ({0}) and ready to use."
-    },
-    "reset_pairing": {
-      "label": "Reset {0} pairing"
-    },
     "companion_pairing_pin": {
       "label": "Enter the 4-digit PIN shown on the device"
-    },
-    "companion_pairing_instructions": {
-      "label": "Pair Companion controls to monitor power, wake the device before playing, and control native playback and volume."
-    },
-    "start_companion_pairing": {
-      "label": "Pair Companion controls"
-    },
-    "finish_companion_pairing": {
-      "label": "Complete Companion pairing"
-    },
-    "companion_pairing_status": {
-      "label": "Companion controls are paired and ready."
-    },
-    "reset_companion_pairing": {
-      "label": "Reset Companion controls"
     },
     "mrp_pairing_pin": {
       "label": "Enter the 4-digit PIN shown on the device"
     },
-    "mrp_pairing_instructions": {
-      "label": "Pair MRP playback monitoring to show the active app and media playing outside Music Assistant. This uses separate credentials from AirPlay streaming and Companion controls."
+    "pair_now": {
+      "label": "Set up now"
     },
-    "start_mrp_pairing": {
-      "label": "Pair MRP playback monitoring"
-    },
-    "finish_mrp_pairing": {
-      "label": "Complete playback monitoring pairing"
-    },
-    "mrp_pairing_status": {
-      "label": "MRP playback monitoring is paired and ready."
-    },
-    "reset_mrp_pairing": {
-      "label": "Reset MRP playback monitoring"
+    "verbose_ptp_logging": {
+      "label": "Verbose PTP daemon logging",
+      "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."
     }
+  },
+  "setup_flow": {
+    "pair_pin": {
+      "title": "Pair with your device",
+      "description": "A PIN code is shown on the screen of your device. Enter it below to complete pairing."
+    },
+    "pair_password": {
+      "title": "Enter the device password",
+      "description": "This device is protected with a password. Enter it below to connect."
+    },
+    "streaming_repair_offer": {
+      "title": "Pair again (optional)",
+      "description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing."
+    },
+    "companion_offer": {
+      "title": "Set up remote control (optional)",
+      "description": "Optionally pair Companion controls to monitor power, wake the device before playback, and control native playback and volume. You can skip this and set it up later from the player settings."
+    },
+    "pair_companion": {
+      "title": "Pair remote control",
+      "description": "A PIN code is shown on the screen of your device. Enter it below to pair the remote controls."
+    },
+    "mrp_offer": {
+      "title": "Set up playback monitoring (optional)",
+      "description": "Optionally pair playback monitoring to show the active app and media playing outside Music Assistant. You can skip this and set it up later from the player settings."
+    },
+    "pair_mrp": {
+      "title": "Pair playback monitoring",
+      "description": "A PIN code is shown on the screen of your device. Enter it below to pair playback monitoring."
+    },
+    "abort": {
+      "pairing_failed": "Could not start pairing with the device. Make sure the device is reachable on the network and try again."
+    }
+  },
+  "errors": {
+    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}.",
+    "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
+    "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
+    "pairing_wrong_pin": "The device rejected the PIN. Start pairing again and enter the new code shown on its screen."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."

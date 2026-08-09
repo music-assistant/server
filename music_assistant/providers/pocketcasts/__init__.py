@@ -7,9 +7,7 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -48,7 +46,7 @@ from .api_client import PocketCastsClient
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
@@ -168,27 +166,6 @@ async def setup(
     return PocketCastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
-
-
 class PocketCastsProvider(MusicProvider):
     """Provider for Pocket Casts podcast service."""
 
@@ -197,10 +174,14 @@ class PocketCastsProvider(MusicProvider):
     # set since multi-room playback can have several episodes in progress on one instance
     _announced_episodes: set[str]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        email = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        email = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
         if not email or not password:
             raise LoginFailed("Email and password are required for Pocket Casts")
         self._announced_episodes = set()
@@ -351,8 +332,9 @@ class PocketCastsProvider(MusicProvider):
         if episode_item is None:
             raise MediaNotFoundError(f"Episode {episode_uuid} not found in podcast {podcast_uuid}")
 
-        played_up_to = episode_data.get("playedUpTo", 0)
-        duration = episode_data.get("duration", 0)
+        # the API sends explicit nulls for these fields, so a dict default is not enough
+        played_up_to = episode_data.get("playedUpTo") or 0
+        duration = episode_data.get("duration") or 0
         playing_status = episode_data.get("playingStatus", 1)  # 1=unplayed, 2=in_progress, 3=played
         if duration > 0:
             episode_item.duration = duration
@@ -387,8 +369,8 @@ class PocketCastsProvider(MusicProvider):
 
         for ep in in_progress:
             if ep.get("uuid") == episode_uuid:
-                played_up_to = int(ep.get("playedUpTo", 0))  # seconds from API
-                duration = int(ep.get("duration", 0))
+                played_up_to = int(ep.get("playedUpTo") or 0)  # seconds from API
+                duration = int(ep.get("duration") or 0)
                 fully_played = duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
                 LOGGER.debug(
                     "Resume position for %s: %d ms (fully_played=%s)",
@@ -561,8 +543,10 @@ class PocketCastsProvider(MusicProvider):
         # never on mere history membership. Both fields are always set so the library sync can
         # clear a stale completed/resume value (it only updates when both are non-None).
         status_data = in_progress_map.get(episode_uuid) or history_map.get(episode_uuid) or {}
-        played_up_to = status_data.get("playedUpTo", 0)
-        duration = status_data.get("duration") or episode_data.get("duration", 0)
+        # feeds that omit a duration yield an explicit null rather than a missing key, so
+        # coerce instead of relying on a dict default
+        played_up_to = status_data.get("playedUpTo") or 0
+        duration = status_data.get("duration") or episode_data.get("duration") or 0
         completed = status_data.get("playingStatus") == 3 or (
             duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
         )

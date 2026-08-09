@@ -9,7 +9,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -202,11 +202,7 @@ class YandexStationPlayer(Player):
         self.glagol.update_handler = self._on_glagol_update
         await self.glagol.start()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return player-specific config entries.
 
@@ -450,7 +446,7 @@ class YandexStationPlayer(Player):
             _raise_if_failed(result, "Audio announcement")
             # externalCommandBypass playback doesn't update state.playing,
             # so we can't observe completion — wait by known duration instead.
-            duration = announcement.duration
+            duration = await self.mass.streams.get_announcement_duration(announcement)
             wait_time = (
                 min(duration + 1, announcement_timeout)
                 if duration and duration > 0

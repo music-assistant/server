@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -56,31 +56,24 @@ async def setup(
     return SomaFMProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_QUALITY,
-            advanced=True,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption("highest"),
-                ConfigValueOption("high"),
-                ConfigValueOption("low"),
-            ],
-            default_value="highest",
-        ),
-    )
-
-
 class SomaFMProvider(MusicProvider):
     """Provider implementation for SomaFM Radio."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_QUALITY,
+                advanced=True,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption("highest"),
+                    ConfigValueOption("high"),
+                    ConfigValueOption("low"),
+                ],
+                default_value="highest",
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:

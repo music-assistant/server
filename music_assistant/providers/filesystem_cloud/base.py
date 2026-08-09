@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import posixpath
 import time
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from aiohttp import ClientError, web
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
@@ -23,24 +26,28 @@ from music_assistant_models.errors import (
 
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     AUDIOBOOK_EXTENSIONS,
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from aiohttp import ClientResponse
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.setup_flow import SetupSession
 
 # (id, name, is_dir, checksum, size) as returned by _api_list_children
 RawItem = tuple[str, str, bool, str, int | None]
@@ -48,6 +55,90 @@ RawItem = tuple[str, str, bool, str, int | None]
 # extensions the stream route will serve; playlists/cue/images are read
 # server-side and never fetched over HTTP, so audio is all it needs to proxy
 AUDIO_STREAM_EXTENSIONS = TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPISODE_EXTENSIONS
+
+# config keys shared by the cloud filesystem providers, all collected by the setup flow
+CONF_CLIENT_ID = "client_id"
+CONF_CLIENT_SECRET = "client_secret"
+CONF_REFRESH_TOKEN = "refresh_token"
+CONF_FOLDER_ID = "folder_id"
+
+
+async def run_cloud_setup(
+    session: SetupSession,
+    authorize: Callable[[SetupSession, str, str], Awaitable[str]],
+) -> None:
+    """
+    Drive the setup flow shared by the cloud filesystem providers.
+
+    Collects the content type, OAuth client credentials and root folder, runs the
+    provider-specific OAuth ``authorize`` step for a refresh token and persists it all.
+
+    :param session: The setup session driving the flow.
+    :param authorize: Provider-specific coroutine that runs the OAuth consent for the given
+        (client_id, client_secret) and returns the resulting refresh token.
+    """
+    setup_data = dict(session.context.setup_data)
+    # a secure value is never echoed back into a flow step, so on reconfigure the user may
+    # leave the client secret blank to reuse the previously stored one
+    stored_secret = str(session.context.setup_data.get(CONF_CLIENT_SECRET) or "")
+    errors: dict[str, str] | None = None
+    while True:
+        entries = [
+            replace(entry, value=setup_data.get(entry.key, entry.value))
+            for entry in _cloud_setup_entries(has_stored_secret=bool(stored_secret))
+        ]
+        submitted = await session.form(entries, step_id="user", errors=errors)
+        setup_data.update(submitted)
+        client_id = str(setup_data.get(CONF_CLIENT_ID) or "")
+        client_secret = str(setup_data.get(CONF_CLIENT_SECRET) or "") or stored_secret
+        setup_data[CONF_CLIENT_SECRET] = client_secret
+        # a blank secret on a retry means "the one just tried", not the original stored one
+        stored_secret = client_secret
+        try:
+            if not client_secret:
+                raise SetupFlowError("A client secret is required", translation_key="required")
+            setup_data[CONF_REFRESH_TOKEN] = await authorize(session, client_id, client_secret)
+            await session.finish(setup_data)
+            return
+        except SetupFlowError as err:
+            errors = {"base": err.translation_key or str(err)}
+
+
+def read_setup_value(
+    mass: MusicAssistant, config: ProviderConfig, key: str, default: ConfigValueType = None
+) -> ConfigValueType:
+    """
+    Read a setup_data value from a config not yet attached to a provider instance.
+
+    Mirrors Provider.get_setup_value for the __init__ window (before super().__init__),
+    decrypting strings and reading through to legacy config values for pre-flow installs.
+
+    :param mass: The MusicAssistant instance.
+    :param config: The provider config being loaded.
+    :param key: The setup data key to read.
+    :param default: Value to return when the key is not present anywhere.
+    """
+    value = config.setup_data.get(key)
+    if value is not None:
+        return mass.config.decrypt_string(value) if isinstance(value, str) else value
+    return config.get_value(key, default)
+
+
+def _cloud_setup_entries(*, has_stored_secret: bool) -> tuple[ConfigEntry, ...]:
+    """Return the config entries collected by the shared cloud setup form."""
+    return (
+        CONF_ENTRY_CONTENT_TYPE,
+        ConfigEntry(key=CONF_CLIENT_ID, type=ConfigEntryType.STRING, required=True),
+        ConfigEntry(
+            key=CONF_CLIENT_SECRET,
+            type=ConfigEntryType.SECURE_STRING,
+            # optional on reconfigure (a stored secret can be reused), required on first setup
+            required=not has_stored_secret,
+        ),
+        ConfigEntry(
+            key=CONF_FOLDER_ID, type=ConfigEntryType.STRING, required=False, default_value="root"
+        ),
+    )
 
 
 class CloudFileSystemProvider(LocalFileSystemProvider):
@@ -74,6 +165,12 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         """
         # base_path is unused for us, but the parent expects something
         super().__init__(mass, manifest, config, root_folder_id)
+        # the content type is collected by the setup flow (setup_data); the parent reads it
+        # from the legacy config values, so re-resolve it setup-data-aware (read-through keeps
+        # pre-flow installs working)
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self.root_folder_id = root_folder_id
         self._unregister_stream_route: Callable[[], None] | None = None
         # per-folder listing cache: folder path -> {child name -> (cloud id, item)};
@@ -214,7 +311,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """Walk the cloud folder tree via the API and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -235,16 +332,18 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                 # picked up no matter how recently a folder was browsed
                 items = await self._scandir(path, use_cache=False)
             except ProviderUnavailableError as err:
-                # only a root-level failure aborts the sync; subfolder failures
-                # are logged and skipped, matching the local-filesystem walker
-                if is_root:
-                    root_scan_errors.append(OSError(str(err)))
-                else:
+                # a root-level failure aborts the sync right away, subfolder failures only
+                # once too many happen in a row, matching the local-filesystem walker
+                if not is_root:
                     self.logger.warning("Error scanning folder %s: %s", path, err)
+                scan_errors.record_dir_error(err, is_root=is_root, path=path)
                 return
+            scan_errors.record_dir_read()
             for item in items:
                 if item.is_dir:
                     await _walk(item.relative_path, is_root=False)
+                    if scan_errors.aborted:
+                        return
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue

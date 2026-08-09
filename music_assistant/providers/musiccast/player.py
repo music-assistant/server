@@ -18,7 +18,7 @@ from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from aiomusiccast.pyamaha import System as MCSystem
 from mashumaro import DataClassDictMixin
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -274,20 +274,19 @@ class MusicCastPlayer(Player):
 
         # STATE
 
+        self._attr_elapsed_time = None
         match self.zone_device.state:
             case MusicCastPlayerState.PAUSED:
                 self._attr_playback_state = PlaybackState.PAUSED
             case MusicCastPlayerState.PLAYING:
                 self._attr_playback_state = PlaybackState.PLAYING
+                if self.zone_device.media_position_updated_at is not None:
+                    self._attr_elapsed_time = self.zone_device.media_position
+                    self._attr_elapsed_time_last_updated = (
+                        self.zone_device.media_position_updated_at.timestamp()
+                    )
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 self._attr_playback_state = PlaybackState.IDLE
-        self._attr_elapsed_time = self.zone_device.media_position
-        if self.zone_device.media_position_updated_at is not None:
-            self._attr_elapsed_time_last_updated = (
-                self.zone_device.media_position_updated_at.timestamp()
-            )
-        else:
-            self._attr_elapsed_time_last_updated = None
 
         # UPDATE UPNP HELPER
         now = time.time()
@@ -992,13 +991,9 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries(action=action, values=values)
+        base_entries = await super().get_config_entries()
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:

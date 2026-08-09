@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ImageType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.media_items import MediaItemImage
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.const import (
     DeviceState,
@@ -17,7 +25,7 @@ from pyatv.const import (
     Protocol,
 )
 from pyatv.const import MediaType as PyatvMediaType
-from pyatv.interface import App, AppleTV, Playing
+from pyatv.interface import App, AppleTV, ArtworkInfo, Playing
 from pyatv.settings import MrpTunnel
 from zeroconf import ServiceStateChange
 
@@ -25,21 +33,15 @@ from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     COMPANION_DISCOVERY_TYPE,
-    CONF_ACTION_START_COMPANION_PAIRING,
-    CONF_ACTION_START_MRP_PAIRING,
     CONF_COMPANION_CREDENTIALS,
-    CONF_COMPANION_PAIRING_PIN,
     CONF_MRP_CREDENTIALS,
-    CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     MRP_DISCOVERY_TYPE,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
-
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
 
 PLAYER_ID = "apaabbccddeeff"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF"
@@ -72,6 +74,7 @@ def _make_control_player(
     model: str = "Apple TV 4K",
     companion_flags: str | None = "0x367A2",
     config_values: dict[str, object] | None = None,
+    setup_data: dict[str, object] | None = None,
 ) -> AirPlayControlPlayer:
     """Create a control-capable AirPlay player with mocked provider state."""
     provider = MagicMock()
@@ -84,6 +87,32 @@ def _make_control_player(
     config.update.side_effect = values.update
     provider.mass.config.get_base_player_config.return_value = config
     provider.mass.config.save_player_config = AsyncMock()
+    # Credentials live in the player's (encrypted) setup_data; serve them through the
+    # mass.config get/set surface that Player.get_setup_value / _update_setup_data use.
+    # The same dict object is returned so tests can observe cleared/updated values.
+    stored_setup_data = setup_data if setup_data is not None else {}
+
+    def _config_get(key: str, default: object = None) -> object:
+        if key == f"players/{PLAYER_ID}/setup_data":
+            return stored_setup_data
+        if key == f"players/{PLAYER_ID}":
+            return {"player_id": PLAYER_ID}
+        return default
+
+    def _config_set(key: str, value: object, **_kwargs: object) -> None:
+        prefix = f"players/{PLAYER_ID}/setup_data/"
+        if key.startswith(prefix):
+            stored_setup_data[key[len(prefix) :]] = value
+
+    provider.mass.config.get.side_effect = _config_get
+    provider.mass.config.set.side_effect = _config_set
+    provider.mass.config.decrypt_string.side_effect = lambda value: value
+    provider.mass.config.encrypt_string.side_effect = lambda value: value
+    # raw player config values live in their own store (individual tests override
+    # this); without it they would read back as (truthy) mocks
+    provider.mass.config.get_raw_player_config_value.side_effect = (
+        lambda _player_id, _key, default=None: default
+    )
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
     companion_info = (
@@ -156,9 +185,43 @@ def test_companion_pairing_follows_advertised_flags(flags: str, supported: bool)
     assert PlayerFeature.NEXT_PREVIOUS not in player.supported_features
 
 
+def test_playback_state_churn_does_not_force_control_reconnect() -> None:
+    """A receiver toggling volatile TXT state must not change the reconnect signature."""
+    idle = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x4"},
+    )
+    # Same device while receiving a stream: only the session `flags` bit differs.
+    streaming = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x404"},
+    )
+    assert AirPlayControlPlayer._service_signature(idle) == AirPlayControlPlayer._service_signature(
+        streaming
+    )
+
+    # TXT keys are case-insensitive (RFC 6763): re-casing keys is not a change.
+    recased = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"DeviceID": DEVICE_ID, "PK": "device-key", "Flags": "0x4"},
+    )
+    assert AirPlayControlPlayer._service_signature(idle) == AirPlayControlPlayer._service_signature(
+        recased
+    )
+
+    # A change to a connection-relevant field still forces a reconnect.
+    rekeyed = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"deviceid": DEVICE_ID, "pk": "rotated-key", "flags": "0x4"},
+    )
+    assert AirPlayControlPlayer._service_signature(idle) != AirPlayControlPlayer._service_signature(
+        rekeyed
+    )
+
+
 def test_power_feature_requires_credentials_or_connection() -> None:
     """POWER is advertised for stored Companion credentials or a live channel."""
-    paired = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    paired = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
     assert PlayerFeature.POWER in paired.supported_features
 
     connected = _make_control_player()
@@ -166,6 +229,34 @@ def test_power_feature_requires_credentials_or_connection() -> None:
     device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
     connected._companion_device = device
     assert PlayerFeature.POWER in connected.supported_features
+
+
+def test_power_feature_skips_transient_mrp_tunnels() -> None:
+    """A transient MRP tunnel does not count as real power control."""
+    # pyatv reports TurnOn/TurnOff as available on every MRP connection, but a HomePod
+    # reached over the transient tunnel cannot act on them and derives its power state
+    # from logicalDeviceCount, which does not count AirPlay audio sessions.
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert homepod._uses_transient_mrp is True
+
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    assert PlayerFeature.POWER not in homepod.supported_features
+
+
+async def test_power_command_refuses_transient_mrp_tunnels() -> None:
+    """A power command never reaches a tunnel that cannot serve it."""
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    with pytest.raises(PlayerCommandFailed):
+        await homepod.power(True)
+
+    device.power.turn_on.assert_not_called()
 
 
 def test_native_transport_features_follow_live_capabilities() -> None:
@@ -179,24 +270,12 @@ def test_native_transport_features_follow_live_capabilities() -> None:
     assert PlayerFeature.NEXT_PREVIOUS in player.supported_features
 
 
-async def test_config_entries_keep_pairing_sections_separate() -> None:
-    """Companion and MRP pairing entries are composed independently."""
-    player = _make_control_player()
-
-    entries = await player.get_config_entries()
-    keys = {entry.key for entry in entries}
-
-    assert CONF_ACTION_START_COMPANION_PAIRING in keys
-    assert CONF_ACTION_START_MRP_PAIRING in keys
-    assert CONF_COMPANION_CREDENTIALS in keys
-    assert CONF_MRP_CREDENTIALS in keys
-    assert CONF_NATIVE_MRP_CREDENTIALS in keys
-
-
-async def test_stored_credentials_never_exposed_in_config_entries() -> None:
-    """Stored pairing secrets are not included in the config-entry payload."""
+async def test_pairing_moved_out_of_config_entries() -> None:
+    """Pairing and credentials are handled by the setup flow, not by config entries."""
+    # even with stored credentials, no pairing action/credential entry is emitted:
+    # the interactive setup flow owns pairing and stores creds in setup_data.
     player = _make_control_player(
-        config_values={
+        setup_data={
             CONF_COMPANION_CREDENTIALS: "companion-creds",
             CONF_MRP_CREDENTIALS: "mrp-creds",
             CONF_NATIVE_MRP_CREDENTIALS: "native-creds",
@@ -204,13 +283,14 @@ async def test_stored_credentials_never_exposed_in_config_entries() -> None:
     )
 
     entries = await player.get_config_entries()
+    keys = {entry.key for entry in entries}
 
-    credential_keys = (
-        CONF_COMPANION_CREDENTIALS,
-        CONF_MRP_CREDENTIALS,
-        CONF_NATIVE_MRP_CREDENTIALS,
-    )
-    assert all(entry.value is None for entry in entries if entry.key in credential_keys)
+    assert CONF_COMPANION_CREDENTIALS not in keys
+    assert CONF_MRP_CREDENTIALS not in keys
+    assert CONF_NATIVE_MRP_CREDENTIALS not in keys
+    assert not any("pairing" in key for key in keys)
+    # the run_setup_flow override is what drives the pairing now
+    assert type(player).run_setup_flow is not AirPlayPlayer.run_setup_flow
 
 
 def test_mute_feature_follows_available_control_path() -> None:
@@ -261,6 +341,58 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
 
     cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
     update_state.assert_not_called()
+
+
+def test_native_volume_update_ignored_while_streaming() -> None:
+    """Native volume reports never overwrite the volume of a running stream."""
+    # volume_set routes to the stream while streaming and leaves the native device
+    # volume alone, so a report about that separate knob must not clobber (or persist)
+    # the level the user just set.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 10)
+
+    assert player.volume_level == 62
+    assert player.volume_muted is False
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
+def test_transient_mrp_volume_report_never_latches_mute() -> None:
+    """A transient MRP tunnel never mutes the player or rewrites its volume."""
+    # A muted player skips the stream volume command, so a phantom mute learned while
+    # idle would silently stop every later volume change from reaching the device.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert player._uses_transient_mrp is True
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 0)
+
+    assert player.volume_muted is False
+    assert player.volume_level == 62
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
+def test_native_volume_update_applies_when_idle() -> None:
+    """Native volume reports still drive player state while no stream is running."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("companion", 10)
+
+    assert player.volume_level == 10
+    update_state.assert_called_once()
 
 
 def test_control_pairing_is_optional_and_never_requires_setup() -> None:
@@ -364,6 +496,28 @@ def test_power_off_update_tracks_sleep_state() -> None:
         update_state.assert_called_once()
 
 
+def test_power_off_update_ignored_while_streaming() -> None:
+    """A device streaming from Music Assistant is never marked powered off."""
+    # MRP derives power from logicalDeviceCount, which does not count AirPlay audio
+    # sessions, so a playing HomePod reports PowerState.Off. Acting on that would
+    # strand the player as "off" and trip the auto-ungroup in the players controller.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_powered = True
+    player._power_on_event.set()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "airplay"
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_power_update("mrp", PowerState.Off)
+
+    assert player.powered is True
+    assert player._power_on_event.is_set()
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "airplay"
+    update_state.assert_not_called()
+
+
 def test_power_on_update_tracks_awake_state() -> None:
     """A Companion power-on update confirms that the device is awake."""
     player = _make_control_player()
@@ -403,6 +557,80 @@ def test_mrp_updates_external_source_and_media() -> None:
     assert player.current_media.title == "External track"
     assert player.current_media.elapsed_time == 12
     assert player.source_list[0].name == "Music"
+
+
+def test_mrp_update_publishes_external_artwork() -> None:
+    """MRP artwork is exposed as a cached Music Assistant image-proxy URL."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Artwork
+    device.metadata.app = App("NLZIET", "nl.nlziet")
+    artwork_id = "https://artwork.example/{w}x{h}/cover"
+    device.metadata.artwork_id = artwork_id
+    player._mrp_device = device
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(
+            player.mass.metadata,
+            "get_image_url",
+            return_value="http://mass/imageproxy/artwork",
+        ) as get_image_url,
+    ):
+        player._handle_playing_update(
+            Playing(device_state=DeviceState.Playing, title="De Eindmusical")
+        )
+
+    assert player.current_media is not None
+    assert player.current_media.image_url == "http://mass/imageproxy/artwork"
+    image = get_image_url.call_args.args[0]
+    assert image == MediaItemImage(
+        type=ImageType.THUMB,
+        path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{PLAYER_ID}/{artwork_id}",
+        provider="airplay",
+        remotely_accessible=False,
+    )
+
+
+def test_mrp_update_refreshes_existing_app_name() -> None:
+    """A late app name replaces the bundle id on an existing source."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.return_value = False
+    device.metadata.app = App(None, "nl.nlziet")
+    player._mrp_device = device
+    playing = Playing(device_state=DeviceState.Playing, title="De Eindmusical")
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(playing)
+        device.metadata.app = App("NLZIET", "nl.nlziet")
+        player._handle_playing_update(playing)
+
+    assert len(player.source_list) == 1
+    assert player.source_list[0].name == "NLZIET"
+
+
+async def test_airplay_provider_resolves_only_current_external_artwork() -> None:
+    """The image proxy can retrieve current MRP artwork but not stale artwork."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Artwork
+    artwork_id = "https://artwork.example/{w}x{h}/cover"
+    device.metadata.artwork_id = artwork_id
+    device.metadata.artwork = AsyncMock(
+        return_value=ArtworkInfo(b"artwork-bytes", "image/jpeg", 512, 288)
+    )
+    player._mrp_device = device
+    provider = AirPlayProvider.__new__(AirPlayProvider)
+    provider.mass = MagicMock()
+    provider.mass.players.get_player.return_value = player
+    artwork_path = f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{PLAYER_ID}/{artwork_id}"
+
+    assert await provider.resolve_image(artwork_path) == b"artwork-bytes"
+
+    device.metadata.artwork_id = "replacement-artwork"
+    with pytest.raises(MediaNotFoundError):
+        await provider.resolve_image(artwork_path)
 
 
 def test_mrp_update_without_app_uses_generic_source() -> None:
@@ -454,7 +682,7 @@ async def test_mrp_retry_does_not_recycle_connected_companion() -> None:
 
 async def test_connection_retains_listener_references() -> None:
     """Pyatv listeners remain strongly referenced for the connection lifetime."""
-    player = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
     device = MagicMock(spec=AppleTV)
     device.features.in_state.return_value = False
 
@@ -474,7 +702,7 @@ async def test_connection_retains_listener_references() -> None:
 async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     """Playback monitoring connects with pyatv's complete AirPlay credentials."""
     credentials = "ltpk:ltsk:accessory-id:client-id"
-    player = _make_control_player(config_values={CONF_MRP_CREDENTIALS: credentials})
+    player = _make_control_player(setup_data={CONF_MRP_CREDENTIALS: credentials})
     device = MagicMock(spec=AppleTV)
     device.features.in_state.side_effect = lambda _state, feature: (
         feature == FeatureName.PushUpdates
@@ -501,8 +729,8 @@ async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
 
 async def test_rejected_mrp_credentials_are_cleared() -> None:
     """Rejected MRP credentials return playback monitoring to setup state."""
-    values: dict[str, object] = {CONF_MRP_CREDENTIALS: "invalid-creds"}
-    player = _make_control_player(config_values=values)
+    setup_data: dict[str, object] = {CONF_MRP_CREDENTIALS: "invalid-creds"}
+    player = _make_control_player(setup_data=setup_data)
 
     with patch(
         "music_assistant.providers.airplay.control_player.pyatv.connect",
@@ -510,12 +738,8 @@ async def test_rejected_mrp_credentials_are_cleared() -> None:
     ):
         assert await player._connect_mrp() is False
 
-    assert values[CONF_MRP_CREDENTIALS] is None
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_called_once_with(
-        player.player_id,
-        CONF_MRP_CREDENTIALS,
-        None,
-    )
+    # the rejected credential is cleared from the player's setup_data
+    assert setup_data[CONF_MRP_CREDENTIALS] is None
 
 
 async def test_homepod_mrp_connection_uses_transient_credentials() -> None:
@@ -603,7 +827,7 @@ async def test_native_mrp_connection_uses_advertised_service() -> None:
 def test_mrp_credentials_are_scoped_to_transport() -> None:
     """Native and tunneled MRP keep independent pairing credentials."""
     player = _make_control_player(
-        config_values={
+        setup_data={
             CONF_MRP_CREDENTIALS: "tunnel-creds",
             CONF_NATIVE_MRP_CREDENTIALS: "native-creds",
         }
@@ -665,6 +889,7 @@ async def test_provider_selects_player_model_from_device_identity(
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
+    provider.dashboards = MagicMock()
     provider._companion_info_by_address = {
         "192.168.1.10": _service_info(
             COMPANION_DISCOVERY_TYPE,
@@ -708,6 +933,7 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
+    provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
     companion_info = _service_info(
@@ -875,6 +1101,7 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
+    provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
@@ -938,64 +1165,58 @@ async def test_related_discovery_finds_differently_named_cached_service() -> Non
     )
 
 
-async def test_companion_pairing_stores_separate_credentials() -> None:
-    """Companion pairing retains credentials independently from AirPlay pairing."""
+async def test_list_installed_app_ids_none_when_feature_unavailable() -> None:
+    """No AppList feature available on the device returns None."""
     player = _make_control_player()
-    pairing = MagicMock()
-    pairing.begin = AsyncMock()
-    pairing.finish = AsyncMock()
-    pairing.close = AsyncMock()
-    pairing.has_paired = True
-    pairing.service.credentials = "companion-creds"
-    values: dict[str, ConfigValueType] = {CONF_COMPANION_PAIRING_PIN: "1234"}
-
-    with patch("music_assistant.providers.airplay.control_player.pyatv.pair", return_value=pairing):
-        await player._start_companion_pairing()
-        await player._finish_companion_pairing(values)
-
-    pairing.pin.assert_called_once_with(1234)
-    assert values[CONF_COMPANION_CREDENTIALS] == "companion-creds"
-    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
-        PLAYER_ID, {CONF_COMPANION_CREDENTIALS: "companion-creds"}
-    )
+    with patch.object(player, "_device_for_feature", return_value=None):
+        assert await player.async_list_installed_app_ids() is None
 
 
-async def test_mrp_pairing_stores_complete_airplay_credentials() -> None:
-    """Playback monitoring stores the complete credentials returned by pyatv."""
+async def test_list_installed_app_ids_none_on_command_error() -> None:
+    """A control-channel error while listing apps returns None."""
     player = _make_control_player()
-    pairing = MagicMock()
-    pairing.begin = AsyncMock()
-    pairing.finish = AsyncMock()
-    pairing.close = AsyncMock()
-    pairing.has_paired = True
-    pairing.service.credentials = "ltpk:ltsk:accessory-id:client-id"
-    values: dict[str, ConfigValueType] = {CONF_MRP_PAIRING_PIN: "1234"}
-
-    with patch("music_assistant.providers.airplay.control_player.pyatv.pair", return_value=pairing):
-        await player._start_mrp_pairing()
-        await player._finish_mrp_pairing(values)
-
-    pairing.pin.assert_called_once_with(1234)
-    assert values[CONF_MRP_CREDENTIALS] == "ltpk:ltsk:accessory-id:client-id"
-    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
-        PLAYER_ID, {CONF_MRP_CREDENTIALS: "ltpk:ltsk:accessory-id:client-id"}
-    )
+    device = MagicMock()
+    device.apps.app_list = AsyncMock(side_effect=pyatv_exceptions.CommandError("boom"))
+    with patch.object(player, "_device_for_feature", return_value=device):
+        assert await player.async_list_installed_app_ids() is None
 
 
-async def test_reset_companion_pairing_reconnects_mrp() -> None:
-    """Resetting Companion pairing immediately restores independent MRP monitoring."""
-    player = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
-    values: dict[str, ConfigValueType] = {}
+async def test_list_installed_app_ids_returns_bundle_ids() -> None:
+    """A successful app list returns the set of installed bundle ids."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.app_list = AsyncMock(return_value=[App("App A", "com.a"), App("App B", "com.b")])
+    with patch.object(player, "_device_for_feature", return_value=device):
+        assert await player.async_list_installed_app_ids() == {"com.a", "com.b"}
 
+
+async def test_launch_app_raises_when_feature_unavailable() -> None:
+    """Launching with no LaunchApp feature raises PlayerCommandFailed."""
+    player = _make_control_player()
     with (
-        patch.object(player, "_disconnect_control_services", new=AsyncMock()) as disconnect,
-        patch.object(player, "_schedule_connection") as schedule,
+        patch.object(player, "_device_for_feature", return_value=None),
+        pytest.raises(PlayerCommandFailed),
     ):
-        await player._reset_companion_pairing(values)
+        await player.async_launch_app("musicassistant://dashboard/show")
 
-    disconnect.assert_awaited_once()
-    schedule.assert_called_once_with(force=True)
-    assert values[CONF_COMPANION_CREDENTIALS] is None
-    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
-        PLAYER_ID, {CONF_COMPANION_CREDENTIALS: None}
-    )
+
+async def test_launch_app_wraps_command_error() -> None:
+    """A control-channel error while launching raises PlayerCommandFailed."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.launch_app = AsyncMock(side_effect=pyatv_exceptions.CommandError("nope"))
+    with (
+        patch.object(player, "_device_for_feature", return_value=device),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await player.async_launch_app("musicassistant://dashboard/show")
+
+
+async def test_launch_app_dispatches_to_device() -> None:
+    """Launching on an available device dispatches the value over Companion."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.launch_app = AsyncMock()
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.async_launch_app("musicassistant://dashboard/show")
+    device.apps.launch_app.assert_awaited_once_with("musicassistant://dashboard/show")

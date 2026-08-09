@@ -48,6 +48,10 @@ from music_assistant_models.media_items.metadata import MediaItemImage, MediaIte
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.plugin_engines import (
+    create_ai_engine_config_entries,
+    select_ai_engine,
+)
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.helpers.uri import parse_uri
@@ -64,7 +68,7 @@ from music_assistant.providers.smart_playlist.helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
@@ -76,7 +80,13 @@ CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
 DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still served via SWR
 
 CONF_AI_DESCRIPTIONS = "ai_descriptions"
+CONF_AI_ENGINE = "ai_engine"
 DESCRIPTION_PREFIX = "[Smart Playlist] "
+# descriptions are a sentence or two, so this only has to cover a slow local model
+AI_QUERY_TIMEOUT_SECONDS = 60
+# a reply is persisted and served in every playlist listing, so a runaway one is discarded
+# in favour of the rules summary; the cap sits well above the sentence or two we ask for
+MAX_AI_DESCRIPTION_BYTES = 2048
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -89,23 +99,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return SmartPlaylistProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_AI_DESCRIPTIONS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-        ),
-    )
 
 
 def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list[Track]:
@@ -173,6 +166,20 @@ class SmartPlaylistProvider(PluginProvider):
     _descriptions_store: dict[str, str]
     _unregister_handles: list[Callable[[], None]]
     _flush_lock: asyncio.Lock
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_AI_DESCRIPTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            *await create_ai_engine_config_entries(
+                self.mass, CONF_AI_ENGINE, depends_on=CONF_AI_DESCRIPTIONS
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization."""
@@ -1372,26 +1379,44 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def _generate_ai_description(self, name: str, rules: SmartPlaylistRules) -> str | None:
         """
-        Generate a natural-language description via the first AI provider that responds.
+        Generate a natural-language description via the configured AI engine.
 
         :param name: The playlist name, included in the prompt for context.
         :param rules: The rules whose summary the description should reflect.
-        :return: The AI-generated description, or None when disabled, unavailable, or on error.
+        :return: The AI-generated description, or None when disabled, unavailable, too large,
+            or on error.
         """
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
         locale = self.mass.metadata.locale
-        for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY):
-            if not isinstance(provider, PluginProvider):
-                continue
-            try:
-                response = await provider.ai_query(self._build_ai_prompt(name, rules, locale))
-            except Exception as exc:
-                self.logger.debug("AI description generation failed for '%s': %s", name, exc)
-                continue
-            if cleaned := response.strip():
-                return cleaned
-        return None
+        # selected on first use rather than at init: providers load concurrently, so the
+        # plugin supplying the engines may not have been available back then
+        engine = await select_ai_engine(self, CONF_AI_ENGINE)
+        if engine is None:
+            return None
+        try:
+            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                response = await engine.provider.ai_query(
+                    self._build_ai_prompt(name, rules, locale), engine_id=engine.id
+                )
+        except Exception as exc:
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            details: str | Exception = (
+                f"no response within {AI_QUERY_TIMEOUT_SECONDS}s"
+                if isinstance(exc, TimeoutError) and query_timeout.expired()
+                else exc
+            )
+            self.logger.debug("AI description generation failed for '%s': %s", name, details)
+            return None
+        description = response.strip()
+        if len(description.encode("utf-8")) > MAX_AI_DESCRIPTION_BYTES:
+            self.logger.debug(
+                "AI description for '%s' exceeds %d bytes, keeping the rules summary",
+                name,
+                MAX_AI_DESCRIPTION_BYTES,
+            )
+            return None
+        return description or None
 
     def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:
         """Build the prompt asking an AI provider to describe the smart playlist."""
@@ -1413,7 +1438,13 @@ class SmartPlaylistProvider(PluginProvider):
             for playlist_id, entry in data.items():
                 self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
                 self._names_store[playlist_id] = entry.get("name", playlist_id)
-                if description := entry.get("ai_description"):
+                # a description persisted before the size cap existed is dropped here too
+                description = entry.get("ai_description")
+                if (
+                    isinstance(description, str)
+                    and description
+                    and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
+                ):
                     self._descriptions_store[playlist_id] = description
         except Exception as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)

@@ -1,12 +1,16 @@
 {
   "config_entries": {
+    "api_key": {
+      "label": "API Key",
+      "description": "API key for authentication. If provided, username and password are not required."
+    },
     "username": {
       "label": "[%key:common::config_entries::username::label%]",
-      "description": "Your username for this Open Subsonic server"
+      "description": "Your username for this Open Subsonic server. Not required when using an API key."
     },
     "password": {
       "label": "[%key:common::config_entries::password::label%]",
-      "description": "The password associated with the username"
+      "description": "The password associated with the username. Not required when using an API key."
     },
     "baseURL": {
       "label": "Base URL",
@@ -65,8 +69,6 @@
   },
   "errors": {
     "connect_failed": "Failed to connect to {0}, check your settings.",
-    "create_playlist_failed": "Failed to create playlist with name '{0}'.",
-    "extension_failure": "Failed to query server for OpenSubsonic extensions",
-    "formpost_missing": "Server does not support the 'formpost' OpenSubsonic extension, which is required."
+    "create_playlist_failed": "Failed to create playlist with name '{0}'."
   }
 }

@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
@@ -246,7 +246,7 @@ class SyncGroupPlayer(Player):
         # all members offline), offer any compatible player.
         # Actual compatibility is validated when adding members
         can_group_with = set()
-        for player in self.mass.players.all_players(return_unavailable=False):
+        for player in self.mass.players.iter_players(return_unavailable=False):
             if not player.available or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
                 continue
@@ -266,11 +266,7 @@ class SyncGroupPlayer(Player):
             return sync_leader.state.group_members
         return self._attr_group_members
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # keep saved player ids so the UI can render a user friendly name
         # prevents the bug where only the player ids show up during playback

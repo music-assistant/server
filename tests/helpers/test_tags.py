@@ -2,10 +2,13 @@
 
 import pathlib
 import shutil
+import subprocess
 from unittest.mock import MagicMock
 
 import mutagen
 import pytest
+from music_assistant_models.errors import InvalidDataError
+from mutagen.id3 import ID3, UFID
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -14,6 +17,7 @@ from music_assistant.helpers.tags import (
     _parse_id3_tags,
     _parse_mp4_tags,
     _parse_vorbis_tags,
+    clean_mbid,
     parse_tags_mutagen,
     split_artists,
     write_replaygain_track_gain,
@@ -27,6 +31,39 @@ FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
 FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_detail"),
+    [
+        (
+            b"[Vorbis parser @ 0x123] Invalid Setup header\n"
+            b"[ogg @ 0x456] Header processing failed: Unknown error occurred\n",
+            "Invalid Setup header",
+        ),
+        (b"broken.ogg: Unknown error occurred\n", "Invalid or unsupported media file"),
+    ],
+)
+def test_parse_tags_reports_actionable_ffprobe_error(
+    monkeypatch: pytest.MonkeyPatch, stderr: bytes, expected_detail: str
+) -> None:
+    """Test that tag parsing reports a useful FFprobe failure."""
+    process_error = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=("ffprobe",),
+        output=b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
+        stderr=stderr,
+    )
+    check_output = MagicMock(side_effect=process_error)
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError) as err:
+        tags.parse_tags("broken.ogg")
+
+    assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
+    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    args = check_output.call_args.args[0]
+    assert args[args.index("-loglevel") + 1] == "error"
 
 
 async def test_parse_metadata_from_id3tags() -> None:
@@ -43,6 +80,11 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.musicbrainz_artistids == ("abcdefg",)
     assert _tags.musicbrainz_releasegroupid == "abcdefg"
     assert _tags.musicbrainz_recordingid == "abcdefg"
+    assert _tags.synchronized_lyrics == [
+        ("My synchronized lyrics start here", 0),
+        ("continue on this line", 671110),
+        ("and end here.", 5999999),
+    ]
     # test parsing disc/track number
     _tags.tags["disc"] = ""
     assert _tags.disc is None
@@ -98,9 +140,9 @@ async def test_parse_metadata_from_mp4tags() -> None:
     assert _tags.year == 2022
     # test sort tags (artistsort/albumartistsort returned as lists to match ID3 behavior)
     assert _tags.tags.get("titlesort") == "MyTitle Sort"
-    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]
     assert _tags.tags.get("albumsort") == "MyAlbum Sort"
-    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]
 
 
 def test_parse_metadata_from_apev2tags() -> None:
@@ -131,6 +173,28 @@ def test_parse_metadata_from_apev2tags() -> None:
     assert result.get("artistsort") == ["MyArtist Sort"]
     assert result.get("albumsort") == "MyAlbum Sort"
     assert result.get("albumartistsort") == ["MyAlbumArtist Sort"]
+
+
+def test_id3_musicbrainz_ufid_strips_trailing_null() -> None:
+    """
+    Strip a trailing NUL terminator from the MusicBrainz UFID frame data.
+
+    Some taggers (e.g. Picard) append a NUL to the UFID data; without stripping
+    it the recording MBID is malformed and breaks import and MusicBrainz
+    lookups.
+
+    See https://github.com/music-assistant/support/issues/5906
+    """
+    ufid = UFID(  # type: ignore[no-untyped-call]
+        owner="http://musicbrainz.org",
+        data=b"1e74cd4c-cfa7-4bdb-99da-41869f5f1171\x00",
+    )
+
+    mock_tags = MagicMock()
+    mock_tags.get = lambda key: ufid if key == "UFID:http://musicbrainz.org" else None
+    result = _parse_id3_tags(mock_tags)
+
+    assert result["musicbrainzrecordingid"] == "1e74cd4c-cfa7-4bdb-99da-41869f5f1171"
 
 
 async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
@@ -514,7 +578,9 @@ def test_parse_id3_multi_value_musicbrainz_albumtype() -> None:
     """Multi-value TXXX:MusicBrainz Album Type frame entries are joined into a single value."""
     frame = MagicMock()
     frame.text = ["album", "live"]
-    result = _parse_id3_tags({"TXXX:MusicBrainz Album Type": frame})
+    mock_tags = MagicMock()
+    mock_tags.get = lambda key: frame if key == "TXXX:MusicBrainz Album Type" else None
+    result = _parse_id3_tags(mock_tags)
     assert result.get("musicbrainzalbumtype") == "album;live"
 
 
@@ -712,7 +778,7 @@ def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
         # musicbrainzartistid can be list[str] from mutagen (dict type is str for ffprobe compat)
         tags={
             "artist": "Artist A;Artist B",
-            "musicbrainzartistid": ["id-a", "id-b"],  # type: ignore[dict-item]
+            "musicbrainzartistid": ["id-a", "id-b"],
         },
         has_cover_image=False,
         filename="test.mp3",
@@ -794,3 +860,61 @@ async def test_write_replaygain_track_gain_read_only(tmp_path: pathlib.Path) -> 
     finally:
         # restore permissions so tmp_path cleanup can remove the file
         dest.chmod(0o644)
+
+
+VALID_MBID = "73c69a4b-1f9e-4c8c-b8bb-3ba903af1c3f"
+
+
+def test_clean_mbid() -> None:
+    """Test cleaning/canonicalizing MusicBrainz identifiers from file tags."""
+    assert clean_mbid(VALID_MBID) == VALID_MBID
+    # uppercase hex digits are canonicalized to lowercase
+    assert clean_mbid(VALID_MBID.upper()) == VALID_MBID
+    # trailing NUL bytes and surrounding whitespace are stripped
+    assert clean_mbid(f"{VALID_MBID}\x00") == VALID_MBID
+    assert clean_mbid(f"  {VALID_MBID} \n") == VALID_MBID
+    # non-UUID values are rejected
+    assert clean_mbid("CAAE0466 1G4B0N3 07800NE1") is None
+    assert clean_mbid("abcdefg") is None
+    assert clean_mbid("") is None
+    assert clean_mbid(None) is None
+    # non-string values (e.g. repeated NFO elements parsed as a list) are rejected
+    assert clean_mbid([VALID_MBID, VALID_MBID]) is None  # type: ignore[arg-type]
+
+
+def test_parse_id3_ufid_frame_binary_data() -> None:
+    """A UFID frame with non-UTF-8 binary data must not break parsing of other tags."""
+    ufid = UFID(  # type: ignore[no-untyped-call]
+        owner="http://musicbrainz.org",
+        data=bytes.fromhex("73c69a4b1f9e4c8cb8bb3ba903af1c3f"),
+    )
+    title_frame = MagicMock()
+    title_frame.text = ["MyTitle"]
+    frames = {"UFID:http://musicbrainz.org": ufid, "TIT2": title_frame}
+
+    mock_tags = MagicMock()
+    mock_tags.get = frames.get
+    result = _parse_id3_tags(mock_tags)
+
+    assert result.get("title") == "MyTitle"
+    # the garbled identifier is rejected downstream by clean_mbid
+    assert clean_mbid(result.get("musicbrainzrecordingid")) is None
+
+
+async def test_parse_ufid_frame_with_dirty_payload(tmp_path: pathlib.Path) -> None:
+    """
+    A UFID payload with a NUL terminator must still yield a usable recording id.
+
+    Regression test for https://github.com/music-assistant/support/issues/5906
+    where such files failed to import with "Invalid MusicBrainz identifier".
+    """
+    dest = tmp_path / "ufid.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(  # type: ignore[no-untyped-call]
+        UFID(owner="http://musicbrainz.org", data=f"{VALID_MBID}\x00".encode("ascii"))  # type: ignore[no-untyped-call]
+    )
+    id3.save()
+
+    _tags = await tags.async_parse_tags(str(dest))
+    assert clean_mbid(_tags.musicbrainz_recordingid) == VALID_MBID

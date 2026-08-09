@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
@@ -58,28 +58,23 @@ class CacheController(CoreController):
         )
         self.manifest.icon = "memory"
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        if action == CONF_CLEAR_CACHE:
-            await self.clear()
-            return (
-                ConfigEntry(
-                    key=CONF_CLEAR_CACHE,
-                    type=ConfigEntryType.LABEL,
-                    # distinct key so the result label doesn't collide with the action's label
-                    translation_key="clear_cache_result",
-                ),
-            )
         return (
             ConfigEntry(
                 key=CONF_CLEAR_CACHE,
                 type=ConfigEntryType.ACTION,
             ),
         )
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot action button press and report its outcome."""
+        if action == CONF_CLEAR_CACHE:
+            await self.clear()
+            return ConfigActionResult(translation_key=f"{CONF_CLEAR_CACHE}.result")
+        return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of cache module."""

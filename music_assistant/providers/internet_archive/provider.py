@@ -46,7 +46,7 @@ from .parsers import (
 from .streaming import InternetArchiveStreaming
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -71,6 +71,10 @@ class InternetArchiveProvider(MusicProvider):
         self.client = InternetArchiveClient(mass)
         self.streaming = InternetArchiveStreaming(self)
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if provider is a streaming provider."""
@@ -91,8 +95,8 @@ class InternetArchiveProvider(MusicProvider):
         """Throttled metadata wrapper."""
         return await self.client.get_metadata(identifier)
 
-    @throttle_with_retries
     @use_cache(expiration=86400 * 30)  # 30 days - file listings are static
+    @throttle_with_retries
     async def _get_audio_files(self, identifier: str) -> list[dict[str, Any]]:
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)

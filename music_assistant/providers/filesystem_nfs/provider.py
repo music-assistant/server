@@ -2,22 +2,46 @@
 
 from __future__ import annotations
 
+import os
 import platform
+from contextlib import suppress
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.mount import error_summary, unmount
 from music_assistant.helpers.process import check_output
+from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
-    exists,
+    isdir,
     ismount,
     makedirs,
 )
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
+    content_type_config_entry,
+)
 
 from .constants import CONF_EXPORT_PATH, CONF_HOST, CONF_NFS_VERSION, CONF_SUBFOLDER
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
 
 
 class NFSFileSystemProvider(LocalFileSystemProvider):
@@ -29,11 +53,59 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
     are handled by the base LocalFileSystemProvider.
     """
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        base_path: str | None = None,
+    ) -> None:
+        """
+        Initialize NFS FileSystem Provider.
+
+        :raises SetupFailedError: If the configured subfolder would escape the mountpoint.
+        """
+        super().__init__(mass, manifest, config, base_path)
+        # NFSv3's rpc.mountd only hands out a filehandle for a path that is itself exported,
+        # so the subfolder can only be a path inside the mount: mount_path owns the mount
+        # lifecycle, base_path is the scan/serve root the base class works from.
+        self.mount_path: str = self.base_path
+        self._subfolder: str = str(self.get_setup_value(CONF_SUBFOLDER) or "").strip().lstrip("/")
+        if not self._subfolder:
+            return
+        if not is_safe_path(self._subfolder, self.mount_path):
+            msg = f"Invalid subfolder {self._subfolder}: must be a relative path inside the export"
+            raise SetupFailedError(
+                msg,
+                translation_key="invalid_subfolder",
+                translation_owner=self.translation_owner,
+                translation_args=[self._subfolder],
+            )
+        self.base_path = os.path.normpath(os.path.join(self.mount_path, self._subfolder))
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
+        return (
+            content_type_config_entry(content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
+
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "")
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
         if subfolder:
             return subfolder
         if export_path:
@@ -42,15 +114,44 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not await exists(self.base_path):
-            await makedirs(self.base_path)
+        # validate the connection details before attempting to mount
+        server = str(self.get_setup_value(CONF_HOST))
+        if not await get_ip_from_host(server):
+            msg = f"Unable to resolve {server}, make sure the address is resolvable."
+            raise SetupFailedError(
+                msg,
+                translation_key="host_unresolvable",
+                translation_args=[server],
+            )
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
+        if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):
+            msg = "Invalid export path: must be an absolute path starting with /"
+            raise SetupFailedError(msg)
+        # the mount point may already exist; checking first is not reliable because
+        # reading the path fails while the server is unreachable
+        await makedirs(self.mount_path, exist_ok=True)
         try:
             # unmount first to cleanup any unexpected state
-            await self.unmount(ignore_error=True)
+            await unmount(self.mount_path, self.logger)
             await self.mount()
         except OSError as err:
             msg = f"NFS mount failed: {err}"
             raise SetupFailedError(msg) from err
+        # the subfolder lives on the share, so it can only be checked once mounted. Raise
+        # rather than leave it to check_write_access, which logs and lets the sync report an
+        # empty library instead.
+        if self._subfolder and not await isdir(self.base_path):
+            # a failed handle_async_init never gets unload(), so drop the mount here; failing
+            # to must not mask the missing subfolder
+            with suppress(SetupFailedError, OSError):
+                await unmount(self.mount_path, self.logger)
+            msg = f"Subfolder {self._subfolder} does not exist in the NFS export"
+            raise SetupFailedError(
+                msg,
+                translation_key="subfolder_not_found",
+                translation_owner=self.translation_owner,
+                translation_args=[self._subfolder],
+            )
         await self.check_write_access()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -59,29 +160,23 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        await self.unmount(ignore_error=True)
+        await unmount(self.mount_path, self.logger)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
         return {
             **await super().get_diagnostics(),
-            "mounted": await ismount(self.base_path),
+            "mounted": await ismount(self.mount_path),
         }
 
     async def mount(self) -> None:
         """Mount the NFS export to a temporary folder."""
-        server = str(self.config.get_value(CONF_HOST))
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
-
-        # build full export path including optional subfolder
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "").strip()
-        full_export = (
-            str(PurePosixPath(export_path) / subfolder.lstrip("/")) if subfolder else export_path
-        )
+        server = str(self.get_setup_value(CONF_HOST))
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
 
         if platform.system() not in ("Linux", "Darwin"):
             msg = f"NFS provider is not supported on {platform.system()}"
-            raise SetupFailedError(msg)
+            raise UnsupportedSystemError(msg)
 
         mount_options = self._get_mount_options()
         mount_cmd = [
@@ -90,18 +185,23 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
             "nfs",
             "-o",
             ",".join(mount_options),
-            f"{server}:{full_export}",
-            self.base_path,
+            f"{server}:{export_path}",
+            self.mount_path,
         ]
 
-        self.logger.debug("Mounting %s:%s to %s", server, full_export, self.base_path)
+        self.logger.debug("Mounting %s:%s to %s", server, export_path, self.mount_path)
         self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode: int
         output: bytes
         returncode, output = await check_output(*mount_cmd)
         if returncode != 0:
-            msg = f"NFS mount failed with error: {output.decode()}"
-            raise SetupFailedError(msg)
+            error = output.decode().strip()
+            msg = f"NFS mount failed with error: {error}"
+            raise SetupFailedError(
+                msg,
+                translation_key="mount_failed",
+                translation_args=[error_summary(error)],
+            )
 
     def _get_mount_options(self) -> list[str]:
         """Get platform-specific NFS mount options."""
@@ -110,16 +210,8 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         else:
             options = ["noatime", "nolock", "tcp", "soft", "timeo=30", "retrans=5"]
 
-        nfs_version = str(self.config.get_value(CONF_NFS_VERSION) or "")
+        nfs_version = str(self.get_setup_value(CONF_NFS_VERSION) or "")
         if nfs_version:
             options.append(f"vers={nfs_version}")
 
         return options
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote NFS export."""
-        returncode: int
-        output: bytes
-        returncode, output = await check_output("umount", self.base_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("NFS unmount failed with error: %s", output.decode())

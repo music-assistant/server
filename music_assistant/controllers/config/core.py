@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueType,
     CoreConfig,
@@ -137,32 +138,38 @@ class CoreConfigMixin:
         )
 
     @api_command("config/core/get_entries", required_scope=Scope.CONFIG_CORE_READ)
-    async def get_core_config_entries(
-        self,
-        domain: str,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_core_config_entries(self, domain: str) -> list[ConfigEntry]:
         """
         Return Config entries to configure a core controller.
 
-        core_controller: name of the core controller
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param domain: The core controller domain.
         """
         controller: CoreController = getattr(self.mass, domain)
-        all_entries = list(
-            await controller.get_config_entries(action=action, values=values)
-            + DEFAULT_CORE_CONFIG_ENTRIES
+        return await self._resolve_core_config_entries(
+            domain, await controller.get_config_entries()
         )
-        if domain == CONF_PLAYER_QUEUES:
-            # populate the global autoplay playlist dropdown for the UI here (not in get_core_config),
-            # so the config value/parse path stays free of a library lookup
-            playlist_options = await self.mass.config._library_playlist_options()
-            for entry in all_entries:
-                if entry.key == CONF_AUTOPLAY_PLAYLIST:
-                    entry.options = playlist_options
-        return _with_translation_owner(all_entries, f"core.{domain}", action, values)
+
+    @api_command("config/core/invoke_action", required_scope=Scope.CONFIG_CORE_WRITE)
+    async def invoke_core_config_action(
+        self, domain: str, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult:
+        """
+        Run a one-shot action button from a core module's config.
+
+        A ``ConfigActionResult`` holds the outcome to report to the user; an empty list
+        means the action ran with nothing to report; a non-empty list holds the entries
+        the config form should re-render with.
+
+        :param domain: The core controller domain.
+        :param action: The action id of the pressed button.
+        """
+        controller: CoreController = getattr(self.mass, domain)
+        if (result := await controller.handle_config_action(action)) is None:
+            return []
+        if isinstance(result, ConfigActionResult):
+            result.translation_owner = result.translation_owner or f"core.{domain}"
+            return result
+        return await self._resolve_core_config_entries(domain, result)
 
     @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)
     async def save_core_config(
@@ -243,3 +250,17 @@ class CoreConfigMixin:
         controller = getattr(self.mass, core_module, None)
         if (config := getattr(controller, "config", None)) and (entry := config.values.get(key)):
             entry.value = value
+
+    async def _resolve_core_config_entries(
+        self, domain: str, entries: tuple[ConfigEntry, ...]
+    ) -> list[ConfigEntry]:
+        """Append the server default entries, resolve dynamic options and stamp the owner."""
+        all_entries = list(entries + DEFAULT_CORE_CONFIG_ENTRIES)
+        if domain == CONF_PLAYER_QUEUES:
+            # populate the global autoplay playlist dropdown for the UI here (not in get_core_config),
+            # so the config value/parse path stays free of a library lookup
+            playlist_options = await self.mass.config._library_playlist_options()
+            for entry in all_entries:
+                if entry.key == CONF_AUTOPLAY_PLAYLIST:
+                    entry.options = playlist_options
+        return _with_translation_owner(all_entries, f"core.{domain}")

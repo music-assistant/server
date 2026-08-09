@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -47,6 +51,7 @@ from music_assistant_models.media_items import (
     SoundEffect,
     Track,
 )
+from music_assistant_models.media_items.media_item import MediaCollection
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
@@ -68,7 +73,10 @@ from music_assistant.controllers.music.constants import (
     SEARCH_PROVIDER_HARD_TIMEOUT,
     SEARCH_PROVIDER_SOFT_TIMEOUT,
 )
-from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
+from music_assistant.controllers.music.database import (
+    PLAYLOG_CONFLICT_KEYS,
+    MusicDatabaseSetupMixin,
+)
 from music_assistant.controllers.music.helpers import filter_search_results, sort_search_result
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
@@ -85,6 +93,7 @@ from music_assistant.controllers.music.recommendations.controller import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
@@ -95,7 +104,7 @@ from music_assistant.helpers.datetime import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
+from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -155,13 +164,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise RuntimeError("Database not initialized")
         return self._database
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        entries: tuple[ConfigEntry, ...] = (
+        return (
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
@@ -169,20 +174,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 advanced=True,
             ),
         )
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot action button press and report its outcome."""
         if action == CONF_RESET_DB:
             await self._reset_database()
             await self.mass.cache.clear()
             await self.start_sync()
-            entries = (
-                *entries,
-                ConfigEntry(
-                    key=CONF_RESET_DB,
-                    type=ConfigEntryType.LABEL,
-                    # distinct key so the result label doesn't collide with the action's label
-                    translation_key="reset_db_result",
-                ),
-            )
-        return entries
+            return ConfigActionResult(translation_key=f"{CONF_RESET_DB}.result")
+        return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -219,8 +221,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.schedule_provider_sync(provider.instance_id)
 
     async def on_provider_unload(self, provider: MusicProvider) -> None:
-        """Handle logic when a provider is (about to get) unloaded."""
-        self.unschedule_provider_sync(provider.instance_id)
+        """
+        Handle logic when a provider is (about to get) unloaded.
+
+        Sync tasks are unscheduled by MusicAssistant.unload_provider itself, which also
+        decides whether their persisted state is kept (reload) or cleared (removal).
+        """
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -319,6 +325,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             (by instance id or domain), where the special value "library" selects
             the library. Omit to search the library and all available providers.
         """
+        if not search_query.strip():
+            # several providers reject an empty query with a hard error
+            return SearchResults()
         if not media_types:
             media_types = MediaType.ALL
         if library_only and providers is None:
@@ -933,10 +942,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
-        if provider_instance_id_or_domain == "builtin":
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if media_type in (
+            MediaType.TRACK,
+            MediaType.RADIO,
+            MediaType.SOUND_EFFECT,
+            MediaType.UNKNOWN,  # e.g. plain (HA) URLs, see helpers/uri.py
+        ) and (
+            provider_instance_id_or_domain == "builtin"
+            or (provider and provider.domain == "builtin")
+        ):
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
-            builtin_prov = cast("BuiltinProvider", self.mass.get_provider("builtin"))
-            return await builtin_prov.parse_item(item_id)
+            builtin_prov = cast("BuiltinProvider", provider or self.mass.get_provider("builtin"))
+            if media_type == MediaType.RADIO:
+                # a radio station must stay a radio station, also when the stream
+                # reports a duration or carries no ICY name
+                return await builtin_prov.get_radio(item_id)
+            if media_type == MediaType.TRACK:
+                # and a track must stay a track, also when the stream carries an
+                # ICY name or reports no duration
+                return await builtin_prov.get_track(item_id)
+            return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
             return await self.podcasts.episode(item_id, provider_instance_id_or_domain)
@@ -971,6 +997,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(
                 f"SoundEffect {provider_instance_id_or_domain}/{item_id} not found"
             )
+        if media_type == MediaType.COLLECTION:
+            ctrl = self.get_controller_for_collection(item_id)
+            return await ctrl.get_collection(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -985,7 +1014,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> MediaItemType | None:
-        """Get single library music item by id and media type."""
+        """Get the library item for the given provider item, if present."""
         ctrl = self.get_controller(media_type)
         return await ctrl.get_library_item_by_prov_id(
             item_id=item_id,
@@ -1173,16 +1202,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
 
-    async def refresh_items(self, items: list[MediaItemType]) -> None:
-        """
-        Refresh MediaItems to force retrieval of full info and matches.
-
-        Creates background tasks to process the action.
-        """
-        async with TaskManager(self.mass) as tg:
-            for media_item in items:
-                tg.create_task(self.refresh_item(media_item))
-
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
     async def refresh_item(  # noqa: PLR0915
         self,
@@ -1315,17 +1334,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param userid: The user ID to mark the item as played for (instead of the current user).
         :param queue_id: The queue ID where the item was played.
         :param user_initiated: If True, the playback was initiated by the user (e.g. enqueued).
+            Sticky once set: a later report can promote a playlog row to user-initiated but
+            never demote it, so a writer reporting playback it did not itself initiate
+            (e.g. a provider sync) must pass False.
         :param skip_artist_ids: Library artist ids to skip when crediting an album's artists.
         :param playback_speed: The current playback speed to persist (audiobooks/podcasts).
             If None, any previously stored speed for the item is preserved.
         """
         timestamp = utc_timestamp()
+        # we deliberately skip one-off items: sound effects and live inputs whoever owns
+        # them, and everything the builtin provider plays (except playlists) is a one-off url
+        if media_item.media_type in (MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE):
+            return
         if (
             media_item.provider.startswith("builtin")
             and media_item.media_type != MediaType.PLAYLIST
         ):
-            # we deliberately skip builtin provider items as those are often
-            # one-off items like TTS or some sound effect etc.
             return
 
         params = {
@@ -1366,39 +1390,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else:
                 # NOTE: if no user was found, we will alter the playlog for all users
                 user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
-            # only audiobooks/podcast episodes ever carry a non-default playback speed
-            preserve_speed = playback_speed is None and media_item.media_type in (
-                MediaType.AUDIOBOOK,
-                MediaType.PODCAST_EPISODE,
-            )
+            # Leaving the speed out keeps whatever is already stored for this item/user
+            # (a provider sync reporting progress has no speed to offer), and falls back to
+            # the column default of 1.0 for a brand new row.
+            if playback_speed is not None:
+                params["playback_speed"] = playback_speed
             for user_id in user_ids:
                 params["userid"] = user_id
-                # INSERT OR REPLACE rewrites the whole row, so the speed must be re-supplied
-                # or it reverts to the column default. When the caller has no speed (e.g. a
-                # provider sync), keep the value already stored for this item/user.
-                if playback_speed is not None:
-                    params["playback_speed"] = playback_speed
-                elif preserve_speed:
-                    existing = await self.database.get_row(
-                        DB_TABLE_PLAYLOG,
-                        {
-                            "item_id": params["item_id"],
-                            "provider": params["provider"],
-                            "media_type": params["media_type"],
-                            "userid": user_id,
-                        },
-                    )
-                    params["playback_speed"] = (
-                        existing["playback_speed"]
-                        if existing and existing["playback_speed"] is not None
-                        else 1.0
-                    )
-                # otherwise leave playback_speed out so the column default (1.0) applies
-                await self.database.insert(
-                    DB_TABLE_PLAYLOG,
-                    params,
-                    allow_replace=True,
-                )
+                await self._upsert_playlog(params)
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -1406,7 +1405,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             seconds_played = 0
             if (
                 fully_played
-                and not isinstance(media_item, Album | Artist | Genre | Playlist | Podcast)
+                and not isinstance(
+                    media_item, Album | Artist | Genre | Playlist | Podcast | MediaCollection
+                )
                 and isinstance(media_item.duration, int)  # for Radio duration can be None
             ):
                 seconds_played = media_item.duration
@@ -1780,6 +1781,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             f"No media controller available for media type: {media_type.value}"
         )
 
+    def get_controller_for_collection(
+        self, item_id: str
+    ) -> (
+        ArtistsController
+        | AlbumsController
+        | TracksController
+        | RadioController
+        | PlaylistController
+        | AudiobooksController
+        | PodcastsController
+        | GenreController
+    ):
+        """Return controller for MediaType."""
+        media_type = get_collection_item_media_type_from_item_id(item_id)
+        controller = self.get_controller(media_type)
+        if not isinstance(controller, AudiobooksController):
+            # currently only supported for audiobooks
+            raise NotImplementedError(
+                f"No media controller available for media type: {media_type.value}"
+            )
+        return controller
+
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False
     ) -> list[MusicProvider]:
@@ -1916,26 +1939,34 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider := self.mass.get_provider(provider_instance_id, provider_type=MusicProvider)
         ):
             return
-        self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
+        await self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
         for media_type in MediaType:
             if not self.library_supported(provider, media_type):
                 continue
             await self._schedule_provider_mediatype_sync(provider, media_type, True)
 
-    def unschedule_provider_sync(
+    async def unschedule_provider_sync(
         self, provider_instance_id: str, clear_persisted_state: bool = True
     ) -> None:
         """
-        Unschedule Library sync for given provider.
+        Unschedule Library sync for given provider and wait for a running sync to stop.
+
+        Callers tear down provider state right after this (unloading the provider, or
+        rescheduling its syncs), so all media types are cancelled first and then awaited
+        together, keeping the bounded wait to one timeout instead of one per media type.
 
         :param provider_instance_id: The provider instance id to unschedule.
         :param clear_persisted_state: Whether to remove persisted schedule state from config.
         """
-        for media_type in MediaType:
-            self.mass.tasks.unregister_scheduled_task(
-                self._get_sync_task_id(provider_instance_id, media_type),
-                clear_persisted_state=clear_persisted_state,
+        await asyncio.gather(
+            *(
+                self.mass.tasks.unregister_scheduled_task_and_wait(
+                    self._get_sync_task_id(provider_instance_id, media_type),
+                    clear_persisted_state=clear_persisted_state,
+                )
+                for media_type in MediaType
             )
+        )
 
     def get_provider_sync_schedule(
         self, provider_instance_id: str, media_type: MediaType
@@ -2578,6 +2609,38 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     return user
         return None
 
+    async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
+        """
+        Write a playlog row, updating the existing row for the item/user if there is one.
+
+        Columns left out of the entry keep whatever the existing row holds, and
+        `user_initiated` is sticky: once a play was explicitly user-initiated it stays that
+        way for the lifetime of the row, so a later side-effect credit (an autoplay replay,
+        or a track crediting its album/artist) can never demote it and drop the item out of
+        the "recently played" recommendations.
+
+        The generic `database.upsert()` cannot express either half of that: the sticky OR is
+        playlog-specific, and it needs an explicit conflict target because the playlog carries
+        more than one unique constraint.
+
+        :param entry: The playlog column values to write, including all of
+            `PLAYLOG_CONFLICT_KEYS`.
+        """
+        columns = list(entry)
+        updates = [
+            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+            if column == "user_initiated"
+            else f"{column} = excluded.{column}"
+            for column in columns
+            if column not in PLAYLOG_CONFLICT_KEYS
+        ]
+        await self.database.execute_write(
+            f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+            f"VALUES ({', '.join(f':{column}' for column in columns)}) "
+            f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
+            entry,
+        )
+
     async def _credit_artist_plays(
         self,
         artists: Iterable[Artist | ItemMapping],
@@ -2588,20 +2651,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_ids: set[str],
     ) -> None:
         """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
-        # ON CONFLICT keeps an explicit user-initiated artist play sticky across the
-        # repeated side-effect credits its tracks generate.
-        upsert_query = (
-            f"INSERT INTO {DB_TABLE_PLAYLOG} "
-            "(item_id, provider, media_type, name, image, fully_played, "
-            "seconds_played, timestamp, queue_id, user_initiated, userid) "
-            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
-            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
-            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
-            "name = excluded.name, image = excluded.image, "
-            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
-            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
-        )
         for artist in artists:
             db_artist = await self.artists.get_library_item_by_prov_id(
                 artist.item_id, artist.provider
@@ -2630,7 +2679,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             }
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
-                await self.database.execute(upsert_query, playlog_entry)
+                await self._upsert_playlog(playlog_entry)
 
     async def _credit_podcast_play(
         self,
@@ -2641,20 +2690,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         queue_id: str | None,
     ) -> None:
         """Credit the parent podcast with a play so the show surfaces in recently played."""
-        # ON CONFLICT keeps an explicit user-initiated show play sticky across the
-        # repeated side-effect credits its episodes generate.
-        upsert_query = (
-            f"INSERT INTO {DB_TABLE_PLAYLOG} "
-            "(item_id, provider, media_type, name, image, fully_played, "
-            "seconds_played, timestamp, queue_id, user_initiated, userid) "
-            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
-            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
-            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
-            "name = excluded.name, image = excluded.image, "
-            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
-            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
-        )
         # Resolve to the library item first, like _credit_artist_plays does, so an episode's
         # parent-podcast credit lands on the same library-scoped row as an explicit play of the
         # library show, instead of creating a separate provider-scoped duplicate.
@@ -2678,7 +2713,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         }
         for user_id in user_ids:
             playlog_entry["userid"] = user_id
-            await self.database.execute(upsert_query, playlog_entry)
+            await self._upsert_playlog(playlog_entry)
 
     async def _get_item_by_name(
         self,
@@ -2786,7 +2821,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
                 allow_update_metadata=False,  # no need trigger more methods
             )
-        except MediaNotFoundError:
+        except MediaNotFoundError, NotImplementedError:
+            # NotImplementedError: the uri has a valid format, but specifies an unknown media type
             return False
 
         # non library item handling for users with no filter, or no user at all

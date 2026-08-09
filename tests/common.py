@@ -2,11 +2,13 @@
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Iterator
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from types import MethodType
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
@@ -18,6 +20,28 @@ from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
+
+
+def utf8_safe(value: object) -> object:
+    """
+    Return ``value`` with any non-UTF-8-encodable strings made encodable.
+
+    Lone surrogates (e.g. from undecodable filesystem paths) are replaced with
+    their backslash escapes so the value survives strict-UTF-8 serialization.
+    """
+    if isinstance(value, str):
+        try:
+            value.encode()
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "backslashreplace").decode()
+        return value
+    if isinstance(value, list):
+        return [utf8_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(utf8_safe(item) for item in value)
+    if isinstance(value, dict):
+        return {utf8_safe(key): utf8_safe(item) for key, item in value.items()}
+    return value
 
 
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
@@ -35,6 +59,26 @@ async def get_fixtures_dir(
     for file in await aiofiles.os.listdir(dir_path):
         async with aiofiles.open(dir_path / file, "rb") as fp:
             yield (file, await fp.read())
+
+
+@contextlib.contextmanager
+def collect_loop_errors() -> Iterator[list[dict[str, Any]]]:
+    """
+    Capture everything the running loop reports to its exception handler.
+
+    Yields the (initially empty) list the captured contexts are appended to; the loop's
+    own handler is restored on exit. Use it to assert that an operation does not surface
+    an error the server itself already handles, which would otherwise reach the user as
+    an ERROR log entry with a traceback.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    reported: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        yield reported
+    finally:
+        loop.set_exception_handler(previous)
 
 
 @contextlib.asynccontextmanager
@@ -63,6 +107,48 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]
 SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
 
 _orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
+
+# the address a fixture's web and stream servers bind to, so a test run never listens
+# on the host's real interfaces
+LOOPBACK_IP = "127.0.0.1"
+
+
+@contextlib.contextmanager
+def use_ephemeral_server_ports() -> Iterator[None]:
+    """
+    Bind a full-server test fixture's web and stream servers to a free loopback port.
+
+    Port 0 has the kernel pick the port during the bind itself, so nothing else can
+    claim it in the meantime.
+
+    Binding loopback keeps a test run off the host's other interfaces and gives each
+    server a single socket, so it has one assigned port: asyncio binds a wildcard
+    address once per address family, each with its own port.
+    """
+    with (
+        patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
+        patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
+        # keep address detection off the host's real interfaces
+        patch(
+            "music_assistant.controllers.streams.controller.get_ip_addresses",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.get_ip_addresses",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+    ):
+        yield
 
 
 @contextlib.contextmanager
@@ -98,6 +184,32 @@ async def _create_builtin_provider_config_hermetic(
 # Mock classes for testing
 
 
+def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
+    """
+    Give a mocked MusicAssistant the real create_task implementation.
+
+    Needed for any test that lets a `@use_cache` decorated method run, since the
+    decorator awaits the task it gets back to share one fetch between callers.
+
+    :param mass: The mock standing in for the MusicAssistant instance.
+    """
+    mass._tracked_tasks = {}
+    # on an AsyncMock this call would hand back a coroutine that nobody awaits
+    mass.verify_event_loop_thread = MagicMock()  # type: ignore[method-assign]
+    real_create_task = MethodType(MusicAssistant.create_task, mass)
+
+    def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
+        if not (inspect.iscoroutine(target) or inspect.iscoroutinefunction(target)):
+            # tests hand this mocked methods too, which the real one refuses
+            return MagicMock()
+        # resolved per call so this also works from a synchronous fixture
+        mass.loop = asyncio.get_running_loop()
+        return real_create_task(target, *args, **kwargs)
+
+    # kept a mock so tests can still assert on the calls it received
+    mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
 def create_mock_config(name: str) -> MagicMock:
     """Create a mock player config with the given name."""
     config = MagicMock()
@@ -120,6 +232,7 @@ class MockProvider:
         self.manifest = MagicMock()
         self.manifest.name = f"Mock {domain} Provider"
         self.mass = mass or MagicMock()
+        self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
 
 

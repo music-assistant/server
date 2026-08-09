@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
@@ -22,7 +22,7 @@ from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
@@ -68,8 +68,9 @@ class SnapCastPlayer(Player):
         self.snap_client = snap_client
         super().__init__(provider, player_id)
 
-        # snapcast has fixed sample rate/bit depth
-        self._attr_supported_sample_rates = [(48000, 16)]
+        # Snapcast stream format is fixed for a provider instance (from advanced settings)
+        stream_format = provider.stream_audio_format
+        self._attr_supported_sample_rates = [(stream_format.sample_rate, stream_format.bit_depth)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
 
@@ -373,11 +374,7 @@ class SnapCastPlayer(Player):
                 else "default"
             )
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Player config."""
         return [
             # we don't use the http server for streaming

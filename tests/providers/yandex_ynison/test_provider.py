@@ -25,7 +25,7 @@ from music_assistant_models.media_items import AudioFormat, AudioSource
 from ya_passport_auth import SecretStr
 from ya_passport_auth.ma import BorrowedCredentialSource, list_yandex_music_instances
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
@@ -114,6 +114,11 @@ def _make_mock_mass() -> MagicMock:
     mass.subscribe = MagicMock(return_value=MagicMock())
     mass.get_providers = MagicMock(return_value=[])
     mass.config.set_raw_provider_config_value = MagicMock()
+    # Auth values now live in setup_data; the provider reads them via
+    # get_setup_value. Empty setup_data routes those reads through to
+    # config.get_value (via get_config_value; the seeded stub above).
+    mass.config.get = MagicMock(return_value={})
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
 
     # Cache — return None (miss) by default
     mass.cache.get = AsyncMock(return_value=None)
@@ -152,7 +157,9 @@ def _make_provider(player_id: str = PLAYER_ID_AUTO) -> YandexYnisonProvider:
     mass = _make_mock_mass()
     config = _make_mock_config({CONF_MASS_PLAYER_ID: player_id})
     manifest = _make_mock_manifest()
-    return YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider._api_throttler = ThrottlerManager(rate_limit=1000)
+    return provider
 
 
 # ------------------------------------------------------------------
@@ -1281,12 +1288,16 @@ class TestPCMNormalization:
         """If get_stream_details fails, _stream_track yields nothing."""
         provider = _make_provider()
         mock_yandex = MagicMock()
-        mock_yandex.get_stream_details = AsyncMock(side_effect=Exception("API error"))
         provider._yandex_provider = mock_yandex
 
         collected: list[bytes] = []
-        async for chunk in provider._stream_track("track:bad"):
-            collected.append(chunk)
+        with patch.object(
+            provider,
+            "_get_stream_details_with_retry",
+            new=AsyncMock(side_effect=Exception("API error")),
+        ):
+            async for chunk in provider._stream_track("track:bad"):
+                collected.append(chunk)
 
         assert collected == []
 
@@ -1543,7 +1554,7 @@ class TestRefreshYnisonToken:
         provider._ym_instance_id = None
         provider.config = MagicMock()
         provider.config.get_value = MagicMock(
-            side_effect=lambda key: "own-x-token" if key == CONF_X_TOKEN else None
+            side_effect=lambda key, default=None: "own-x-token" if key == CONF_X_TOKEN else default
         )
 
         with patch(
@@ -2387,8 +2398,13 @@ class TestAdvanceQueueIndex:
 
         type(mock_yn).connected = property(_get_connected)
 
-        await provider._advance_queue_index(1)
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await provider._advance_queue_index(1)
 
+        assert sleep.await_count == 2
         mock_yn.update_player_state.assert_awaited_once()
 
     async def test_timeout_no_send(self) -> None:
@@ -2919,7 +2935,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
         assert provider._normalized_params["bit_depth"] == 24
         # And get_stream_details now reflects that — MA's
         # `_select_audio_source_pcm_format` consumes this.
-        sd = await provider.get_stream_details("main", "queue1")
+        sd = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert sd.audio_format.sample_rate == 96_000
         assert sd.audio_format.bit_depth == 24
@@ -2938,8 +2954,8 @@ class TestPrefetchFlowsThroughToStreamDetails:
         from music_assistant_models.enums import MediaType  # noqa: PLC0415
 
         provider = _make_provider()
-        sd1 = await provider.get_stream_details("main", "queue1")
-        sd2 = await provider.get_stream_details("main", "queue1")
+        sd1 = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
+        sd2 = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
 
         assert sd1.media_type == MediaType.AUDIO_SOURCE
         assert sd1.audio_format == sd2.audio_format  # value-equal

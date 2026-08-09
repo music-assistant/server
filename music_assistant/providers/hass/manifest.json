@@ -10,5 +10,5 @@
   "multi_instance": false,
   "builtin": false,
   "icon": "md:webhook",
-  "requirements": ["hass-client==1.2.3"]
+  "requirements": ["hass-client==1.3.0"]
 }

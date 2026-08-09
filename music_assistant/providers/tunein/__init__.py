@@ -6,9 +6,7 @@ import random
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -38,7 +36,7 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -60,34 +58,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_USERNAME):
-        msg = "Username is invalid"
-        raise LoginFailed(msg)
-
     return TuneInProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-    )
 
 
 class TuneInProvider(MusicProvider):
@@ -96,11 +67,18 @@ class TuneInProvider(MusicProvider):
     _throttler: Throttler
     _browse_url_map: dict[str, str]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=2)
         self._browse_url_map = {}
-        username = self.config.get_value(CONF_USERNAME)
+        username = self.get_setup_value(CONF_USERNAME)
+        if not username:
+            msg = "Username is invalid"
+            raise LoginFailed(msg)
         if isinstance(username, str) and "@" in username:
             self.logger.warning(
                 "Email address detected instead of username, "
@@ -509,7 +487,7 @@ class TuneInProvider(MusicProvider):
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
             kwargs["formats"] = "ogg,aac,wma,mp3,hls"
-            kwargs["username"] = self.config.get_value(CONF_USERNAME)
+            kwargs["username"] = self.get_setup_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         locale = self.mass.metadata.locale.replace("_", "-")

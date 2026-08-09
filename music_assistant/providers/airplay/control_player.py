@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from ipaddress import AddressValueError, IPv4Address
 from typing import TYPE_CHECKING, Final
 
@@ -13,12 +13,14 @@ import pyatv
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.media_items import MediaItemImage
 from music_assistant_models.player import PlayerSource
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.conf import AppleTV as AppleTVConfig
@@ -48,20 +50,16 @@ from pyatv.settings import MrpTunnel
 from pyatv.storage.memory_storage import MemoryStorage
 
 from music_assistant.models.player import PlayerMedia
+from music_assistant.models.setup_flow import AbortFlow
 
 from .constants import (
-    CONF_ACTION_FINISH_COMPANION_PAIRING,
-    CONF_ACTION_FINISH_MRP_PAIRING,
-    CONF_ACTION_RESET_COMPANION_PAIRING,
-    CONF_ACTION_RESET_MRP_PAIRING,
-    CONF_ACTION_START_COMPANION_PAIRING,
-    CONF_ACTION_START_MRP_PAIRING,
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
     CONF_STORED_VOLUME,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
 )
 from .helpers import (
@@ -76,10 +74,20 @@ from .player import AirPlayPlayer
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.models.setup_flow import SetupSession
+
     from .provider import AirPlayProvider
 
 _CONTROL_RECONNECT_DELAY: Final[float] = 30.0
 _WAKE_TIMEOUT: Final[float] = 10.0
+
+# mDNS TXT keys whose values change with transient playback, session or group
+# state - most notably `flags`, which a receiver toggles while it is receiving a
+# stream. They never affect how the control connection is established, so a
+# change must not force a reconnect: doing so made Apple TVs tear down and
+# re-establish the control channel on every stream start and stop, each time
+# surfacing the on-screen pairing code. Compared case-insensitively (RFC 6763).
+_VOLATILE_DISCOVERY_KEYS: Final = frozenset({"flags", "gcgl", "gid", "igl", "gpn", "pgcgl"})
 
 _CONNECTION_ERRORS = (
     pyatv_exceptions.AuthenticationError,
@@ -149,8 +157,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._companion_listener: _AirPlayStateListener | None = None
         self._mrp_state_listener: _AirPlayStateListener | None = None
         self._mrp_push_listener: _AirPlayPushListener | None = None
-        self._active_companion_pairing: PairingHandler | None = None
-        self._active_mrp_pairing: PairingHandler | None = None
         self._connection_task: asyncio.Task[None] | None = None
         self._connection_lock = asyncio.Lock()
         self._power_on_event = asyncio.Event()
@@ -158,6 +164,9 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._disconnecting = False
         self._restart_connections = False
         self._unloading = False
+        # invoked (if set) whenever the Companion connection comes up or goes down,
+        # so an observer (e.g. the dashboard adapter) can re-evaluate its state
+        self.on_companion_state_change: Callable[[], None] | None = None
 
     @property
     def companion_pairing_supported(self) -> bool:
@@ -193,43 +202,55 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # control channel exposing power commands, or stored Companion
         # credentials (so the feature does not flap while (re)connecting).
         if (
-            self.config.get_value(CONF_COMPANION_CREDENTIALS)
-            or self._device_for_feature(FeatureName.TurnOn)
-            or self._device_for_feature(FeatureName.TurnOff)
+            self.get_setup_value(CONF_COMPANION_CREDENTIALS)
+            or self._device_for_power_feature(FeatureName.TurnOn)
+            or self._device_for_power_feature(FeatureName.TurnOff)
         ):
             features.add(PlayerFeature.POWER)
         if not self._stream_active and not self._device_for_feature(FeatureName.SetVolume):
             features.discard(PlayerFeature.VOLUME_MUTE)
         return features
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return player configuration entries, including control pairing."""
-        entries = await super().get_config_entries(action, values)
-        if action in {
-            CONF_ACTION_START_COMPANION_PAIRING,
-            CONF_ACTION_FINISH_COMPANION_PAIRING,
-            CONF_ACTION_RESET_COMPANION_PAIRING,
-        }:
-            await self._handle_companion_pairing_action(action, values)
-        elif action in {
-            CONF_ACTION_START_MRP_PAIRING,
-            CONF_ACTION_FINISH_MRP_PAIRING,
-            CONF_ACTION_RESET_MRP_PAIRING,
-        }:
-            await self._handle_mrp_pairing_action(action, values)
+    @property
+    def companion_connected(self) -> bool:
+        """Return whether the Companion control channel is currently connected."""
+        return self._companion_device is not None
 
-        entries.extend(self._get_companion_config_entries(values))
-        entries.extend(self._get_mrp_config_entries(values))
-        return entries
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return player configuration entries."""
+        # Companion/MRP pairing is handled by the interactive setup flow
+        # (run_setup_flow) and stored in setup_data, no longer as config entries.
+        return await super().get_config_entries()
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """
+        Run the interactive setup flow for this controlled AirPlay player.
+
+        The streaming pairing (if any) is the required "device code" that gates
+        ``needs_setup``; the optional Companion (remote control) and MRP (playback
+        monitoring) pairings are offered afterwards as sequential, skippable steps.
+        Re-launching from the player settings re-offers every pairing, so a stored
+        pairing can be redone (replaced) when it went stale.
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        collected: dict[str, ConfigValueType] = {}
+        await self._run_streaming_pairing(session, collected)
+        await self._run_companion_pairing(session, collected)
+        await self._run_mrp_pairing(session, collected)
+        await session.finish(collected)
+        if collected.keys() & {
+            CONF_COMPANION_CREDENTIALS,
+            CONF_MRP_CREDENTIALS,
+            CONF_NATIVE_MRP_CREDENTIALS,
+        }:
+            # bring the freshly paired control channel up right away
+            self._schedule_connection(force=True)
 
     async def power(self, powered: bool) -> None:
         """Turn the controlled device on or off."""
         feature = FeatureName.TurnOn if powered else FeatureName.TurnOff
-        device = self._device_for_feature(feature)
+        device = self._device_for_power_feature(feature)
         if device is None:
             raise PlayerCommandFailed(f"Power control is unavailable for {self.display_name}")
         if powered:
@@ -269,9 +290,15 @@ class AirPlayControlPlayer(AirPlayPlayer):
         await self._run_control_command(device.remote_control.pause(), "pause")
 
     async def stop(self) -> None:
-        """Stop Music Assistant or external playback."""
+        """Stop Music Assistant playback, or return the device to its home screen."""
         if self._stream_active:
             await super().stop()
+            return
+        # For external playback there is no real "stop"; returning to the home
+        # screen backgrounds the current app, which is the closest equivalent.
+        device = self._device_for_feature(FeatureName.Home)
+        if device is not None:
+            await self._run_control_command(device.remote_control.home(), "stop")
             return
         device = self._device_for_feature(FeatureName.Stop)
         if device is not None:
@@ -297,7 +324,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if device is None:
             await super().volume_set(volume_level)
             return
-        await self._run_control_command(device.audio.set_volume(volume_level), "set volume")
+        await self._run_volume_command(device.audio.set_volume(volume_level), "set volume")
         self._handle_volume_update("command", volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
@@ -313,13 +340,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 return
             if self.volume_level and self.volume_level > 0:
                 self._volume_before_mute = self.volume_level
-            await self._run_control_command(device.audio.set_volume(0), "mute")
+            await self._run_volume_command(device.audio.set_volume(0), "mute")
             self._handle_volume_update("command", 0)
             return
         if not self.volume_muted:
             return
         volume = self._volume_before_mute or self.volume_level or FALLBACK_VOLUME
-        await self._run_control_command(device.audio.set_volume(volume), "unmute")
+        await self._run_volume_command(device.audio.set_volume(volume), "unmute")
         self._handle_volume_update("command", volume)
 
     async def next_track(self) -> None:
@@ -335,6 +362,69 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if device is None:
             raise PlayerCommandFailed(f"Previous control is unavailable for {self.display_name}")
         await self._run_control_command(device.remote_control.previous(), "skip to previous")
+
+    async def wake(self) -> None:
+        """Wake the device from sleep when it exposes power control."""
+        await self._wake_for_playback()
+
+    async def async_list_installed_app_ids(self) -> set[str] | None:
+        """
+        Return the bundle ids of the apps installed on the device.
+
+        Uses the Companion app-listing feature. Returns None when the app list cannot be
+        retrieved (Companion channel down or the query failed), so a caller can tell
+        "unknown" apart from "installed, but not this app".
+        """
+        device = self._device_for_feature(FeatureName.AppList)
+        if device is None:
+            return None
+        try:
+            apps = await device.apps.app_list()
+        except _COMMAND_ERRORS as err:
+            self.logger.debug("Unable to list installed apps for %s: %s", self.name, err)
+            return None
+        return {app.identifier for app in apps}
+
+    async def async_launch_app(self, bundle_id_or_url: str) -> None:
+        """
+        Launch an app (bundle id) or custom URL on the device over Companion.
+
+        :param bundle_id_or_url: A bundle id or a URL-scheme value to launch.
+        :raises PlayerCommandFailed: If app launching is unavailable or the launch fails.
+        """
+        device = self._device_for_feature(FeatureName.LaunchApp)
+        if device is None:
+            raise PlayerCommandFailed(f"App launching is unavailable for {self.display_name}")
+        await self._run_control_command(device.apps.launch_app(bundle_id_or_url), "launch app")
+
+    async def async_get_external_artwork(self, artwork_id: str) -> bytes:
+        """
+        Return artwork bytes for the current externally playing item.
+
+        :param artwork_id: Identifier of the artwork requested by the image proxy.
+        :raises MediaNotFoundError: If the artwork is stale or unavailable.
+        """
+        device = self._mrp_device
+        if (
+            device is None
+            or self._stream_active
+            or not self._feature_available(device, FeatureName.Artwork)
+            or device.metadata.artwork_id != artwork_id
+        ):
+            raise MediaNotFoundError("External AirPlay artwork is unavailable")
+        try:
+            artwork = await device.metadata.artwork()
+        except _COMMAND_ERRORS as err:
+            raise MediaNotFoundError("Unable to retrieve external AirPlay artwork") from err
+        if (
+            artwork is None
+            or not artwork.bytes
+            or self._mrp_device is not device
+            or self._stream_active
+            or device.metadata.artwork_id != artwork_id
+        ):
+            raise MediaNotFoundError("External AirPlay artwork is no longer current")
+        return artwork.bytes
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Update AirPlay discovery data and reconnect device control if needed."""
@@ -380,12 +470,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._connection_task
         await self._disconnect_control_services()
-        if self._active_companion_pairing:
-            await self._active_companion_pairing.close()
-            self._active_companion_pairing = None
-        if self._active_mrp_pairing:
-            await self._active_mrp_pairing.close()
-            self._active_mrp_pairing = None
         await super().on_unload()
 
     def _schedule_connection(self, *, force: bool = False) -> None:
@@ -427,7 +511,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Connect the Companion control channel."""
         if self._companion_device is not None:
             return False
-        credentials = self.config.get_value(CONF_COMPANION_CREDENTIALS)
+        credentials = self.get_setup_value(CONF_COMPANION_CREDENTIALS)
         if not credentials or not self.companion_discovery_info:
             return False
         config = self._build_config(
@@ -460,6 +544,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._apply_initial_device_state(device, "companion")
         self.update_state()
         self.logger.debug("Connected Companion control for %s", self.display_name)
+        self._notify_companion_state_change()
         return False
 
     async def _connect_mrp(self) -> bool:
@@ -544,6 +629,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if companion_device:
             companion_device.close()
         self._disconnecting = False
+        if companion_device is not None:
+            self._notify_companion_state_change()
 
     def _build_config(
         self,
@@ -591,7 +678,26 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
-        return bool((stream := getattr(self, "stream", None)) and stream.running)
+        active = bool((stream := getattr(self, "stream", None)) and stream.running)
+        if active:
+            self._stream_last_active = time.monotonic()
+        return active
+
+    @property
+    def _external_state_blocked(self) -> bool:
+        """
+        Return whether externally observed playback state must be ignored.
+
+        While Music Assistant streams to this device, the stream is the SOLE
+        authority on player state. The check extends a grace period past a
+        stream's end because a warm-to-cold fallback briefly tears the stream
+        down mid-playback: a Companion/MRP update slipping through that window
+        applies the device's view of our own dying session as an "external
+        source", freezing the UI on a stale snapshot.
+        """
+        if self._stream_active:
+            return True
+        return time.monotonic() - getattr(self, "_stream_last_active", 0.0) < 15.0
 
     @property
     def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
@@ -615,7 +721,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _mrp_credentials(self) -> str | None:
         """Return credentials for the active MRP transport."""
-        credentials = self.config.get_value(self._mrp_credentials_key)
+        credentials = self.get_setup_value(self._mrp_credentials_key)
         return str(credentials) if credentials else None
 
     @property
@@ -647,6 +753,28 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 return device
         return None
 
+    def _device_for_power_feature(self, feature: FeatureName) -> AppleTV | None:
+        """
+        Return a connected device facade that can genuinely serve a power command.
+
+        pyatv reports the power commands as available on every MRP connection, but a
+        transient tunnel - the only control channel current HomePod firmware offers -
+        cannot act on them, and derives its power state from ``logicalDeviceCount``,
+        which does not count AirPlay audio sessions. Trusting it would leave a playing
+        HomePod stranded as "off".
+
+        :param feature: The power feature to look for.
+        """
+        if self._companion_device and self._feature_available(self._companion_device, feature):
+            return self._companion_device
+        if (
+            self._mrp_device
+            and not self._uses_transient_mrp
+            and self._feature_available(self._mrp_device, feature)
+        ):
+            return self._mrp_device
+        return None
+
     @staticmethod
     def _feature_available(device: AppleTV, feature: FeatureName) -> bool:
         """Return whether pyatv currently exposes a feature."""
@@ -656,7 +784,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Wake the device before starting or resuming playback."""
         if self.powered is True:
             return
-        device = self._device_for_feature(FeatureName.TurnOn)
+        device = self._device_for_power_feature(FeatureName.TurnOn)
         if device is None:
             return
         self._power_on_event.clear()
@@ -681,363 +809,185 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 f"Unable to {description} {self.display_name}: {err}"
             ) from err
 
-    def _get_companion_config_entries(
-        self,
-        values: dict[str, ConfigValueType] | None,
-    ) -> list[ConfigEntry]:
-        """Return Companion pairing configuration entries."""
-        credentials = self.config.get_value(CONF_COMPANION_CREDENTIALS)
-        if values is not None:
-            credentials = values.get(CONF_COMPANION_CREDENTIALS, credentials)
-        entries: list[ConfigEntry] = []
-        if credentials:
-            entries.extend(
-                [
-                    ConfigEntry(
-                        key="companion_pairing_status",
-                        type=ConfigEntryType.LABEL,
-                        category="protocol_generic",
-                    ),
-                    ConfigEntry(
-                        key=CONF_ACTION_RESET_COMPANION_PAIRING,
-                        type=ConfigEntryType.ACTION,
-                        action=CONF_ACTION_RESET_COMPANION_PAIRING,
-                        category="protocol_generic",
-                    ),
-                ]
+    async def _run_volume_command(self, command: Awaitable[None], description: str) -> None:
+        """Run a native volume command, tolerating a missing confirmation event."""
+        # pyatv waits (up to 5s) for a pushed volume confirmation after a Companion
+        # volume command. Apple TVs that pass volume through to an HDMI-CEC amplifier
+        # apply the change but never emit that event, so the call times out even
+        # though it succeeded. Treat the timeout as success and let the caller apply
+        # the requested level; genuine command failures still surface.
+        try:
+            await command
+        except TimeoutError:
+            self.logger.debug(
+                "No volume confirmation from %s; assuming the change was applied",
+                self.display_name,
             )
-        elif self.companion_pairing_supported:
-            if self._active_companion_pairing:
-                entries.extend(
+        except _COMMAND_ERRORS as err:
+            raise PlayerCommandFailed(
+                f"Unable to {description} {self.display_name}: {err}"
+            ) from err
+
+    async def _run_companion_pairing(
+        self, session: SetupSession, collected: dict[str, ConfigValueType]
+    ) -> None:
+        """
+        Offer optional Companion (remote control) pairing, when supported.
+
+        Shows a skippable choice; on "set up now" it drives the PIN pairing and adds
+        the resulting credentials to ``collected`` (replacing any stored ones).
+
+        :param session: The setup flow session used to interact with the user.
+        :param collected: The values collected so far; updated in place.
+        """
+        if not self.companion_pairing_supported:
+            return
+        if not await self._offer_optional_pairing(session, "companion_offer"):
+            return
+        errors: dict[str, str] | None = None
+        while True:
+            pairing = await self._begin_pyatv_pairing(
+                self.companion_discovery_info, Protocol.Companion
+            )
+            try:
+                values = await session.form(
                     [
                         ConfigEntry(
                             key=CONF_COMPANION_PAIRING_PIN,
                             type=ConfigEntryType.STRING,
                             required=True,
                             category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_FINISH_COMPANION_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_FINISH_COMPANION_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
+                        )
+                    ],
+                    step_id="pair_companion",
+                    errors=errors,
                 )
-            else:
-                entries.extend(
-                    [
-                        ConfigEntry(
-                            key="companion_pairing_instructions",
-                            type=ConfigEntryType.LABEL,
-                            category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_START_COMPANION_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_START_COMPANION_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
+                credentials = await self._finish_pyatv_pairing(
+                    pairing, str(values[CONF_COMPANION_PAIRING_PIN])
                 )
-        # Only in-flight values are echoed back; stored secrets must never be
-        # included in the config-entry payload.
-        entries.append(
-            self._get_hidden_credentials_entry(
-                CONF_COMPANION_CREDENTIALS,
-                values.get(CONF_COMPANION_CREDENTIALS) if values is not None else None,
-            )
-        )
-        return entries
+            except PlayerCommandFailed as err:
+                errors = {"base": err.translation_key or str(err)}
+                continue
+            finally:
+                await pairing.close()
+            collected[CONF_COMPANION_CREDENTIALS] = credentials
+            return
 
-    def _get_mrp_config_entries(
-        self,
-        values: dict[str, ConfigValueType] | None,
-    ) -> list[ConfigEntry]:
-        """Return MRP pairing configuration entries."""
-        credentials = self._mrp_credentials
-        if values is not None:
-            credentials_value = values.get(self._mrp_credentials_key, credentials)
-            credentials = str(credentials_value) if credentials_value else None
-        entries: list[ConfigEntry] = []
-        if credentials:
-            entries.extend(
-                [
-                    ConfigEntry(
-                        key="mrp_pairing_status",
-                        type=ConfigEntryType.LABEL,
-                        category="protocol_generic",
-                    ),
-                    ConfigEntry(
-                        key=CONF_ACTION_RESET_MRP_PAIRING,
-                        type=ConfigEntryType.ACTION,
-                        action=CONF_ACTION_RESET_MRP_PAIRING,
-                        category="protocol_generic",
-                    ),
-                ]
-            )
-        elif self.mrp_pairing_supported:
-            if self._active_mrp_pairing:
-                entries.extend(
+    async def _run_mrp_pairing(
+        self, session: SetupSession, collected: dict[str, ConfigValueType]
+    ) -> None:
+        """
+        Offer optional MRP (playback monitoring) pairing, when supported.
+
+        :param session: The setup flow session used to interact with the user.
+        :param collected: The values collected so far; updated in place.
+        """
+        if not self.mrp_pairing_supported:
+            return
+        endpoint = self._mrp_endpoint
+        if endpoint is None:
+            return
+        discovery_info, protocol = endpoint
+        cred_key = self._mrp_credentials_key
+        if not await self._offer_optional_pairing(session, "mrp_offer"):
+            return
+        errors: dict[str, str] | None = None
+        while True:
+            pairing = await self._begin_pyatv_pairing(discovery_info, protocol)
+            try:
+                values = await session.form(
                     [
                         ConfigEntry(
                             key=CONF_MRP_PAIRING_PIN,
                             type=ConfigEntryType.STRING,
                             required=True,
                             category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_FINISH_MRP_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_FINISH_MRP_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
+                        )
+                    ],
+                    step_id="pair_mrp",
+                    errors=errors,
                 )
-            else:
-                entries.extend(
-                    [
-                        ConfigEntry(
-                            key="mrp_pairing_instructions",
-                            type=ConfigEntryType.LABEL,
-                            category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_START_MRP_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_START_MRP_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
+                credentials = await self._finish_pyatv_pairing(
+                    pairing, str(values[CONF_MRP_PAIRING_PIN])
                 )
-        # Only in-flight values are echoed back; stored secrets must never be
-        # included in the config-entry payload.
-        entries.extend(
-            self._get_hidden_credentials_entry(
-                credentials_key,
-                values.get(credentials_key) if values is not None else None,
-            )
-            for credentials_key in (CONF_MRP_CREDENTIALS, CONF_NATIVE_MRP_CREDENTIALS)
-        )
-        return entries
-
-    @staticmethod
-    def _get_hidden_credentials_entry(
-        credentials_key: str,
-        credentials: ConfigValueType,
-    ) -> ConfigEntry:
-        """Return a hidden secure credentials entry."""
-        return ConfigEntry(
-            key=credentials_key,
-            type=ConfigEntryType.SECURE_STRING,
-            default_value=None,
-            value=credentials,
-            required=False,
-            hidden=True,
-            category="protocol_generic",
-        )
-
-    async def _handle_companion_pairing_action(
-        self,
-        action: str,
-        values: dict[str, ConfigValueType] | None,
-    ) -> None:
-        """Handle a Companion control pairing action."""
-        if action == CONF_ACTION_START_COMPANION_PAIRING:
-            await self._reset_companion_pairing(values)
-            await self._start_companion_pairing()
-        elif action == CONF_ACTION_FINISH_COMPANION_PAIRING:
-            await self._finish_companion_pairing(values)
-        elif action == CONF_ACTION_RESET_COMPANION_PAIRING:
-            await self._reset_companion_pairing(values)
-
-    async def _handle_mrp_pairing_action(
-        self,
-        action: str,
-        values: dict[str, ConfigValueType] | None,
-    ) -> None:
-        """Handle an MRP playback-monitoring pairing action."""
-        if action == CONF_ACTION_START_MRP_PAIRING:
-            await self._reset_mrp_pairing(values)
-            await self._start_mrp_pairing()
-        elif action == CONF_ACTION_FINISH_MRP_PAIRING:
-            await self._finish_mrp_pairing(values)
-        elif action == CONF_ACTION_RESET_MRP_PAIRING:
-            await self._reset_mrp_pairing(values)
-
-    async def _start_companion_pairing(self) -> None:
-        """Start Companion PIN pairing."""
-        if self._active_mrp_pairing:
-            raise PlayerCommandFailed("Finish playback monitoring pairing first")
-        if not self.companion_discovery_info or not self.companion_pairing_supported:
-            raise PlayerCommandFailed(f"Companion pairing is unavailable for {self.display_name}")
-        config = self._build_config(
-            self.companion_discovery_info,
-            Protocol.Companion,
-            None,
-            PairingRequirement.Mandatory,
-        )
-        if config is None:
-            raise PlayerCommandFailed(
-                f"Companion pairing requires an IPv4 address for {self.display_name}"
-            )
-        pairing: PairingHandler | None = None
-        try:
-            pairing = await pyatv.pair(
-                config,
-                Protocol.Companion,
-                self.mass.loop,
-                name="Music Assistant",
-            )
-            await pairing.begin()
-        except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
-            if pairing:
+            except PlayerCommandFailed as err:
+                errors = {"base": err.translation_key or str(err)}
+                continue
+            finally:
                 await pairing.close()
-            raise PlayerCommandFailed(
-                f"Unable to start Companion pairing for {self.display_name}: {err}"
-            ) from err
-        self._active_companion_pairing = pairing
+            collected[cred_key] = credentials
+            return
 
-    async def _finish_companion_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
-        """Finish Companion PIN pairing and retain its credentials."""
-        if not self._active_companion_pairing or values is None:
-            raise PlayerCommandFailed("Companion pairing was not started")
-        pin = values.get(CONF_COMPANION_PAIRING_PIN)
-        try:
-            pin_code = int(str(pin))
-        except (TypeError, ValueError) as err:
-            raise PlayerCommandFailed("Enter the 4-digit PIN shown on the device") from err
-        pairing = self._active_companion_pairing
-        try:
-            pairing.pin(pin_code)
-            await pairing.finish()
-            credentials = pairing.service.credentials
-            if not pairing.has_paired or not credentials:
-                raise PlayerCommandFailed("Companion pairing did not complete")
-            values[CONF_COMPANION_CREDENTIALS] = credentials
-            # the action flow never persists `values` itself, so save right away
-            await self.mass.config.save_player_config(
-                self.player_id, {CONF_COMPANION_CREDENTIALS: credentials}
-            )
-        except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
-            raise PlayerCommandFailed(
-                f"Unable to finish Companion pairing for {self.display_name}: {err}"
-            ) from err
-        finally:
-            await pairing.close()
-            self._active_companion_pairing = None
-        self._schedule_connection(force=True)
+    async def _begin_pyatv_pairing(
+        self, discovery_info: AsyncServiceInfo | None, protocol: Protocol
+    ) -> PairingHandler:
+        """
+        Build a pyatv config and begin a Companion/MRP pairing (the device shows its PIN).
 
-    async def _reset_companion_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
-        """Clear stored Companion credentials and active connections."""
-        if self._connection_task and not self._connection_task.done():
-            self._connection_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._connection_task
-        if self._active_companion_pairing:
-            await self._active_companion_pairing.close()
-            self._active_companion_pairing = None
-        if values is not None:
-            values[CONF_COMPANION_CREDENTIALS] = None
-        await self._disconnect_control_services()
-        # persist the cleared credentials so a restart cannot resurrect them
-        await self.mass.config.save_player_config(
-            self.player_id, {CONF_COMPANION_CREDENTIALS: None}
-        )
-        self._schedule_connection(force=True)
+        A failure here cannot be recovered by re-prompting, so it aborts the flow; a
+        partially started session is torn down first.
 
-    async def _start_mrp_pairing(self) -> None:
-        """Start pairing for MRP playback monitoring."""
-        if self._active_companion_pairing:
-            raise PlayerCommandFailed("Finish Companion pairing first")
-        endpoint = self._mrp_endpoint
-        if endpoint is None or not self.mrp_pairing_supported:
-            raise PlayerCommandFailed(
-                f"Playback monitoring pairing is unavailable for {self.display_name}"
-            )
-        discovery_info, protocol = endpoint
-        config = self._build_config(
-            discovery_info,
-            protocol,
-            None,
+        :param discovery_info: The mDNS record of the service to pair.
+        :param protocol: The pyatv protocol to pair (Companion or the MRP transport).
+        """
+        pairing_requirement = (
             PairingRequirement.Optional
             if protocol == Protocol.MRP
-            else PairingRequirement.Mandatory,
+            else PairingRequirement.Mandatory
+        )
+        config = (
+            self._build_config(discovery_info, protocol, None, pairing_requirement)
+            if discovery_info is not None
+            else None
         )
         if config is None:
-            raise PlayerCommandFailed(
-                f"Playback monitoring pairing requires an IPv4 address for {self.display_name}"
-            )
+            raise AbortFlow("pairing_failed")
         pairing: PairingHandler | None = None
+        started = False
         try:
-            pairing = await pyatv.pair(
-                config,
-                protocol,
-                self.mass.loop,
-                name="Music Assistant",
-            )
+            pairing = await pyatv.pair(config, protocol, self.mass.loop, name="Music Assistant")
             await pairing.begin()
-        except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
-            if pairing:
+            started = True
+        except Exception as err:
+            # any failure starting the pairing (device unreachable, pyatv/system
+            # issue, ...) is unrecoverable here; abort with a clear reason rather
+            # than letting it surface as a generic internal error
+            self.logger.warning("Could not start Apple TV pairing: %s", err)
+            raise AbortFlow("pairing_failed") from err
+        finally:
+            if not started and pairing is not None:
                 await pairing.close()
-            raise PlayerCommandFailed(
-                f"Unable to start playback monitoring pairing for {self.display_name}: {err}"
-            ) from err
-        self._active_mrp_pairing = pairing
+        assert pairing is not None  # reached only when started, i.e. a live session
+        return pairing
 
-    async def _finish_mrp_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
-        """Finish MRP playback-monitoring pairing and retain its credentials."""
-        if not self._active_mrp_pairing or values is None:
-            raise PlayerCommandFailed("Playback monitoring pairing was not started")
-        pin = values.get(CONF_MRP_PAIRING_PIN)
+    async def _finish_pyatv_pairing(self, pairing: PairingHandler, pin: str) -> str:
+        """
+        Submit the PIN and return the credentials from a Companion/MRP pairing session.
+
+        :param pairing: The active pyatv pairing session.
+        :param pin: The PIN the user entered.
+        """
         try:
-            pin_code = int(str(pin))
+            pin_code = int(pin)
         except (TypeError, ValueError) as err:
-            raise PlayerCommandFailed("Enter the 4-digit PIN shown on the device") from err
-        pairing = self._active_mrp_pairing
+            raise PlayerCommandFailed(
+                "Enter the numeric PIN shown on the device",
+                translation_key="invalid_pin",
+                translation_owner=self.translation_owner,
+            ) from err
         try:
             pairing.pin(pin_code)
             await pairing.finish()
-            credentials = pairing.service.credentials
-            if not pairing.has_paired or not credentials:
-                raise PlayerCommandFailed("Playback monitoring pairing did not complete")
-            credentials_key = self._mrp_credentials_key
-            values[credentials_key] = credentials
-            # the action flow never persists `values` itself, so save right away
-            await self.mass.config.save_player_config(
-                self.player_id, {credentials_key: credentials}
-            )
         except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
             raise PlayerCommandFailed(
-                f"Unable to finish playback monitoring pairing for {self.display_name}: {err}"
+                f"Unable to finish pairing for {self.display_name}: {err}"
             ) from err
-        finally:
-            await pairing.close()
-            self._active_mrp_pairing = None
-        self._schedule_connection(force=True)
-
-    async def _reset_mrp_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
-        """Clear stored playback-monitoring credentials and reconnect Companion."""
-        if self._connection_task and not self._connection_task.done():
-            self._connection_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._connection_task
-        if self._active_mrp_pairing:
-            await self._active_mrp_pairing.close()
-            self._active_mrp_pairing = None
-        if values is not None:
-            values[CONF_MRP_CREDENTIALS] = None
-            values[CONF_NATIVE_MRP_CREDENTIALS] = None
-        await self._disconnect_control_services()
-        # persist the cleared credentials so a restart cannot resurrect them
-        await self.mass.config.save_player_config(
-            self.player_id,
-            {
-                CONF_MRP_CREDENTIALS: None,
-                CONF_NATIVE_MRP_CREDENTIALS: None,
-            },
-        )
-        self._schedule_connection(force=True)
+        credentials = pairing.service.credentials
+        if not pairing.has_paired or not credentials:
+            raise PlayerCommandFailed(
+                "Pairing did not complete", translation_key="authentication_failed"
+            )
+        return str(credentials)
 
     def _apply_initial_device_state(self, device: AppleTV, source: str) -> None:
         """Apply power and volume snapshots exposed after connection."""
@@ -1054,19 +1004,36 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._attr_powered = True
             self._power_on_event.set()
         elif power_state == PowerState.Off:
+            # A device streaming from Music Assistant is not powered off, whatever the
+            # control channel claims: MRP derives the state from logicalDeviceCount,
+            # which does not count AirPlay audio sessions, and a Companion SystemStatus
+            # can briefly report sleep mid-stream. Acting on it would strand the player
+            # as "off" and trip the auto-ungroup in the players controller.
+            if self._stream_active:
+                return
             self._attr_powered = False
             self._power_on_event.clear()
-            if not self._stream_active:
-                self._attr_playback_state = PlaybackState.IDLE
-                self._attr_active_source = None
-                self._attr_current_media = None
+            self._attr_playback_state = PlaybackState.IDLE
+            self._attr_active_source = None
+            self._attr_current_media = None
         else:
             self._attr_powered = None
         self.update_state()
 
     def _handle_volume_update(self, source: str, volume: float) -> None:
         """Apply a pushed pyatv volume level."""
-        if source == "mrp" and self._companion_device is not None:
+        # MRP volume is ignored when Companion owns volume, and always on a transient
+        # tunnel: that only exposes the speaker's own volume, which Music Assistant
+        # never drives. Worse, a 0 from there latches a mute, and a muted player
+        # skips the stream volume command entirely - so every later volume change
+        # silently stops reaching the device.
+        if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
+            return
+        # While Music Assistant streams, volume_set drives the stream volume and
+        # deliberately leaves the native device volume alone. The two are separate
+        # knobs on a different scale, so a report about the native one must not
+        # overwrite (or persist) the level the user just set on the stream.
+        if source != "command" and self._stream_active:
             return
         volume_level = max(0, min(100, round(volume)))
         if volume_level == 0:
@@ -1099,24 +1066,30 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _clear_stored_credentials(self, credentials_key: str) -> None:
         """Clear credentials that the receiver rejected."""
-        self.config.update({credentials_key: None})
-        self.mass.config.set_raw_player_config_value(
-            self.player_id,
-            credentials_key,
-            None,
-        )
+        self._update_setup_data(credentials_key, None)
         self.update_state()
 
     def _handle_playing_update(self, playing: Playing) -> None:
         """Apply external playback state received over the MRP tunnel."""
-        if self._stream_active:
+        if self._external_state_blocked:
             return
+        app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
             DeviceState.Playing: PlaybackState.PLAYING,
             DeviceState.Loading: PlaybackState.PLAYING,
             DeviceState.Seeking: PlaybackState.PLAYING,
             DeviceState.Paused: PlaybackState.PAUSED,
         }.get(playing.device_state, PlaybackState.IDLE)
+        # Many tvOS apps (e.g. Netflix) report Idle rather than Paused when
+        # paused. While the same app stays the active source, keep it paused
+        # instead of going idle so transport controls resume the app itself
+        # rather than falling back to the Music Assistant queue.
+        if (
+            playback_state == PlaybackState.IDLE
+            and app is not None
+            and self._attr_active_source == app.identifier
+        ):
+            playback_state = PlaybackState.PAUSED
         self._attr_playback_state = playback_state
         if playback_state == PlaybackState.IDLE:
             self._attr_active_source = None
@@ -1124,13 +1097,20 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self.update_state()
             return
 
-        app = self._mrp_device.metadata.app if self._mrp_device else None
         source_id = app.identifier if app else "airplay_control"
         source_name = (app.name or app.identifier) if app else "AirPlay device"
         self._attr_active_source = source_id
         self._ensure_source(source_id, source_name)
         self._attr_elapsed_time = float(playing.position or 0)
         self._attr_elapsed_time_last_updated = time.time()
+        image_url: str | None = None
+        if (
+            self._mrp_device
+            and self._feature_available(self._mrp_device, FeatureName.Artwork)
+            and isinstance(artwork_id := self._mrp_device.metadata.artwork_id, str)
+            and artwork_id
+        ):
+            image_url = self._get_external_artwork_url(artwork_id)
         media_type = (
             MediaType.TRACK if playing.media_type == PyatvMediaType.Music else MediaType.UNKNOWN
         )
@@ -1140,6 +1120,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             title=playing.title or source_name,
             artist=playing.artist,
             album=playing.album,
+            image_url=image_url,
             duration=playing.total_time,
             source_id=source_id,
             elapsed_time=playing.position,
@@ -1149,24 +1130,46 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
         """Add a passive source reported by MRP playback monitoring."""
-        if any(source.id == source_id for source in self._attr_source_list):
+        # Track external ids so the stream can reclaim the device state from a
+        # leaked external snapshot (see AirPlayPlayer.set_state_from_stream).
+        if not hasattr(self, "_external_source_ids"):
+            self._external_source_ids: set[str] = set()
+        self._external_source_ids.add(source_id)
+        can_play_pause = bool(
+            self._device_for_feature(FeatureName.Play)
+            or self._device_for_feature(FeatureName.Pause)
+        )
+        can_next_previous = bool(
+            self._device_for_feature(FeatureName.Next)
+            or self._device_for_feature(FeatureName.Previous)
+        )
+        for source in self._attr_source_list:
+            if source.id != source_id:
+                continue
+            source.name = source_name
+            source.can_play_pause = can_play_pause
+            source.can_next_previous = can_next_previous
             return
         self._attr_source_list.append(
             PlayerSource(
                 id=source_id,
                 name=source_name,
                 passive=True,
-                can_play_pause=bool(
-                    self._device_for_feature(FeatureName.Play)
-                    or self._device_for_feature(FeatureName.Pause)
-                ),
+                can_play_pause=can_play_pause,
                 can_seek=False,
-                can_next_previous=bool(
-                    self._device_for_feature(FeatureName.Next)
-                    or self._device_for_feature(FeatureName.Previous)
-                ),
+                can_next_previous=can_next_previous,
             )
         )
+
+    def _get_external_artwork_url(self, artwork_id: str) -> str:
+        """Return the image-proxy URL for external MRP artwork."""
+        image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            provider=self.provider_id,
+            remotely_accessible=False,
+        )
+        return self.mass.metadata.get_image_url(image)
 
     def _handle_connection_closed(
         self,
@@ -1175,9 +1178,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         exception: Exception | None = None,
     ) -> None:
         """Handle a pyatv connection closing."""
+        companion_closed = False
         if source == "companion" and self._companion_device is device:
             self._companion_device = None
             self._companion_listener = None
+            companion_closed = True
         elif source == "mrp" and self._mrp_device is device:
             self._mrp_device = None
             self._mrp_state_listener = None
@@ -1186,6 +1191,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         if exception:
             self.logger.debug("Apple %s connection lost for %s: %s", source, self.name, exception)
+        if companion_closed:
+            self._notify_companion_state_change()
         if not self._disconnecting and not self._unloading:
             self._schedule_connection()
 
@@ -1201,16 +1208,30 @@ class AirPlayControlPlayer(AirPlayPlayer):
         device.close()
         self._schedule_connection()
 
+    def _notify_companion_state_change(self) -> None:
+        """Notify a wired-up observer that the Companion connection state changed."""
+        if self.on_companion_state_change is not None:
+            self.on_companion_state_change()
+
     @staticmethod
     def _service_signature(info: AsyncServiceInfo | None) -> tuple[object, ...] | None:
         """Return fields that require a pyatv reconnection when changed."""
         if info is None:
             return None
+        # TXT keys are case-insensitive (RFC 6763); casefold them so a re-cased
+        # key is never mistaken for a connection-relevant change.
+        stable_properties = tuple(
+            sorted(
+                (key.casefold(), value)
+                for key, value in info.decoded_properties.items()
+                if key.casefold() not in _VOLATILE_DISCOVERY_KEYS
+            )
+        )
         return (
             info.name,
             info.port,
             tuple(info.addresses),
-            tuple(sorted(info.decoded_properties.items())),
+            stable_properties,
         )
 
 

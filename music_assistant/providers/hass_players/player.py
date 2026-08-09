@@ -30,6 +30,7 @@ from music_assistant.providers.hass.constants import (
     UNAVAILABLE_STATES,
     MediaPlayerEntityFeature,
     StateMap,
+    parse_supported_features,
 )
 
 from .constants import CONF_ENTRY_WARN_HASS_INTEGRATION, NATIVE_SUPPORTED_HASS_INTEGRATIONS
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from hass_client.models import CompressedState
     from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import HomeAssistantPlayerProvider
 
@@ -78,8 +79,8 @@ class HomeAssistantPlayer(Player):
         self._attr_playback_state = StateMap.get(hass_state["state"], PlaybackState.IDLE)
         # Work out supported features
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
-        hass_supported_features = MediaPlayerEntityFeature(
-            hass_state["attributes"]["supported_features"]
+        hass_supported_features = parse_supported_features(
+            hass_state["attributes"].get("supported_features"), player_id, self.logger
         )
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
@@ -134,11 +135,7 @@ class HomeAssistantPlayer(Player):
         # hass media players are a hot mess so play it safe and always use flow mode
         return True
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
         # add alert if the player (type) is also supported by a native MA provider
@@ -269,7 +266,7 @@ class HomeAssistantPlayer(Player):
                 "albumName": media.album,
                 "images": [{"url": media.image_url}] if media.image_url else None,
                 "imageUrl": media.image_url,
-                "duration": media.duration,
+                "duration": media.stream_duration or media.duration,
             },
         }
         if self.extra_data.get("hass_domain") == "esphome":
@@ -315,7 +312,7 @@ class HomeAssistantPlayer(Player):
                 self.display_name,
             )
         hass_prov = cast("HomeAssistantPlayerProvider", self.provider).hass_prov
-        await hass_prov.play_announcement_on_entity(self.player_id, announcement.uri)
+        await hass_prov.play_announcement_on_entity(self.player_id, announcement)
         self.logger.debug(
             "Playing announcement on %s completed",
             self.display_name,
@@ -423,7 +420,9 @@ class HomeAssistantPlayer(Player):
                     self._attr_group_members.clear()
             elif key == "supported_features":
                 # Update supported features dynamically via shared helper
-                hass_supported_features = MediaPlayerEntityFeature(value)
+                hass_supported_features = parse_supported_features(
+                    value, self.player_id, self.logger
+                )
                 self.extra_data["hass_supported_features"] = hass_supported_features
                 self._update_hass_features(hass_supported_features)
 

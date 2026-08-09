@@ -12,6 +12,7 @@ from music_assistant_models.media_items import (
     MediaItemMetadata,
     ProviderMapping,
     Radio,
+    SoundEffect,
     Track,
     UniqueList,
 )
@@ -21,6 +22,7 @@ from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,
     ProviderMappingInfo,
+    construct_media_item_from_playlist_item,
     generate_m3u,
     media_item_to_playlist_item,
     parse_extinf_title,
@@ -455,6 +457,32 @@ def test_round_trip_multiple_entries() -> None:
     assert parsed[2].length is None
 
 
+def test_round_trip_unknown_length_keeps_title() -> None:
+    """Test that an entry with unknown length survives repeated rewrites."""
+    original = PlaylistItem(
+        path="builtin://radio/http://stream.example.com",
+        title="My Custom Station Name",
+        metadata={"media_type": "radio", "name": "My Custom Station Name"},
+        images=[
+            ImageInfo(
+                type="thumb",
+                path="https://img.example.com/station.jpg",
+                provider="builtin",
+                remotely_accessible=True,
+            ),
+        ],
+    )
+    # playlist files are rewritten on every edit, so parse -> generate must be lossless
+    parsed = parse_m3u(generate_m3u("Radio", [original]))
+    reparsed = parse_m3u(generate_m3u("Radio", parsed))
+
+    assert len(reparsed) == 1
+    assert reparsed[0].title == "My Custom Station Name"
+    assert reparsed[0].length is None
+    assert reparsed[0].metadata == original.metadata
+    assert reparsed[0].images[0].path == "https://img.example.com/station.jpg"
+
+
 def test_round_trip_bare_uris() -> None:
     """Test round-trip with bare URIs (no metadata) - migrated playlists."""
     items = [
@@ -468,6 +496,129 @@ def test_round_trip_bare_uris() -> None:
     assert parsed[0].metadata is None
     assert parsed[0].providers == []
     assert parsed[1].path == "tidal://track/xyz789"
+
+
+def test_construct_media_item_from_playlist_item_sound_effect() -> None:
+    """Stored playlist metadata reconstructs a SoundEffect with mappings and artwork."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    builtin_provider = DummyProvider("builtin", "builtin_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "builtin": builtin_provider,
+        "builtin_1": builtin_provider,
+    }.get(ref)
+    item = PlaylistItem(
+        path="builtin://sound_effect/http://example.com/chime.mp3",
+        title="Chime",
+        length="12",
+        metadata={
+            "media_type": MediaType.SOUND_EFFECT.value,
+            "name": "Chime",
+            "mbid": "soundeffect-mbid",
+        },
+        providers=[
+            ProviderMappingInfo(
+                domain="builtin",
+                item_id="http://example.com/chime.mp3",
+                instance_id="builtin_1",
+                content_type="mp3",
+                sample_rate=44100,
+                bit_depth=16,
+                bit_rate=192,
+            )
+        ],
+        images=[
+            ImageInfo(
+                type="thumb",
+                path="https://example.com/chime.jpg",
+                provider="builtin",
+                remotely_accessible=True,
+            )
+        ],
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert isinstance(result, SoundEffect)
+    assert result.name == "Chime"
+    assert result.duration == 12
+    assert result.get_external_id(ExternalID.MB_RECORDING) == "soundeffect-mbid"
+    assert result.provider_mappings
+    mapping = next(iter(result.provider_mappings))
+    assert mapping.provider_domain == "builtin"
+    assert mapping.provider_instance == "builtin_1"
+    assert mapping.item_id == "http://example.com/chime.mp3"
+    assert result.metadata.images
+    assert result.metadata.images[0].path == "https://example.com/chime.jpg"
+
+
+def test_media_item_to_playlist_item_sound_effect_round_trip() -> None:
+    """SoundEffect playlist items round-trip through M3U metadata without losing data."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    builtin_provider = DummyProvider("builtin", "builtin_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "builtin": builtin_provider,
+        "builtin_1": builtin_provider,
+    }.get(ref)
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="https://example.com/chime.jpg",
+        provider="builtin",
+        remotely_accessible=True,
+    )
+    sound_effect = SoundEffect(
+        item_id="http://example.com/chime.mp3",
+        provider="builtin",
+        name="Chime",
+        provider_mappings={
+            ProviderMapping(
+                item_id="http://example.com/chime.mp3",
+                provider_domain="builtin",
+                provider_instance="builtin_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.MP3,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    bit_rate=192,
+                ),
+            )
+        },
+        external_ids={(ExternalID.MB_RECORDING, "soundeffect-mbid")},
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+    sound_effect.duration = 12
+
+    playlist_item = media_item_to_playlist_item(sound_effect)
+    parsed = parse_m3u(generate_m3u("FX", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert playlist_item.path == "builtin://sound_effect/http://example.com/chime.mp3"
+    assert playlist_item.metadata == {
+        "media_type": MediaType.SOUND_EFFECT.value,
+        "name": "Chime",
+        "mbid": "soundeffect-mbid",
+    }
+    assert playlist_item.length == "12"
+    assert playlist_item.images[0].path == "https://example.com/chime.jpg"
+    assert isinstance(reconstructed, SoundEffect)
+    assert reconstructed.duration == 12
+    assert reconstructed.provider_mappings
+    mapping = next(iter(reconstructed.provider_mappings))
+    assert mapping.provider_instance == "builtin_1"
+    assert mapping.item_id == "http://example.com/chime.mp3"
+    assert reconstructed.metadata.images
+    assert reconstructed.metadata.images[0].path == "https://example.com/chime.jpg"
 
 
 # --------------------------------------------------------------------------- #
@@ -564,7 +715,9 @@ def test_media_item_to_playlist_item_radio() -> None:
     assert result.podcast is None
     assert result.album is None
     assert len(result.artists) == 0
+    # a radio has no duration, which must still yield an #EXTINF line carrying the name
     assert result.length is None
+    assert "#EXTINF:-1,Test FM" in generate_m3u("Radio Stations", [result])
 
 
 def test_media_item_to_playlist_item_no_version() -> None:
@@ -624,6 +777,160 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert domains == {"spotify", "tidal"}
     # primary URI uses the highest quality provider
     assert result.path == "tidal://track/t2"
+
+
+def test_radio_entries_round_trip() -> None:
+    """Test that radio entries survive generation and parsing unchanged."""
+    items = [
+        PlaylistItem(
+            path="http://stream.example.com/radio1",
+            title="Jazz FM",
+            length="-1",
+            metadata={"media_type": "radio"},
+        ),
+        PlaylistItem(
+            path="http://stream.example.com/radio2",
+            title="Classic Rock Radio",
+            length="-1",
+            metadata={"media_type": "radio"},
+        ),
+    ]
+    m3u_data = generate_m3u("Radio Stations", items)
+    parsed = parse_m3u(m3u_data)
+
+    assert len(parsed) == 2
+    assert parsed[0].path == "http://stream.example.com/radio1"
+    assert parsed[0].title == "Jazz FM"
+    assert parsed[0].metadata is not None
+    assert parsed[0].metadata["media_type"] == "radio"
+    assert parsed[1].path == "http://stream.example.com/radio2"
+    assert parsed[1].title == "Classic Rock Radio"
+    assert parse_m3u_playlist_name(m3u_data) == "Radio Stations"
+
+
+def test_zero_duration_track_round_trips_unknown_length() -> None:
+    """Test that a zero-duration track gets an #EXTINF:-1 line that parses back to None."""
+    track = Track(
+        item_id="t1",
+        provider="builtin",
+        name="Unknown Length",
+        duration=0,
+        provider_mappings={
+            ProviderMapping(
+                item_id="http://example.com/live.mp3",
+                provider_domain="builtin",
+                provider_instance="builtin",
+            ),
+        },
+    )
+
+    m3u_data = generate_m3u("Playlist", [media_item_to_playlist_item(track)])
+
+    assert "#EXTINF:-1,Unknown Length" in m3u_data
+    parsed = parse_m3u(m3u_data)
+    assert len(parsed) == 1
+    assert parsed[0].length is None
+    assert parsed[0].title == "Unknown Length"
+
+
+# --------------------------------------------------------------------------- #
+#  construct_media_item_from_playlist_item — entries without #EXTPROV          #
+# --------------------------------------------------------------------------- #
+
+
+def _mass_with_builtin() -> MagicMock:
+    """Return a mock mass whose only resolvable provider is builtin."""
+
+    class DummyProvider:
+        domain = "builtin"
+        instance_id = "builtin"
+
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: DummyProvider() if ref == "builtin" else None
+    return mass
+
+
+def test_construct_plain_url_gets_builtin_mapping() -> None:
+    """A bare stream URL with no #EXTPROV must still produce a usable provider mapping."""
+    item = PlaylistItem(path="http://stream.example.com/radio1")
+
+    media_item = construct_media_item_from_playlist_item(
+        item, cast("Any", _mass_with_builtin()), MediaType.RADIO
+    )
+
+    assert isinstance(media_item, Radio)
+    # an item with no mappings never reaches library_add and stays unplayable
+    assert len(media_item.provider_mappings) == 1
+    mapping = next(iter(media_item.provider_mappings))
+    assert mapping.provider_domain == "builtin"
+    assert mapping.available is True
+    # builtin's item_id *is* the stream url, so the whole url carries through
+    assert mapping.item_id == "http://stream.example.com/radio1"
+    assert media_item.item_id == "http://stream.example.com/radio1"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "some/relative/file.mp3",
+        "/media/library/file.mp3",
+        # an MA-style provider URI is not a stream URL; builtin would ffprobe it and fail
+        "radiobrowser://radio/123",
+        "file://host/share/file.mp3",
+    ],
+)
+def test_construct_non_stream_url_gets_no_fallback_mapping(path: str) -> None:
+    """Only a plain stream URL falls back to builtin; anything else stays unmapped."""
+    media_item = construct_media_item_from_playlist_item(
+        PlaylistItem(path=path), cast("Any", _mass_with_builtin()), MediaType.RADIO
+    )
+
+    assert media_item is not None
+    # claiming builtin availability here would mask an entry that cannot be played
+    assert media_item.provider_mappings == set()
+
+
+def test_construct_defaults_to_requested_media_type() -> None:
+    """An entry without #EXTMA media_type honours the caller's default instead of Track."""
+    item = PlaylistItem(path="http://stream.example.com/radio1")
+    mass = cast("Any", _mass_with_builtin())
+
+    assert isinstance(
+        construct_media_item_from_playlist_item(item, mass, MediaType.RADIO),
+        Radio,
+    )
+    # the default stays Track for every existing caller
+    assert isinstance(construct_media_item_from_playlist_item(item, mass), Track)
+
+
+def test_construct_keeps_the_provider_instance() -> None:
+    """The entry's own instance is used, not whichever instance of the domain loaded first."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    first = DummyProvider("radiobrowser", "radiobrowser--AAA")
+    second = DummyProvider("radiobrowser", "radiobrowser--BBB")
+    providers = {
+        # a bare domain lookup resolves to the first configured instance
+        "radiobrowser": first,
+        "radiobrowser--AAA": first,
+        "radiobrowser--BBB": second,
+    }
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: providers.get(ref)
+    item = PlaylistItem(
+        path="radiobrowser://radio/station-9",
+        metadata={"media_type": MediaType.RADIO.value, "name": "Station Nine"},
+        providers=[ProviderMappingInfo("radiobrowser", "station-9", "radiobrowser--BBB")],
+    )
+
+    media_item = construct_media_item_from_playlist_item(item, cast("Any", mass), MediaType.RADIO)
+
+    assert media_item is not None
+    assert media_item.provider == "radiobrowser--BBB"
 
 
 # --------------------------------------------------------------------------- #

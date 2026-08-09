@@ -153,12 +153,12 @@ async def test_payload_mixin_rows_timeout_does_not_cancel_shared_fetch(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    The controller's rows timeout degrades gracefully without killing the shielded fetch.
+    The controller's rows timeout degrades gracefully without killing the shared fetch.
 
     A RecommendationPayloadMixin provider's shared payload fetch outlives the controller's
     own RECOMMENDATIONS_ROWS_TIMEOUT: the timed-out rows call returns without this provider's
     rows, but the fetch keeps running in the background, warms the cache, and a later rows
-    call serves it without hitting the backend again (pins shield-vs-controller-timeout).
+    call serves it without hitting the backend again.
     """
     monkeypatch.setattr(rec_controller, "RECOMMENDATIONS_ROWS_TIMEOUT", 0.05)
     gate = asyncio.Event()
@@ -208,7 +208,7 @@ async def test_payload_mixin_rows_timeout_does_not_cancel_shared_fetch(
     assert any(f.provider == "recommendations" for f in folders)  # other rows unaffected
     assert provider.fetch_count == 1  # the fetch started but did not finish in time
 
-    # release the gate: the shielded fetch, still running in the background, completes
+    # release the gate: the shared fetch, still running in the background, completes
     gate.set()
     payload_task = provider._recommendation_payload_task
     assert payload_task is not None

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -212,18 +213,11 @@ class PlayerConfigMixin:
         raise KeyError(msg)
 
     @api_command("config/players/get_entries", required_scope=Scope.CONFIG_PLAYERS_READ)
-    async def get_player_config_entries(
-        self,
-        player_id: str,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_player_config_entries(self, player_id: str) -> list[ConfigEntry]:
         """
         Return Config entries to configure a player.
 
-        player_id: id of an existing player instance.
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param player_id: id of an existing player instance.
         """
         if not (player := self.mass.players.get_player(player_id, False)):
             msg = f"Player {player_id} not found"
@@ -233,9 +227,7 @@ class PlayerConfigMixin:
         player_entries: list[ConfigEntry]
         if player.state.type == PlayerType.PROTOCOL:
             default_entries = []
-            player_entries = await self._get_player_config_entries(
-                player, action=action, values=values
-            )
+            player_entries = await self._get_player_config_entries(player)
         else:
             # get default entries which are common for all (non protocol)players
             default_entries = self._get_default_player_config_entries(player)
@@ -246,14 +238,25 @@ class PlayerConfigMixin:
             # and maximizes api client compatibility because you can configure the whole player
             # including its protocols from a single config endpoint without needing special handling
             # for protocol players in the UI/api clients
-            if protocol_entries := await self._create_output_protocol_config_entries(
-                player, action=action, values=values
-            ):
+            if protocol_entries := await self._create_output_protocol_config_entries(player):
                 player_entries = protocol_entries
+                if not any(protocol.is_native for protocol in player.output_protocols):
+                    # A control-only player (e.g. a device that delegates playback to a
+                    # linked DLNA protocol player) has no native output protocol, so the
+                    # block above never injects the player's own entries. Append them here
+                    # so it keeps its own config surface, skipping keys the protocol
+                    # entries already cover.
+                    protocol_keys = {entry.key for entry in protocol_entries}
+                    player_entries = [
+                        *protocol_entries,
+                        *[
+                            entry
+                            for entry in await self._get_player_config_entries(player)
+                            if entry.key not in protocol_keys
+                        ],
+                    ]
             else:
-                player_entries = await self._get_player_config_entries(
-                    player, action=action, values=values
-                )
+                player_entries = await self._get_player_config_entries(player)
 
         player_entries_keys = {entry.key for entry in player_entries}
         all_entries = [
@@ -261,7 +264,46 @@ class PlayerConfigMixin:
             *[x for x in default_entries if x.key not in player_entries_keys],
             *player_entries,
         ]
-        return _with_translation_owner(all_entries, f"provider.{player.provider}", action, values)
+        return _with_translation_owner(all_entries, player.translation_owner)
+
+    @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def invoke_player_config_action(
+        self, player_id: str, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult:
+        """
+        Run a one-shot action button from a player's config.
+
+        A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
+        the linked protocol player; the parent player's entries are then re-rendered so the
+        injected protocol entries pick up any state change. A ``ConfigActionResult`` holds the
+        outcome to report to the user; an empty list means the action ran with nothing to
+        report; a non-empty list holds the parent player's entries the config form should
+        re-render with.
+
+        :param player_id: The player whose config surface holds the action.
+        :param action: The action id of the pressed button (may be protocol-prefixed).
+        """
+        if not (player := self.mass.players.get_player(player_id, False)):
+            msg = f"Player {player_id} not found"
+            raise KeyError(msg)
+        if CONF_PROTOCOL_KEY_SPLITTER in action:
+            protocol_player_id, protocol_action = action.split(CONF_PROTOCOL_KEY_SPLITTER, 1)
+            if not (target := self.mass.players.get_player(protocol_player_id, False)):
+                msg = f"Player {protocol_player_id} not found"
+                raise KeyError(msg)
+            result = await target.handle_config_action(protocol_action)
+        else:
+            target = player
+            result = await player.handle_config_action(action)
+        if result is None:
+            return []
+        if isinstance(result, ConfigActionResult):
+            # the strings belong to the provider that handled the action, which for a
+            # protocol-prefixed action is the protocol player's, not the host player's
+            result.translation_owner = result.translation_owner or target.translation_owner
+            return result
+        # re-render the full (parent) player entries so injected protocol entries refresh
+        return await self.get_player_config_entries(player_id)
 
     @overload
     async def get_player_config_value(
@@ -547,8 +589,6 @@ class PlayerConfigMixin:
     async def _get_player_config_entries(
         self,
         player: Player,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """
         Return Player(protocol) specific config entries, without any default entries.
@@ -556,9 +596,7 @@ class PlayerConfigMixin:
         In general this returns entries that are specific to this provider/player type only,
         and includes audio related entries that are not part of the default set.
 
-        player: the player instance
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param player: the player instance
         """
         default_entries: list[ConfigEntry]
         is_dedicated_group_player = player.state.type in (
@@ -595,7 +633,7 @@ class PlayerConfigMixin:
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
-        player_entries = await player.get_config_entries(action=action, values=values)
+        player_entries = await player.get_config_entries()
         players_keys = {entry.key for entry in player_entries}
         # filter out any default entries that are already provided by the player
         default_entries = [entry for entry in default_entries if entry.key not in players_keys]
@@ -696,7 +734,7 @@ class PlayerConfigMixin:
             if has_native_volume_control:
                 break
             protocol_player = self.mass.players.get_player(linked_protocol.output_protocol_id)
-            if not protocol_player or not protocol_player.available:
+            if not protocol_player or not protocol_player.available_for_playback:
                 continue
             if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
                 if auto_option not in volume_options:
@@ -786,15 +824,15 @@ class PlayerConfigMixin:
     async def _create_output_protocol_config_entries(  # noqa: PLR0915
         self,
         player: Player,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """
-        Create config entry for preferred output protocol.
+        Create the output protocol config entries for a player.
 
-        Returns empty list if there are no output protocol options (native only or no protocols).
-        The player.output_protocols property includes native, active, and disabled protocols,
-        with the available flag indicating their status.
+        The preferred output protocol entry is always returned, listing outputs that can not
+        be selected right now as disabled options and hidden altogether when the player has
+        at most one output. The settings of each output whose provider is loaded follow.
+
+        :param player: The player to create the output protocol config entries for.
         """
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
@@ -815,28 +853,42 @@ class PlayerConfigMixin:
             ):
                 base_protocols[protocol.output_protocol_id] = base_protocol
 
-        # Build options from available output protocols, sorted by priority
+        # Build options from all output protocols, sorted by priority
         options: list[ConfigValueOption] = []
 
-        # Add each available output protocol as an option, sorted by priority
+        # Add each output protocol as an option, sorted by priority. An output that can not be
+        # used right now is offered disabled with the reason why, rather than left out entirely:
+        # that keeps the device's outputs recognizable and explains what to do about it.
         has_native = False
         for protocol in sorted(output_protocols, key=lambda p: p.priority):
             protocol_name = self._get_protocol_display_name(protocol.protocol_domain)
-            if protocol.available:
-                # Use "native" for native playback,
-                # otherwise use the protocol output id (=player id)
-                if protocol.is_native:
-                    title = f"{protocol_name} (native)"
-                elif base_protocol := base_protocols.get(protocol.output_protocol_id):
-                    title = (
-                        f"{protocol_name} "
-                        f"(over {self._get_protocol_display_name(base_protocol.protocol_domain)})"
-                    )
-                else:
-                    title = protocol_name
-                value = "native" if protocol.is_native else protocol.output_protocol_id
-                options.append(ConfigValueOption(value, title=title))
-                has_native = has_native or protocol.is_native
+            # Use "native" for native playback,
+            # otherwise use the protocol output id (=player id)
+            if protocol.is_native:
+                title = f"{protocol_name} (native)"
+            elif base_protocol := base_protocols.get(protocol.output_protocol_id):
+                title = (
+                    f"{protocol_name} "
+                    f"(over {self._get_protocol_display_name(base_protocol.protocol_domain)})"
+                )
+            else:
+                title = protocol_name
+            value = "native" if protocol.is_native else protocol.output_protocol_id
+            options.append(
+                ConfigValueOption(
+                    value,
+                    title=title,
+                    disabled=not protocol.available,
+                    # the option's value is a player id, so its reason is keyed by this slug
+                    translation_key=(
+                        None
+                        if protocol.available
+                        else self._output_protocol_unavailable_reason(player, protocol)
+                    ),
+                )
+            )
+            # never default to an output that can not be selected
+            has_native = has_native or (protocol.is_native and protocol.available)
 
         if has_native:
             default_value = "native"
@@ -904,9 +956,7 @@ class PlayerConfigMixin:
                 )
             if protocol.is_native:
                 # add protocol-specific entries from native player
-                protocol_entries = await self._get_player_config_entries(
-                    player, action=action, values=values
-                )
+                protocol_entries = await self._get_player_config_entries(player)
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -918,23 +968,8 @@ class PlayerConfigMixin:
             elif protocol_player := self.mass.players.get_player(protocol.output_protocol_id):
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
-
-                if action and protocol_prefix in action:
-                    protocol_action = action.replace(protocol_prefix, "")
-                else:
-                    protocol_action = None
-                if values:
-                    # extract only relevant values for this protocol player
-                    protocol_values = {
-                        key.replace(protocol_prefix, ""): val
-                        for key, val in values.items()
-                        if key.startswith(protocol_prefix)
-                    }
-                else:
-                    protocol_values = None
-                protocol_entries = await self._get_player_config_entries(
-                    protocol_player, action=protocol_action, values=protocol_values
-                )
+                protocol_entries = await self._get_player_config_entries(protocol_player)
+                protocol_entry_keys = {entry.key for entry in protocol_entries}
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -947,7 +982,17 @@ class PlayerConfigMixin:
                     entry.translation_key = entry.translation_key or entry.key
                     entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
-                    entry.depends_on = None if protocol.is_native else protocol_enabled_key
+                    if entry.depends_on in protocol_entry_keys:
+                        # the entry it depends on is copied into this same block, so follow it
+                        # to its prefixed key and keep the value condition that goes with it
+                        entry.depends_on = f"{protocol_prefix}{entry.depends_on}"
+                    else:
+                        # nothing of its own to depend on, so gate it on the protocol toggle.
+                        # any value condition belonged to the original key and must not carry
+                        # over, or it gets compared against the toggle's boolean instead.
+                        entry.depends_on = protocol_enabled_key
+                        entry.depends_on_value = None
+                        entry.depends_on_value_not = None
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None
                     all_entries.append(entry)
 
@@ -999,6 +1044,22 @@ class PlayerConfigMixin:
                 continue
             values[entry.key] = stored_value
         return values
+
+    def _output_protocol_unavailable_reason(self, player: Player, protocol: OutputProtocol) -> str:
+        """
+        Return the translation slug telling why an output protocol can not be selected.
+
+        :param player: The player the output protocol belongs to.
+        :param protocol: The output protocol that is currently unavailable.
+        """
+        if protocol.is_native:
+            return "needs_setup" if player.needs_setup else "unavailable"
+        if not self.get_raw_player_config_value(protocol.output_protocol_id, CONF_ENABLED, True):
+            return "turned_off"
+        protocol_player = self.mass.players.get_player(protocol.output_protocol_id)
+        if protocol_player is not None and protocol_player.needs_setup:
+            return "needs_setup"
+        return "unavailable"
 
     def _get_protocol_display_name(self, protocol_domain: str) -> str:
         """Return the display name for a protocol domain."""

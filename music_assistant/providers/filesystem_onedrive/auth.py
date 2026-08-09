@@ -16,69 +16,67 @@ from urllib.parse import urlencode
 from aiohttp import ClientError
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
-from music_assistant.helpers.auth import AuthenticationHelper
-
-from .constants import (
-    CALLBACK_REDIRECT_URL,
-    CONF_REFRESH_TOKEN,
-    OAUTH_AUTHORIZE_URL,
-    OAUTH_SCOPE,
-    OAUTH_TOKEN_URL,
+from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.helpers.oauth import (
+    OAUTH_STEP_TIMEOUT,
+    authorization_code_from_params,
+    hosted_bounce_redirect,
 )
+from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.providers.filesystem_cloud.base import CONF_REFRESH_TOKEN
+
+from .constants import OAUTH_AUTHORIZE_URL, OAUTH_SCOPE, OAUTH_TOKEN_URL
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.setup_flow import SetupSession
 
 
-async def authorize(
-    mass: MusicAssistant, session_id: str, client_id: str, client_secret: str
-) -> str:
+async def authorize(session: SetupSession, client_id: str, client_secret: str) -> str:
     """
-    Run the Microsoft OAuth consent flow and return the resulting refresh token.
+    Run the Microsoft OAuth consent flow via the setup session and return the refresh token.
 
-    :param mass: MusicAssistant instance.
-    :param session_id: Unique id for this auth session, provided by the frontend.
+    :param session: The setup session driving the flow.
     :param client_id: The user's Microsoft OAuth client (application) ID.
     :param client_secret: The user's Microsoft OAuth client secret.
     """
-    async with AuthenticationHelper(mass, session_id) as auth_helper:
-        params = {
-            "response_type": "code",
-            "client_id": client_id,
-            "scope": OAUTH_SCOPE,
-            "redirect_uri": CALLBACK_REDIRECT_URL,
-            # Microsoft only allows pre-registered redirect URIs, so we send the
-            # user through the fixed MA callback page which forwards to the local
-            # (session-specific) callback URL we smuggle along in `state`
-            "state": auth_helper.callback_url,
-        }
-        auth_url = f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
-        result = await auth_helper.authenticate(auth_url, timeout=120)
-    # the callback relay page forwards a literal "null" code when consent was denied
-    if not result.get("code") or result["code"] == "null":
-        err = result.get("error", "no authorization code returned")
-        raise LoginFailed(f"OneDrive authorization failed: {err}")
+    # Microsoft only allows pre-registered redirect URIs, so send the user through the fixed
+    # MA callback page which forwards to the local callback URL smuggled along in `state`
+    redirect_uri, state = hosted_bounce_redirect(session.callback_url)
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "scope": OAUTH_SCOPE,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    result = await session.external(
+        f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}",
+        step_id="authenticate",
+        expires_in=OAUTH_STEP_TIMEOUT,
+    )
+    code = authorization_code_from_params(result)
     data = {
         "grant_type": "authorization_code",
-        "code": result["code"],
+        "code": code,
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": CALLBACK_REDIRECT_URL,
+        "redirect_uri": redirect_uri,
         "scope": OAUTH_SCOPE,
     }
     try:
-        async with mass.http_session.post(OAUTH_TOKEN_URL, data=data) as resp:
+        async with session.mass.http_session.post(OAUTH_TOKEN_URL, data=data) as resp:
             if resp.status != 200:
                 error_text = await resp.text()
-                raise LoginFailed(
+                raise SetupFlowError(
                     _friendly_auth_error(error_text)
                     or f"Failed to exchange authorization code: {error_text}"
                 )
             token_info = await resp.json()
     except ClientError as err:
-        raise LoginFailed(f"Failed to exchange authorization code: {err}") from err
+        raise SetupFlowError(f"Failed to exchange authorization code: {err}") from err
     if not (refresh_token := token_info.get("refresh_token")):
-        raise LoginFailed(
+        raise SetupFlowError(
             "Microsoft did not return a refresh token, please retry the authorization"
         )
     return str(refresh_token)
@@ -143,12 +141,14 @@ class MAOneDriveAuth:
         self._access_token = str(payload["access_token"])
         self._expires_at = time.time() + float(payload["expires_in"])
         # Microsoft rotates the refresh token on every use and the old one only
-        # stays valid for a limited time, so persist the newest to config to
+        # stays valid for a limited time, so persist the newest to setup_data to
         # survive restarts
         if (new_refresh := payload.get("refresh_token")) and new_refresh != self._refresh_token:
             self._refresh_token = new_refresh
-            self.mass.config.set_raw_provider_config_value(
-                self._instance_id, CONF_REFRESH_TOKEN, new_refresh, encrypted=True, immediate=True
+            self.mass.config.set(
+                f"{CONF_PROVIDERS}/{self._instance_id}/setup_data/{CONF_REFRESH_TOKEN}",
+                self.mass.config.encrypt_string(new_refresh),
+                immediate=True,
             )
         return self._access_token
 

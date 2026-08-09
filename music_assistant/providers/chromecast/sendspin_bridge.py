@@ -32,6 +32,7 @@ from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.errors import PlayerCommandFailed
 from pychromecast.controllers import BaseController
 
+from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
@@ -76,6 +77,14 @@ _CAST_LOG_LEVEL_MAP: dict[str, int] = {
     "warn": logging.WARNING,
     "info": logging.INFO,
     "debug": logging.DEBUG,
+}
+
+_BRIDGE_POLICY_STATE_FIELDS = {
+    "device_info.identifiers",
+    "device_info.manufacturer",
+    "device_info.model",
+    "output_protocols",
+    "type",
 }
 
 
@@ -622,12 +631,12 @@ class SendspinChromecastBridge:
         The Cast app uses this info to connect its JS Sendspin client
         back to the server with the same client_id.
         """
-        # The Sendspin server runs on its own port (8927), NOT through
+        # The Sendspin server runs on its own port, NOT through
         # the MA webserver or streams server. Use publish_ip directly.
         publish_ip = self.mass.streams.publish_ip
         # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
         # the WebSocket URL. Send the bare server URL here so it ends up correct.
-        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927"
+        server_url = f"ws://{format_ip_for_url(publish_ip)}:{SENDSPIN_SERVER_PORT}"
         raw_delay = self.mass.config.get_raw_player_config_value(
             self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )
@@ -676,7 +685,17 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         super().__init__(provider)
         self._rebridge_unsubs: dict[str, Callable[[], None]] = {}
         self._claimed_clients: dict[str, str] = {}
-        self._unsubs.append(self.mass.subscribe(self._on_player_updated, EventType.PLAYER_UPDATED))
+        self._blocklist_log_state: dict[str, tuple[str, str]] = {}
+        self._pending_bridge_evaluations: set[str] = set()
+        self._unsubs.append(
+            self.mass.players.subscribe_player_state_update(self._on_player_state_updated)
+        )
+        self._unsubs.append(
+            self.mass.subscribe(
+                self._on_player_unregistered,
+                (EventType.PLAYER_UPDATED, EventType.PLAYER_REMOVED),
+            )
+        )
 
     async def remove_bridge(self, player_id: str, permanent: bool = False) -> None:
         """
@@ -708,6 +727,8 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 unsub()
         self._rebridge_unsubs.clear()
         self._claimed_clients.clear()
+        self._blocklist_log_state.clear()
+        self._pending_bridge_evaluations.clear()
         await super().close()
 
     def get_bridge_by_client_id(self, bridge_client_id: str) -> SendspinChromecastBridge | None:
@@ -761,13 +782,17 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         manufacturer = cast_player.device_info.manufacturer or ""
         model = cast_player.device_info.model or ""
         if is_sendspin_cast_blocked(manufacturer, model):
-            self.logger.debug(
-                "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
-                cast_player.display_name,
-                manufacturer,
-                model,
-            )
+            blocklist_state = (manufacturer, model)
+            if self._blocklist_log_state.get(cast_player.player_id) != blocklist_state:
+                self.logger.debug(
+                    "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
+                    cast_player.display_name,
+                    manufacturer,
+                    model,
+                )
+                self._blocklist_log_state[cast_player.player_id] = blocklist_state
             return False
+        self._blocklist_log_state.pop(cast_player.player_id, None)
 
         # Prefer the airplay bridge over the cast bridge: the Cast receiver
         # pipeline is fragile on many (especially 3rd-party) devices. Hard-deny
@@ -935,20 +960,49 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
 
         self._rebridge_unsubs[client_id] = _combined_unsub
 
-    async def _on_player_updated(self, event: MassEvent) -> None:
-        """Re-evaluate bridge state for cast players affected by a player update."""
-        if not event.object_id:
+    def _on_player_state_updated(
+        self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Re-evaluate bridge state after a relevant player state change."""
+        if not changed_values.keys() & _BRIDGE_POLICY_STATE_FIELDS:
             return
-        updated_player = self.mass.players.get_player(event.object_id)
-        match_ids = {event.object_id}
-        if updated_player and updated_player.protocol_parent_id:
+        match_ids = {updated_player.player_id}
+        if updated_player.protocol_parent_id:
             match_ids.add(updated_player.protocol_parent_id)
+        self._schedule_bridge_evaluations(match_ids)
+
+    def _on_player_unregistered(self, event: MassEvent) -> None:
+        """Re-evaluate Cast bridges after a possible parent is unregistered."""
+        if not event.object_id or self.mass.players.get_player(event.object_id):
+            return
+        self._schedule_bridge_evaluations({event.object_id})
+
+    def _schedule_bridge_evaluations(self, match_ids: set[str]) -> None:
+        """Schedule reconciliation for Cast bridges matching a player ID."""
         for player in self.provider.players:
             cast_player = cast("ChromecastPlayer", player)
             if cast_player.player_id in match_ids or (
                 cast_player.protocol_parent_id and cast_player.protocol_parent_id in match_ids
             ):
-                await self.evaluate_bridge(cast_player)
+                self._pending_bridge_evaluations.add(cast_player.player_id)
+                self.mass.create_task(
+                    self._process_pending_bridge_evaluations,
+                    cast_player.player_id,
+                    task_id=f"evaluate_chromecast_sendspin_bridge_{cast_player.player_id}",
+                )
+
+    async def _process_pending_bridge_evaluations(self, player_id: str) -> None:
+        """
+        Reconcile all bridge policy updates queued for a Chromecast player.
+
+        :param player_id: The Chromecast player ID to reconcile.
+        """
+        while player_id in self._pending_bridge_evaluations:
+            self._pending_bridge_evaluations.discard(player_id)
+            player = self.mass.players.get_player(player_id)
+            if player is None or player.provider is not self.provider:
+                return
+            await self.evaluate_bridge(player)
 
     async def _on_player_config_updated(self, event: MassEvent) -> None:
         """Re-evaluate bridges and push runtime config updates to active Cast apps."""

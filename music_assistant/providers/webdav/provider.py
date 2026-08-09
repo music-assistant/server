@@ -20,16 +20,24 @@ from music_assistant.controllers.tasks.context import update_current_task_progre
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
+    content_type_config_entry,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_connection
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -48,13 +56,35 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize WebDAV FileSystem Provider."""
-        base_url = cast("str", config.get_value(CONF_URL)).rstrip("/")
-        super().__init__(mass, manifest, config, base_url)
-        self.base_url = base_url
-        self.username = cast("str | None", config.get_value(CONF_USERNAME))
-        self.password = cast("str | None", config.get_value(CONF_PASSWORD))
-        self.verify_ssl = cast("bool", config.get_value(CONF_VERIFY_SSL))
-        self.media_content_type = cast("str", config.get_value(CONF_CONTENT_TYPE))
+        # the base path (WebDAV URL) is resolved from the setup data below, which needs
+        # the initialized instance, so hand the base class a placeholder and set it after
+        super().__init__(mass, manifest, config, base_path="")
+        self.base_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
+        self.base_path = self.base_url
+        self.username = cast("str | None", self.get_setup_value(CONF_USERNAME))
+        self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD))
+        self.verify_ssl = cast("bool", self.get_setup_value(CONF_VERIFY_SSL))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
+        return (
+            content_type_config_entry(content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -277,7 +307,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """Walk the WebDAV tree via PROPFIND and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -298,16 +328,18 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             except LoginFailed, SetupFailedError, ProviderUnavailableError:
                 raise
             except aiohttp.ClientError as err:
-                # only a root-level failure aborts the sync; subdir failures
-                # are logged and skipped, matching the local-filesystem walker
-                if is_root:
-                    root_scan_errors.append(OSError(str(err)))
-                else:
+                # a root-level failure aborts the sync right away, subdir failures only
+                # once too many happen in a row, matching the local-filesystem walker
+                if not is_root:
                     self.logger.warning("WebDAV error scanning %s: %s", path, err)
+                scan_errors.record_dir_error(err, is_root=is_root, path=path)
                 return
+            scan_errors.record_dir_read()
             for item in items:
                 if item.is_dir:
                     await _walk(item.relative_path, is_root=False)
+                    if scan_errors.aborted:
+                        return
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue

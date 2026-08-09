@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from music_assistant_models.enums import MediaType
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -19,6 +21,7 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
 CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT = "default_enqueue_option_sound_effect"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
+CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION = "default_enqueue_option_collection"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 
 CONF_AUTOPLAY_LABEL = "autoplay_label"
@@ -65,6 +68,13 @@ MANAGED_POOL_SOURCE_CAP = 250
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
+# A play command is only complete once the player actually reports playback: several player
+# implementations return from play_media as soon as the start command is out while the device
+# needs another moment to connect and start (AirPlay anchors its audible start in the future).
+# The play action - and with it the UI's in-progress indication - is held until the player
+# reports PLAYING, capped by this timeout so a player that never reports state can't block.
+PLAYBACK_START_TIMEOUT = 5.0
+
 # The queue's cached state/items are written through a debounced timer, so a burst of updates (or
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
 # db on every signal_update.
@@ -72,3 +82,11 @@ QUEUE_CACHE_SAVE_DELAY = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
+
+# Media types that may reach us without a duration, so one determined while streaming is applied.
+# Radio and audio sources would wrongly become seekable. Tracks always carry a duration and a
+# rounded value would affect crossfade and gapless timing.
+PROBED_DURATION_MEDIA_TYPES = (
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)

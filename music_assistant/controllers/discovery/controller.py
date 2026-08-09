@@ -13,7 +13,7 @@ from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
     NonUniqueNameException,
@@ -100,13 +100,8 @@ class DiscoveryController(CoreController):
             self._schedule_periodic_ha_announce()
         self._schedule_periodic_upnp_discovery()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for the discovery controller."""
-        del action, values
         return (
             CONF_ENTRY_ZEROCONF_INTERFACES,
             ConfigEntry(
@@ -202,10 +197,11 @@ class DiscoveryController(CoreController):
 
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
+        library_log_level = (
+            logging.DEBUG if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else self.logger.level + 10
+        )
+        for logger_name in ("async_upnp_client", "zeroconf"):
+            logging.getLogger(logger_name).setLevel(library_log_level)
 
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""

@@ -5,11 +5,14 @@ from __future__ import annotations
 import ctypes
 import sys
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    AUDIO_BACKEND_ALSA,
     AUDIO_BACKEND_AUTO,
     AUDIO_BACKEND_PULSEAUDIO,
     CONF_AUDIO_BACKEND,
@@ -21,6 +24,26 @@ class LocalAudioProvider(PlayerProvider):
     """Player provider that exposes locally attached soundcards as Sendspin players."""
 
     _bridge_manager: LocalAudioBridgeManager
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        entries: list[ConfigEntry] = []
+
+        if sys.platform == "linux":
+            entries.append(
+                ConfigEntry(
+                    key=CONF_AUDIO_BACKEND,
+                    type=ConfigEntryType.STRING,
+                    options=[
+                        ConfigValueOption(AUDIO_BACKEND_AUTO),
+                        ConfigValueOption(AUDIO_BACKEND_PULSEAUDIO),
+                        ConfigValueOption(AUDIO_BACKEND_ALSA),
+                    ],
+                    default_value=AUDIO_BACKEND_AUTO,
+                )
+            )
+
+        return tuple(entries)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

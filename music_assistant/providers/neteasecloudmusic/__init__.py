@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import re
 import time
@@ -14,12 +12,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from aiohttp import ClientError, ClientSession, ClientTimeout
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    EventType,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -54,13 +51,8 @@ from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    CONF_ACTION_CHECK_QR_AUTH,
-    CONF_ACTION_CLEAR_AUTH,
-    CONF_ACTION_START_QR_AUTH,
     CONF_API_BASE_URL,
     CONF_COOKIE,
-    CONF_QR_KEY,
-    CONF_QR_PAGE_URL,
     CONF_QUALITY,
     CONF_UID,
     DEFAULT_API_BASE_URL,
@@ -94,7 +86,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LYRICS,
 }
 
-_QR_ROUTE_UNREGISTER: dict[str, Any] = {}
 _HTTP_TIMEOUT = ClientTimeout(total=20)
 _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
 _LRC_META_TAG_PATTERN = re.compile(r"^\[[a-zA-Z]+:.*\]$")
@@ -318,91 +309,6 @@ def _with_pc_os_cookie(cookie: str) -> str:
     return "; ".join(kept)
 
 
-def _clear_qr_route(route_path: str | None) -> None:
-    """Unregister one temporary QR route if present."""
-    if not route_path:
-        return
-    if unregister := _QR_ROUTE_UNREGISTER.pop(route_path, None):
-        if callable(unregister):
-            with suppress(RuntimeError):
-                unregister()
-
-
-def _get_qr_route_path(values: dict[str, ConfigValueType]) -> str | None:
-    """Resolve current session QR route path from config values."""
-    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
-    if qr_page_url:
-        parsed = urlparse(qr_page_url)
-        path = parsed.path or qr_page_url
-        if path and not path.startswith("/"):
-            path = f"/{path}"
-        if path.startswith("/auth/neteasecloudmusic/qr/"):
-            return path
-    if session_id := values.get("session_id"):
-        return f"/auth/neteasecloudmusic/qr/{session_id}"
-    return None
-
-
-def _register_qr_auth_page(
-    mass: MusicAssistant,
-    session_id: str,
-    image_bytes: bytes,
-    mime_type: str,
-) -> str:
-    """Register a temporary web route for QR image and return client-safe URL."""
-    if not getattr(mass, "webserver", None):
-        b64 = base64.b64encode(image_bytes).decode("ascii")
-        return f"data:{mime_type};base64,{b64}"
-
-    route_path = f"/auth/neteasecloudmusic/qr/{session_id}"
-    _clear_qr_route(route_path)
-
-    async def _serve_qr(_: web.Request) -> web.Response:
-        return web.Response(
-            body=image_bytes,
-            content_type=mime_type,
-            headers={"Cache-Control": "no-store, max-age=0"},
-        )
-
-    unregister = mass.webserver.register_dynamic_route(route_path, _serve_qr, "GET")
-    _QR_ROUTE_UNREGISTER[route_path] = unregister
-    return f"{route_path.lstrip('/')}?ts={int(time.time())}"
-
-
-def _decode_qr_data_url(data_url: str) -> tuple[bytes, str] | None:
-    """Decode data:image/...;base64,... to bytes."""
-    if not data_url.startswith("data:image/"):
-        return None
-    if ";base64," not in data_url:
-        return None
-    meta, b64_data = data_url.split(";base64,", 1)
-    mime_type = meta.replace("data:", "", 1)
-    try:
-        return (base64.b64decode(b64_data), mime_type)
-    except ValueError, binascii.Error:
-        return None
-
-
-def _clear_auth(values: dict[str, ConfigValueType]) -> None:
-    """Clear stored authentication fields."""
-    route_path = _get_qr_route_path(values)
-    values[CONF_COOKIE] = None
-    values[CONF_UID] = None
-    values[CONF_QR_KEY] = None
-    values[CONF_QR_PAGE_URL] = None
-    _clear_qr_route(route_path)
-
-
-def _has_qr_pending(values: dict[str, ConfigValueType]) -> bool:
-    """Return True if QR auth is currently pending."""
-    return bool(values.get(CONF_QR_KEY))
-
-
-def _is_verified(values: dict[str, ConfigValueType]) -> bool:
-    """Return True if auth fields are already complete."""
-    return bool(values.get(CONF_COOKIE) and values.get(CONF_UID))
-
-
 async def _resolve_uid(client: NcmApiClient, cookie: str) -> str:
     """Resolve user id from login status endpoint."""
 
@@ -461,227 +367,11 @@ async def _resolve_uid(client: NcmApiClient, cookie: str) -> str:
     raise LoginFailed("Login succeeded but user id is missing from login status")
 
 
-async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType]) -> None:
-    """Start QR login flow and auto-poll once for quick setup."""
-    _clear_qr_route(_get_qr_route_path(values))
-    base_url = str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
-    client = NcmApiClient(mass.http_session, base_url)
-
-    key_payload = await client.get("/login/qr/key", params={"timestamp": int(time.time() * 1000)})
-    key_data = _extract_data(key_payload)
-    qr_key = str(key_data.get("unikey") or key_data.get("key") or "").strip()
-    if not qr_key:
-        raise LoginFailed("Failed to generate NetEase QR key")
-
-    qr_payload = await client.get(
-        "/login/qr/create",
-        params={
-            "key": qr_key,
-            "qrimg": "true",
-            "timestamp": int(time.time() * 1000),
-        },
-    )
-    qr_data = _extract_data(qr_payload)
-    qrimg = str(qr_data.get("qrimg") or "").strip()
-    qrurl = str(qr_data.get("qrurl") or "").strip()
-
-    values[CONF_QR_KEY] = qr_key
-    values[CONF_QR_PAGE_URL] = None
-
-    if session_id := values.get("session_id"):
-        decoded = _decode_qr_data_url(qrimg)
-        if decoded:
-            image_bytes, mime_type = decoded
-            qr_page_url = _register_qr_auth_page(mass, str(session_id), image_bytes, mime_type)
-            values[CONF_QR_PAGE_URL] = qr_page_url
-            mass.signal_event(EventType.AUTH_SESSION, str(session_id), qr_page_url)
-        elif qrurl:
-            values[CONF_QR_PAGE_URL] = qrurl
-            mass.signal_event(EventType.AUTH_SESSION, str(session_id), qrurl)
-    elif qrurl:
-        values[CONF_QR_PAGE_URL] = qrurl
-
-    deadline = time.monotonic() + 120
-    while time.monotonic() < deadline:
-        try:
-            await _check_qr_auth(mass, values, raise_for_pending=False)
-            if _is_verified(values):
-                return
-        except InvalidDataError as err:
-            if "expired" in str(err).lower():
-                raise
-        await asyncio.sleep(1.0)
-    if values.get(CONF_QR_KEY):
-        raise InvalidDataError(
-            "Waiting for scan confirmation timed out. "
-            "You can click QR Login again or use Check QR status."
-        )
-
-
-async def _check_qr_auth(
-    mass: MusicAssistant,
-    values: dict[str, ConfigValueType],
-    *,
-    raise_for_pending: bool = True,
-) -> None:
-    """Check QR status and store cookie/uid when login completes."""
-    qr_key = str(values.get(CONF_QR_KEY) or "").strip()
-    if not qr_key:
-        raise InvalidDataError("Please generate a QR code first")
-    base_url = str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
-    client = NcmApiClient(mass.http_session, base_url)
-
-    payload = await client.get(
-        "/login/qr/check",
-        params={"key": qr_key, "timestamp": int(time.time() * 1000)},
-        allow_codes={800, 801, 802, 803},
-    )
-    code = _extract_code(payload)
-    if code == 803:
-        route_path = _get_qr_route_path(values)
-        cookie = _extract_cookie(payload)
-        if not cookie:
-            raise LoginFailed("QR login succeeded but API response did not include cookie")
-        uid = await _resolve_uid(client, cookie)
-        _clear_qr_route(route_path)
-        values[CONF_COOKIE] = cookie
-        values[CONF_UID] = uid
-        values[CONF_QR_KEY] = None
-        values[CONF_QR_PAGE_URL] = None
-        return
-    if code == 800:
-        route_path = _get_qr_route_path(values)
-        _clear_qr_route(route_path)
-        values[CONF_QR_KEY] = None
-        values[CONF_QR_PAGE_URL] = None
-        raise InvalidDataError("QR code expired, please generate a new one")
-    if raise_for_pending:
-        if code == 801:
-            raise InvalidDataError("QR code not scanned yet")
-        if code == 802:
-            raise InvalidDataError("QR scanned, please confirm login in NetEase app")
-        raise LoginFailed("Unable to determine QR login status")
-
-
-def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEntry, ...]:
-    """Build setup flow config entries."""
-    has_qr_pending = _has_qr_pending(values)
-    is_verified = _is_verified(values)
-    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
-    status_label = (
-        "NetEase Cloud Music login confirmed. Close the QR page and click Save."
-        if is_verified
-        else "QR generated. Open the popup page, scan in NetEase Cloud Music app, then confirm."
-        if has_qr_pending
-        else "Click QR Login to start authentication."
-    )
-    help_text = (
-        "Login flow: 1) Click QR Login. 2) In the newly opened page, scan with NetEase app and "
-        "confirm login. 3) Close QR page. 4) Click Save."
-    )
-    return (
-        ConfigEntry(key="auth_help", type=ConfigEntryType.LABEL, label=help_text),
-        ConfigEntry(key="auth_status", type=ConfigEntryType.LABEL, label=status_label),
-        ConfigEntry(
-            key=CONF_API_BASE_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=DEFAULT_API_BASE_URL,
-            value=str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL),
-        ),
-        ConfigEntry(
-            key=CONF_QR_PAGE_URL,
-            type=ConfigEntryType.STRING,
-            required=False,
-            hidden=not has_qr_pending or not qr_page_url,
-            value=qr_page_url,
-        ),
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            default_value=QUALITY_EXHIGH,
-            hidden=not is_verified,
-            options=[
-                ConfigValueOption(QUALITY_STANDARD),
-                ConfigValueOption(QUALITY_HIGHER),
-                ConfigValueOption(QUALITY_EXHIGH),
-                ConfigValueOption(QUALITY_LOSSLESS),
-                ConfigValueOption(QUALITY_HIRES),
-                ConfigValueOption(QUALITY_JYEFFECT),
-                ConfigValueOption(QUALITY_JYMASTER),
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_START_QR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_START_QR_AUTH,
-            hidden=is_verified,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_CHECK_QR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_CHECK_QR_AUTH,
-            hidden=not has_qr_pending or is_verified,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_CLEAR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_CLEAR_AUTH,
-            hidden=not (has_qr_pending or is_verified),
-        ),
-        ConfigEntry(
-            key=CONF_COOKIE,
-            type=ConfigEntryType.SECURE_STRING,
-            label=CONF_COOKIE,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_COOKIE) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_UID,
-            type=ConfigEntryType.STRING,
-            label=CONF_UID,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_UID) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_QR_KEY,
-            type=ConfigEntryType.STRING,
-            label=CONF_QR_KEY,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_QR_KEY) or ""),
-        ),
-    )
-
-
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
     return NeteaseCloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    if values is None:
-        values = {}
-    try:
-        if action == CONF_ACTION_CLEAR_AUTH:
-            _clear_auth(values)
-        elif action == CONF_ACTION_START_QR_AUTH:
-            await _start_qr_auth(mass, values)
-        elif action == CONF_ACTION_CHECK_QR_AUTH:
-            await _check_qr_auth(mass, values)
-    except ResourceTemporarilyUnavailable as err:
-        raise InvalidDataError(str(err)) from err
-    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class NeteaseCloudMusicProvider(MusicProvider):
@@ -691,27 +381,146 @@ class NeteaseCloudMusicProvider(MusicProvider):
     _cookie: str
     _uid: str
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the configuration (options) entries for the NetEase Cloud Music provider.
+
+        Authentication runs in the interactive setup flow (see ``setup_flow.py``); the only
+        genuine option configured here is the preferred streaming quality.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=QUALITY_EXHIGH,
+                options=[
+                    ConfigValueOption(QUALITY_STANDARD),
+                    ConfigValueOption(QUALITY_HIGHER),
+                    ConfigValueOption(QUALITY_EXHIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                    ConfigValueOption(QUALITY_HIRES),
+                    ConfigValueOption(QUALITY_JYEFFECT),
+                    ConfigValueOption(QUALITY_JYMASTER),
+                ],
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of provider."""
-        self._cookie = str(self.config.get_value(CONF_COOKIE) or "").strip()
-        self._uid = str(self.config.get_value(CONF_UID) or "").strip()
+        self._cookie = str(self.get_setup_value(CONF_COOKIE) or "").strip()
+        self._uid = str(self.get_setup_value(CONF_UID) or "").strip()
         if not self._cookie:
             raise LoginFailed("No NetEase authentication configured, please login by QR code")
 
-        api_base_url = str(self.config.get_value(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
+        api_base_url = str(self.get_setup_value(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
         self._client = NcmApiClient(self.mass.http_session, api_base_url)
         if not self._uid:
             self._uid = await _resolve_uid(self._client, self._cookie)
         self.logger.info("NetEase Cloud Music authenticated for uid %s", self._uid)
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of provider."""
-        if is_removed:
-            route_path = _get_qr_route_path(
-                {CONF_QR_PAGE_URL: str(self.config.get_value(CONF_QR_PAGE_URL) or "")}
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id="recommended_radios",
+                provider=self.instance_id,
+                name="Personal Radio",
+                translation_key="personal_radio",
+                icon="mdi:radio",
+            ),
+            RecommendationFolder(
+                item_id="daily_songs",
+                provider=self.instance_id,
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
+                icon="mdi:star",
+            ),
+            RecommendationFolder(
+                item_id="recommended_new_songs",
+                provider=self.instance_id,
+                name="Recommended new tracks",
+                translation_key="recommended_new_tracks",
+                icon="mdi:music-note",
+            ),
+            RecommendationFolder(
+                item_id="recommended_playlists",
+                provider=self.instance_id,
+                name="Recommended playlists",
+                translation_key="recommended_playlists",
+                icon="mdi:playlist-music",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+
+        if item_id == "recommended_radios":
+            return await self._build_radio_items()
+
+        if item_id == "daily_songs":
+            daily_payload = await self._get_recommend_payload_cached(
+                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
             )
-            _clear_qr_route(route_path)
-        await super().unload(is_removed)
+            daily_data = _extract_data(daily_payload)
+            daily_songs = daily_data.get("dailySongs")
+            if isinstance(daily_songs, list):
+                for song_obj in daily_songs:
+                    if not isinstance(song_obj, dict):
+                        continue
+                    with suppress(InvalidDataError):
+                        items.append(self._parse_track(song_obj))
+                daily_tracks = [item for item in items if isinstance(item, Track)]
+                await self._fill_track_durations(daily_tracks)
+            return items
+
+        if item_id == "recommended_new_songs":
+            new_song_payload = await self._get_recommend_payload_cached(
+                "recommended_newsong",
+                _RECOMMEND_NEWSONG_TTL,
+                "/personalized/newsong",
+                {"limit": 50},
+            )
+            new_song_data = _extract_data(new_song_payload)
+            raw_new_songs = new_song_data.get("result")
+            if isinstance(raw_new_songs, list):
+                for item in raw_new_songs:
+                    if not isinstance(item, dict):
+                        continue
+                    song_obj = item.get("song") if isinstance(item.get("song"), dict) else item
+                    if not isinstance(song_obj, dict):
+                        continue
+                    with suppress(InvalidDataError):
+                        items.append(self._parse_track(song_obj))
+                new_tracks = [item for item in items if isinstance(item, Track)]
+                await self._fill_track_durations(new_tracks)
+            return items
+
+        if item_id == "recommended_playlists":
+            playlist_payload = await self._get_recommend_payload_cached(
+                "recommended_playlists",
+                _RECOMMEND_PLAYLIST_TTL,
+                "/personalized",
+                {"limit": 25},
+            )
+            playlist_data = _extract_data(playlist_payload)
+            raw_playlists = playlist_data.get("result")
+            if isinstance(raw_playlists, list):
+                for playlist_obj in raw_playlists:
+                    if not isinstance(playlist_obj, dict):
+                        continue
+                    with suppress(InvalidDataError):
+                        items.append(self._parse_playlist(playlist_obj))
+            return items
+
+        return items
 
     def _get_item_mapping(self, media_type: MediaType, item_id: str, name: str) -> ItemMapping:
         """Create generic item mapping."""
@@ -1850,149 +1659,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 result.append(self._parse_track(song_obj))
         return filter_tracks(result)
 
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's available recommendation rows, without items."""
-        return [
-            RecommendationFolder(
-                item_id="recommended_radios",
-                provider=self.instance_id,
-                name="Personal Radio",
-                translation_key="personal_radio",
-                icon="mdi:radio",
-            ),
-            RecommendationFolder(
-                item_id="daily_songs",
-                provider=self.instance_id,
-                name="Recommended tracks",
-                translation_key="recommended_tracks",
-                icon="mdi:star",
-            ),
-            RecommendationFolder(
-                item_id="recommended_new_songs",
-                provider=self.instance_id,
-                name="Recommended new tracks",
-                translation_key="recommended_new_tracks",
-                icon="mdi:music-note",
-            ),
-            RecommendationFolder(
-                item_id="recommended_playlists",
-                provider=self.instance_id,
-                name="Recommended playlists",
-                translation_key="recommended_playlists",
-                icon="mdi:playlist-music",
-            ),
-        ]
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
-
-        if item_id == "recommended_radios":
-            return await self._build_radio_items()
-
-        if item_id == "daily_songs":
-            daily_payload = await self._get_recommend_payload_cached(
-                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
-            )
-            daily_data = _extract_data(daily_payload)
-            daily_songs = daily_data.get("dailySongs")
-            if isinstance(daily_songs, list):
-                for song_obj in daily_songs:
-                    if not isinstance(song_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        items.append(self._parse_track(song_obj))
-                daily_tracks = [item for item in items if isinstance(item, Track)]
-                await self._fill_track_durations(daily_tracks)
-            return items
-
-        if item_id == "recommended_new_songs":
-            new_song_payload = await self._get_recommend_payload_cached(
-                "recommended_newsong",
-                _RECOMMEND_NEWSONG_TTL,
-                "/personalized/newsong",
-                {"limit": 50},
-            )
-            new_song_data = _extract_data(new_song_payload)
-            raw_new_songs = new_song_data.get("result")
-            if isinstance(raw_new_songs, list):
-                for item in raw_new_songs:
-                    if not isinstance(item, dict):
-                        continue
-                    song_obj = item.get("song") if isinstance(item.get("song"), dict) else item
-                    if not isinstance(song_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        items.append(self._parse_track(song_obj))
-                new_tracks = [item for item in items if isinstance(item, Track)]
-                await self._fill_track_durations(new_tracks)
-            return items
-
-        if item_id == "recommended_playlists":
-            playlist_payload = await self._get_recommend_payload_cached(
-                "recommended_playlists",
-                _RECOMMEND_PLAYLIST_TTL,
-                "/personalized",
-                {"limit": 25},
-            )
-            playlist_data = _extract_data(playlist_payload)
-            raw_playlists = playlist_data.get("result")
-            if isinstance(raw_playlists, list):
-                for playlist_obj in raw_playlists:
-                    if not isinstance(playlist_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        items.append(self._parse_playlist(playlist_obj))
-            return items
-
-        return items
-
-    async def _build_radio_items(self) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """Build the dynamic radio playlist items for the recommended_radios row."""
-        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
-        personal_fm_image_url: str | None = None
-        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
-            fm_payload = await self._get_recommend_payload_cached(
-                "personal_fm",
-                _RECOMMEND_PERSONAL_FM_TTL,
-                "/personal_fm",
-            )
-            fm_data = _extract_data(fm_payload)
-            fm_rows = fm_data.get("data")
-            if isinstance(fm_rows, list) and fm_rows and isinstance(fm_rows[0], dict):
-                fm_item = fm_rows[0]
-                song_obj = fm_item.get("song") if isinstance(fm_item.get("song"), dict) else fm_item
-                if isinstance(song_obj, dict):
-                    personal_fm_image_url = _extract_song_image_url(song_obj)
-        if not personal_fm_image_url:
-            with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
-                daily_payload = await self._get_recommend_payload_cached(
-                    "daily_songs",
-                    _RECOMMEND_DAILY_TTL,
-                    "/recommend/songs",
-                )
-                daily_data = _extract_data(daily_payload)
-                daily_rows = daily_data.get("dailySongs")
-                if isinstance(daily_rows, list) and daily_rows and isinstance(daily_rows[0], dict):
-                    personal_fm_image_url = _extract_song_image_url(daily_rows[0])
-        items.append(
-            self._build_dynamic_playlist(
-                _PLAYLIST_PERSONAL_FM_ID,
-                "Personal FM",
-                translation_key="personal_fm",
-                image_url=personal_fm_image_url,
-            )
-        )
-        if heart_playlist := await self._build_heart_mode_dynamic_playlist():
-            items.append(heart_playlist)
-        return items
-
     def _quality_candidates(self) -> list[str]:
         """Return ordered quality levels based on config."""
         raw_quality = str(self.config.get_value(CONF_QUALITY) or QUALITY_EXHIGH).lower()
@@ -2219,3 +1885,43 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 allow_seek=True,
             )
         raise UnsupportedFeaturedException(f"Unsupported media type {media_type}")
+
+    async def _build_radio_items(self) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Build the dynamic radio playlist items for the recommended_radios row."""
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        personal_fm_image_url: str | None = None
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+            fm_payload = await self._get_recommend_payload_cached(
+                "personal_fm",
+                _RECOMMEND_PERSONAL_FM_TTL,
+                "/personal_fm",
+            )
+            fm_data = _extract_data(fm_payload)
+            fm_rows = fm_data.get("data")
+            if isinstance(fm_rows, list) and fm_rows and isinstance(fm_rows[0], dict):
+                fm_item = fm_rows[0]
+                song_obj = fm_item.get("song") if isinstance(fm_item.get("song"), dict) else fm_item
+                if isinstance(song_obj, dict):
+                    personal_fm_image_url = _extract_song_image_url(song_obj)
+        if not personal_fm_image_url:
+            with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+                daily_payload = await self._get_recommend_payload_cached(
+                    "daily_songs",
+                    _RECOMMEND_DAILY_TTL,
+                    "/recommend/songs",
+                )
+                daily_data = _extract_data(daily_payload)
+                daily_rows = daily_data.get("dailySongs")
+                if isinstance(daily_rows, list) and daily_rows and isinstance(daily_rows[0], dict):
+                    personal_fm_image_url = _extract_song_image_url(daily_rows[0])
+        items.append(
+            self._build_dynamic_playlist(
+                _PLAYLIST_PERSONAL_FM_ID,
+                "Personal FM",
+                translation_key="personal_fm",
+                image_url=personal_fm_image_url,
+            )
+        )
+        if heart_playlist := await self._build_heart_mode_dynamic_playlist():
+            items.append(heart_playlist)
+        return items

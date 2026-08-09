@@ -4,17 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.constants import CONF_PORT
-
-from .constants import (
-    CONF_CLI_JSON_PORT,
-    CONF_CLI_TELNET_PORT,
-    CONF_DISCOVERY,
-    DEFAULT_SLIMPROTO_PORT,
-)
 from .provider import SqueezelitePlayerProvider
 
 if TYPE_CHECKING:
@@ -34,44 +25,3 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return SqueezelitePlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_CLI_TELNET_PORT,
-            type=ConfigEntryType.INTEGER,
-            default_value=9090,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_CLI_JSON_PORT,
-            type=ConfigEntryType.INTEGER,
-            default_value=9000,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_DISCOVERY,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.INTEGER,
-            default_value=DEFAULT_SLIMPROTO_PORT,
-        ),
-    )

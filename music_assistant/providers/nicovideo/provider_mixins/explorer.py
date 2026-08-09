@@ -111,6 +111,12 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             return UniqueList()
         return folder.items
 
+    @override
+    @use_cache(3600 * 6, allow_expired_cache=True)  # Cache for 6 hours
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Retrieve a dynamic list of similar tracks based on the provided track."""
+        return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)
+
     @use_cache(1800, base_class=RecommendationFolder)  # Cache for 30 minutes
     async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:
         """
@@ -140,9 +146,3 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             return None
         folder.items = UniqueList(items)
         return folder
-
-    @override
-    @use_cache(3600 * 6, allow_expired_cache=True)  # Cache for 6 hours
-    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Retrieve a dynamic list of similar tracks based on the provided track."""
-        return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)

@@ -19,6 +19,7 @@ from music_assistant_models.audio_processing import (
 )
 from music_assistant_models.dsp import (
     AudioChannel,
+    ConvolutionFilter,
     DSPConfig,
     DSPState,
     ToneControlFilter,
@@ -40,6 +41,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_normalization_details,
 )
 from music_assistant.controllers.streams.controller import StreamsController
+from music_assistant.helpers.dsp import ComplexFilter
 
 
 def _format(
@@ -135,6 +137,65 @@ def test_audio_processing_manager_attaches_grouped_chain() -> None:
         quality=AudioQuality.LOW,
         bit_perfect=False,
     )
+
+
+def test_lossy_source_can_have_bit_perfect_lossless_output() -> None:
+    """Lossy source quality does not prevent preserving its decoded PCM samples."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.OGG,
+        codec_type=ContentType.VORBIS,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+        bit_rate=320,
+    )
+    pcm_format = _format(ContentType.PCM_S16LE)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=pcm_format,
+        pcm_format=pcm_format,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = pcm_format
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC)
+    lossy_plan.input_format = pcm_format
+    lossy_plan.output_details.output_format = _format(ContentType.MP3, bit_rate=320)
+
+    manager.update_output(
+        "lossless-player",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    manager.update_output(
+        "lossy-player",
+        lossy_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    outputs = {output.player_ids[0]: output for output in chain.outputs}
+    assert chain.input_fidelity.quality == AudioQuality.STANDARD
+    assert outputs["lossless-player"].fidelity == AudioFidelity(
+        quality=AudioQuality.STANDARD,
+        bit_perfect=True,
+    )
+    assert outputs["lossy-player"].fidelity == AudioFidelity(
+        quality=AudioQuality.STANDARD,
+        bit_perfect=False,
+    )
+    serialized = streamdetails.to_dict()
+    serialized_outputs = {
+        output["player_ids"][0]: output for output in serialized["audio_processing"]["outputs"]
+    }
+    assert serialized_outputs["lossless-player"]["fidelity"]["bit_perfect"] is True
 
 
 def test_shared_output_destinations_are_registered_atomically() -> None:
@@ -491,6 +552,112 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
 
 
+def test_player_output_plan_downmixes_to_mono() -> None:
+    """The mono output mode folds both source channels into a single channel."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    input_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        input_format,
+        output_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=mono|c0=0.5*FL+0.5*FR"]
+    assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+def test_player_output_plan_feeds_every_output_channel() -> None:
+    """A stereo output carries the downmix on both channels instead of being upmixed."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
+    assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
+    """A single channel source has no channels to select, so it is left untouched."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32, channels=1)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == []
+    assert plan.output_details.source_channel is None
+
+
+def test_player_output_plan_pans_for_the_handoff_format() -> None:
+    """The pan follows the format FFmpeg emits, not a later provider side encode."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        pcm_format,
+        _format(ContentType.FLAC, 48000, 16, channels=1),
+        handoff_format=pcm_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
+
+
+def test_mono_downmix_prevents_bit_perfect_claim() -> None:
+    """A mono downmix alters the samples, even when every format stays stereo."""
+    manager, _mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    output_plan.output_details.source_channel = AudioChannel.ALL
+
+    manager.update_output(
+        "player-1",
+        output_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].fidelity.bit_perfect is False
+
+
 def test_player_output_plan_excludes_neutral_filters() -> None:
     """A filter that emits no FFmpeg params is left out of the reported chain."""
     mass = MagicMock()
@@ -513,7 +680,49 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
     )
 
     assert plan.output_details.dsp.filters == []
-    assert not any(param.startswith("equalizer=") for param in plan.filter_params)
+    assert not any(
+        isinstance(param, str) and param.startswith("equalizer=") for param in plan.filter_params
+    )
+
+
+def _convolution_plan(known_ir_ids: list[str]) -> AudioOutputPlan:
+    """Build an output plan for a player convolving with impulse response "abc123"."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.storage_path = "/storage"
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=True,
+        filters=[ConvolutionFilter(enabled=True, ir_id="abc123")],
+    )
+    mass.config.get_dsp_irs.return_value = [{"ir_id": ir_id} for ir_id in known_ir_ids]
+    mass.config.get_raw_player_config_value.return_value = "stereo"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    return audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+
+def test_player_output_plan_drops_convolution_with_unknown_ir() -> None:
+    """An impulse response with no stored record is left out rather than failing ffmpeg."""
+    plan = _convolution_plan(known_ir_ids=["other"])
+
+    assert plan.output_details.dsp.filters == []
+    assert not any(isinstance(param, ComplexFilter) for param in plan.filter_params)
+
+
+def test_player_output_plan_keeps_convolution_with_known_ir() -> None:
+    """An impulse response that is still stored convolves as configured."""
+    plan = _convolution_plan(known_ir_ids=["abc123"])
+
+    assert len(plan.output_details.dsp.filters) == 1
+    complex_filters = [param for param in plan.filter_params if isinstance(param, ComplexFilter)]
+    assert [f.inputs[0].path for f in complex_filters] == ["/storage/dsp_irs/abc123.wav"]
 
 
 def test_player_output_plan_prefers_rendering_player_channels() -> None:
@@ -540,7 +749,7 @@ def test_player_output_plan_prefers_rendering_player_channels() -> None:
     )
 
     assert plan.output_details.source_channel == AudioChannel.FL
-    assert "pan=mono|c0=FL" in plan.filter_params
+    assert "pan=stereo|c0=FL|c1=FL" in plan.filter_params
     # processing attribution still points at the visible parent player
     assert mass.streams.audio_processing.update_output.call_args.args[0] == "parent-1"
 

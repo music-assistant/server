@@ -23,6 +23,7 @@ from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
+from music_assistant.helpers.util import cap_native_thread_pools
 from music_assistant.mass import MusicAssistant
 
 FORMAT_DATE: Final = "%Y-%m-%d"
@@ -84,7 +85,10 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     # define log formatter
     log_fmt = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
 
-    # base logging config for the root logger
+    # base logging config for the root logger.
+    # The root level doubles as the gate for third-party libraries that never get an
+    # explicit level of their own, so it is kept separate from the Music Assistant log
+    # level below: a verbose MA (or provider) level stays scoped to MA's own loggers.
     logging.basicConfig(level=logging.INFO)
 
     colorfmt = f"%(log_color)s{log_fmt}%(reset)s"
@@ -240,6 +244,11 @@ def main() -> None:
     # setup logger
     logger = setup_logger(data_dir, log_level)
 
+    # Size the native BLAS/OpenMP pools before any provider imports a math library,
+    # because those pools read the environment once at load time.
+    blas_budget = cap_native_thread_pools()
+    LOGGER.debug("Native BLAS/OpenMP thread pools capped to %d thread(s)", blas_budget)
+
     # Raise the open-file soft limit to the hard limit so the concurrent provider
     # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).
     # Skip when the hard limit is unlimited (e.g. macOS), which setrlimit won't apply.
@@ -273,8 +282,10 @@ def main() -> None:
             with suppress(NotImplementedError):
                 loop.add_signal_handler(sig, _set_stop)
 
-        await mass.start()
         try:
+            # a startup that fails part-way must be cleaned up too, or the databases it
+            # already opened keep their worker threads alive and the process never exits
+            await mass.start()
             await stop_event.wait()
         finally:
             logger.info("shutdown requested!")

@@ -32,8 +32,19 @@
         "fr-FR": "French (France)",
         "fr-CA": "French (Canada)",
         "it-IT": "Italian (Italy)",
-        "pt-BR": "Portuguese (Brazil)"
+        "pt-BR": "Portuguese (Brazil)",
+        "nl-NL": "Dutch (Netherlands)"
       }
+    }
+  },
+  "setup_flow": {
+    "credentials": {
+      "title": "Enter your Amazon account details",
+      "description": "Provide your Amazon sign-in details and the address of the companion API. You will complete any CAPTCHA or two-step verification on Amazon's own page in the next step."
+    },
+    "amazon_login": {
+      "title": "Sign in to Amazon",
+      "description": "Complete the Amazon sign-in in the window that opens, including any CAPTCHA or two-step verification."
     }
   },
   "manifest": {

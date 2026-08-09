@@ -4,17 +4,19 @@ import asyncio
 import base64
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable
+import logging
+from collections.abc import AsyncIterator, Callable, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from urllib.parse import urlparse
 
 import aiohttp
 import pytest
-from aiolibdatachannel import DataChannel, IceServer, PeerConnection, RTCConfiguration
+from aiolibdatachannel import DataChannel, IceServer, LogLevel, PeerConnection, RTCConfiguration
 from cryptography.hazmat.primitives import serialization
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.webserver.remote_access import (
     STARTUP_DELAY,
     TASK_ID_START_GATEWAY,
@@ -25,6 +27,7 @@ from music_assistant.controllers.webserver.remote_access.gateway import (
     MA_API_CHUNK_SIZE,
     WebRTCGateway,
     WebRTCSession,
+    _is_usable_ice_url,
 )
 from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
@@ -187,6 +190,65 @@ async def test_remote_access_skips_restart_after_mode_flap_settles() -> None:
     assert manager._target_using_ha_cloud is False
 
 
+async def test_remote_access_gateway_uses_internal_sendspin_url(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Bridge the Sendspin data channel to the locally reachable Sendspin server."""
+    internal_url = "ws://127.0.0.1:8927/sendspin"
+    manager = _create_remote_access_manager()
+    manager._remote_id = "TEST-REMOTE-ID"
+    cast("Mock", manager.webserver).internal_base_url = "http://127.0.0.1:8095"
+    cast("Mock", manager.webserver).internal_sendspin_url = internal_url
+
+    with (
+        patch(
+            "music_assistant.controllers.webserver.remote_access"
+            ".get_or_create_webrtc_certificate_pems",
+            return_value=cert_pems,
+        ),
+        patch.object(manager, "_get_ha_cloud_status", new=AsyncMock(return_value=(False, None))),
+        patch.object(WebRTCGateway, "start", new=AsyncMock()),
+    ):
+        await manager._start_gateway_locked()
+
+    assert manager.gateway is not None
+    assert manager.gateway.sendspin_url == internal_url
+
+
+@pytest.mark.parametrize(
+    ("internal_base_url", "expected"),
+    [
+        ("http://127.0.0.1:8095", "ws://127.0.0.1:8095/ws"),
+        ("https://127.0.0.1:8095", "wss://127.0.0.1:8095/ws"),
+    ],
+)
+async def test_remote_access_gateway_uses_internal_base_url(
+    cert_pems: tuple[str, str],
+    internal_base_url: str,
+    expected: str,
+) -> None:
+    """Bridge the API data channel to the locally reachable webserver."""
+    manager = _create_remote_access_manager()
+    manager._remote_id = "TEST-REMOTE-ID"
+    # an external base URL must never be dialed back into this host
+    cast("Mock", manager.mass).webserver.base_url = "https://ma.example.com"
+    cast("Mock", manager.webserver).internal_base_url = internal_base_url
+
+    with (
+        patch(
+            "music_assistant.controllers.webserver.remote_access"
+            ".get_or_create_webrtc_certificate_pems",
+            return_value=cert_pems,
+        ),
+        patch.object(manager, "_get_ha_cloud_status", new=AsyncMock(return_value=(False, None))),
+        patch.object(WebRTCGateway, "start", new=AsyncMock()),
+    ):
+        await manager._start_gateway_locked()
+
+    assert manager.gateway is not None
+    assert manager.gateway.local_ws_url == expected
+
+
 async def test_webrtc_gateway_initialization(cert_pems: tuple[str, str]) -> None:
     """Test WebRTCGateway initializes correctly."""
     cert_pem, key_pem = cert_pems
@@ -228,6 +290,58 @@ async def test_webrtc_gateway_custom_ice_servers(cert_pems: tuple[str, str]) -> 
     assert gateway.ice_servers == custom_ice_servers
 
 
+async def test_webrtc_gateway_local_ice_servers_skip_non_udp_turn(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Test the local peer connection only gets ICE servers libjuice can use."""
+    cert_pem, key_pem = cert_pems
+    cred = {"username": "u", "credential": "p"}
+    # shape of what HA Cloud hands us: one UDP TURN url plus TCP/TLS variants
+    ha_cloud_ice_servers = [
+        {"urls": "stun:stun.cloudflare.com:3478"},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=udp", **cred},
+        {"urls": "turn:turn.cloudflare.com:53", **cred},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=tcp", **cred},
+        {"urls": "turns:turn.cloudflare.com:5349?transport=tcp", **cred},
+        {"urls": "turns:turn.cloudflare.com:443?transport=tcp", **cred},
+    ]
+
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        ice_servers=ha_cloud_ice_servers,
+    )
+
+    assert [server.url for server in gateway._build_ice_servers(ha_cloud_ice_servers)] == [
+        "stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turn:turn.cloudflare.com:53",
+    ]
+    # remote clients still get the unfiltered list, since browsers do support TCP/TLS TURN
+    assert gateway.ice_servers == ha_cloud_ice_servers
+
+
+@pytest.mark.parametrize(
+    ("url", "usable"),
+    [
+        ("stun:stun.example.com:3478", True),
+        ("turn:turn.example.com:3478", True),
+        ("turn:turn.example.com:3478?transport=udp", True),
+        # the transport parameter wins over the scheme, matching rtc::IceServer
+        ("turns:turn.example.com:5349?transport=udp", True),
+        ("turn:turn.example.com:3478?transport=tcp", False),
+        ("turns:turn.example.com:5349", False),
+        ("turn:turn.example.com:3478?transport=tls", False),
+        ("https://turn.example.com", False),
+    ],
+)
+def test_is_usable_ice_url(url: str, usable: bool) -> None:
+    """Test only ICE server urls libjuice can actually use are kept."""
+    assert _is_usable_ice_url(url) is usable
+
+
 async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
     """Test WebRTCGateway start and stop."""
     cert_pem, key_pem = cert_pems
@@ -247,6 +361,75 @@ async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
 
         await gateway.stop()
         assert gateway.is_running is False
+
+
+@pytest.mark.parametrize(
+    ("logger_level", "expected_rtc_level"),
+    [
+        (VERBOSE_LOG_LEVEL, LogLevel.VERBOSE),
+        (logging.DEBUG, LogLevel.WARNING),
+        (logging.INFO, LogLevel.ERROR),
+        (logging.WARNING, LogLevel.ERROR),
+    ],
+)
+async def test_webrtc_gateway_native_log_level(
+    cert_pems: tuple[str, str], logger_level: int, expected_rtc_level: LogLevel
+) -> None:
+    """Test native libdatachannel logging is capped at ERROR unless debugging."""
+    cert_pem, key_pem = cert_pems
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    gateway.logger = logging.getLogger("test_webrtc_native_log_level")
+    gateway.logger.setLevel(logger_level)
+
+    with (
+        patch.object(gateway, "_run", new_callable=AsyncMock),
+        patch(
+            "music_assistant.controllers.webserver.remote_access.gateway.install_python_logger"
+        ) as install_logger,
+    ):
+        await gateway.start()
+        await gateway.stop()
+
+    install_logger.assert_called_once_with(gateway.logger, level=expected_rtc_level)
+    assert not gateway.logger.filters
+
+
+async def test_webrtc_gateway_drops_benign_turn_warning_at_debug(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test the benign Cloudflare CreatePermission warning is dropped at DEBUG level."""
+    cert_pem, key_pem = cert_pems
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    gateway.logger = logging.getLogger("test_webrtc_benign_turn_warning")
+    gateway.logger.setLevel(logging.DEBUG)
+
+    with (
+        patch.object(gateway, "_run", new_callable=AsyncMock),
+        patch("music_assistant.controllers.webserver.remote_access.gateway.install_python_logger"),
+    ):
+        await gateway.start()
+        with caplog.at_level(logging.DEBUG, logger="test_webrtc_benign_turn_warning"):
+            gateway.logger.warning(
+                "rtc::impl::IceTransport::LogCallback@390: "
+                "juice: Got TURN CreatePermission error response, code=0"
+            )
+            gateway.logger.warning("juice: Lost connectivity")
+        await gateway.stop()
+
+    messages = [record.getMessage() for record in caplog.records if "juice" in record.getMessage()]
+    assert messages == ["juice: Lost connectivity"]
+    # stop() must remove the filter again
+    assert not gateway.logger.filters
 
 
 async def test_webrtc_gateway_handle_registration_message(cert_pems: tuple[str, str]) -> None:
@@ -529,6 +712,73 @@ async def test_http_proxy_request_cannot_change_host(
     assert "evil.com" not in (parsed.netloc or "")
 
 
+async def test_http_proxy_request_keeps_the_unverified_dial_on_this_host(
+    cert_pems: tuple[str, str],
+) -> None:
+    """The proxy must not carry its unverified TLS dial off this host."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_request(_method: str, _url: str, **kwargs: object) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url="wss://127.0.0.1:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", pc=Mock())
+
+    await gateway._handle_http_proxy_request(session, {"id": "1", "method": "GET", "path": "/info"})
+
+    assert captured_kwargs["ssl"] is False
+    assert captured_kwargs["allow_redirects"] is False
+
+
+async def test_local_websocket_dial_skips_certificate_verification(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Reach the local API on the bind address, which no certificate is issued for."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, object] = {}
+
+    async def fake_ws_connect(_url: str, **kwargs: object) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        return AsyncMock()
+
+    mock_session.ws_connect = fake_ws_connect
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url="wss://127.0.0.1:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", pc=Mock())
+    channel = MagicMock()
+    channel.wait_open = AsyncMock()
+
+    with patch.object(gateway, "_schedule_close"):
+        await gateway._bridge_ma_api(session, channel)
+
+    assert captured_kwargs["ssl"] is False
+
+
 # ---- aiolibdatachannel loopback tests --------------------------------------
 #
 # These exercise the migrated gateway against real loopback PeerConnections
@@ -604,6 +854,79 @@ class _FakeLocalWS:
         return msg
 
 
+class _FakeBidiChannel:
+    """
+    Async-iterable data-channel stand-in for bridging tests.
+
+    Drives the gateway's channel->local pump without a real WebRTC handshake: feed
+    inbound messages with :meth:`feed`, end the stream with :meth:`close`, and read
+    what the gateway sent back on ``sent``.
+    """
+
+    def __init__(self, label: str = "ma-api") -> None:
+        self.label = label
+        self.is_open = True
+        self.closed = False
+        self.sent: list[str | bytes] = []
+        self._inbound: asyncio.Queue[str | bytes | None] = asyncio.Queue()
+
+    async def wait_open(self) -> None:
+        return
+
+    async def send(self, data: str | bytes) -> None:
+        self.sent.append(data)
+
+    def feed(self, message: str | bytes) -> None:
+        """Queue an inbound message as if the browser sent it over the channel."""
+        self._inbound.put_nowait(message)
+
+    def close(self) -> None:
+        self.closed = True
+        self.is_open = False
+        self._inbound.put_nowait(None)
+
+    async def aclose(self) -> None:
+        self.close()
+
+    def __aiter__(self) -> AsyncIterator[str | bytes]:
+        return self
+
+    async def __anext__(self) -> str | bytes:
+        message = await self._inbound.get()
+        if message is None:
+            raise StopAsyncIteration
+        return message
+
+
+class _FakePeerConnection:
+    """PeerConnection stand-in that runs gateway-spawned pumps as asyncio tasks."""
+
+    def __init__(self) -> None:
+        self._tasks: list[asyncio.Task[None]] = []
+
+    def spawn_task(self, coro: Coroutine[Any, Any, None]) -> None:
+        self._tasks.append(asyncio.ensure_future(coro))
+
+    async def aclose(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        # await cancellation so no pump task lingers past teardown
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+def _register_bridge_session(
+    gateway: WebRTCGateway, session_id: str, channel: _FakeBidiChannel
+) -> WebRTCSession:
+    """Register a session backed by a fake PeerConnection and ma-api channel."""
+    session = WebRTCSession(
+        session_id=session_id,
+        pc=cast("PeerConnection", _FakePeerConnection()),
+        data_channel=cast("DataChannel", channel),
+    )
+    gateway.sessions[session_id] = session
+    return session
+
+
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 15.0) -> None:
     """Poll ``predicate`` until it is true or the timeout elapses."""
     loop = asyncio.get_running_loop()
@@ -613,29 +936,6 @@ async def _wait_for(predicate: Callable[[], bool], timeout: float = 15.0) -> Non
             return
         await asyncio.sleep(0.02)
     raise AssertionError("condition not met within timeout")
-
-
-async def _connect_gateway_session(
-    gateway: WebRTCGateway, session_id: str
-) -> tuple[PeerConnection, DataChannel]:
-    """
-    Drive a browser-role offerer through the gateway until the ma-api channel opens.
-
-    :return: Tuple of (offerer PeerConnection, opened ma-api DataChannel).
-    """
-    signaling = _FakeSignaling()
-    gateway._signaling_ws = cast("aiohttp.ClientWebSocketResponse", signaling)
-    offerer = PeerConnection(RTCConfiguration())
-    dc = await offerer.create_data_channel("ma-api")
-    offer = await offerer.create_offer()
-    await gateway._create_session(session_id)
-    await asyncio.wait_for(
-        gateway._handle_offer(session_id, {"sdp": offer.sdp, "type": "offer"}), timeout=15
-    )
-    answer = signaling.answers[-1]
-    await offerer.set_remote_description(answer["data"]["sdp"], "answer")
-    await asyncio.wait_for(dc.wait_open(), timeout=15)
-    return offerer, dc
 
 
 async def test_handle_offer_answers_with_pinned_fingerprint(cert_pems: tuple[str, str]) -> None:
@@ -678,32 +978,33 @@ async def test_ma_api_channel_bridges_to_local_ws(cert_pems: tuple[str, str]) ->
     """Messages flow both ways across the ma-api data channel and the local WebSocket."""
     cert_pem, key_pem = cert_pems
     fake_ws = _FakeLocalWS()
-    local_ws = cast("aiohttp.ClientWebSocketResponse", fake_ws)
     http_session = Mock()
-    http_session.ws_connect = AsyncMock(return_value=local_ws)
+    http_session.ws_connect = AsyncMock(
+        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    )
     gateway = WebRTCGateway(
         http_session=http_session,
         remote_id="TEST-REMOTE-ID",
         cert_pem=cert_pem,
         key_pem=key_pem,
     )
-    session_id = "bridge-session"
-    with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
-        offerer, dc = await _connect_gateway_session(gateway, session_id)
+    channel = _FakeBidiChannel()
+    session = _register_bridge_session(gateway, "bridge-session", channel)
+    bridge = asyncio.ensure_future(gateway._bridge_ma_api(session, cast("DataChannel", channel)))
     try:
-        await _wait_for(lambda: gateway.sessions[session_id].local_ws is local_ws)
+        await _wait_for(lambda: session.local_ws is not None)
 
         # browser -> local WebSocket
-        await dc.send("from browser")
+        channel.feed("from browser")
         await _wait_for(lambda: fake_ws.sent == ["from browser"])
 
         # local WebSocket -> browser
         fake_ws.feed_text("from local")
-        msg = await asyncio.wait_for(dc.recv(), timeout=15)
-        assert msg == "from local"
+        await _wait_for(lambda: channel.sent == ["from local"])
     finally:
-        await gateway._close_session(session_id)
-        await offerer.aclose()
+        channel.close()
+        await asyncio.wait_for(bridge, timeout=5)
+        await _wait_for(lambda: "bridge-session" not in gateway.sessions)
 
 
 def test_build_ice_servers_maps_dicts() -> None:
@@ -744,33 +1045,27 @@ async def test_session_closes_when_ma_api_channel_closes(cert_pems: tuple[str, s
     """Closing the browser ma-api channel tears down the whole gateway session."""
     cert_pem, key_pem = cert_pems
     fake_ws = _FakeLocalWS()
-    local_ws = cast("aiohttp.ClientWebSocketResponse", fake_ws)
     http_session = Mock()
-    http_session.ws_connect = AsyncMock(return_value=local_ws)
+    http_session.ws_connect = AsyncMock(
+        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    )
     gateway = WebRTCGateway(
         http_session=http_session,
         remote_id="TEST-REMOTE-ID",
         cert_pem=cert_pem,
         key_pem=key_pem,
     )
-    session_id = "channel-close-session"
-    with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
-        offerer, dc = await _connect_gateway_session(gateway, session_id)
-    try:
-        await _wait_for(
-            lambda: (
-                gateway.sessions.get(session_id) is not None
-                and gateway.sessions[session_id].local_ws is local_ws
-            )
-        )
+    channel = _FakeBidiChannel()
+    session = _register_bridge_session(gateway, "channel-close-session", channel)
+    bridge = asyncio.ensure_future(gateway._bridge_ma_api(session, cast("DataChannel", channel)))
+    await _wait_for(lambda: session.local_ws is not None)
 
-        await dc.aclose()
+    # the browser closes the ma-api channel -> the whole session is torn down
+    channel.close()
 
-        await _wait_for(lambda: session_id not in gateway.sessions)
-        assert session_id not in gateway.sessions
-    finally:
-        await gateway._close_session(session_id)
-        await offerer.aclose()
+    await _wait_for(lambda: "channel-close-session" not in gateway.sessions)
+    assert "channel-close-session" not in gateway.sessions
+    await asyncio.wait_for(bridge, timeout=5)
 
 
 class _FakeDataChannel:
@@ -867,43 +1162,3 @@ async def test_send_ma_api_large_message_chunked(cert_pems: tuple[str, str]) -> 
     assert len(channel.sent) > 1
     assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
     assert _reassemble_chunks(channel.sent) == text
-
-
-async def test_ma_api_chunks_survive_real_data_channel(cert_pems: tuple[str, str]) -> None:
-    """A body too large for one message round-trips as chunks over a real libdatachannel session."""
-    cert_pem, key_pem = cert_pems
-    fake_ws = _FakeLocalWS()
-    http_session = Mock()
-    http_session.ws_connect = AsyncMock(
-        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
-    )
-    gateway = WebRTCGateway(
-        http_session=http_session,
-        remote_id="TEST-REMOTE-ID",
-        cert_pem=cert_pem,
-        key_pem=key_pem,
-    )
-    session_id = "chunk-wire-session"
-    with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
-        offerer, dc = await _connect_gateway_session(gateway, session_id)
-    try:
-        # ~293 KiB body -> ~586 KiB hex JSON, well over the 256 KiB limit: only arrives chunked
-        body = bytes((i * 7) % 256 for i in range(300_000))
-        session = gateway.sessions[session_id]
-        await gateway._send_http_proxy_response(
-            session, "wire-req", 200, {"content-type": "image/jpeg"}, body
-        )
-
-        first = await asyncio.wait_for(dc.recv(), timeout=15)
-        count = json.loads(first)["count"]
-        assert count > 1
-        frames = [first]
-        for _ in range(count - 1):
-            frames.append(await asyncio.wait_for(dc.recv(), timeout=15))
-
-        reassembled = json.loads(_reassemble_chunks(cast("list[str]", frames)))
-        assert reassembled["id"] == "wire-req"
-        assert bytes.fromhex(reassembled["body"]) == body
-    finally:
-        await gateway._close_session(session_id)
-        await offerer.aclose()

@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import uuid
+import zlib
 from collections.abc import AsyncGenerator, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -40,6 +53,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from PIL import Image as PilImage
 from ya_passport_auth import SecretStr
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
@@ -49,6 +63,8 @@ from .auth import refresh_credentials_via_passport, refresh_music_token
 from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
+    CONF_ACTION_DELETE_WAVE_PRESET,
+    CONF_ACTION_SAVE_WAVE_PRESET,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -56,6 +72,11 @@ from .constants import (
     CONF_REFRESH_TOKEN,
     CONF_RESTRICTIVE_RATE_LIMITS,
     CONF_TOKEN,
+    CONF_WAVE_PRESET_DRAFT_DIVERSITY,
+    CONF_WAVE_PRESET_DRAFT_LANGUAGE,
+    CONF_WAVE_PRESET_DRAFT_MOOD,
+    CONF_WAVE_PRESET_DRAFT_NAME,
+    CONF_WAVE_PRESET_TO_DELETE,
     CONF_WAVE_PRESETS_DATA,
     CONF_X_TOKEN,
     DEFAULT_BASE_URL,
@@ -75,6 +96,8 @@ from .constants import (
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
     QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_SUPERB,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
@@ -92,6 +115,9 @@ from .constants import (
     WAVE_MODE_ORDER,
     WAVE_MODE_PRESETS,
     WAVE_MODE_SEP,
+    WAVE_PRESET_DIVERSITY_VALUES,
+    WAVE_PRESET_LANGUAGE_VALUES,
+    WAVE_PRESET_MOOD_VALUES,
     WAVES_FOLDER_ID,
     WAVES_LANDING_FOLDER_ID,
 )
@@ -194,6 +220,172 @@ def _extract_chapter_map_from_album(album: YandexAlbum) -> tuple[list[str], list
     return chapter_ids, chapter_durations_ms
 
 
+def _merge_wave_preset(
+    name: str | None,
+    diversity: str | None,
+    mood: str | None,
+    language: str | None,
+    presets_data: str | None,
+) -> str:
+    """
+    Merge the given draft fields into the stored preset list and return the new JSON.
+
+    Overwrites an existing preset with the same name instead of creating a duplicate.
+    Raises ``InvalidDataError`` when the name is blank.
+
+    :param name: Draft preset name; blank/whitespace-only raises.
+    :param diversity: Draft diversity seed ("" / None → omitted).
+    :param mood: Draft mood/energy seed ("" / None → omitted).
+    :param language: Draft language seed ("" / None → omitted).
+    :param presets_data: The current stored presets JSON.
+    """
+    clean_name = name.strip() if isinstance(name, str) else ""
+    if not clean_name:
+        raise InvalidDataError("Please fill the preset name before saving.")
+    presets = parse_stored_presets(presets_data)
+    presets = [p for p in presets if p["name"] != clean_name]
+    new_preset: dict[str, str] = {
+        "name": clean_name,
+        **{
+            api_key: val
+            for val, api_key in (
+                (diversity, "diversity"),
+                (mood, "moodEnergy"),
+                (language, "language"),
+            )
+            if isinstance(val, str) and val
+        },
+    }
+    presets.append(new_preset)
+    return json.dumps(presets, ensure_ascii=False)
+
+
+def _remove_wave_preset(target: str | None, presets_data: str | None) -> str:
+    """
+    Remove the named preset from the stored list and return the new JSON.
+
+    Raises ``InvalidDataError`` when no name is selected. Idempotent — an absent
+    name simply rewrites an unchanged list.
+
+    :param target: Name of the preset to remove; blank/whitespace-only raises.
+    :param presets_data: The current stored presets JSON.
+    """
+    clean_target = target.strip() if isinstance(target, str) else ""
+    if not clean_target:
+        raise InvalidDataError("Please select a preset to delete.")
+    presets = parse_stored_presets(presets_data)
+    presets = [p for p in presets if p["name"] != clean_target]
+    return json.dumps(presets, ensure_ascii=False)
+
+
+def _wave_preset_config_entries(presets_data: str | None) -> list[ConfigEntry]:
+    """
+    Return the wave-preset builder UI (all advanced settings).
+
+    Layout:
+      - Section label showing how many presets are saved.
+      - Four "draft" fields (name + three dropdowns) the user fills in.
+      - "Save preset" action → copies draft into the JSON store.
+      - "Delete preset" dropdown + action (hidden when no presets exist).
+      - Hidden STRING carrying the JSON store itself.
+
+    Number of presets is unbounded; the user never edits JSON directly.
+
+    :param presets_data: The stored wave-presets JSON (``CONF_WAVE_PRESETS_DATA``).
+    """
+    empty_title = "— Default —"
+    diversity_options = [
+        ConfigValueOption(v, title=empty_title if not v else v.title())
+        for v in WAVE_PRESET_DIVERSITY_VALUES
+    ]
+    mood_options = [
+        ConfigValueOption(v, title=empty_title if not v else v.title())
+        for v in WAVE_PRESET_MOOD_VALUES
+    ]
+    language_options = [
+        ConfigValueOption(v, title=empty_title if not v else v.replace("-", " ").title())
+        for v in WAVE_PRESET_LANGUAGE_VALUES
+    ]
+
+    presets = parse_stored_presets(presets_data)
+    has_presets = bool(presets)
+    delete_options = [ConfigValueOption(p["name"], title=p["name"]) for p in presets]
+    if not delete_options:
+        # Empty options can break some frontends; supply a no-op placeholder.
+        delete_options = [ConfigValueOption("")]
+
+    return [
+        ConfigEntry(
+            key="wave_preset_section_label",
+            type=ConfigEntryType.LABEL,
+            translation_key="wave_preset_section_saved" if has_presets else None,
+            translation_params=[str(len(presets))] if has_presets else None,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_NAME,
+            type=ConfigEntryType.STRING,
+            default_value=None,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_DIVERSITY,
+            type=ConfigEntryType.STRING,
+            options=diversity_options,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_MOOD,
+            type=ConfigEntryType.STRING,
+            options=mood_options,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_LANGUAGE,
+            type=ConfigEntryType.STRING,
+            options=language_options,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_SAVE_WAVE_PRESET,
+            type=ConfigEntryType.ACTION,
+            action=CONF_ACTION_SAVE_WAVE_PRESET,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_TO_DELETE,
+            type=ConfigEntryType.STRING,
+            options=delete_options,
+            default_value="",
+            required=False,
+            advanced=True,
+            hidden=not has_presets,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_DELETE_WAVE_PRESET,
+            type=ConfigEntryType.ACTION,
+            action=CONF_ACTION_DELETE_WAVE_PRESET,
+            advanced=True,
+            hidden=not has_presets,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESETS_DATA,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            required=False,
+            advanced=True,
+            hidden=True,
+        ),
+    ]
+
+
 class _WaveState:
     """
     Per-station mutable state for rotor wave playback.
@@ -247,6 +439,106 @@ class YandexMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Authentication runs in the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options and the My Wave preset builder
+        (whose save/delete actions are handled in ``handle_config_action``).
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            # Quality
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_EFFICIENT),
+                    ConfigValueOption(QUALITY_BALANCED),
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_SUPERB),
+                ],
+                default_value=QUALITY_BALANCED,
+            ),
+            # My Wave maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_MY_WAVE_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(10, 1000),
+                default_value=150,
+                required=False,
+                advanced=True,
+            ),
+            # User-defined wave presets: builder + save/delete actions (dynamic list)
+            *_wave_preset_config_entries(
+                self.get_config_value(CONF_WAVE_PRESETS_DATA, return_type=str)
+            ),
+            # Liked Tracks maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_LIKED_TRACKS_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(50, 2000),
+                default_value=200,
+                required=False,
+                advanced=True,
+            ),
+            # API Base URL (advanced)
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                translation_params=[DEFAULT_BASE_URL],
+                default_value=DEFAULT_BASE_URL,
+                required=False,
+                advanced=True,
+            ),
+            # Restrictive rate limits (advanced)
+            ConfigEntry(
+                key=CONF_RESTRICTIVE_RATE_LIMITS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+            ),
+        )
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """
+        Handle a wave-preset save/delete button press and re-render the entries.
+
+        Both actions mutate the hidden JSON store and clear the draft / selection
+        fields so the UI re-renders in a clean state. Draft values are read from
+        stored config (no form values are passed) and persisted immediately.
+
+        :param action: The action id of the pressed button.
+        """
+        if action == CONF_ACTION_SAVE_WAVE_PRESET:
+            new_presets = _merge_wave_preset(
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_NAME, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_DIVERSITY, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_MOOD, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_LANGUAGE, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESETS_DATA, return_type=str),
+            )
+            self._update_config_value(CONF_WAVE_PRESETS_DATA, new_presets, immediate=True)
+            # Clear draft so the UI is ready for the next preset
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_NAME, None, immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_DIVERSITY, "", immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_MOOD, "", immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_LANGUAGE, "", immediate=True)
+            return await self.get_config_entries()
+        if action == CONF_ACTION_DELETE_WAVE_PRESET:
+            new_presets = _remove_wave_preset(
+                self.get_config_value(CONF_WAVE_PRESET_TO_DELETE, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESETS_DATA, return_type=str),
+            )
+            self._update_config_value(CONF_WAVE_PRESETS_DATA, new_presets, immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_TO_DELETE, "", immediate=True)
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
+
     def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
         """
         Resolve a media label to its English ``name`` and ``translation_key``.
@@ -292,26 +584,24 @@ class YandexMusicProvider(MusicProvider):
             ) from err2
         except LoginFailed as err2:
             self.logger.warning("Session and refresh tokens are both expired")
-            self._update_config_value(CONF_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            self._update_setup_data(CONF_TOKEN, None)
+            self._update_setup_data(CONF_X_TOKEN, None)
+            self._update_setup_data(CONF_REFRESH_TOKEN, None)
             raise LoginFailed("Session expired. Please re-authenticate.") from err2
 
         new_music_token = new_creds.music_token
         new_refresh_token = new_creds.refresh_token
         if new_music_token is None or new_refresh_token is None:
-            self._update_config_value(CONF_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            self._update_setup_data(CONF_TOKEN, None)
+            self._update_setup_data(CONF_X_TOKEN, None)
+            self._update_setup_data(CONF_REFRESH_TOKEN, None)
             raise LoginFailed(
                 "Credential refresh returned an incomplete response."
             ) from original_err
 
-        self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
-        self._update_config_value(CONF_X_TOKEN, new_creds.x_token.get_secret(), encrypted=True)
-        self._update_config_value(
-            CONF_REFRESH_TOKEN, new_refresh_token.get_secret(), encrypted=True
-        )
+        self._update_setup_data(CONF_TOKEN, new_music_token.get_secret())
+        self._update_setup_data(CONF_X_TOKEN, new_creds.x_token.get_secret())
+        self._update_setup_data(CONF_REFRESH_TOKEN, new_refresh_token.get_secret())
         restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
         self._client = YandexMusicClient(
             new_music_token, base_url=base_url, restrictive_rate_limits=restrictive
@@ -321,9 +611,9 @@ class YandexMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
-        x_token = self.config.get_value(CONF_X_TOKEN)
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
+        x_token = self.get_setup_value(CONF_X_TOKEN)
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
         restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
 
@@ -342,7 +632,7 @@ class YandexMusicProvider(MusicProvider):
             except LoginFailed:
                 self.logger.warning("Music token is invalid or expired")
                 # Clear the dead token so restarts go straight to refresh
-                self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                self._update_setup_data(CONF_TOKEN, None)
                 if x_token:
                     self.logger.info("Attempting to refresh from session token")
                     token = None
@@ -354,7 +644,7 @@ class YandexMusicProvider(MusicProvider):
         if not token and x_token:
             try:
                 new_music_token = await refresh_music_token(SecretStr(str(x_token)))
-                self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
+                self._update_setup_data(CONF_TOKEN, new_music_token.get_secret())
                 self._client = YandexMusicClient(
                     new_music_token,
                     base_url=str(base_url),
@@ -373,8 +663,8 @@ class YandexMusicProvider(MusicProvider):
                 else:
                     # Definitive auth failure — clear dead credentials
                     self.logger.warning("Session token is invalid or expired")
-                    self._update_config_value(CONF_TOKEN, None, encrypted=True)
-                    self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+                    self._update_setup_data(CONF_TOKEN, None)
+                    self._update_setup_data(CONF_X_TOKEN, None)
                     raise LoginFailed("Session token expired. Please re-authenticate.") from err
             except asyncio.CancelledError:
                 raise
@@ -597,21 +887,12 @@ class YandexMusicProvider(MusicProvider):
 
         # The English name on each folder doubles as the fallback; translation_key localizes
         # it for the connection locale at serialization (the server is the single source).
-        folders: list[BrowseFolder] = []
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
-        # My Wave folder (always enabled — Яндекс «Моя волна»)
-        folders.append(
-            BrowseFolder(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name="My Wave",
-                translation_key=MY_WAVE_PLAYLIST_ID,
-                is_playable=True,
-            )
-        )
+        # Expose My Wave as its dynamic virtual playlist so queue refills stay enabled.
+        items.append(await self.get_playlist(MY_WAVE_PLAYLIST_ID))
         # Wave modes folder (P4): discover / calm / active / language presets
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=MY_WAVE_MODES_FOLDER_ID,
                 provider=self.instance_id,
@@ -623,7 +904,7 @@ class YandexMusicProvider(MusicProvider):
         )
         # User-defined wave presets (P8) — shown only when any configured.
         if self._get_user_wave_presets():
-            folders.append(
+            items.append(
                 BrowseFolder(
                     item_id=MY_WAVE_PRESETS_FOLDER_ID,
                     provider=self.instance_id,
@@ -634,7 +915,7 @@ class YandexMusicProvider(MusicProvider):
                 )
             )
         # For You folder — Picks + Mixes (Яндекс «Для вас»)
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=FOR_YOU_FOLDER_ID,
                 provider=self.instance_id,
@@ -655,7 +936,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         if has_library:
-            folders.append(
+            items.append(
                 BrowseFolder(
                     item_id=COLLECTION_FOLDER_ID,
                     provider=self.instance_id,
@@ -666,7 +947,7 @@ class YandexMusicProvider(MusicProvider):
                 )
             )
         # Radio folder — rotor stations (Яндекс волны, shown as Radio)
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=RADIO_FOLDER_ID,
                 provider=self.instance_id,
@@ -677,7 +958,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         # AI Wave Sets — parametric stations from /landing-blocks/mixes-waves
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=MY_WAVES_SET_FOLDER_ID,
                 provider=self.instance_id,
@@ -688,7 +969,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         # Pinned items — user-pinned artists/albums/playlists/waves
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=PINNED_ITEMS_FOLDER_ID,
                 provider=self.instance_id,
@@ -699,7 +980,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         # Listening history — recently played tracks/albums
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=LISTENING_HISTORY_FOLDER_ID,
                 provider=self.instance_id,
@@ -709,9 +990,9 @@ class YandexMusicProvider(MusicProvider):
                 is_playable=False,
             )
         )
-        if len(folders) == 1:
-            return await self.browse(folders[0].path)
-        return folders
+        if len(items) == 1 and isinstance(items[0], BrowseFolder):
+            return await self.browse(items[0].path)
+        return items
 
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None
@@ -2311,6 +2592,7 @@ class YandexMusicProvider(MusicProvider):
                     )
                 },
                 is_editable=False,
+                is_dynamic=True,
             )
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
@@ -2355,9 +2637,10 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
-        Get My Wave tracks for virtual playlist (uncached; uses cursor for page > 0).
+        Get My Wave tracks for virtual playlist (uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -2433,6 +2716,7 @@ class YandexMusicProvider(MusicProvider):
             wave.playlist_next_cursor = next_cursor
             return tracks
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get liked tracks for virtual playlist (sorted in reverse chronological order).
@@ -2672,12 +2956,15 @@ class YandexMusicProvider(MusicProvider):
                 translation_key="top_picks",
                 icon="mdi-star",
             ),
-            # Mood/Activity row titles are static; the rotating tag is picked at items time.
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
             RecommendationFolder(
                 item_id="mood_mix",
                 provider=self.instance_id,
                 name="Mood Mix",
                 translation_key="mood_mix",
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
                 icon="mdi-emoticon-outline",
             ),
             RecommendationFolder(
@@ -2685,6 +2972,7 @@ class YandexMusicProvider(MusicProvider):
                 provider=self.instance_id,
                 name="Activity Mix",
                 translation_key="activity_mix",
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
                 icon="mdi-run",
             ),
             RecommendationFolder(
@@ -2719,13 +3007,16 @@ class YandexMusicProvider(MusicProvider):
         elif item_id == "top_picks":
             folder = await self._get_top_picks_recommendations()
         elif item_id == "mood_mix":
-            # Pick the tag outside the cached helper so rotation actually works
-            if mood_tag := await self._pick_random_tag_for_category("mood"):
-                folder = await self._get_mood_mix_recommendations(mood_tag)
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
         elif item_id == "activity_mix":
-            # Pick the tag outside the cached helper so rotation actually works
-            if activity_tag := await self._pick_random_tag_for_category("activity"):
-                folder = await self._get_activity_mix_recommendations(activity_tag)
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
         elif item_id == "seasonal_mix":
             folder = await self._get_seasonal_mix_recommendations()
         if folder is None:
@@ -2970,18 +3261,6 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-star",
         )
 
-    async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """
-        Pick a random valid tag for a category (not cached — enables rotation).
-
-        :param category: Category name ('mood', 'activity', etc.).
-        :return: Random tag slug, or None if no valid tags.
-        """
-        valid_tags = await self._get_valid_tags_for_category(category)
-        if not valid_tags:
-            return None
-        return random.choice(valid_tags)
-
     @use_cache(1800, allow_expired_cache=True)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
         """
@@ -3088,7 +3367,6 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.
@@ -3112,6 +3390,17 @@ class YandexMusicProvider(MusicProvider):
             self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
+        return await self._get_regular_playlist_tracks(prov_playlist_id, page)
+
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_regular_playlist_tracks(self, prov_playlist_id: str, page: int) -> list[Track]:
+        """
+        Get the tracks of a regular (non-virtual) playlist.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
         # Yandex Music API returns all playlist tracks in one call (no server-side pagination).
         # Return empty list for page > 0 so the controller pagination loop terminates.
         if page > 0:
@@ -3865,3 +4154,41 @@ class YandexMusicProvider(MusicProvider):
             total_played_seconds=offset,
             end_position_seconds=offset,
         )
+
+    async def _rotating_row_tag_subtitle(self, category: str) -> str | None:
+        """
+        Return the display label of the current rotating tag for a mood/activity row.
+
+        Cache-only read of the validated tag list (rows must stay free of backend I/O):
+        returns None - no subtitle - until an items fetch has warmed that cache.
+
+        :param category: Tag category ('mood' or 'activity').
+        """
+        # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
+        # the wrapped function's __name__ (preserved by functools.wraps, so it survives
+        # renames) plus its positional args, joined by dots
+        tags, _, found = await self.mass.cache.get_with_freshness(
+            f"{self._get_valid_tags_for_category.__name__}.{category}",
+            provider=self.instance_id,
+            include_expired=True,
+        )
+        if not found or not tags:
+            return None
+        tag = self._rotating_row_tag(category, tags)
+        return self._media_label("folder", _media_label_key(tag), tag.title())[0]
+
+    def _rotating_row_tag(self, category: str, valid_tags: list[str]) -> str:
+        """
+        Deterministically pick the current hour's tag for a mood/activity row.
+
+        Rows and items derive the same tag independently - no shared state, so
+        concurrent clients (or multiple users on one instance) can never make the
+        served items mismatch the row subtitle. The pick rotates hourly and
+        differs per provider instance.
+
+        :param category: Tag category the tags belong to.
+        :param valid_tags: Non-empty list of valid tag slugs to pick from.
+        """
+        hour_bucket = int(utc().timestamp()) // 3600
+        seed = f"{self.instance_id}.{category}.{hour_bucket}".encode()
+        return sorted(valid_tags)[zlib.crc32(seed) % len(valid_tags)]

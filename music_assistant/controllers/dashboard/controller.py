@@ -36,6 +36,9 @@ APP_MA_HOST = "https://app.music-assistant.io"
 # every real dashboard type, i.e. what a registration supports when not given explicitly
 ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.UNKNOWN)
 
+# the frontend's router leaves these literal in a query value; escaped, it never matches
+ROUTE_SAFE_CHARS = ":!'()*@,;$/"
+
 
 @dataclass
 class _RegisteredDashboard:
@@ -219,20 +222,22 @@ class DashboardController(CoreController):
 
     @api_command("dashboard/get_url")
     async def get_url_for_dashboard(
-        self, dashboard: DashboardType, player_id: str | None = None
+        self, dashboard: DashboardType, player_id: str | None = None, prefer_local: bool = False
     ) -> str:
         """
         Return a fully-qualified dashboard URL for a client to load itself.
 
         :param dashboard: Dashboard to load.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :param prefer_local: Return the plain local base url form (native LAN viewers
+            that are not bound by the https/remote-access requirement).
         :raises InsufficientPermissions: If the caller has neither the required scope
             nor a matching active session of its own.
         """
         if not self._can_resolve_url_for_caller(dashboard, player_id):
             msg = "Insufficient permissions to resolve a dashboard url"
             raise InsufficientPermissions(msg)
-        return await self.resolve_dashboard_url(dashboard, player_id)
+        return await self.resolve_dashboard_url(dashboard, player_id, prefer_local=prefer_local)
 
     def register_dashboard_handler(
         self,
@@ -285,20 +290,44 @@ class DashboardController(CoreController):
         if sessions_changed:
             self._signal_sessions_updated()
 
-    async def resolve_dashboard_url(self, dashboard: DashboardType, player_id: str | None) -> str:
+    def end_session(self, dashboard_id: str, reason: str) -> None:
+        """
+        End the active session for an endpoint that stopped showing its dashboard.
+
+        :param dashboard_id: Id of a registered dashboard endpoint.
+        :param reason: Human-readable cause, logged as a warning.
+        """
+        session = self._sessions.pop(dashboard_id, None)
+        if session is None:
+            return
+        self.logger.warning("Dashboard session on %s ended: %s", session.name, reason)
+        self._signal_sessions_updated()
+
+    async def resolve_dashboard_url(
+        self, dashboard: DashboardType, player_id: str | None, *, prefer_local: bool = False
+    ) -> str:
         """
         Build the fully-qualified URL a dashboard endpoint should load to show a dashboard.
 
-        Prefers an externally-reachable https base url (reverse-proxied server, same origin)
-        over remote access (via the app.music-assistant.io signaling portal). In-server
-        consumers (e.g. the chromecast provider) call this to resolve the url themselves.
+        By default an externally-reachable https base url (reverse-proxied server, same
+        origin) is preferred over remote access (the app.music-assistant.io signaling portal),
+        as required by cast receivers. With ``prefer_local`` the server's own base url is
+        always returned, plain http included: native apps on the LAN are not bound by the cast
+        receiver's https requirement. In-server consumers (e.g. the chromecast provider) call
+        this to resolve the url themselves.
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
-        :raises ActionUnavailable: If neither an https base url nor remote access is configured.
+        :param prefer_local: Return the plain local base url instead of the https/remote form.
+        :raises ActionUnavailable: If neither an https base url nor remote access is configured
+            (never raised when ``prefer_local`` is set).
         """
         route = self._dashboard_route(dashboard, player_id)
         base_url = self.mass.webserver.base_url
+        if prefer_local:
+            # native LAN apps talk straight to this server, no https/remote gate needed
+            query = {"dashboard": await self._get_dashboard_code(), "path": route}
+            return f"{base_url}?{urlencode(query)}"
         remote_access = self.mass.webserver.remote_access
         use_https_base = base_url.startswith("https://")
         if not use_https_base and not (remote_access.is_enabled and remote_access.remote_id):
@@ -372,7 +401,7 @@ class DashboardController(CoreController):
             if not player_id:
                 msg = "player_id is required to show the now_playing dashboard"
                 raise InvalidCommand(msg)
-            return f"/now-playing?{urlencode({'player': player_id})}"
+            return f"/now-playing?{urlencode({'player': player_id}, safe=ROUTE_SAFE_CHARS)}"
         if dashboard == DashboardType.MUSIC_QUIZ:
             return "/music-quiz"
         msg = f"Unsupported dashboard type: {dashboard}"

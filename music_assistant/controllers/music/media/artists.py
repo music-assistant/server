@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -43,7 +44,6 @@ from music_assistant.helpers.compare import (
     compare_artist,
     compare_strings,
     compare_track,
-    create_safe_string,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
@@ -94,6 +94,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.similar_artists,
             required_scope=Scope.LIBRARY_READ,
         )
+        self.mass.register_api_command(
+            f"music/{api_base}/library_artist_types",
+            self.get_library_artist_types,
+            required_scope=Scope.LIBRARY_READ,
+        )
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -112,9 +117,19 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
     ) -> int:
-        """Return the total number of items in the library."""
+        """
+        Return the number of artists in the library.
+
+        Restricted to the providers the current user is allowed to see when that user
+        has a provider filter set.
+
+        :param favorite_only: Only count artists marked as favorite.
+        :param album_artists_only: Only count artists that have albums.
+        :param artist_type: Only count artists of this type.
+        """
         sql_query = f"SELECT item_id FROM {self.db_table}"
         query_parts = []
+        query_params: dict[str, Any] = {}
         if artist_type:
             query_parts.append(f"artist_type = '{artist_type}'")
         if favorite_only:
@@ -124,9 +139,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"FROM {DB_TABLE_ALBUM_ARTISTS})"
             )
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
-        return await self.mass.music.database.get_count_from_query(sql_query)
+        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     async def library_items(  # noqa: PLR0913
         self,
@@ -821,6 +840,15 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 result.append(candidate)
         return result[:limit]
+
+    async def get_library_artist_types(self) -> list[ArtistType]:
+        """Get all supported in-library artist types."""
+        artist_types: list[ArtistType] = []
+        query = f"SELECT DISTINCT artist_type FROM {DB_TABLE_ARTISTS}"
+        rows = await self.mass.music.database.get_rows_from_query(query)
+        for row in rows:
+            artist_types.append(ArtistType(row["artist_type"]))
+        return artist_types
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""

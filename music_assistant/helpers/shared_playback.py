@@ -33,6 +33,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.util import join_task
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
@@ -51,6 +53,17 @@ class SharedPlaybackMode(StrEnum):
 
     VENUE = "venue"
     REMOTE = "remote"
+
+
+def is_remote_session_host(mass: MusicAssistant, player_id: str) -> bool:
+    """
+    Return whether the given player is the virtual host of a REMOTE session.
+
+    :param mass: MusicAssistant instance.
+    :param player_id: Player to inspect.
+    """
+    sendspin = cast("SendspinProvider | None", mass.get_provider(SENDSPIN_DOMAIN))
+    return sendspin is not None and sendspin.is_virtual_player(player_id)
 
 
 class SharedPlaybackSession:
@@ -133,7 +146,9 @@ class SharedPlaybackSession:
             cls._cancel_and_observe_creation(mass, sendspin, creation_task)
             raise
         try:
-            player_id = await asyncio.shield(creation_task)
+            # join: cancelling the caller must not abort the creation halfway, or the
+            # cleanup task can no longer remove the player it left behind
+            player_id = await join_task(creation_task)
         except asyncio.CancelledError:
             cleanup_required.set_result(True)
             raise

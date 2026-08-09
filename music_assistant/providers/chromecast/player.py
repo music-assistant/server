@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
 from music_assistant_models.enums import (
     IdentifierType,
@@ -30,11 +30,13 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    APP_LAUNCH_TIMEOUT,
     APP_MEDIA_RECEIVER,
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
+    DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
@@ -131,11 +133,7 @@ class ChromecastPlayer(Player):
         """Start the chromecast socket client (must be called after __init__)."""
         await asyncio.to_thread(self.cc.start)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         if self.type == PlayerType.GROUP:
             return [
@@ -399,18 +397,21 @@ class ChromecastPlayer(Player):
         self.mass.create_task(update_flow_metadata())
 
     async def _launch_app(self) -> None:
-        """Launch the default Media Receiver App on a Chromecast."""
-        event = asyncio.Event()
+        """Launch the configured Media Receiver App on a Chromecast."""
+        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
+            return  # already active with a compatible media receiver app
 
         if self.config.get_value(CONF_USE_MASS_APP, True):
             app_id = MASS_APP_ID
         else:
             app_id = APP_MEDIA_RECEIVER
 
-        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
-            return  # already active with a compatible media receiver app
+        event = asyncio.Event()
+        launched = False
 
         def launched_callback(success: bool, response: dict[str, Any] | None) -> None:  # noqa: ARG001
+            nonlocal launched
+            launched = success
             self.mass.loop.call_soon_threadsafe(event.set)
 
         def launch() -> None:
@@ -423,15 +424,60 @@ class ChromecastPlayer(Player):
 
         await self.mass.loop.run_in_executor(None, launch)
         try:
-            await asyncio.wait_for(event.wait(), timeout=30.0)
+            await asyncio.wait_for(event.wait(), timeout=APP_LAUNCH_TIMEOUT)
         except TimeoutError:
-            self.logger.warning("Timed out waiting for app launch on %s", self.display_name)
+            # pychromecast resolves the launch callback only on a reply with a matching
+            # request id, so an ignored LAUNCH never completes on its own.
+            self._log_launch_failure(app_id, "the receiver did not respond")
             raise PlayerUnavailableError(
                 f"Timed out launching app on {self.display_name}",
                 translation_key="app_launch_timeout",
                 translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             ) from None
+
+        if not launched:
+            # not via register_launch_error_listener: a registered listener makes
+            # pychromecast skip its retry of a CANCELLED launch
+            failure = self.cc.socket_client.receiver_controller.launch_failure
+            reason = getattr(failure, "reason", None) or "no reason given"
+            self._log_launch_failure(app_id, reason)
+            raise PlayerUnavailableError(
+                f"Launching app on {self.display_name} was refused: {reason}",
+                translation_key="app_launch_refused",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
+
+        if self.cc.app_id != app_id:
+            # a receiver can acknowledge the launch without starting the app;
+            # pychromecast applies the status before the callback, so app_id is current
+            self._log_launch_failure(app_id, "the receiver did not start the app")
+            raise PlayerUnavailableError(
+                f"App did not start on {self.display_name}",
+                translation_key="app_launch_refused",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
+
+    def _log_launch_failure(self, app_id: str, reason: str) -> None:
+        """
+        Log a failed receiver app launch and which config option to try instead.
+
+        :param app_id: Cast application id that failed to launch.
+        :param reason: Why the launch failed, as reported by the receiver.
+        """
+        # Cast emulators in TV boxes and phone apps often implement only one of the two
+        # receiver apps, so the opposite setting is the first thing to try.
+        suggestion = "disabling" if app_id == MASS_APP_ID else "enabling"
+        self.logger.warning(
+            "%s did not launch app %s: %s. If this player keeps failing to start "
+            "playback, try %s the 'Use Music Assistant Cast App' option in its settings.",
+            self.display_name,
+            app_id,
+            reason,
+            suggestion,
+        )
 
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
@@ -496,6 +542,16 @@ class ChromecastPlayer(Player):
                 return
             group_player = player_obj
             status = group_player.cc.media_controller.status
+
+        # never surface the receiver's dashboard keepalive as actual playback
+        if status.content_id and status.content_id.endswith(DASHBOARD_KEEPALIVE_SUFFIXES):
+            self._attr_playback_state = PlaybackState.IDLE
+            self._attr_current_media = None
+            self._attr_active_source = None
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
+            self.update_state()
+            return
 
         # player state
         # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
@@ -657,7 +713,7 @@ class ChromecastPlayer(Player):
             "contentType": f"audio/{file_ext}",
             "streamType": stream_type,
             "metadata": metadata,
-            "duration": media.duration,
+            "duration": media.stream_duration or media.duration,
         }
 
     def _flow_stream_underrun(self) -> bool:

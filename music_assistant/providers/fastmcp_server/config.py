@@ -51,8 +51,6 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
-
     from music_assistant.mass import MusicAssistant
 
 
@@ -69,19 +67,18 @@ def _bool(key: str, default: bool, category: str) -> ConfigEntry:
 
 def build_config_entries(
     mass: MusicAssistant,
-    values: dict[str, ConfigValueType],
+    mount_path: str,
 ) -> tuple[ConfigEntry, ...]:
     """
     Return the full ConfigEntry schema for this provider.
 
     :param mass: MusicAssistant instance, used to compose the info label.
-    :param values: Current config values (may be empty on first setup).
+    :param mount_path: The configured mount path, used to compose the info label URL.
     """
     base_url = mass.webserver.base_url.rstrip("/")
-    raw_mount = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
     # Mirror ``MCPServerRuntime.__init__``'s normalisation so the info label
     # always renders a valid URL even if the user dropped the leading slash.
-    mount_path = "/" + raw_mount.strip("/")
+    mount_path = "/" + mount_path.strip("/")
     info_label = f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Profile → Long-lived access tokens."
 
     return (

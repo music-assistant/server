@@ -9,6 +9,7 @@ Thin facade that delegates to specialized manager classes:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ from deezer_python_gql import DeezerGQLClient, GraphQLClientError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -26,6 +28,7 @@ from .media import DeezerMediaManager
 from .streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -76,7 +79,7 @@ SUPPORTED_FEATURES = {
 CONF_ARL_TOKEN = "arl_token"
 
 
-class DeezerProvider(MusicProvider, RecommendationPayloadMixin):
+class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     """
     Deezer provider support.
 
@@ -90,12 +93,17 @@ class DeezerProvider(MusicProvider, RecommendationPayloadMixin):
     streaming_manager: DeezerStreamingManager
     user_id: str
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
-        arl_token = str(self.config.get_value(CONF_ARL_TOKEN))
+        arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
 
         try:
             self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
+            logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
@@ -269,10 +277,6 @@ class DeezerProvider(MusicProvider, RecommendationPayloadMixin):
         """
         return await self.browse_manager.get_recommendation_items(item_id)
 
-    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
-        return await self.browse_manager._fetch_recommendation_payload()
-
     # -- Streaming --
 
     async def get_resume_position(
@@ -309,3 +313,7 @@ class DeezerProvider(MusicProvider, RecommendationPayloadMixin):
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when an item completed streaming."""
         await self.streaming_manager.on_streamed(streamdetails)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
+        return await self.browse_manager._fetch_recommendation_payload()

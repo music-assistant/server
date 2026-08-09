@@ -14,6 +14,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import Playlist, PlaylistSummary
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
@@ -22,7 +23,6 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.playlists import (
@@ -366,6 +366,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 },
                 allow_retry=True,
                 allow_cancel=True,
+                priority=True,
             )
         return db_playlist
 

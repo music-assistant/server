@@ -17,6 +17,7 @@ import hashlib
 import logging
 import os
 import plistlib
+import re
 
 import aiohttp
 from cryptography.hazmat.primitives import serialization
@@ -32,6 +33,9 @@ from .helpers import get_cli_binary
 
 # Timeout for the binary to complete the SRP exchange after the PIN is entered
 PAIR_SETUP_TIMEOUT = 60
+
+# HAP error tag in the binary's pair-setup stderr lines ("... error tag: 3 (backoff ...)")
+HAP_ERROR_TAG_RE = re.compile(r"error tag: (\d+)")
 
 # ============================================================================
 # RAOP Pairing constants (for AirPlay 1 legacy)
@@ -97,21 +101,8 @@ class AirPlayPairing:
         self._session: aiohttp.ClientSession | None = None
         self._base_url: str = f"http://{format_ip_for_url(address)}:{self.port}"
 
-        # Common state
-        self._is_pairing: bool = False
-
         # RAOP client identifier: 8 random bytes, the credentials are self-contained
         self._client_id = os.urandom(8)
-
-    @property
-    def is_pairing(self) -> bool:
-        """Return True if a pairing session is in progress."""
-        return self._is_pairing
-
-    @property
-    def device_provides_pin(self) -> bool:
-        """Return True if the device displays the PIN."""
-        return True  # Both HAP and RAOP display PIN on device
 
     @property
     def protocol_name(self) -> str:
@@ -133,7 +124,6 @@ class AirPlayPairing:
             self._cli_binary = await get_cli_binary()
         else:
             self._session = aiohttp.ClientSession()
-        self._is_pairing = True
 
     async def start_pin_pairing(self) -> bool:
         """
@@ -191,7 +181,6 @@ class AirPlayPairing:
 
     async def close(self) -> None:
         """Clean up resources."""
-        self._is_pairing = False
         if self._pair_proc and not self._pair_proc.closed:
             await self._pair_proc.kill()
         self._pair_proc = None
@@ -256,11 +245,9 @@ class AirPlayPairing:
             )
             returncode = await proc.wait_with_timeout(10)
         except (TimeoutError, BrokenPipeError, ConnectionResetError) as err:
-            raise PlayerCommandFailed(f"Pairing failed: {self._pair_setup_error()}") from err
+            raise self._pair_setup_failure("Pairing failed") from err
         if not credentials or returncode != 0:
-            raise PlayerCommandFailed(
-                f"Pairing failed (exit code {returncode}): {self._pair_setup_error()}"
-            )
+            raise self._pair_setup_failure(f"Pairing failed (exit code {returncode})")
         if len(credentials) != 192:
             raise PlayerCommandFailed(
                 f"Pairing produced invalid credentials (length {len(credentials)})"
@@ -279,14 +266,45 @@ class AirPlayPairing:
                     return line.split(":", 1)[1].strip()
         return None
 
+    def _pair_setup_failure(self, summary: str) -> PlayerCommandFailed:
+        """
+        Build the pairing failure carrying the most specific error detail available.
+
+        :param summary: Short summary prefixed to the error detail.
+        """
+        detail = f"{summary}: {self._pair_setup_error()}"
+        translation_key = self._pair_setup_translation_key() or "pairing_failed"
+        return PlayerCommandFailed(detail, translation_key=translation_key)
+
+    def _pair_setup_translation_key(self) -> str | None:
+        """Map the HAP error tag from the pair-setup stderr (if any) to an error translation."""
+        for line in reversed(self._pair_proc_stderr):
+            if match := HAP_ERROR_TAG_RE.search(line):
+                tag = int(match.group(1))
+                if tag == 2:
+                    return "pairing_wrong_pin"
+                if tag in (3, 5):
+                    # backoff/max tries: the device rate-limits pairing attempts
+                    return "pairing_backoff"
+        return None
+
     def _pair_setup_error(self) -> str:
         """Return a short error description from the pair-setup stderr output."""
-        # the binary reports failures as plain lines on stderr; the last
-        # (non-prompt) line is the most specific one
-        for line in reversed(self._pair_proc_stderr):
-            if line and "Enter the PIN" not in line:
-                return line
-        return "no error details reported"
+        # the binary reports failures as plain lines on stderr; the last specific
+        # line wins, its generic "Pairing failed." trailer only as a last resort
+        fallback = "no error details reported"
+        for raw_line in reversed(self._pair_proc_stderr):
+            # the PIN prompt is written without a newline, so it arrives glued
+            # to the front of the next line - strip it rather than skip the line
+            line = raw_line.split("Enter the PIN shown on the device:")[-1].strip()
+            if not line:
+                continue
+            if line == "Pairing failed.":
+                fallback = line
+                continue
+            # strip the binary's log prefix ("[time] func:line [HAP] message")
+            return line.rsplit("] ", 1)[-1]
+        return fallback
 
     # ========================================================================
     # RAOP (AirPlay 1 legacy) pairing implementation

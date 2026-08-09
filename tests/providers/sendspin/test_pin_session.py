@@ -43,6 +43,15 @@ async def _blocked() -> None:
     await asyncio.Event().wait()
 
 
+async def _submit_and_settle(provider: SendspinProvider, pin: str, client_id: str = "c") -> None:
+    """Submit the PIN and wait for the attempt task to reach its outcome."""
+    provider.submit_pin(client_id, pin)
+    session = provider.get_pin_session(client_id)
+    assert session is not None
+    assert session.task is not None
+    await session.task
+
+
 class _FakeMass:
     """MusicAssistant stand-in mirroring create_task / call_later timer bookkeeping."""
 
@@ -169,7 +178,6 @@ def _make_provider(
     provider.mass = cast("MusicAssistant", _FakeMass(asyncio.get_running_loop()))
     provider.server_api = cast("SendspinServer", server_api)
     provider._pin_sessions = {}
-    provider._token_pairing = set()
     provider._pairing_config_snapshots = {}
     provider.logger = logging.getLogger("test.sendspin.pin")
     refreshed: list[str] = []
@@ -248,7 +256,7 @@ async def test_pin_pairing_success(monkeypatch: pytest.MonkeyPatch) -> None:
     provider, refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c")
     assert session.awaiting_pin
-    await provider.submit_pin("c", "123456")
+    await _submit_and_settle(provider, "123456")
     assert session.finished
     assert session.error is None
     assert refreshed == ["c"]
@@ -260,13 +268,12 @@ async def test_pin_submitted_before_gesture(monkeypatch: pytest.MonkeyPatch) -> 
     gesture = asyncio.Event()
     api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], gesture=gesture)
     provider, refreshed = _make_provider(api, monkeypatch)
-    monkeypatch.setattr(provider_module, "PIN_SUBMIT_FEEDBACK_TIMEOUT", 0)
     monkeypatch.setattr(provider_module, "PIN_REQUEST_FEEDBACK_TIMEOUT", 0)
     session = await provider.start_pin_pairing("c")
     await asyncio.sleep(0)
     assert (session.awaiting_gesture, session.awaiting_pin) == (True, True)
 
-    await provider.submit_pin("c", "12345678")
+    provider.submit_pin("c", "12345678")
     assert (session.awaiting_gesture, session.awaiting_pin) == (True, False)
     assert session.attempt_running
 
@@ -294,7 +301,7 @@ async def test_static_override_picks_static_pin(monkeypatch: pytest.MonkeyPatch)
     provider, refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c", static=True)
     assert session.method is PairMethod.STATIC_PIN
-    await provider.submit_pin("c", "12345678")
+    await _submit_and_settle(provider, "12345678")
     assert session.finished
     assert session.error is None
     assert refreshed == ["c"]
@@ -317,7 +324,7 @@ async def test_pin_mismatch_is_retryable(monkeypatch: pytest.MonkeyPatch) -> Non
     api.outcomes.append(RemotePairingAbortError(PairAbortReason.PIN_MISMATCH))
     provider, refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c")
-    await provider.submit_pin("c", "000000")
+    await _submit_and_settle(provider, "000000")
     assert session.can_retry
     assert isinstance(session.error, RemotePairingAbortError)
     assert _pin_idle_task_id("c") in _timers(provider)
@@ -327,15 +334,15 @@ async def test_pin_mismatch_is_retryable(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 async def test_retry_resumes_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A retry reuses the session, preserving method and verify mode, and can then succeed."""
+    """A same-mode retry reuses the session and can then succeed."""
     api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN)])
     api.outcomes.append(RemotePairingAbortError(PairAbortReason.PIN_MISMATCH))
     provider, refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c", verify=True)
-    await provider.submit_pin("c", "000000")
+    await _submit_and_settle(provider, "000000")
     assert session.can_retry
 
-    same = await provider.start_pin_pairing("c")
+    same = await provider.start_pin_pairing("c", verify=True)
     assert same is session
     assert session.verify is True
     assert session.method is PairMethod.DYNAMIC_PIN
@@ -346,10 +353,58 @@ async def test_retry_resumes_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
     # start_pin_pairing waited for the immediate PIN request, so no gesture is claimed.
     assert not session.awaiting_gesture
 
-    await provider.submit_pin("c", "123456")
+    await _submit_and_settle(provider, "123456")
     assert session.finished
     assert api.initiate_calls == 2
     assert refreshed == ["c"]
+
+
+async def test_parked_mode_mismatch_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale parked session never resumes under a different mode."""
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api.outcomes.append(RemotePairingAbortError(PairAbortReason.PIN_MISMATCH))
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", verify=True)
+    await _submit_and_settle(provider, "000000")
+    assert session.can_retry
+
+    fresh = await provider.start_pin_pairing("c")
+    assert fresh is not session
+    assert fresh.verify is False
+    assert api.end_pairing_calls == 1
+    assert api.initiate_calls == 2
+
+
+async def test_parked_static_session_not_resumed_by_default_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parked static-PIN session is not resumed by a later dynamic-first request."""
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
+    api.outcomes.append(RemotePairingAbortError(PairAbortReason.PIN_MISMATCH))
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert session.method is PairMethod.STATIC_PIN
+    await _submit_and_settle(provider, "00000000")
+    assert session.can_retry
+
+    fresh = await provider.start_pin_pairing("c")
+    assert fresh is not session
+    assert fresh.method is PairMethod.DYNAMIC_PIN
+    assert api.end_pairing_calls == 1
+
+
+async def test_running_mode_mismatch_raises_concurrent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An attempt in flight with a different mode cannot be co-opted."""
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN)])
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c")
+    assert session.attempt_running
+
+    with pytest.raises(SecurityActionError) as excinfo:
+        await provider.start_pin_pairing("c", verify=True)
+    assert excinfo.value.alert_key == "pairing_error_concurrent"
+    assert provider.get_pin_session("c") is session
+    await provider.cancel_pin_pairing("c")
 
 
 async def test_retry_awaits_gesture_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -361,7 +416,7 @@ async def test_retry_awaits_gesture_again(monkeypatch: pytest.MonkeyPatch) -> No
     provider, _refreshed = _make_provider(api, monkeypatch)
     monkeypatch.setattr(provider_module, "PIN_REQUEST_FEEDBACK_TIMEOUT", 0)
     session = await provider.start_pin_pairing("c")
-    await provider.submit_pin("c", "00000000")
+    await _submit_and_settle(provider, "00000000")
     assert session.can_retry
 
     gesture.clear()
@@ -371,7 +426,7 @@ async def test_retry_awaits_gesture_again(monkeypatch: pytest.MonkeyPatch) -> No
     assert session.awaiting_gesture
 
     gesture.set()
-    await provider.submit_pin("c", "12345678")
+    await _submit_and_settle(provider, "12345678")
     assert session.finished
     assert session.error is None
 
@@ -520,16 +575,6 @@ async def test_pair_with_token_success_refreshes(monkeypatch: pytest.MonkeyPatch
     await provider.pair_with_token("c", "tok")
     assert api.end_pairing_calls == 0
     assert refreshed == ["c"]
-
-
-async def test_token_pairing_submenu_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The token-entry submenu state toggles per client."""
-    provider, _ = _make_provider(_FakeServerApi([], await_pin=False), monkeypatch)
-    assert not provider.is_token_pairing("c")
-    provider.open_token_pairing("c")
-    assert provider.is_token_pairing("c")
-    provider.close_token_pairing("c")
-    assert not provider.is_token_pairing("c")
 
 
 async def test_idle_timeout_restores_connection(monkeypatch: pytest.MonkeyPatch) -> None:

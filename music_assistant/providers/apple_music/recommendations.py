@@ -154,22 +154,6 @@ class AppleMusicRecommendationManager:
                 folders[title].items.append(playlist)
         return list(folders.values())
 
-    def _populate_station_maps(self, folders: list[RecommendationFolder]) -> None:
-        """
-        Populate the station name maps from payload folders, if they are empty.
-
-        After a process restart the payload may be served from the persistent cache
-        without running get_personal_recommendations, leaving the maps empty; the
-        folder items (stations parsed as playlists) carry the id/name pairs.
-        """
-        if self._station_id_to_name:
-            return
-        for folder in folders:
-            for item in folder.items:
-                if item.name and item.name != item.item_id:
-                    self._station_id_to_name[item.item_id] = item.name
-                    self._station_name_to_id[item.name] = item.item_id
-
     async def resolve_station_id(self, stale_id: str) -> str | None:
         """
         Return the current station ID for a stale one.
@@ -198,3 +182,19 @@ class AppleMusicRecommendationManager:
                 for item in folder.items
             ],
         )
+
+    def _populate_station_maps(self, folders: list[RecommendationFolder]) -> None:
+        """
+        Populate the station name maps from payload folders, if they are empty.
+
+        After a process restart the payload may be served from the persistent cache
+        without running get_personal_recommendations, leaving the maps empty; the
+        folder items (stations parsed as playlists) carry the id/name pairs.
+        """
+        if self._station_id_to_name:
+            return
+        for folder in folders:
+            for item in folder.items:
+                if item.name and item.name != item.item_id:
+                    self._station_id_to_name[item.item_id] = item.name
+                    self._station_name_to_id[item.name] = item.item_id

@@ -10,6 +10,7 @@ from unittest import mock
 
 import pytest
 import yappi
+from music_assistant_models.media_items import Artist, ProviderMapping
 
 from music_assistant.providers.profiler import provider as provider_module
 from music_assistant.providers.profiler.helpers import (
@@ -30,11 +31,49 @@ if TYPE_CHECKING:
 @pytest.fixture
 async def profiler(mass: MusicAssistant) -> ProfilerProvider:
     """Load the profiler provider into a running Music Assistant instance."""
-    await mass.config.save_provider_config("profiler", {})
+    await mass.config._create_provider_instance("profiler", {})
     provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
     assert provider is not None
     await provider.initialized.wait()
     return provider
+
+
+async def test_library_counts_ignore_requesting_user_provider_filter(
+    profiler: ProfilerProvider,
+    mass: MusicAssistant,
+) -> None:
+    """Test that the report's library counts are true totals, not the admin's filtered view."""
+    await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Census Artist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="census_artist",
+                    provider_domain="prov_a",
+                    provider_instance="prov_a_inst",
+                    in_library=True,
+                )
+            },
+        )
+    )
+    with mock.patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=mock.Mock(provider_filter=["no_such_provider"]),
+    ):
+        counts = await profiler._get_library_counts()
+    # the seeded artist has no mapping on the filtered provider, so a user-scoped count
+    # would report 0 for it
+    assert counts == {
+        "artist": 1,
+        "album": 0,
+        "track": 0,
+        "playlist": 0,
+        "radio": 0,
+        "audiobook": 0,
+        "podcast": 0,
+    }
 
 
 async def test_report_shape(profiler: ProfilerProvider) -> None:
@@ -135,7 +174,7 @@ async def test_unload_cleans_up(profiler: ProfilerProvider) -> None:
 async def test_tracemalloc_lifecycle(mass: MusicAssistant) -> None:
     """Test that tracemalloc is started/stopped with the provider when enabled."""
     was_tracing = tracemalloc.is_tracing()
-    await mass.config.save_provider_config("profiler", {CONF_TRACEMALLOC_ENABLED: True})
+    await mass.config._create_provider_instance("profiler", {CONF_TRACEMALLOC_ENABLED: True})
     provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
     assert provider is not None
     await provider.initialized.wait()
