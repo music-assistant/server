@@ -1405,7 +1405,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     async def register(self, player: Player) -> None:
         """Register a player on the Player Controller."""
-        if self.mass.closing:
+        if self._teardown_in_progress(player):
             return
 
         # Use lock to prevent race conditions during concurrent player registrations
@@ -1440,6 +1440,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 )
                 if cached_value is not None:
                     player.extra_data[ATTR_FAKE_POWER] = cached_value
+
+            # _registration_aborted below only works once the player is in the registry;
+            # until then the unregister pass of a provider unload cannot see it, so re-check
+            # the guard from the top of this method, which the awaits above may have staled
+            if self._teardown_in_progress(player):
+                return
 
             # finally actually register it
 
@@ -1499,7 +1505,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
-        if self.mass.closing:
+        if self._teardown_in_progress(player):
             return
 
         # the register lock ensures a replacement is never swapped in while register()
@@ -2268,6 +2274,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                     self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
                 else:
                     player.extra_data["reported_mac"] = cached_reported_mac
+
+    def _teardown_in_progress(self, player: Player) -> bool:
+        """
+        Return True if the server or this player's provider is shutting down.
+
+        :param player: The player that is in the process of being registered.
+        """
+        return self.mass.closing or player.provider.unloading
 
     def _registration_aborted(self, player: Player) -> bool:
         """

@@ -234,6 +234,7 @@ class MockProvider:
         self.mass = mass or MagicMock()
         self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
+        self.unloading = False
 
 
 class MockPlayer(Player):
