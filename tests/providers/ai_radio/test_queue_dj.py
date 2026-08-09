@@ -19,7 +19,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_QUEUE_DJ,
     ATTR_SESSION_ID,
 )
-from music_assistant.providers.ai_radio.models import PlannedSection
+from music_assistant.providers.ai_radio.models import PlannedSection, SessionState
 from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
@@ -181,6 +181,7 @@ class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixi
         self.logger = logging.getLogger(__name__)
         self.config = cast("Any", StubConfig())
         self._sections = {_transition_section()["id"]: _transition_section()}
+        self._sessions: dict[str, SessionState] = {}
         self._hosts: dict[str, dict[str, Any]] = {host["id"]: host}
         self._dj_queues: dict[str, Any] = {}
         self._dj_file = tmp_path / "queue_dj.json"
@@ -544,6 +545,34 @@ async def test_injection_rereads_a_guard_that_moved_during_the_pass(tmp_path: Pa
     queues = dummy.player_queues
     assert len(queues.loads) == 1
     assert queues.loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+
+
+async def test_replan_yields_the_queue_to_a_running_show(tmp_path: Path) -> None:
+    """A show owning the queue plans its own breaks, so the sticky DJ stays out of it."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    dummy._sessions["s1"] = SessionState(
+        session_id="s1", station_id="station_a", queue_id="queue-1"
+    )
+
+    await dummy._replan_queue("queue-1")
+
+    assert dummy.player_queues.loads == []
+    assert dummy._dj_queues["queue-1"].replan_pending is False
+
+
+async def test_replan_ignores_a_show_running_on_another_queue(tmp_path: Path) -> None:
+    """A show elsewhere leaves this queue's DJ working."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    dummy._sessions["s1"] = SessionState(
+        session_id="s1", station_id="station_a", queue_id="queue-2"
+    )
+    dummy._sessions["s2"] = SessionState(
+        session_id="s2", station_id="station_b", queue_id="queue-1", status="completed"
+    )
+
+    await dummy._replan_queue("queue-1")
+
+    assert len(dummy.player_queues.loads) == 2
 
 
 async def test_replan_keeps_state_when_the_queue_is_not_registered_yet(tmp_path: Path) -> None:

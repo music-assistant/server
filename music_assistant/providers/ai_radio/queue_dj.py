@@ -15,7 +15,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.helpers.json import async_json_loads
 
 from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID
-from .models import DJQueueState, PlannedSection
+from .models import DJQueueState, PlannedSection, SessionState
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,6 +44,7 @@ class AIRadioQueueDJMixin:
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
         _dj_queues: dict[str, DJQueueState]
+        _sessions: dict[str, SessionState]
         _dj_file: Path
         _dj_lock: asyncio.Lock
         _unloading: bool
@@ -181,6 +182,14 @@ class AIRadioQueueDJMixin:
         async with state.lock:
             # cleared up front so an event landing mid-pass requests a fresh pass
             state.replan_pending = False
+            if any(
+                session.status == "running" and session.queue_id == queue_id
+                for session in self._sessions.values()
+            ):
+                # a show plans its own breaks into this queue and its clips carry no DJ
+                # attribute, so injecting here would stack talk on top of talk
+                self.logger.debug("Queue %s is running a show, skipping replan", queue_id)
+                return
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
                 # an unknown queue is usually one that has not registered yet (players
