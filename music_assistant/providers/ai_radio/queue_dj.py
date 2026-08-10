@@ -65,19 +65,28 @@ class AIRadioQueueDJMixin:
         if not queue_id:
             raise InvalidDataError("queue_id is required")
         armed: DJQueueState | None = None
-        async with self._dj_lock:
-            if host_id is None:
-                self._dj_queues.pop(queue_id, None)
-            else:
-                host_id = str(host_id).strip()
-                if host_id not in self._hosts:
-                    raise InvalidDataError(f"Unknown host id: {host_id}")
-                armed = self._arm_dj_state(queue_id, host_id)
-            await self._write_queue_dj()
-        # any pending clip other than the armed session's own carries a persona and voice
-        # that is no longer the queue's, so it has to go before the replan can plant this
-        # host's clips into the gaps it frees up
-        await self._remove_pending_dj_clips(queue_id)
+        try:
+            async with self._dj_lock:
+                if host_id is None:
+                    self._dj_queues.pop(queue_id, None)
+                else:
+                    host_id = str(host_id).strip()
+                    if host_id not in self._hosts:
+                        raise InvalidDataError(f"Unknown host id: {host_id}")
+                    armed = self._arm_dj_state(queue_id, host_id)
+                await self._write_queue_dj()
+            # any pending clip other than the armed session's own carries a persona and voice
+            # that is no longer the queue's, so it has to go before the replan can plant this
+            # host's clips into the gaps it frees up
+            self._remove_pending_dj_clips(queue_id)
+        except Exception:
+            # an armed state that never reached its cleanup stays unready forever, which
+            # reads as an armed DJ that never speaks. dropping it lets a retry arm cleanly
+            if armed is not None:
+                async with self._dj_lock:
+                    if self._dj_queues.get(queue_id) is armed:
+                        del self._dj_queues[queue_id]
+            raise
         if armed is not None:
             # only now may this state plan: a pass racing the cleanup above would see the
             # gaps the old clips still occupy, mark them served and leave them empty.
@@ -362,8 +371,10 @@ class AIRadioQueueDJMixin:
         items.insert(target_index, clip)
         return "injected"
 
-    async def _remove_pending_dj_clips(self, queue_id: str) -> None:
+    def _remove_pending_dj_clips(self, queue_id: str) -> None:
         """Remove not-yet-played DJ clips from the queue, except the armed session's own."""
+        # await-free on purpose: nothing can mutate the queue between the snapshot below and
+        # the update that applies the filtered list
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
             return

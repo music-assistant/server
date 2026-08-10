@@ -756,6 +756,25 @@ async def test_switch_refills_the_gaps_its_own_cleanup_frees(tmp_path: Path) -> 
         assert clip.extra_attributes[ATTR_HOST_ID] == "daisy"
 
 
+async def test_a_failing_switch_cleanup_leaves_no_armed_state(tmp_path: Path) -> None:
+    """A switch whose cleanup blows up must not leave behind a state that can never plan."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(3)])
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    dummy._hosts["daisy"] = daisy
+
+    def _failing_cleanup(queue_id: str) -> None:
+        raise MusicAssistantError("queue layer is unhappy")
+
+    dummy._remove_pending_dj_clips = _failing_cleanup  # type: ignore[method-assign]
+
+    with pytest.raises(MusicAssistantError):
+        await dummy.set_queue_dj("queue-1", "daisy")
+
+    assert dummy._dj_queues == {}
+    assert dummy.mass.tasks == []
+
+
 async def test_a_rejected_clip_keeps_no_guard_history(tmp_path: Path) -> None:
     """A merged clip the splice rejects must not block its own sections from airing later."""
     tracks = [_track(index) for index in range(4)]
