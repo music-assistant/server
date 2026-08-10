@@ -14,6 +14,8 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
 )
 from music_assistant_models.errors import (
     MediaNotFoundError,
@@ -154,13 +156,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Artist]:
@@ -171,14 +175,25 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
         :param artist_type: The artist's type
+        :param sort_field: Sort field to use (new typed parameter).
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
+        if sort_field is not None:
+            final_order_by = (
+                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
+            )
+        elif order_by:
+            final_order_by = order_by
+        else:
+            final_order_by = "sort_name"
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if artist_type:
@@ -194,7 +209,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,

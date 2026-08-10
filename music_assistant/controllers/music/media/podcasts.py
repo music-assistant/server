@@ -6,7 +6,12 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -75,17 +80,19 @@ class PodcastsController(MediaControllerBase[Podcast]):
             FROM podcasts"""
         return query, {}
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Podcast]:
@@ -96,19 +103,30 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
+        :param sort_field: Sort field to use (new typed parameter).
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param genre: Filter by genre id(s).
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
+        if sort_field is not None:
+            final_order_by = (
+                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
+            )
+        elif order_by:
+            final_order_by = order_by
+        else:
+            final_order_by = "sort_name"
+
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._ensure_provider_filter(provider),
             played_only=played_only,
             in_library_only=True,

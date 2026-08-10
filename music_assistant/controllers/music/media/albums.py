@@ -7,7 +7,14 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -126,18 +133,20 @@ class AlbumsController(MediaControllerBase[Album]):
         album.artists = album_artists
         return album
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         album_types: list[AlbumType] | None = None,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Album]:
@@ -148,28 +157,42 @@ class AlbumsController(MediaControllerBase[Album]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
+        :param sort_field: Sort field to use (new typed parameter).
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
+        # Resolve sort parameters: prefer typed parameters over legacy order_by string
+        if sort_field is not None:
+            final_order_by = (
+                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
+            )
+        elif order_by:
+            final_order_by = order_by
+        else:
+            final_order_by = "sort_name"
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
         artist_table_joined = False
-        # optional album type filter
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
-        if order_by and "artist_name" in order_by:
-            # join artist table to allow sorting on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-            )
-            artist_table_joined = True
+
+        if final_order_by:
+            parsed = self._parse_order_by(final_order_by)
+            if parsed and parsed[0] == SortField.ARTIST_NAME:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id"
+                )
+                artist_table_joined = True
+
         if search and " - " in search:
             # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
@@ -196,7 +219,7 @@ class AlbumsController(MediaControllerBase[Album]):
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
@@ -227,7 +250,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
-                order_by=order_by,
+                order_by=final_order_by,
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
@@ -708,6 +731,18 @@ class AlbumsController(MediaControllerBase[Album]):
                 "disc_number": track.disc_number,
             },
         )
+
+    def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str | None:
+        """
+        Get SQL ORDER BY clause for albums.
+
+        Overrides base implementation to provide album-specific ARTIST_NAME sorting.
+        """
+        if field == SortField.ARTIST_NAME:
+            if direction == SortDirection.DESC:
+                return "artists.search_name DESC, year DESC"
+            return "artists.search_name ASC, year DESC"
+        return super()._get_sort_sql(field, direction)
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AlbumSummary:
         """Parse a raw summary db row into an AlbumSummary object."""

@@ -14,6 +14,8 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -233,18 +235,20 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = UniqueList(track_artists)
         return track
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         explicit: bool | None = None,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Track]:
@@ -255,14 +259,26 @@ class TracksController(MediaControllerBase[Track]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Filter to only played tracks.
         :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
+        :param sort_field: Sort field to use (new typed parameter).
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
+        # Resolve sort parameters: prefer typed parameters over legacy order_by string
+        if sort_field is not None:
+            final_order_by = (
+                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
+            )
+        elif order_by:
+            final_order_by = order_by
+        else:
+            final_order_by = "sort_name"
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
@@ -270,16 +286,25 @@ class TracksController(MediaControllerBase[Track]):
         # Apply explicit content filter
         if explicit is not None:
             if explicit:
-                # Only explicit tracks
                 extra_query_parts.append("json_extract(tracks.metadata, '$.explicit') = 1")
             else:
-                # No explicit tracks (null or false)
                 extra_query_parts.append(
                     "(json_extract(tracks.metadata, '$.explicit') IS NULL "
                     "OR json_extract(tracks.metadata, '$.explicit') = 0)"
                 )
+
+        artist_join_added = False
+
+        if order_by:
+            parsed = self._parse_order_by(order_by)
+            if parsed and parsed[0] == SortField.ARTIST_NAME:
+                extra_join_parts.append(
+                    "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                    "JOIN artists ON artists.item_id = track_artists.artist_id"
+                )
+                artist_join_added = True
+
         if search and " - " in search:
-            # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
             search = None
             title_str = create_safe_string(title_str, True, True)
@@ -287,22 +312,29 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts.append(
                 search_name_match_clause("tracks", title_str, "search_title", extra_query_params)
             )
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
-                "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND "
-                + search_name_match_clause(
-                    "artists", artist_str, "search_artist", extra_query_params
+            if not artist_join_added:
+                extra_join_parts.append(
+                    "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                    "JOIN artists ON artists.item_id = track_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
                 )
-            )
+                artist_join_added = True
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
@@ -328,7 +360,7 @@ class TracksController(MediaControllerBase[Track]):
                 search=None,
                 genre_ids=genre,
                 limit=limit,
-                order_by=order_by,
+                order_by=final_order_by,
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
@@ -868,6 +900,18 @@ class TracksController(MediaControllerBase[Track]):
             },
         )
         return ItemMapping.from_item(db_artist)
+
+    def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str | None:
+        """
+        Get SQL ORDER BY clause for tracks.
+
+        Overrides base implementation to provide track-specific ARTIST_NAME sorting.
+        """
+        if field == SortField.ARTIST_NAME:
+            if direction == SortDirection.DESC:
+                return "artists.search_name DESC, tracks.search_name ASC"
+            return "artists.search_name ASC, tracks.search_name ASC"
+        return super()._get_sort_sql(field, direction)
 
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the tracks sync-details query."""
