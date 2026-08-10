@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
@@ -57,7 +57,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.models.player_provider import PlayerProvider
-from tests.common import MockPlayer, MockProvider, create_mock_config
+from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
 
 def _player_config_stub(
@@ -118,30 +118,34 @@ def _volume_step_config(step: int | None) -> CoreConfig:
     )
 
 
-@contextlib.contextmanager
-def _running_background_tasks(mock_mass: MagicMock) -> Iterator[None]:
+@pytest.fixture
+def running_background_tasks(mock_mass: MagicMock) -> Iterator[None]:
     """
-    Let ``mass.create_task`` actually run its coroutine on the running event loop.
+    Really run the tasks that ``mass.create_task`` is handed, and raise what they raise.
 
-    :param mock_mass: The mocked MusicAssistant instance to patch.
+    The real implementation only logs the exception of a background task, which would
+    leave a test that dispatches its work through the TaskManager passing regardless.
     """
     errors: list[BaseException] = []
+    use_real_create_task(mock_mass)
+    real_create_task = mock_mass.create_task
 
     def _collect_exception(task: asyncio.Task[Any]) -> None:
-        # the real helper retrieves the exception of every task it creates, so a failing
-        # background task must fail the test instead of only warning at collection time
         if not task.cancelled() and (err := task.exception()) is not None:
             errors.append(err)
 
-    def _create_task(coro: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
-        task = asyncio.ensure_future(coro)
-        task.add_done_callback(_collect_exception)
+    def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
+        task = real_create_task(target, *args, **kwargs)
+        if isinstance(task, asyncio.Task):
+            task.add_done_callback(_collect_exception)
         return task
 
     mock_mass.create_task = MagicMock(side_effect=_create_task)
     yield
-    if errors:
+    if len(errors) == 1:
         raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("background tasks failed", errors)
 
 
 def _mute_natively(player: MockPlayer) -> AsyncMock:
@@ -3112,14 +3116,9 @@ class TestPlayAnnouncementCleanup:
         render.wait_finished.assert_not_awaited()
 
 
+@pytest.mark.usefixtures("running_background_tasks")
 class TestPlayAnnouncementRestore:
     """Test the state restore of the default (fallback) announcement implementation."""
-
-    @pytest.fixture(autouse=True)
-    def _background_tasks(self, mock_mass: MagicMock) -> Iterator[None]:
-        """Run the (temporary and restored) volume commands the TaskManager dispatches."""
-        with _running_background_tasks(mock_mass):
-            yield
 
     def _make_player(
         self, mock_mass: MagicMock, prev_media: PlayerMedia
@@ -3479,14 +3478,9 @@ class TestPlayAnnouncementRestore:
         assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
 
 
+@pytest.mark.usefixtures("running_background_tasks")
 class TestPlayNativeAnnouncement:
     """Test the mute handling around an announcement that a player plays natively."""
-
-    @pytest.fixture(autouse=True)
-    def _background_tasks(self, mock_mass: MagicMock) -> Iterator[None]:
-        """Run the mute commands the TaskManager dispatches."""
-        with _running_background_tasks(mock_mass):
-            yield
 
     def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
         """Create a controller and a player with native announcement support."""
