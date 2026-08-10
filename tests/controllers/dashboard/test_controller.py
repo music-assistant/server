@@ -616,7 +616,8 @@ async def test_show_dashboard_api_path_now_playing_requires_player_id() -> None:
     [
         (DashboardType.PARTY, None, "/party"),
         (DashboardType.NOW_PLAYING, "player1", "/now-playing?player=player1"),
-        (DashboardType.MUSIC_QUIZ, None, "/music-quiz"),
+        # the viewer-only kiosk view, not the host page (which needs USERS_INVITE)
+        (DashboardType.MUSIC_QUIZ, None, "/music-quiz/dashboard"),
     ],
 )
 def test_dashboard_route_resolves_expected_path(

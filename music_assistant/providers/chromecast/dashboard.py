@@ -36,7 +36,11 @@ DASHBOARD_CONNECT_TIMEOUT = 10.0
 DASHBOARD_CONNECTION_LOSS_GRACE = 60.0
 
 # Dashboard types the chromecast receiver app has routes for.
-SUPPORTED_DASHBOARD_TYPES = {DashboardType.PARTY, DashboardType.NOW_PLAYING}
+SUPPORTED_DASHBOARD_TYPES = {
+    DashboardType.PARTY,
+    DashboardType.NOW_PLAYING,
+    DashboardType.MUSIC_QUIZ,
+}
 
 
 @dataclass

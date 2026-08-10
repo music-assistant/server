@@ -1204,15 +1204,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_mappings: Iterable[ProviderMapping],
         overwrite: bool = False,
     ) -> None:
-        """Update the provider_items table for the media item."""
+        """
+        Update the provider_mappings table for the media item.
+
+        An empty set of mappings never clears the stored rows: an item without any
+        mapping can not be played or resolved.
+        """
         db_id = int(item_id)  # ensure integer
-        if overwrite:
-            # on overwrite, clear the provider_mappings table first
-            # this is done for filesystem provider changing the path (and thus item_id)
-            await self.mass.music.database.delete(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": self.media_type.value, "item_id": db_id},
-            )
         prov_map_objs: list[dict[str, Any]] = []
         for provider_mapping in provider_mappings:
             prov_map_obj = {
@@ -1228,6 +1226,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             prov_map_objs.append(prov_map_obj)
+        if not prov_map_objs:
+            if overwrite:
+                # a caller asking to replace all mappings with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning(
+                    "Ignoring request to clear all provider mappings of %s item id %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        if overwrite:
+            # on overwrite, clear the provider_mappings table first
+            # this is done for filesystem provider changing the path (and thus item_id)
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
         await self.mass.music.database.upsert_many(
             DB_TABLE_PROVIDER_MAPPINGS,
             prov_map_objs,
