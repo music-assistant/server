@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.player import (
     DeviceInfo,
     PlayerOption,
@@ -28,7 +28,7 @@ from music_assistant_models.player import (
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     create_sample_rates_config_entry,
 )
 from music_assistant.models.player import Player, PlayerMedia
@@ -331,7 +331,8 @@ class BoseSoundTouchPlayer(Player):
         base_entries = await super().get_config_entries()
 
         default_entries = [
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+            # by far the most consistent results with mp3. flac is flakier.
+            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
             CONF_ENTRY_FLOW_MODE,
             create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
         ]
@@ -360,7 +361,9 @@ class BoseSoundTouchPlayer(Player):
                 1,
             )
         ]
-        return base_entries + default_entries + preset_entries
+
+        # preset first, as the others are advanced
+        return preset_entries + base_entries + default_entries
 
     async def handle_config_action(
         self, action: str
@@ -461,8 +464,13 @@ class BoseSoundTouchPlayer(Player):
             )
             return
         self.logger.info("Preset %s pressed on %s, playing %s", preset_id, self.name, media_id)
+        player_id = self.player_id if self.synced_to is None else self.synced_to
         try:
-            await self.mass.player_queues.play_media(queue_id=self.player_id, media=media_id)
+            await self.mass.player_queues.play_media(queue_id=player_id, media=media_id)
+        except MediaNotFoundError:
+            self.logger.error(
+                "Unable to play media for preset %s, as the media does not exist.", preset_id
+            )
         except MusicAssistantError:
             self.logger.exception("Unable to play media for preset %s", preset_id)
 
