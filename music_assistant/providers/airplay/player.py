@@ -34,6 +34,7 @@ from .constants import (
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
+    AIRPLAY_SESSION_CLEANUP_ATTEMPT_DELAYS,
     ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
@@ -64,6 +65,7 @@ from .helpers import (
     player_id_to_mac_address,
     supports_airplay2,
 )
+from .stream import AirPlayStream
 from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
@@ -73,7 +75,6 @@ if TYPE_CHECKING:
 
     from .pairing import AirPlayPairing
     from .provider import AirPlayProvider
-    from .stream import AirPlayStream
 
 # Docker bridge subnet, sometimes wrongly advertised via mDNS by containerized devices.
 _DOCKER_SUBNET = ipaddress.ip_network("172.16.0.0/12")
@@ -108,6 +109,7 @@ class AirPlayPlayer(Player):
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         self._rejoin_task: asyncio.Task[None] | None = None
+        self._session_cleanup_task: asyncio.Task[None] | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -447,8 +449,10 @@ class AirPlayPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         # the player is being (re)purposed on purpose: drop any pending
-        # automatic re-join left over from an unexpected stream loss
+        # automatic re-join left over from an unexpected stream loss (the new
+        # session also displaces any leaked device session)
         self.cancel_group_rejoin()
+        self.cancel_device_session_cleanup()
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways
@@ -808,6 +812,7 @@ class AirPlayPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         self.cancel_group_rejoin()
+        self.cancel_device_session_cleanup()
         if self.stream:
             # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
@@ -845,6 +850,24 @@ class AirPlayPlayer(Player):
         # session (re)start paths that call this to clear stale schedules
         if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
             rejoin_task.cancel()
+
+    def schedule_device_session_cleanup(self) -> None:
+        """
+        Schedule bounded attempts to clear a session left behind on the device.
+
+        Call after the stream process died without a clean teardown. The
+        attempts stand down once a live stream owns the player again and are
+        cancelled by any deliberate use of the player.
+        """
+        self.cancel_device_session_cleanup()
+        self._session_cleanup_task = self.mass.create_task(self._device_session_cleanup_attempts())
+
+    def cancel_device_session_cleanup(self) -> None:
+        """Cancel any pending device session cleanup attempts for this player."""
+        cleanup_task = self._session_cleanup_task
+        self._session_cleanup_task = None
+        if cleanup_task and not cleanup_task.done() and cleanup_task is not asyncio.current_task():
+            cleanup_task.cancel()
 
     def _volume_control_routes_to_self(self, volume_control: str) -> bool:
         """Return True if the given (resolved) volume control routes volume to this player."""
@@ -1321,6 +1344,60 @@ class AirPlayPlayer(Player):
                 continue
             return candidate
         return None
+
+    async def _device_session_cleanup_attempts(self) -> None:
+        """Connect and cleanly disconnect to clear a session leaked on the device."""
+        # Let a scheduled re-join resolve first: a successful re-join already
+        # displaces the leaked session. asyncio.wait never propagates the
+        # task's outcome, so a failed re-join cannot end the cleanup with it.
+        if (rejoin_task := self._rejoin_task) is not None:
+            await asyncio.wait({rejoin_task})
+        max_attempts = len(AIRPLAY_SESSION_CLEANUP_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(AIRPLAY_SESSION_CLEANUP_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if self.stream and self.stream.running:
+                # a live session owns the device again; it displaced the leak
+                return
+            if not self.available:
+                # device offline; a later attempt may reach it
+                continue
+            # This stream never becomes self.stream: its state reports are
+            # ignored (set_state_from_stream validates the sender) and a real
+            # session starting meanwhile simply displaces it.
+            cleanup_stream = AirPlayStream(self)
+            try:
+                await cleanup_stream.connect()
+                await cleanup_stream.wait_for_connection()
+            except Exception as err:
+                self.logger.debug(
+                    "Device session cleanup for %s could not connect (attempt %d/%d): %s",
+                    self.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                with contextlib.suppress(Exception):
+                    await cleanup_stream.stop(force=True)
+                continue
+            try:
+                await cleanup_stream.stop()
+            except Exception as err:
+                self.logger.debug(
+                    "Device session cleanup for %s failed to disconnect: %s",
+                    self.display_name,
+                    err,
+                )
+                continue
+            self.logger.info(
+                "Cleared a leftover AirPlay session on %s after unexpected stream loss",
+                self.display_name,
+            )
+            return
+        self.logger.debug(
+            "Device session cleanup for %s gave up after %d attempt(s)",
+            self.display_name,
+            max_attempts,
+        )
 
     def _store_device_password(self, password: str) -> None:
         """

@@ -1292,6 +1292,10 @@ class AirPlayStream:
                         # the group (or its successor) may still be playing:
                         # schedule bounded attempts to re-join it
                         player.schedule_group_rejoin(rejoin_candidates)
+                    # The dead process never delivered a teardown, so the
+                    # receiver may still hold the armed session and audibly
+                    # pop on it. If no new session lands, this clears it.
+                    player.schedule_device_session_cleanup()
                     if was_leader:
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)

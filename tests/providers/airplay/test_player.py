@@ -1342,6 +1342,148 @@ async def test_stop_cancels_pending_rejoin() -> None:
         assert rejoin_task.cancelled()
 
 
+# --- Device session cleanup after unexpected stream loss ---
+
+
+_NO_CLEANUP_DELAYS = (
+    "music_assistant.providers.airplay.player.AIRPLAY_SESSION_CLEANUP_ATTEMPT_DELAYS"
+)
+_CLEANUP_STREAM_CLS = "music_assistant.providers.airplay.player.AirPlayStream"
+
+
+def _make_cleanup_stream() -> MagicMock:
+    """Create a mock cleanup stream that connects and disconnects successfully."""
+    stream = MagicMock()
+    stream.connect = AsyncMock()
+    stream.wait_for_connection = AsyncMock()
+    stream.stop = AsyncMock()
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_connects_and_cleanly_disconnects() -> None:
+    """The cleanup lands one session on the device and tears it down again."""
+    player = _make_idle_player()
+    cleanup_stream = _make_cleanup_stream()
+
+    with (
+        patch(_NO_CLEANUP_DELAYS, (0,)),
+        patch(_CLEANUP_STREAM_CLS, return_value=cleanup_stream) as stream_cls,
+    ):
+        await player._device_session_cleanup_attempts()
+
+    stream_cls.assert_called_once_with(player)
+    cleanup_stream.connect.assert_awaited_once()
+    cleanup_stream.wait_for_connection.assert_awaited_once()
+    # a graceful stop delivers the teardown that clears the leaked session
+    cleanup_stream.stop.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_stands_down_when_a_session_owns_the_device() -> None:
+    """A live stream on the player means the leak was displaced: no cleanup connect."""
+    player = _make_idle_player()
+    _attach_running_session(player, [player])
+
+    with (
+        patch(_NO_CLEANUP_DELAYS, (0,)),
+        patch(_CLEANUP_STREAM_CLS) as stream_cls,
+    ):
+        await player._device_session_cleanup_attempts()
+
+    stream_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_retries_a_failed_connect() -> None:
+    """A connect failure (device still riding out the blackout) is retried."""
+    player = _make_idle_player()
+    failing_stream = _make_cleanup_stream()
+    failing_stream.wait_for_connection = AsyncMock(side_effect=TimeoutError("no connection"))
+    succeeding_stream = _make_cleanup_stream()
+
+    with (
+        patch(_NO_CLEANUP_DELAYS, (0, 0)),
+        patch(_CLEANUP_STREAM_CLS, side_effect=[failing_stream, succeeding_stream]),
+    ):
+        await player._device_session_cleanup_attempts()
+
+    # the failed attempt only ever kills its own process
+    failing_stream.stop.assert_awaited_once_with(force=True)
+    succeeding_stream.stop.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_gives_up_after_all_attempts() -> None:
+    """An unreachable device exhausts the ladder without further effect."""
+    player = _make_idle_player()
+    streams = [_make_cleanup_stream() for _ in range(3)]
+    for stream in streams:
+        stream.connect = AsyncMock(side_effect=TimeoutError("unreachable"))
+
+    with (
+        patch(_NO_CLEANUP_DELAYS, (0, 0, 0)),
+        patch(_CLEANUP_STREAM_CLS, side_effect=streams) as stream_cls,
+    ):
+        await player._device_session_cleanup_attempts()
+
+    assert stream_cls.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_skips_attempts_while_device_is_offline() -> None:
+    """An offline device is never dialed; attempts wait for it to come back."""
+    player = _make_idle_player()
+    player._attr_available = False
+
+    with (
+        patch(_NO_CLEANUP_DELAYS, (0, 0)),
+        patch(_CLEANUP_STREAM_CLS) as stream_cls,
+    ):
+        await player._device_session_cleanup_attempts()
+
+    stream_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_waits_for_the_rejoin_to_resolve_first() -> None:
+    """A successful re-join displaces the leak itself, so the cleanup stands down."""
+    player = _make_idle_player()
+
+    async def rejoin() -> None:
+        _attach_running_session(player, [player])
+
+    rejoin_task = asyncio.get_running_loop().create_task(rejoin())
+    player._rejoin_task = rejoin_task
+
+    with (
+        patch(_NO_CLEANUP_DELAYS, (0,)),
+        patch(_CLEANUP_STREAM_CLS) as stream_cls,
+    ):
+        await player._device_session_cleanup_attempts()
+
+    assert rejoin_task.done()
+    stream_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_play_media_cancels_pending_session_cleanup() -> None:
+    """A new playback owns the device and displaces any leak: the cleanup is dropped."""
+    player = _make_idle_player()
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_CLEANUP_DELAYS, (60,)):
+        player.schedule_device_session_cleanup()
+        cleanup_task = player._session_cleanup_task
+        assert cleanup_task is not None
+        player.cancel_device_session_cleanup()
+        assert player._session_cleanup_task is None
+        await asyncio.sleep(0)
+        assert cleanup_task.cancelled()
+
+
 # --- Group membership and the leader's stream session ---
 
 

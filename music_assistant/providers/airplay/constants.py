@@ -206,6 +206,13 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # Staged retries can be reintroduced by adding entries to the tuple.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 
+# Delays (seconds) between attempts to clear a session left behind on a device
+# whose cliairplay process died without a clean teardown. Apple receivers keep
+# the session armed and audibly pop until a new session displaces it, so a
+# short-lived connect/disconnect forces the drop. The increasing delays cover
+# both a brief network blip and a longer outage.
+AIRPLAY_SESSION_CLEANUP_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (10, 60, 300)
+
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.

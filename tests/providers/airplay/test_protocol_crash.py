@@ -67,6 +67,9 @@ async def test_crash_on_sync_leader_defers_idle_and_ungroups() -> None:
 
     mass.players.cmd_ungroup.assert_called_once_with(player.player_id)
     mass.create_task.assert_called_once()
+    # The dead process never delivered a teardown: the device-side session
+    # cleanup must be scheduled so the receiver cannot keep popping on it.
+    player.schedule_device_session_cleanup.assert_called_once()
     # Leader must NOT be forced idle here — that would dissolve the group.
     player.set_state_from_stream.assert_not_called()
 
@@ -80,6 +83,7 @@ async def test_crash_on_member_idles_and_ungroups() -> None:
 
     mass.players.cmd_ungroup.assert_called_once_with(player.player_id)
     mass.create_task.assert_called_once()
+    player.schedule_device_session_cleanup.assert_called_once()
     # Members / standalone players are reflected idle right away.
     player.set_state_from_stream.assert_called_once()
     _, kwargs = player.set_state_from_stream.call_args
