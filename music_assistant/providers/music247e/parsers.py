@@ -1,4 +1,4 @@
-"""Parsers for YouSee Musik API responses."""
+"""Parsers for the 24-7 (247e) music backend API responses."""
 
 from __future__ import annotations
 
@@ -20,18 +20,17 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version, try_parse_int
-from music_assistant.providers.yousee.constants import (
-    CONF_QUALITY,
+from music_assistant.providers.music247e.constants import (
     VARIOUS_ARTISTS_ID,
 )
 
 if TYPE_CHECKING:
-    from music_assistant.providers.yousee.api_client import JsonLike
-    from music_assistant.providers.yousee.provider import YouSeeMusikProvider
+    from music_assistant.providers.music247e.api_client import JsonLike
+    from music_assistant.providers.music247e.provider import Music247eProvider
 
 
-async def parse_track(provider: YouSeeMusikProvider, track_obj: JsonLike) -> Track:
-    """Parse track data from YouSee API response."""
+async def parse_track(provider: Music247eProvider, track_obj: JsonLike) -> Track:
+    """Parse track data from the 24-7 (247e) API response."""
     track = Track(
         item_id=track_obj["id"],
         provider=provider.instance_id,
@@ -45,7 +44,7 @@ async def parse_track(provider: YouSeeMusikProvider, track_obj: JsonLike) -> Tra
                 available=track_obj.get("availableToStream", True),
                 audio_format=AudioFormat(
                     content_type=ContentType.MP4,
-                    bit_rate=try_parse_int(provider.config.get_value(CONF_QUALITY)),
+                    bit_rate=try_parse_int(provider.playback_quality),
                 ),
                 url=track_obj.get("share"),
             )
@@ -86,8 +85,8 @@ async def parse_track(provider: YouSeeMusikProvider, track_obj: JsonLike) -> Tra
     return track
 
 
-def parse_artist(provider: YouSeeMusikProvider, artist_obj: JsonLike) -> Artist:
-    """Parse artist data from YouSee API response."""
+def parse_artist(provider: Music247eProvider, artist_obj: JsonLike) -> Artist:
+    """Parse artist data from the 24-7 (247e) API response."""
     artist = Artist(
         item_id=artist_obj["id"],
         provider=provider.instance_id,
@@ -119,8 +118,8 @@ def parse_artist(provider: YouSeeMusikProvider, artist_obj: JsonLike) -> Artist:
     return artist
 
 
-async def parse_album(provider: YouSeeMusikProvider, album_obj: JsonLike) -> Album:
-    """Parse album data from YouSee API response."""
+async def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album:
+    """Parse album data from the 24-7 (247e) API response."""
     if "artist" not in album_obj:
         return await provider.get_album(str(album_obj["id"]))
 
@@ -137,7 +136,7 @@ async def parse_album(provider: YouSeeMusikProvider, album_obj: JsonLike) -> Alb
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.MP4,
-                    bit_rate=try_parse_int(provider.config.get_value(CONF_QUALITY)),
+                    bit_rate=try_parse_int(provider.playback_quality),
                 ),
                 url=album_obj.get("share"),
             )
@@ -187,8 +186,8 @@ async def parse_album(provider: YouSeeMusikProvider, album_obj: JsonLike) -> Alb
     return album
 
 
-async def parse_playlist(provider: YouSeeMusikProvider, playlist_obj: JsonLike) -> Playlist:
-    """Parse playlist data from YouSee API response."""
+async def parse_playlist(provider: Music247eProvider, playlist_obj: JsonLike) -> Playlist:
+    """Parse playlist data from the 24-7 (247e) API response."""
     playlist = Playlist(
         item_id=str(playlist_obj["id"]),
         provider=provider.instance_id,
@@ -223,7 +222,7 @@ async def parse_playlist(provider: YouSeeMusikProvider, playlist_obj: JsonLike) 
 
 async def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
     """
-    Parse the YouSee lyrics payload and extract the lyric text in two formats if possible.
+    Parse the 24-7 (247e) lyrics payload and extract the lyric text in two formats if possible.
 
     Returns:
         Tuple[str | None, str | None]: lyrics (plain) and lyrics_lrc, if present.
