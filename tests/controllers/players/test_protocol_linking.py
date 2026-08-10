@@ -938,6 +938,60 @@ class TestGetStoredDeviceKey:
 
         assert universal_provider._get_stored_device_key([player]) is None
 
+    def test_stored_key_never_matches_on_invalid_mac(self, mock_mass: MagicMock) -> None:
+        """An all-zero MAC is not identity: it must not match across devices."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "upaabbccddeeff": {
+                    "player_id": "upaabbccddeeff",
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["dlna_123456"],
+                        "device_identifiers": {"mac_address": "00:00:00:00:00:00"},
+                    },
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        player = MockPlayer(
+            provider,
+            "ap_999999",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "00:00:00:00:00:00"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) is None
+
+    def test_stored_key_never_matches_on_unknown_identifier_type(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A stored garbage identifier key coerces to UNKNOWN and must not match."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "upaabbccddeeff": {
+                    "player_id": "upaabbccddeeff",
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["dlna_123456"],
+                        "device_identifiers": {"some_unknown_key": "same-value"},
+                    },
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        player = MockPlayer(
+            provider,
+            "ap_999999",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.UNKNOWN: "same-value"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) is None
+
     def test_no_stored_key_for_unrelated_device(self, mock_mass: MagicMock) -> None:
         """A device without an earlier universal player yields no stored key."""
         universal_provider = create_mock_universal_provider(mock_mass)

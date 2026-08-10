@@ -21,7 +21,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROTOCOL_PARENT_ID,
 )
-from music_assistant.helpers.util import normalize_mac_for_matching
+from music_assistant.helpers.util import is_valid_mac_address, normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -32,6 +32,16 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
     from music_assistant.models.player import Player
+
+# Identifier types considered proof of device identity, kept in sync with the
+# type order used by the player controller's _identifiers_match.
+MATCHABLE_IDENTIFIER_TYPES = (
+    IdentifierType.MAC_ADDRESS,
+    IdentifierType.SERIAL_NUMBER,
+    IdentifierType.UUID,
+    IdentifierType.CAST_UUID,
+    IdentifierType.AIRPLAY_ID,
+)
 
 
 class UniversalPlayerProvider(PlayerProvider):
@@ -615,12 +625,11 @@ class UniversalPlayerProvider(PlayerProvider):
             stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS)
             stored_identifiers = stored_identifiers if isinstance(stored_identifiers, dict) else {}
             for id_type_str, value in stored_identifiers.items():
-                try:
-                    id_type = IdentifierType(id_type_str)
-                except ValueError:
-                    continue
                 if not isinstance(value, str):
                     continue
+                # an unrecognized stored key maps to IdentifierType.UNKNOWN,
+                # which _normalize_identifier rejects
+                id_type = IdentifierType(id_type_str)
                 if (normalized := self._normalize_identifier(id_type, value)) and (
                     id_type.value,
                     normalized,
@@ -634,12 +643,14 @@ class UniversalPlayerProvider(PlayerProvider):
     @staticmethod
     def _normalize_identifier(id_type: IdentifierType, value: str) -> str | None:
         """Normalize a device identifier value for matching, or None if unusable."""
-        if not value:
-            return None
-        if id_type == IdentifierType.IP_ADDRESS:
-            # IP addresses change with DHCP and are shared by multi-instance hosts
+        # restricted to the same identifier types _identifiers_match uses, so both
+        # apply the same notion of device identity. This notably excludes IP
+        # addresses (change with DHCP, shared by multi-instance hosts) and UNKNOWN.
+        if not value or id_type not in MATCHABLE_IDENTIFIER_TYPES:
             return None
         if id_type == IdentifierType.MAC_ADDRESS:
+            if not is_valid_mac_address(value):
+                return None
             return normalize_mac_for_matching(value)
         return value.replace("-", "").replace(":", "").replace("_", "").lower()
 
