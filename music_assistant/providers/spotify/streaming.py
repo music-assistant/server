@@ -13,6 +13,8 @@ from music_assistant_models.errors import AudioError
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 
+from .constants import PLAYBACK_AUTH_REQUIRED_ERROR
+
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -81,6 +83,13 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
+                        if "INVALID_CREDENTIALS" in line and self.provider.available:
+                            # Spotify refused the stored playback credential. Drop it and unload
+                            # with an error: the provider settings then offer to authorize
+                            # playback again, instead of claiming playback is still authorized
+                            # while every track fails.
+                            self.provider.discard_playback_credentials()
+                            self.provider.unload_with_error(PLAYBACK_AUTH_REQUIRED_ERROR)
                         if "unable to" in line.lower() or "skipping" in line.lower():
                             # if librespot reports a fatal error (e.g. unable to load
                             # or read audio), terminate the process to avoid hanging
