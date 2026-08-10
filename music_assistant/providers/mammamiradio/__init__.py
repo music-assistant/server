@@ -16,9 +16,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     MediaType,
     ProviderFeature,
@@ -47,7 +45,7 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -110,10 +108,6 @@ def _pos_int(value: Any, default: int) -> int:
 
 def _supports_v1_schema(value: Any) -> bool:
     """Return True if ``value`` identifies a supported now-playing schema version."""
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        value = str(value)
     return isinstance(value, str) and value.strip() in SUPPORTED_SCHEMA_VERSIONS
 
 
@@ -292,24 +286,6 @@ async def setup(
     return MammamiradioProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_MAMMAMIRADIO_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=DEFAULT_URL,
-        ),
-    )
-
-
 class MammamiradioProvider(MusicProvider):
     """Provider implementation for mammamiradio."""
 
@@ -320,7 +296,7 @@ class MammamiradioProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        raw = self.config.get_value(CONF_MAMMAMIRADIO_URL)
+        raw = self.get_setup_value(CONF_MAMMAMIRADIO_URL)
         try:
             self._base_url = _normalize_base_url(DEFAULT_URL if raw is None else raw)
         except (TypeError, ValueError) as err:
@@ -337,6 +313,11 @@ class MammamiradioProvider(MusicProvider):
         self._audio_format_dict = audio_format if isinstance(audio_format, dict) else None
         self._stream_path = _stream_path_from_contract(stream.get("relative_url"))
         self.logger.info("now-playing contract reachable at %s", self._base_url)
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        await self.mass.music.add_item_to_library(self._build_radio())
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
@@ -459,11 +440,7 @@ class MammamiradioProvider(MusicProvider):
                     raise ProviderUnavailableError(requires_msg)
                 schema = payload.get("schema_version")
                 if not _supports_v1_schema(schema):
-                    if (
-                        schema is None
-                        or isinstance(schema, bool)
-                        or not isinstance(schema, (str, int))
-                    ):
+                    if not isinstance(schema, str):
                         # No usable version field: treat as a pre-2.13 addon (or
                         # some other service answering on this port).
                         raise ProviderUnavailableError(requires_msg)

@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
@@ -19,6 +19,8 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Radio, SearchResults
 
+from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.mammamiradio import (
     CONF_MAMMAMIRADIO_URL,
     DEFAULT_URL,
@@ -33,9 +35,9 @@ from music_assistant.providers.mammamiradio import (
     _stream_path_from_contract,
     _supports_v1_schema,
     _v1_to_stream_metadata,
-    get_config_entries,
     setup,
 )
+from music_assistant.providers.mammamiradio import setup_flow as mammamiradio_setup_flow
 
 
 def _make_response_ctx(status: int = 200) -> MagicMock:
@@ -124,6 +126,9 @@ def mass_mock() -> MagicMock:
     """Return a mock MusicAssistant instance with an http_session."""
     mass = MagicMock()
     mass.http_session = MagicMock()
+    mass.config = MagicMock()
+    mass.config.get.return_value = {CONF_MAMMAMIRADIO_URL: "http://localhost:8000"}
+    mass.config.decrypt_string.side_effect = lambda value: value
     # default: every request answers with a healthy v1 now-playing payload
     mass.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC))
     return mass
@@ -138,10 +143,11 @@ def provider(mass_mock: MagicMock) -> MammamiradioProvider:
 
     config = MagicMock()
     config.instance_id = "mammamiradio_test"
+    config.values = {}
 
     def _get_value(key: str, default: Any = None) -> Any:
         if key == CONF_MAMMAMIRADIO_URL:
-            return "http://localhost:8000"
+            return "legacy-config-must-not-be-used"
         if key == "log_level":
             return "GLOBAL"
         return default
@@ -173,10 +179,15 @@ def _build_provider_with_url(
     manifest.name = "mammamiradio"
     config = MagicMock()
     config.instance_id = "mammamiradio_test"
+    config.values = {}
+
+    mass_mock.config.get.return_value = (
+        {CONF_MAMMAMIRADIO_URL: configured_url} if configured_url is not None else {}
+    )
 
     def _get_value(key: str, default: Any = None) -> Any:
         if key == CONF_MAMMAMIRADIO_URL:
-            return configured_url
+            return None if configured_url is None else "legacy-config-must-not-be-used"
         if key == "log_level":
             return "GLOBAL"
         return default
@@ -186,19 +197,56 @@ def _build_provider_with_url(
 
 
 # ---------------------------------------------------------------------------
-# Configuration entries
+# Setup flow
 # ---------------------------------------------------------------------------
 
 
-async def test_get_config_entries_returns_single_url_field() -> None:
-    """get_config_entries must expose exactly one required URL string field."""
-    entries = await get_config_entries(MagicMock())
+async def test_setup_flow_collects_single_url_field() -> None:
+    """The setup flow prefills and persists its one required URL field."""
+    session = MagicMock()
+    session.context.setup_data = {CONF_MAMMAMIRADIO_URL: "http://previous:8000"}
+    session.form = AsyncMock(return_value={CONF_MAMMAMIRADIO_URL: "http://mammamiradio.local:8000"})
+    session.finish = AsyncMock()
+
+    await mammamiradio_setup_flow.run_setup(session)
+
+    entries = session.form.await_args.args[0]
     assert len(entries) == 1
     entry = entries[0]
     assert entry.key == CONF_MAMMAMIRADIO_URL
     assert entry.required is True
     assert entry.default_value == DEFAULT_URL
+    assert entry.value == "http://previous:8000"
     assert entry.type.value == "string"
+    session.finish.assert_awaited_once_with(
+        {CONF_MAMMAMIRADIO_URL: "http://mammamiradio.local:8000"}
+    )
+
+
+async def test_setup_flow_retries_with_submitted_url_and_error() -> None:
+    """A setup failure redisplays the submitted URL and translated base error."""
+    session = MagicMock()
+    session.context.setup_data = {}
+    session.form = AsyncMock(
+        side_effect=[
+            {CONF_MAMMAMIRADIO_URL: "http://unreachable:8000"},
+            {CONF_MAMMAMIRADIO_URL: "http://mammamiradio.local:8000"},
+        ]
+    )
+    session.finish = AsyncMock(
+        side_effect=[
+            SetupFlowError("Unable to connect", translation_key="cannot_connect"),
+            None,
+        ]
+    )
+
+    await mammamiradio_setup_flow.run_setup(session)
+
+    retry_call = session.form.await_args_list[1]
+    retry_entry = retry_call.args[0][0]
+    assert retry_entry.value == "http://unreachable:8000"
+    assert retry_call.kwargs["errors"] == {"base": "cannot_connect"}
+    assert session.finish.await_count == 2
 
 
 async def test_setup_returns_provider_instance(mass_mock: MagicMock) -> None:
@@ -208,6 +256,7 @@ async def test_setup_returns_provider_instance(mass_mock: MagicMock) -> None:
     manifest.name = "mammamiradio"
     config = MagicMock()
     config.instance_id = "mammamiradio_test"
+    config.values = {}
 
     def _get_value(key: str, default: Any = None) -> Any:
         if key == CONF_MAMMAMIRADIO_URL:
@@ -219,6 +268,35 @@ async def test_setup_returns_provider_instance(mass_mock: MagicMock) -> None:
     config.get_value.side_effect = _get_value
     prov = await setup(mass_mock, manifest, config)
     assert isinstance(prov, MammamiradioProvider)
+
+
+# ---------------------------------------------------------------------------
+# Provider lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def test_loaded_in_mass_adds_radio_after_base_hook(
+    initialized_provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """Post-load setup calls the base hook before adding the station through core."""
+    events: list[str] = []
+
+    async def base_loaded(_provider: MusicProvider) -> None:
+        events.append("base")
+
+    async def add_item(_item: Radio) -> None:
+        events.append("add")
+
+    mass_mock.music.add_item_to_library = AsyncMock(side_effect=add_item)
+    with patch.object(MusicProvider, "loaded_in_mass", base_loaded):
+        await initialized_provider.loaded_in_mass()
+
+    assert events == ["base", "add"]
+    mass_mock.music.add_item_to_library.assert_awaited_once()
+    added = mass_mock.music.add_item_to_library.await_args.args[0]
+    assert isinstance(added, Radio)
+    assert added.item_id == RADIO_ITEM_ID
+    assert added.provider == initialized_provider.instance_id
 
 
 # ---------------------------------------------------------------------------
@@ -335,15 +413,15 @@ async def test_handle_async_init_unsupported_schema_names_version(
     assert "schema_version '2'" in str(excinfo.value)
 
 
-async def test_handle_async_init_numeric_schema_version_accepted(
+async def test_handle_async_init_numeric_schema_version_raises_addon_too_old(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """schema_version arriving as the JSON number 1 is accepted at init."""
+    """A numeric schema_version is not a usable version and receives the 2.13 error."""
     payload = {**_V1_MUSIC, "schema_version": 1}
     mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(payload))
-    await provider.handle_async_init()
-    assert provider._audio_format_dict == _V1_AUDIO_FORMAT
-    assert provider._stream_path == "/stream"
+    with pytest.raises(ProviderUnavailableError, match=r"2\.13") as excinfo:
+        await provider.handle_async_init()
+    assert "schema_version" not in str(excinfo.value)
 
 
 async def test_handle_async_init_bool_schema_version_raises_addon_too_old(
@@ -769,7 +847,7 @@ def test_normalize_base_url_rejects_non_strings(raw: Any) -> None:
     ("value", "expected"),
     [
         ("1", True),
-        (1, True),
+        (1, False),
         (True, False),
         (1.0, False),
         ("2", False),
@@ -777,7 +855,7 @@ def test_normalize_base_url_rejects_non_strings(raw: Any) -> None:
     ],
 )
 def test_supports_v1_schema(value: Any, expected: bool) -> None:
-    """Only a supported version as a string or int counts; bools and floats never do."""
+    """Only a supported version string counts; other value types never do."""
     assert _supports_v1_schema(value) is expected
 
 
