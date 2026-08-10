@@ -203,15 +203,12 @@ class BoseSoundTouchProvider(PlayerProvider):
         if not (preset_id := request.query.get("preset_id")):
             return web.Response(status=400, text="Missing preset_id")
 
-        if preset_id := request.query.get("preset_id"):
-            self.logger.error(preset_id)
-
         return web.json_response(
             {
                 "audio": {
                     "hasPlaylist": False,
                     "isRealtime": True,
-                    "streamUrl": f"http://192.168.37.11:8095/bose_soundtouch_preset?preset_id={preset_id}",
+                    "streamUrl": f"{self.mass.streams.base_url}/{self.instance_id}_preset?preset_id={preset_id}",
                 },
                 "imageUrl": "",
                 "name": "Music Assistant Preset",

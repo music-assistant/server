@@ -84,13 +84,13 @@ class TimeInformation(DataClassJSONMixin):
 
 
 @dataclass
-class NowPlayingContentItem(DataClassJSONMixin):
-    """NowPlayingContentItem."""
+class ContentItem(DataClassJSONMixin):
+    """ContentItem."""
 
     source: str | None = None
     source_account: Annotated[str | None, Alias("sourceAccount")] = None
     is_presetable: Annotated[bool | None, Alias("isPresetable")] = None
-    item_name: Annotated[str | None, Alias("itemName")] = None
+    item_name: str | None = None
 
 
 @dataclass
@@ -107,7 +107,7 @@ class NowPlaying(DataClassJSONMixin):
     genre: str | None = None
     art: Art | None = None
     time_information: TimeInformation | None = None
-    content_item: NowPlayingContentItem | None = None
+    content_item: ContentItem | None = None
     device_id: Annotated[str | None, Alias("deviceID")] = None
     source: str | None = None
 
@@ -124,6 +124,11 @@ class Volume(DataClassJSONMixin):
 @dataclass
 class Preset(DataClassJSONMixin):
     """Preset."""
+
+    id_: Annotated[str | None, Alias("id")] = None
+    created_on: Annotated[int | None, Alias("createdOn")] = None
+    update_on: Annotated[int | None, Alias("updateOn")] = None
+    content_item: ContentItem | None = None
 
 
 @dataclass

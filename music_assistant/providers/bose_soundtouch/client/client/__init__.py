@@ -19,6 +19,7 @@ from music_assistant.providers.bose_soundtouch.client.schema.models import (
     BassCapabilities,
     Info,
     NowPlaying,
+    Presets,
     Sources,
     Volume,
     Zone,
@@ -208,8 +209,21 @@ class SoundtouchDevice:
         xml = f"<volume>{volume}<muteenabled>{mute_str}</muteenabled></volume>"
         await self._post("volume", xml)
 
-    # async def get_presets(self) -> Presets:
-    #     """Get presets."""
+    async def get_presets(self) -> Presets:
+        """Get presets."""
+        element = await self._get("presets")
+        presets_list: list[dict[str, Any]] = []
+        for el in element:
+            preset_dict: dict[str, Any] = el.attrib
+            for sub_el in el:
+                if sub_el.tag == "ContentItem":
+                    item_name: str | None = None
+                    for sub_sub_el in sub_el.iter():
+                        if sub_sub_el.tag == "itemName":
+                            item_name = sub_sub_el.text
+                    preset_dict["content_item"] = {**sub_el.attrib, "item_name": item_name}
+            presets_list.append(preset_dict)
+        return Presets.from_dict({"presets": presets_list})
 
     async def store_preset(self, preset_id: int, preset_url: str) -> None:
         """Store a preset."""
@@ -274,12 +288,6 @@ class SoundtouchDevice:
             await self._post("addZoneSlave", create_zone_xml(zone))
             return
         await self._post("removeZoneSlave", create_zone_xml(zone))
-
-    # not yet implemented
-    # /capabilities
-    # /audiodspcontrols
-    # /audioproducttonecontrols
-    # /audioproductlevelcontrols
 
     async def _get(self, endpoint: str, params: dict[str, str | int] | None = None) -> Element[str]:
         """GET request to abs api."""

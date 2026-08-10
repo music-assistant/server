@@ -144,6 +144,7 @@ class BoseSoundTouchPlayer(Player):
                 await self._refresh_volume()
                 await self._refresh_zone()
                 await self._refresh_options()
+                await self._client.get_presets()
             except (aiohttp.ClientError, TimeoutError, OSError) as err:
                 self.logger.debug("Poll failed for %s: %s", self.name, err)
                 self._attr_available = False
