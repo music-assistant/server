@@ -382,8 +382,8 @@ async def test_replan_respects_buffer_guard(tmp_path: Path) -> None:
     assert queue_items[0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
 
 
-async def test_disable_removes_pending_clips_only(tmp_path: Path) -> None:
-    """Disabling drops this session's upcoming clips but keeps played and foreign ones."""
+async def test_disable_removes_all_pending_clips(tmp_path: Path) -> None:
+    """Disabling drops every upcoming DJ clip whatever session it came from, played ones stay."""
     tracks = [_track(index) for index in range(3)]
     dummy = _make_replan_dj(tmp_path, [], current_index=2, index_in_buffer=2)
     state = dummy._dj_queues["queue-1"]
@@ -402,7 +402,50 @@ async def test_disable_removes_pending_clips_only(tmp_path: Path) -> None:
     await dummy.set_queue_dj("queue-1", None)
 
     assert dummy._dj_queues == {}
-    assert dummy.player_queues.deleted == [pending_clip.queue_item_id]
+    assert dummy.player_queues.deleted == [pending_clip.queue_item_id, foreign_clip.queue_item_id]
+
+
+async def test_switch_removes_clips_of_a_session_no_state_ever_knew(tmp_path: Path) -> None:
+    """Clear a clip left behind by an earlier provider run, whose session id nothing remembers."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, [])
+    stale = _dj_clip(tracks[2].queue_item_id, "dj_from_a_previous_run")
+    dummy.player_queues._items = [tracks[0], tracks[1], stale, tracks[2], tracks[3]]
+
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    dummy._hosts["daisy"] = daisy
+    await dummy.set_queue_dj("queue-1", "daisy")
+
+    assert stale.queue_item_id in dummy.player_queues.deleted
+    await asyncio.gather(*dummy.mass.tasks)
+
+
+async def test_cleanup_keeps_the_freshly_armed_sessions_clips(tmp_path: Path) -> None:
+    """A clip the newly armed session already injected survives the previous host's cleanup."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, [])
+    old_state = dummy._dj_queues["queue-1"]
+    old_clip = _dj_clip(tracks[2].queue_item_id, old_state.dj_session_id)
+    dummy.player_queues._items = [tracks[0], tracks[1], old_clip, tracks[2], tracks[3]]
+    write_queue_dj = dummy._write_queue_dj
+
+    async def _write_and_inject_racing_clip() -> None:
+        # stands in for a replan of the freshly armed session landing a clip in the window
+        # before the cleanup of the previous host's clips got its turn
+        await write_queue_dj()
+        session_id = dummy._dj_queues["queue-1"].dj_session_id
+        dummy.player_queues._items.insert(4, _dj_clip(tracks[3].queue_item_id, session_id))
+
+    dummy._write_queue_dj = _write_and_inject_racing_clip  # type: ignore[method-assign]
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    dummy._hosts["daisy"] = daisy
+
+    await dummy.set_queue_dj("queue-1", "daisy")
+
+    assert dummy.player_queues.deleted == [old_clip.queue_item_id]
+    await asyncio.gather(*dummy.mass.tasks)
 
 
 async def test_switching_host_removes_old_hosts_pending_clips(tmp_path: Path) -> None:

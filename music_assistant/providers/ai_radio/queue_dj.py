@@ -61,27 +61,20 @@ class AIRadioQueueDJMixin:
         if not queue_id:
             raise InvalidDataError("queue_id is required")
         async with self._dj_lock:
-            previous_state = self._dj_queues.get(queue_id)
             if host_id is None:
-                state = self._dj_queues.pop(queue_id, None)
+                self._dj_queues.pop(queue_id, None)
                 await self._write_queue_dj()
             else:
                 host_id = str(host_id).strip()
                 if host_id not in self._hosts:
                     raise InvalidDataError(f"Unknown host id: {host_id}")
-                state = self._arm_dj_state(queue_id, host_id)
+                self._arm_dj_state(queue_id, host_id)
                 await self._write_queue_dj()
-        if host_id is None:
-            # scoped to the disabled session, so a re-enable racing this cleanup keeps
-            # the clips the freshly armed session already injected
-            if state is not None:
-                await self._remove_pending_dj_clips(queue_id, state.dj_session_id)
-        else:
-            if previous_state is not None:
-                # a previous session's pending clips still carry its host's persona and
-                # voice, so they have to go before the replan can plant the new host's
-                # clips into the gaps they freed up
-                await self._remove_pending_dj_clips(queue_id, previous_state.dj_session_id)
+        # any pending clip other than the armed session's own carries a persona and voice
+        # that is no longer the queue's, so it has to go before the replan can plant this
+        # host's clips into the gaps it frees up
+        await self._remove_pending_dj_clips(queue_id)
+        if host_id is not None:
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
 
@@ -306,18 +299,31 @@ class AIRadioQueueDJMixin:
             keep_played=True,
         )
 
-    async def _remove_pending_dj_clips(self, queue_id: str, dj_session_id: str) -> None:
-        """Remove a session's not-yet-played DJ clips from the given queue."""
+    async def _remove_pending_dj_clips(self, queue_id: str) -> None:
+        """Remove not-yet-played DJ clips from the queue, except the armed session's own."""
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
             return
+        # a queue runs exactly one DJ, so the live session is the only one whose clips may
+        # stay: that keeps the clips a re-enable racing this cleanup already injected, while
+        # clips of a session nothing remembers anymore (ids are re-rolled on every provider
+        # load) are cleared instead of lingering in the gaps forever
+        live_state = self._dj_queues.get(queue_id)
+        keep_session_id = live_state.dj_session_id if live_state is not None else None
         guard_index = self._dj_guard_index(queue)
+        removed = 0
         for item in self._dj_queue_items(queue_id)[guard_index + 1 :]:
             if not item.extra_attributes.get(ATTR_QUEUE_DJ):
                 continue
-            if item.extra_attributes.get(ATTR_SESSION_ID) != dj_session_id:
+            if (
+                keep_session_id is not None
+                and item.extra_attributes.get(ATTR_SESSION_ID) == keep_session_id
+            ):
                 continue
             self.mass.player_queues.delete_item(queue_id, item.queue_item_id)
+            removed += 1
+        if removed:
+            self.logger.debug("Removed %s pending DJ clip(s) from queue %s", removed, queue_id)
 
     def _dj_guard_index(self, queue: PlayerQueue) -> int:
         """Return the highest queue index the player already owns."""
