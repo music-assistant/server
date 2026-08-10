@@ -239,10 +239,11 @@ class PandoraProvider(MusicProvider):
         session = self._sessions.get(station_id)
         fragment = session.current if session else None
         if fragment is None or (track := fragment.find(music_id)) is None:
-            # only the newest fragment holds live audio URLs; anything else is unplayable
+            # an older fragment's signed URL may already be expired and there is no way to
+            # tell from here, so refuse it rather than hand ffmpeg a link that 403s mid-track
             raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
         fragment.mark_resolved(music_id, time.time())
-        duration = int(track.get("trackLength", 0))
+        duration = int(track.get("trackLength") or 0)
         can_seek = duration > 0
         return StreamDetails(
             provider=self.instance_id,
@@ -458,7 +459,8 @@ class PandoraProvider(MusicProvider):
             for track in result.get("tracks", [])
             if track.get("audioURL")
             and track.get("musicId")
-            and "curator message" not in track.get("songTitle", "").lower()
+            and track.get("stationId")
+            and "curator message" not in (track.get("songTitle") or "").lower()
         ]
         if not tracks:
             # retaining an empty fragment would make it the live one, and nothing can ever
@@ -513,7 +515,7 @@ class PandoraProvider(MusicProvider):
         )
         if art := station.get("art"):
             art_url = next(
-                (item["url"] for item in art if item.get("size") == 500), art[-1].get("url")
+                (item.get("url") for item in art if item.get("size") == 500), art[-1].get("url")
             )
             if art_url:
                 playlist.metadata.add_image(
@@ -528,14 +530,14 @@ class PandoraProvider(MusicProvider):
 
     def _parse_track(self, obj: dict[str, Any]) -> Track:
         """Parse a raw fragment track into a Track."""
-        name, version = parse_title_and_version(obj.get("songTitle", "Unknown Song"))
+        name, version = parse_title_and_version(obj.get("songTitle") or "Unknown Song")
         track_id = f"{obj['stationId']}_{obj['musicId']}"
         track = Track(
             item_id=track_id,
             provider=self.instance_id,
             name=name,
             version=version,
-            duration=int(obj.get("trackLength", 0)),
+            duration=int(obj.get("trackLength") or 0),
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,
@@ -548,7 +550,7 @@ class PandoraProvider(MusicProvider):
         )
         if album_art := obj.get("albumArt"):
             art_url = next(
-                (art["url"] for art in album_art if art.get("size") == 500),
+                (art.get("url") for art in album_art if art.get("size") == 500),
                 album_art[-1].get("url"),
             )
             if art_url:

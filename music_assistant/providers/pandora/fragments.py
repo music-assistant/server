@@ -59,7 +59,7 @@ class PandoraStationSession:
 
     @property
     def current(self) -> PandoraFragment | None:
-        """Return the newest fragment: the only one whose audio URLs are still live."""
+        """Return the newest fragment: an older one's signed URL might already have expired."""
         return self.fragments[-1] if self.fragments else None
 
     def add_fragment(self, tracks: list[dict[str, Any]], now: float) -> PandoraFragment:

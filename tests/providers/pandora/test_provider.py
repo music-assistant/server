@@ -8,7 +8,9 @@ from unittest.mock import Mock
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import SearchResults
 
+from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 STATION_ID = "4360491625318318161"
@@ -32,12 +34,20 @@ def _tracks(count: int = 4, prefix: str = "S") -> list[dict[str, Any]]:
     ]
 
 
-def _provider(payloads: list[list[dict[str, Any]]] | None = None) -> PandoraProvider:
-    """
-    Build a bare provider whose Pandora API calls return canned fragment payloads.
+def _stations(names: list[str]) -> list[dict[str, Any]]:
+    """Build raw Pandora station dicts with the given names."""
+    return [{"stationId": f"station-{index}", "name": name} for index, name in enumerate(names)]
 
-    The stub sits at `_api_request`, not `_fetch_fragment`, so the real filtering,
-    empty-fragment guard and session retention all execute under test.
+
+def _provider(
+    payloads: list[list[dict[str, Any]]] | None = None,
+    stations: list[dict[str, Any]] | None = None,
+) -> PandoraProvider:
+    """
+    Build a bare provider whose Pandora API calls return canned payloads.
+
+    The stub sits at `_api_request`, not `_fetch_fragment`/`_get_stations`, so the real
+    filtering, empty-fragment guard and session retention all execute under test.
     """
     provider = PandoraProvider.__new__(PandoraProvider)
     provider.manifest = Mock(domain="pandora")
@@ -46,18 +56,42 @@ def _provider(payloads: list[list[dict[str, Any]]] | None = None) -> PandoraProv
     provider._sessions = {}
     provider._high_quality_available = False
     pending = list(payloads or [_tracks()])
+    station_list = stations or []
 
     async def _fake_api_request(
         method: str,  # noqa: ARG001
-        url: str,  # noqa: ARG001
+        url: str,
         data: dict[str, Any] | None = None,  # noqa: ARG001
         **kwargs: Any,  # noqa: ARG001
     ) -> dict[str, Any]:
-        """Return the next canned fragment payload instead of calling Pandora."""
+        """Return the next canned payload instead of calling Pandora."""
+        if url == STATIONS_ENDPOINT:
+            return {"stations": station_list}
         return {"tracks": pending.pop(0) if pending else _tracks()}
 
     provider._api_request = _fake_api_request  # type: ignore[method-assign, assignment]
     return provider
+
+
+async def test_search_returns_a_matching_station_as_a_playlist() -> None:
+    """A station whose name matches the query comes back in the playlist results."""
+    provider = _provider(stations=_stations(["Coldplay Radio", "Jazz Radio"]))
+    results = await provider.search("Coldplay Radio", [MediaType.PLAYLIST])
+    assert [playlist.name for playlist in results.playlists] == ["Coldplay Radio"]
+
+
+async def test_search_finds_nothing_for_a_non_matching_query() -> None:
+    """A query that matches no station name returns no playlists."""
+    provider = _provider(stations=_stations(["Coldplay Radio"]))
+    results = await provider.search("Nonexistent Station", [MediaType.PLAYLIST])
+    assert results.playlists == []
+
+
+async def test_search_without_playlist_media_type_skips_the_station_lookup() -> None:
+    """Stations only ever surface as playlists; excluding that type returns nothing at all."""
+    provider = _provider(stations=_stations(["Coldplay Radio"]))
+    results = await provider.search("Coldplay Radio", [MediaType.TRACK])
+    assert results == SearchResults()
 
 
 async def test_pages_beyond_the_first_terminate_the_loop() -> None:
@@ -118,6 +152,53 @@ async def test_empty_fragment_is_not_retained() -> None:
     with pytest.raises(MediaNotFoundError):
         await provider.get_playlist_tracks(STATION_ID)
     assert provider._sessions[STATION_ID].current is None
+
+
+async def test_track_with_null_song_title_gets_a_fallback_name() -> None:
+    """A JSON-null songTitle must not crash title parsing; the track still comes through."""
+    tracks = _tracks()
+    tracks[0]["songTitle"] = None
+    provider = _provider([tracks])
+    result = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in result] == [f"{STATION_ID}_S{i}" for i in range(4)]
+    assert result[0].name == "Unknown Song"
+
+
+async def test_track_with_null_track_length_gets_zero_duration() -> None:
+    """A JSON-null trackLength must not crash int(); it degrades to a zero duration."""
+    tracks = _tracks()
+    tracks[0]["trackLength"] = None
+    provider = _provider([tracks])
+    result = await provider.get_playlist_tracks(STATION_ID)
+    assert result[0].duration == 0
+
+
+async def test_track_missing_station_id_is_dropped_not_crashed() -> None:
+    """A track without a stationId can't form a track id; drop it instead of raising."""
+    tracks = _tracks()
+    del tracks[0]["stationId"]
+    provider = _provider([tracks])
+    result = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in result] == [f"{STATION_ID}_S{i}" for i in range(1, 4)]
+
+
+async def test_fragment_of_only_malformed_tracks_raises_media_not_found() -> None:
+    """If every track in a fragment is dropped, that's the empty-fragment error, not a crash."""
+    tracks = _tracks()
+    for track in tracks:
+        del track["stationId"]
+    provider = _provider([tracks])
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_playlist_tracks(STATION_ID)
+
+
+async def test_track_with_a_sized_art_entry_missing_url_does_not_crash() -> None:
+    """A size-500 art entry without a url key must not raise KeyError while parsing album art."""
+    tracks = _tracks()
+    tracks[0]["albumArt"] = [{"size": 500}]
+    provider = _provider([tracks])
+    result = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in result] == [f"{STATION_ID}_S{i}" for i in range(4)]
 
 
 async def test_refill_advances_once_the_last_track_is_resolved() -> None:

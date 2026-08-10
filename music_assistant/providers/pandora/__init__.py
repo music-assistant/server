@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 # Supported Features - stations are exposed as dynamic playlists
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_PLAYLISTS,
 }
 
