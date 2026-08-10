@@ -207,8 +207,11 @@ class PandoraProvider(MusicProvider):
         if fragment is None or should_fetch_fragment(fragment, time.time()):
             fragment = await self._fetch_fragment(session)
         # always serve the live fragment: an empty list would read as "this station has
-        # ended" to the queue controller, which stops playback instead of continuing it
-        return [self._parse_track(track) for track in fragment.tracks]
+        # ended" to the queue controller, which stops playback instead of continuing it.
+        # Already-served tracks are withheld: the queue controller only de-duplicates refill
+        # candidates against its unplayed tail, so a served track that scrolls out of that
+        # tail would otherwise be re-added here and then fail once the fragment has moved on.
+        return [self._parse_track(track) for track in fragment.pending]
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""

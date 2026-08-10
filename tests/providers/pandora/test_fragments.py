@@ -110,6 +110,36 @@ def test_mark_resolved_unknown_track_is_a_noop() -> None:
     fragment.mark_resolved("nope", NOW + 100)
     assert fragment.spent is False
     assert fragment.last_activity_at == NOW
+    assert fragment.served == set()
+
+
+def test_mark_resolved_records_the_served_id() -> None:
+    """Handing out a track records its musicId so pending can withhold it later."""
+    fragment = _fragment()
+    fragment.mark_resolved("S1", NOW)
+    assert fragment.served == {"S1"}
+
+
+def test_pending_returns_all_tracks_when_nothing_served() -> None:
+    """A fresh fragment withholds nothing from pending."""
+    fragment = _fragment()
+    assert [track["musicId"] for track in fragment.pending] == ["S0", "S1", "S2", "S3"]
+
+
+def test_pending_excludes_served_tracks_and_preserves_order() -> None:
+    """Pending drops served tracks but keeps the remaining ones in fragment order."""
+    fragment = _fragment()
+    fragment.mark_resolved("S2", NOW)
+    assert [track["musicId"] for track in fragment.pending] == ["S0", "S1", "S3"]
+
+
+def test_fragment_with_every_track_served_is_spent() -> None:
+    """Serving every track spends the fragment, so pending never starves a live station."""
+    fragment = _fragment()
+    for music_id in ("S0", "S1", "S2", "S3"):
+        fragment.mark_resolved(music_id, NOW)
+    assert fragment.spent is True
+    assert fragment.pending == []
 
 
 def test_find_returns_track_by_music_id() -> None:

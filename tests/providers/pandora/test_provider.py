@@ -117,15 +117,18 @@ async def test_browse_then_play_returns_the_same_batch() -> None:
 
 async def test_refill_serves_the_live_fragment_without_refetching() -> None:
     """
-    A refill mid-fragment must not pull a new one, but must still return tracks.
+    A refill mid-fragment must not pull a new one, and must not re-serve a played track.
 
-    Returning [] here would read as end-of-playlist; the core de-duplicates the repeats.
+    Returning [] here would read as end-of-playlist; the core de-duplicates the remaining
+    repeats via its unplayed-tail check, but a track already handed to the audio pipeline
+    must never come back - that check drops it once playback has moved past it.
     """
     provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
     await provider.get_playlist_tracks(STATION_ID)
     await provider.get_stream_details(f"{STATION_ID}_A0", MediaType.TRACK)
     tracks = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in tracks] == [f"{STATION_ID}_A{i}" for i in range(4)]
+    assert [track.item_id for track in tracks] == [f"{STATION_ID}_A{i}" for i in range(1, 4)]
+    assert f"{STATION_ID}_A0" not in [track.item_id for track in tracks]
 
 
 async def test_replay_after_stopping_mid_fragment_still_builds_a_queue() -> None:
@@ -135,7 +138,7 @@ async def test_replay_after_stopping_mid_fragment_still_builds_a_queue() -> None
     await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
     # user stops, then presses play again on the same station
     replayed = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in replayed] == [f"{STATION_ID}_S{i}" for i in range(4)]
+    assert [track.item_id for track in replayed] == [f"{STATION_ID}_S{i}" for i in range(1, 4)]
 
 
 async def test_empty_fragment_is_not_retained() -> None:

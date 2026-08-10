@@ -29,6 +29,7 @@ class PandoraFragment:
     tracks: list[dict[str, Any]]
     last_activity_at: float
     spent: bool = False
+    served: set[str] = field(default_factory=set)
 
     def find(self, music_id: str) -> dict[str, Any] | None:
         """Return the raw track data for the given Pandora musicId, if this fragment holds it."""
@@ -39,12 +40,27 @@ class PandoraFragment:
         if self.find(music_id) is None:
             return
         self.last_activity_at = now
+        self.served.add(music_id)
         if self.tracks[-1].get("musicId") == music_id:
             self.spent = True
 
     def is_stale(self, now: float) -> bool:
         """Return whether nothing has been streamed from this fragment recently."""
         return (now - self.last_activity_at) > FRAGMENT_STALE_SECONDS
+
+    @property
+    def pending(self) -> list[dict[str, Any]]:
+        """
+        Return the tracks not yet handed to the audio pipeline, in the fragment's original order.
+
+        Invariant: serving a fragment's last track sets `spent` (see `mark_resolved`), so a
+        fragment left with nothing pending is always already spent - `should_fetch_fragment`
+        will have returned True and a new fragment will already have replaced it as the
+        session's `current` one. A live fragment's `pending` therefore never comes back empty,
+        which matters because `get_playlist_tracks` treats an empty list as "this station has
+        ended".
+        """
+        return [track for track in self.tracks if track.get("musicId") not in self.served]
 
 
 @dataclass
