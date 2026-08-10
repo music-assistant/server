@@ -405,7 +405,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         return result
 
     async def get_library_author_narrator_audiobooks(
-        self, item_id: str | int, artist_type: ArtistType, collapse_collections: bool = False
+        self,
+        item_id: str | int,
+        artist_type: ArtistType,
+        *,
+        collapse_collections: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """Return all in-library audiobooks for an author/ narrator."""
         db_id = int(item_id)  # ensure integer
