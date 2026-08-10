@@ -219,13 +219,18 @@ class PandoraProvider(MusicProvider):
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
         return self._parse_track(track)
 
-    async def get_album(self, prov_track_id: str) -> Album:
-        """Get the album a station track belongs to."""
-        if (track := self._find_track(prov_track_id)) and (
-            album := self._parse_album(track, prov_track_id)
+    async def get_album(self, prov_album_id: str) -> Album:
+        """
+        Get the album a station track belongs to.
+
+        Fragments carry no album identifier of their own, so an album is addressed by the id of
+        one of its tracks - see `_parse_album`, which mints the album that way.
+        """
+        if (track := self._find_track(prov_album_id)) and (
+            album := self._parse_album(track, prov_album_id)
         ):
             return album
-        raise MediaNotFoundError(f"Album {prov_track_id} not found")
+        raise MediaNotFoundError(f"Album {prov_album_id} not found")
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details; Pandora identifies station artists by name only."""
