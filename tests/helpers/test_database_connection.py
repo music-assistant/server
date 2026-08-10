@@ -25,6 +25,12 @@ GIB = 1024**3
 TEMP_STORE_FILE = 1
 TEMP_STORE_MEMORY = 2
 
+# keeps sqlite busy for well over the threshold the slow query tests set, without touching a table
+_SLOW_QUERY = (
+    "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 2000000) "
+    "SELECT count(*) FROM cnt"
+)
+
 
 @pytest.fixture
 async def db_connection(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
@@ -402,9 +408,18 @@ async def test_slow_query_warning_still_reports_a_slow_query(
     """Test that a query which genuinely keeps sqlite busy is still reported as slow."""
     monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.02)
     with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
-        await debug_db.get_rows_from_query(
-            "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 2000000) "
-            "SELECT count(*) FROM cnt",
-            limit=0,
-        )
+        await debug_db.get_rows_from_query(_SLOW_QUERY, limit=0)
+    assert "SQL Query took" in caplog.text
+
+
+async def test_slow_query_warning_survives_a_stall_that_precedes_it(
+    debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a stall ending before a query starts is not discounted from that query."""
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.02)
+    with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
+        # the sampler only books this stall once it next wakes, which is after the query below
+        # has already started and taken its own reading
+        time.sleep(0.5)  # noqa: ASYNC251  # stalling the loop is what is under test here
+        await debug_db.get_rows_from_query(_SLOW_QUERY, limit=0)
     assert "SQL Query took" in caplog.text

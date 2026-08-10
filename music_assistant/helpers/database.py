@@ -62,19 +62,16 @@ class _LoopStallTracker:
         self._users = 0
 
     @property
-    def total(self) -> float:
-        """Return the stall time recorded so far, to pass to `stalled_since` later on."""
-        return self._total
-
-    def stalled_since(self, total: float) -> float:
-        """Return how long the event loop was unavailable since the given `total`."""
+    def stalled(self) -> float:
+        """Return the total time the event loop was unavailable, to compare two readings of."""
         if self._task is None:
             return 0.0
-        # a stall that is still in progress cannot have been sampled yet: the loop only frees
-        # up at its end and hands the awaiting query its result first, so the time the sampler
-        # is currently overdue by counts towards this window as well
+        # the sampler can only record a stall once the loop frees up again, and it hands any
+        # awaiting query its result first, so a stall in progress lives in how overdue the
+        # sampler currently is. Counting it here as well keeps this reading continuous, which
+        # is what lets two readings bracket exactly the stalls that fall between them
         overdue = asyncio.get_running_loop().time() - self._last_tick - _STALL_SAMPLE_INTERVAL
-        return self._total - total + max(0.0, overdue)
+        return self._total + max(0.0, overdue)
 
     def acquire(self) -> None:
         """Start sampling (if not already running) on behalf of one more user."""
@@ -115,7 +112,7 @@ async def debug_query(
         yield
         return
     time_start = time.monotonic()
-    stalled_start = _loop_stalls.total
+    stalled_start = _loop_stalls.stalled
     try:
         yield
     except OperationalError as err:
@@ -127,7 +124,7 @@ async def debug_query(
         # that keeps an unrelated blocking callback from reporting as a slow query; a stall that
         # overlaps a genuinely slow query is discounted too, so this under-reports rather than
         # points at the wrong culprit.
-        process_time = time.monotonic() - time_start - _loop_stalls.stalled_since(stalled_start)
+        process_time = time.monotonic() - time_start - (_loop_stalls.stalled - stalled_start)
         if process_time > SLOW_QUERY_THRESHOLD:
             # log slow queries
             for key, value in (query_params or {}).items():
