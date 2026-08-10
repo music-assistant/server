@@ -332,7 +332,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         Return audiobooks for an artist.
 
         Artist_type can be omitted for in-library artists.
-        Collapse collections only works for in library items.
+
+        :param collapse_collections: Collapse available collections. Only applies to
+            in-library items; when in_library_only is False, provider items are
+            appended as plain audiobooks alongside the collapsed collections.
         """
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
