@@ -126,22 +126,23 @@ def running_background_tasks(mock_mass: MagicMock) -> Iterator[None]:
     The real implementation only logs the exception of a background task, which would
     leave a test that dispatches its work through the TaskManager passing regardless.
     """
-    errors: list[BaseException] = []
+    tasks: list[asyncio.Task[Any]] = []
     use_real_create_task(mock_mass)
     real_create_task = mock_mass.create_task
-
-    def _collect_exception(task: asyncio.Task[Any]) -> None:
-        if not task.cancelled() and (err := task.exception()) is not None:
-            errors.append(err)
 
     def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
         task = real_create_task(target, *args, **kwargs)
         if isinstance(task, asyncio.Task):
-            task.add_done_callback(_collect_exception)
+            tasks.append(task)
         return task
 
     mock_mass.create_task = MagicMock(side_effect=_create_task)
     yield
+    errors = [
+        err
+        for task in tasks
+        if task.done() and not task.cancelled() and (err := task.exception()) is not None
+    ]
     if len(errors) == 1:
         raise errors[0]
     if errors:
