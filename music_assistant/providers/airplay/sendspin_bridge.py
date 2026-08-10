@@ -845,14 +845,17 @@ class SendspinAirPlayBridge:
 
         # The writer stays gated until this anchor is settled, so the bridge has
         # written nothing for this stream and anything the binary reports pending
-        # is left over from the previous one. The START would anchor that as its
+        # was left behind by an earlier one. The START would anchor that as its
         # first sample and leave every chunk after it late by the same amount,
-        # which no later realignment can see: the cursor below counts only what
-        # the bridge queued itself.
+        # which no later realignment can see: the cursor counts only what the
+        # bridge queued itself. Reported rather than acted on, because the reading
+        # is best effort -- it depends on the status line having been parsed by
+        # now -- so falling back to a cold restart on it would trade a fault that
+        # should no longer happen for one that would.
         if stream.audio_pending_ms:
             self.logger.warning(
-                "%s still had %d ms of the previous stream's audio pending when its "
-                "anchor was commanded; its content will play that late",
+                "%s still had %d ms of earlier audio pending when its anchor was "
+                "commanded; its content will play that late",
                 self.airplay_player.display_name,
                 stream.audio_pending_ms,
             )

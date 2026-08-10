@@ -79,8 +79,10 @@ _CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 _COMMAND_PIPE_READER_TIMEOUT: Final[float] = 2.0
 
 # Seconds to wait for our own queued stdin audio to reach the binary before a
-# flush. Only the bytes already accepted for the pipe are left to move, which the
-# binary keeps reading, so this covers a stalled reader rather than a real wait.
+# flush. At most the write buffer's high-water mark is left to move (64 KiB, a
+# third of a second of PCM) and the binary reads continuously, so reaching this
+# means its reader has stalled -- for which the cold restart it falls back to is
+# the right answer anyway.
 _STDIN_DRAIN_TIMEOUT: Final[float] = 2.0
 
 
@@ -410,13 +412,15 @@ class AirPlayStream:
         Sends ``ACTION=FLUSH`` — the binary stops sending audio, flushes the
         receiver, discards its input ring and drains stdin, then reports
         ``[STATUS] flushed`` while keeping the connection and stdin reader alive.
-        The caller must have stopped feeding old audio before calling this so the
-        drain removes exactly the pre-flush bytes.
+        The caller must have stopped feeding old audio before calling this; what
+        it already wrote is seen through to the binary here, so the drain removes
+        exactly the pre-flush bytes.
 
         :param timeout: Seconds to wait for the flushed acknowledgement.
-        :return: True once the flush is acknowledged; False on a delivery
-            failure, a flush the binary reports it rejected, or a timeout, so
-            the caller can fall back to a cold restart.
+        :return: True once the flush is acknowledged; False when audio we already
+            wrote cannot be cleared, on a delivery failure, on a flush the binary
+            reports it rejected, or on a timeout, so the caller can fall back to a
+            cold restart.
         """
         if not self.running or not self.connected:
             return False
@@ -1416,6 +1420,8 @@ class AirPlayStream:
                     self.audio_pending_ms = int(line.split("buffered_ms=")[1].split(maxsplit=1)[0])
                 except ValueError, IndexError:
                     self.audio_pending_ms = 0
+            else:
+                self.audio_pending_ms = 0
             self._audio_present.set()
         elif "[STATUS] mrp" in line:
             # The artwork reports arrive on stderr; the now-playing push

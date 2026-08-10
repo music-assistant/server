@@ -1686,6 +1686,16 @@ def test_unparsable_audio_status_reports_no_pending_audio() -> None:
     assert stream.audio_pending_ms == 0
 
 
+def test_audio_status_without_a_depth_reports_no_pending_audio() -> None:
+    """A line omitting the depth reports none rather than carrying the previous value."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    assert stream._handle_status_line("[STATUS] audio ") is False
+
+    assert stream.audio_pending_ms == 0
+
+
 @pytest.mark.asyncio
 async def test_flush_clears_the_pending_stdin_depth() -> None:
     """A flush drops the previous cycle's depth so the next report describes the new one."""

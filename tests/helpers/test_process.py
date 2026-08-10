@@ -37,6 +37,9 @@ async def piped_process_fixture() -> AsyncGenerator[tuple[AsyncProcess, int]]:
         yield proc, read_fd
     finally:
         transport.abort()
+        # abort() only schedules the callback that closes the write side, so let
+        # it run before the loop goes away rather than relying on the ordering.
+        await asyncio.sleep(0)
         os.close(read_fd)
 
 

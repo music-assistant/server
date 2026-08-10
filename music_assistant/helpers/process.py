@@ -184,12 +184,15 @@ class AsyncProcess:
 
     async def drain_stdin(self, timeout: float = 5.0) -> bool:
         """
-        Wait until every byte handed to stdin has left the local write buffer.
+        Wait until every byte handed to stdin has reached the pipe.
 
-        :meth:`write` resolves as soon as the buffer falls below asyncio's
-        low-water mark, so it can leave bytes still queued for the pipe. A caller
-        that needs the process to have actually received everything it was sent
-        -- rather than merely to have accepted it -- waits here first.
+        :meth:`write` only waits while the transport is paused, which it is only
+        above the high-water mark, so it returns with up to that much still
+        queued locally (64 KiB by default). A caller that needs the process to
+        have been handed everything it was sent -- rather than to have merely
+        accepted it for later -- waits here first. The bytes are then in the
+        kernel pipe, which is as far as this can guarantee: whether the process
+        has read them is its own business.
 
         :param timeout: Seconds to wait for the buffer to empty.
         :return: True once the buffer is empty, False when the wait timed out.
@@ -198,25 +201,23 @@ class AsyncProcess:
             return True
         async with self._stdin_lock:
             transport = self.proc.stdin.transport
+            low, high = transport.get_write_buffer_limits()
             try:
-                # Pausing the protocol at a zero high-water mark is what makes
-                # drain() resolve only once the buffer is completely empty
-                # instead of at the default low-water mark.
+                # Pausing the transport at a zero high-water mark is what makes
+                # drain() resolve only once the buffer is completely empty: it
+                # otherwise resolves as soon as the transport is not paused.
                 transport.set_write_buffer_limits(high=0)
                 await asyncio.wait_for(self.proc.stdin.drain(), timeout)
             except TimeoutError:
                 return False
-            except (
-                AttributeError,
-                BrokenPipeError,
-                RuntimeError,
-                ConnectionResetError,
-            ):
+            except BrokenPipeError, RuntimeError, ConnectionResetError:
                 # already exited, race condition: nothing is left to arrive
                 return True
             finally:
-                with suppress(AttributeError, RuntimeError):
-                    transport.set_write_buffer_limits()
+                # Restore what this process was configured with rather than the
+                # asyncio defaults a bare call would reinstate.
+                with suppress(RuntimeError):
+                    transport.set_write_buffer_limits(high=high, low=low)
         return True
 
     async def write_eof(self) -> None:

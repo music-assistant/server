@@ -744,10 +744,11 @@ async def test_anchor_reports_leftover_audio_pending_on_stdin() -> None:
     """
     Audio still pending when the anchor is commanded is named as the offset it causes.
 
-    The writer is gated until the anchor settles, so anything pending belongs to
-    the previous stream and the START anchors it as this one's first sample. The
-    cursor only counts what the bridge queued itself, so no later realignment can
-    see the resulting offset -- this warning is the only signal it happened.
+    The writer is gated until the anchor settles, so anything pending was left
+    behind by an earlier stream and the START anchors it as this one's first
+    sample. The cursor only counts what the bridge queued itself, so no later
+    realignment can see the resulting offset, which leaves this warning as the
+    one place it surfaces.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     stream = _make_anchor_stream(audio_pending_ms=92)
@@ -770,7 +771,7 @@ async def test_anchor_stays_quiet_when_stdin_was_left_empty() -> None:
     with patch.object(bridge.logger, "warning") as warning:
         assert await _anchor(bridge, stream, warm=True) is True
 
-    assert not [call for call in warning.call_args_list if "pending" in str(call)]
+    assert not [call for call in warning.call_args_list if "pending" in call.args[0]]
 
 
 async def test_anchor_follows_the_clock_ready_projection() -> None:
