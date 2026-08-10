@@ -1,4 +1,4 @@
-"""Tests for Pandora fragment retention and the fetch/reuse/withhold gate."""
+"""Tests for Pandora fragment retention and the fetch-or-keep-serving gate."""
 
 from __future__ import annotations
 
@@ -7,10 +7,9 @@ from typing import Any
 from music_assistant.providers.pandora.fragments import (
     FRAGMENT_STALE_SECONDS,
     MAX_RETAINED_FRAGMENTS,
-    FragmentAction,
     PandoraFragment,
     PandoraStationSession,
-    next_fragment_action,
+    should_fetch_fragment,
 )
 
 NOW = 1_000_000.0
@@ -42,70 +41,61 @@ def _fragment(**kwargs: Any) -> PandoraFragment:
 
 def test_no_fragment_fetches() -> None:
     """A station with no fragment yet must fetch one."""
-    assert next_fragment_action(None, NOW) is FragmentAction.FETCH
+    assert should_fetch_fragment(None, NOW) is True
 
 
-def test_unresolved_fragment_is_reused() -> None:
-    """Browse fetched a fragment nobody streams from; play must get that same batch."""
-    assert next_fragment_action(_fragment(), NOW) is FragmentAction.REUSE
+def test_live_fragment_is_not_refetched() -> None:
+    """A fragment whose URLs are still live must be served again, not replaced."""
+    assert should_fetch_fragment(_fragment(), NOW) is False
 
 
-def test_stale_unresolved_fragment_is_refetched() -> None:
-    """An untouched fragment older than the staleness window holds expired URLs."""
-    fragment = _fragment()
+def test_stale_fragment_is_refetched() -> None:
+    """A fragment nothing has streamed from for the whole window holds expired URLs."""
     later = NOW + FRAGMENT_STALE_SECONDS + 1
-    assert next_fragment_action(fragment, later) is FragmentAction.FETCH
+    assert should_fetch_fragment(_fragment(), later) is True
 
 
-def test_resolved_unspent_fragment_withholds() -> None:
-    """The gate is closed while handed-out URLs are still pending playback."""
-    fragment = _fragment(resolved=True)
-    assert next_fragment_action(fragment, NOW) is FragmentAction.WITHHOLD
-
-
-def test_abandoned_playback_recovers_after_the_stale_window() -> None:
-    """Stopping mid-fragment must not strand the station on WITHHOLD forever."""
-    fragment = _fragment(resolved=True)
-    later = NOW + FRAGMENT_STALE_SECONDS + 1
-    assert next_fragment_action(fragment, later) is FragmentAction.FETCH
-
-
-def test_active_playback_keeps_the_gate_shut_across_tracks() -> None:
-    """Each resolution refreshes activity, so a playing station never trips staleness."""
+def test_abandoned_playback_is_refetched_once_stale() -> None:
+    """Stopping mid-fragment leaves URLs that eventually expire; refetch then."""
     fragment = _fragment()
-    # tracks resolved a few minutes apart, as the stream feeder would during playback
-    for index, offset in enumerate((0, 300, 600, 900)[:3]):
+    fragment.mark_resolved("S0", NOW)
+    later = NOW + FRAGMENT_STALE_SECONDS + 1
+    assert should_fetch_fragment(fragment, later) is True
+
+
+def test_active_playback_never_refetches_mid_fragment() -> None:
+    """Each hand-out refreshes activity, so a playing station never trips staleness."""
+    fragment = _fragment()
+    # tracks handed out a few minutes apart, as the stream feeder would during playback
+    for index, offset in enumerate((0, 300, 600)):
         fragment.mark_resolved(f"S{index}", NOW + offset)
-        assert next_fragment_action(fragment, NOW + offset) is FragmentAction.WITHHOLD
-    # 900s since the fragment was fetched, but only 300s since the last resolution:
+        assert should_fetch_fragment(fragment, NOW + offset) is False
+    # 900s since the fragment was fetched, but only 300s since the last hand-out:
     # a fetched-at clock would wrongly call this abandoned, a last-activity clock does not
-    assert next_fragment_action(fragment, NOW + 900) is FragmentAction.WITHHOLD
+    assert should_fetch_fragment(fragment, NOW + 900) is False
 
 
 def test_spent_fragment_advances() -> None:
     """Once the last track has been handed out it is safe to pull the next fragment."""
-    fragment = _fragment(resolved=True, spent=True)
-    assert next_fragment_action(fragment, NOW) is FragmentAction.FETCH
+    assert should_fetch_fragment(_fragment(spent=True), NOW) is True
 
 
 def test_mark_resolved_last_track_spends_fragment() -> None:
-    """Resolving the final track opens the gate."""
+    """Handing out the final track opens the gate."""
     fragment = _fragment()
     fragment.mark_resolved("S3", NOW)
-    assert fragment.resolved is True
     assert fragment.spent is True
 
 
 def test_mark_resolved_earlier_track_does_not_spend() -> None:
-    """Resolving a non-final track marks the fragment live but keeps the gate shut."""
+    """Handing out a non-final track keeps the gate shut."""
     fragment = _fragment()
     fragment.mark_resolved("S1", NOW)
-    assert fragment.resolved is True
     assert fragment.spent is False
 
 
 def test_mark_resolved_refreshes_activity() -> None:
-    """Resolving a track restarts the staleness clock."""
+    """Handing out a track restarts the staleness clock."""
     fragment = _fragment()
     later = NOW + FRAGMENT_STALE_SECONDS - 1
     fragment.mark_resolved("S1", later)
@@ -115,10 +105,9 @@ def test_mark_resolved_refreshes_activity() -> None:
 
 
 def test_mark_resolved_unknown_track_is_a_noop() -> None:
-    """An id from an older fragment must not flip this fragment's flags or clock."""
+    """An id from an older fragment must not flip this fragment's flag or clock."""
     fragment = _fragment()
     fragment.mark_resolved("nope", NOW + 100)
-    assert fragment.resolved is False
     assert fragment.spent is False
     assert fragment.last_activity_at == NOW
 
@@ -133,10 +122,8 @@ def test_find_returns_track_by_music_id() -> None:
 
 
 def test_is_stale_measures_time_since_last_activity() -> None:
-    """Staleness applies to resolved and unresolved fragments alike."""
-    later = NOW + FRAGMENT_STALE_SECONDS + 1
-    assert _fragment().is_stale(later) is True
-    assert _fragment(resolved=True).is_stale(later) is True
+    """Staleness is purely a function of the last hand-out, with a strict boundary."""
+    assert _fragment().is_stale(NOW + FRAGMENT_STALE_SECONDS + 1) is True
     assert _fragment().is_stale(NOW) is False
     # exactly at the boundary is not yet stale
     assert _fragment().is_stale(NOW + FRAGMENT_STALE_SECONDS) is False

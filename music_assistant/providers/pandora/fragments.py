@@ -10,24 +10,15 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
-# an untouched fragment's audio URLs expire on Pandora's own clock; refetch rather than
-# serve URLs that a browse fetched and nobody ever played
+# a fragment nothing has streamed from for this long has audio URLs that Pandora's own
+# clock has likely expired; refetch rather than serve them
 FRAGMENT_STALE_SECONDS = 600
 
 # how many fragments of (metadata-only) track data to keep so recently played tracks
 # stay resolvable for queue history
 MAX_RETAINED_FRAGMENTS = 4
-
-
-class FragmentAction(StrEnum):
-    """What a playlist-tracks request should do with a station's current fragment."""
-
-    FETCH = "fetch"
-    REUSE = "reuse"
-    WITHHOLD = "withhold"
 
 
 @dataclass
@@ -36,7 +27,6 @@ class PandoraFragment:
 
     tracks: list[dict[str, Any]]
     last_activity_at: float
-    resolved: bool = False
     spent: bool = False
 
     def find(self, music_id: str) -> dict[str, Any] | None:
@@ -47,9 +37,8 @@ class PandoraFragment:
         """Record that the given track has been handed to the audio pipeline."""
         if self.find(music_id) is None:
             return
-        self.resolved = True
         self.last_activity_at = now
-        if self.tracks and self.tracks[-1].get("musicId") == music_id:
+        if self.tracks[-1].get("musicId") == music_id:
             self.spent = True
 
     def is_stale(self, now: float) -> bool:
@@ -86,20 +75,14 @@ class PandoraStationSession:
         return None
 
 
-def next_fragment_action(fragment: PandoraFragment | None, now: float) -> FragmentAction:
+def should_fetch_fragment(fragment: PandoraFragment | None, now: float) -> bool:
     """
-    Decide how to answer a playlist-tracks request for a station.
+    Return whether a station needs a new fragment fetched from Pandora.
+
+    False means the current fragment's audio URLs are still live and must not be invalidated —
+    its tracks are served again instead. It never means "this station has no tracks".
 
     :param fragment: The station's current (newest) fragment, or None if it has none yet.
     :param now: Current wall-clock time, used for the staleness check.
     """
-    if fragment is None:
-        return FragmentAction.FETCH
-    if fragment.spent or fragment.is_stale(now):
-        # played through, or abandoned long enough that its URLs are no longer worth serving
-        return FragmentAction.FETCH
-    if not fragment.resolved:
-        # fetched but never streamed from (e.g. a browse): hand the same batch out again
-        return FragmentAction.REUSE
-    # URLs are live and pending playback; fetching now would invalidate them
-    return FragmentAction.WITHHOLD
+    return fragment is None or fragment.spent or fragment.is_stale(now)

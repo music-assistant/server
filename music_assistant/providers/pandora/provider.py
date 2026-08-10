@@ -65,12 +65,7 @@ from .constants import (
     RETRY_REASON_STREAM_VIOLATION,
     STATIONS_ENDPOINT,
 )
-from .fragments import (
-    FragmentAction,
-    PandoraFragment,
-    PandoraStationSession,
-    next_fragment_action,
-)
+from .fragments import PandoraFragment, PandoraStationSession, should_fetch_fragment
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
 
 if TYPE_CHECKING:
@@ -209,13 +204,10 @@ class PandoraProvider(MusicProvider):
             return []
         session = self._get_or_create_session(prov_playlist_id)
         fragment = session.current
-        action = next_fragment_action(fragment, time.time())
-        if action is FragmentAction.WITHHOLD:
-            # the live fragment's URLs are still pending playback: fetching now would
-            # invalidate them, so let the next refill ask again
-            return []
-        if action is FragmentAction.FETCH or fragment is None:
+        if fragment is None or should_fetch_fragment(fragment, time.time()):
             fragment = await self._fetch_fragment(session)
+        # always serve the live fragment: an empty list would read as "this station has
+        # ended" to the queue controller, which stops playback instead of continuing it
         return [self._parse_track(track) for track in fragment.tracks]
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -243,8 +235,9 @@ class PandoraProvider(MusicProvider):
         if "_" not in item_id:
             raise MediaNotFoundError(f"Not a Pandora station track: {item_id}")
         station_id, music_id = item_id.split("_", 1)
-        session = self._get_or_create_session(station_id)
-        fragment = session.current
+        # .get, not _get_or_create_session: an unknown station must not evict a live one
+        session = self._sessions.get(station_id)
+        fragment = session.current if session else None
         if fragment is None or (track := fragment.find(music_id)) is None:
             # only the newest fragment holds live audio URLs; anything else is unplayable
             raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
@@ -463,8 +456,16 @@ class PandoraProvider(MusicProvider):
         tracks = [
             track
             for track in result.get("tracks", [])
-            if track.get("audioURL") and "curator message" not in track.get("songTitle", "").lower()
+            if track.get("audioURL")
+            and track.get("musicId")
+            and "curator message" not in track.get("songTitle", "").lower()
         ]
+        if not tracks:
+            # retaining an empty fragment would make it the live one, and nothing can ever
+            # spend it — the station would serve nothing until the staleness window elapsed
+            raise MediaNotFoundError(
+                f"Pandora returned no playable tracks for {session.station_id}"
+            )
         return session.add_fragment(tracks, time.time())
 
     async def _get_stations(self) -> AsyncGenerator[Playlist]:
@@ -531,7 +532,7 @@ class PandoraProvider(MusicProvider):
         track_id = f"{obj['stationId']}_{obj['musicId']}"
         track = Track(
             item_id=track_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
             duration=int(obj.get("trackLength", 0)),
@@ -571,7 +572,7 @@ class PandoraProvider(MusicProvider):
         name, version = parse_title_and_version(obj.get("albumTitle", "Unknown Album"))
         return Album(
             item_id=track_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
             provider_mappings={
@@ -589,7 +590,7 @@ class PandoraProvider(MusicProvider):
         return Artist(
             item_id=artist_name,
             name=artist_name,
-            provider=self.domain,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_name,

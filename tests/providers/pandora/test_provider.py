@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 from unittest.mock import Mock
 
@@ -10,7 +9,6 @@ import pytest
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.providers.pandora.fragments import PandoraStationSession
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 STATION_ID = "4360491625318318161"
@@ -34,21 +32,31 @@ def _tracks(count: int = 4, prefix: str = "S") -> list[dict[str, Any]]:
     ]
 
 
-def _provider(fragments_to_serve: list[list[dict[str, Any]]] | None = None) -> PandoraProvider:
-    """Build a bare provider with a stubbed fragment fetch and no network or mass."""
+def _provider(payloads: list[list[dict[str, Any]]] | None = None) -> PandoraProvider:
+    """
+    Build a bare provider whose Pandora API calls return canned fragment payloads.
+
+    The stub sits at `_api_request`, not `_fetch_fragment`, so the real filtering,
+    empty-fragment guard and session retention all execute under test.
+    """
     provider = PandoraProvider.__new__(PandoraProvider)
     provider.manifest = Mock(domain="pandora")
     provider.config = Mock(instance_id="pandora--test")
     provider.logger = Mock()
     provider._sessions = {}
     provider._high_quality_available = False
-    pending = list(fragments_to_serve or [_tracks()])
+    pending = list(payloads or [_tracks()])
 
-    async def _fake_fetch(session: PandoraStationSession) -> Any:
-        """Serve the next canned fragment instead of calling Pandora."""
-        return session.add_fragment(pending.pop(0) if pending else _tracks(), time.time())
+    async def _fake_api_request(
+        method: str,  # noqa: ARG001
+        url: str,  # noqa: ARG001
+        data: dict[str, Any] | None = None,  # noqa: ARG001
+        **kwargs: Any,  # noqa: ARG001
+    ) -> dict[str, Any]:
+        """Return the next canned fragment payload instead of calling Pandora."""
+        return {"tracks": pending.pop(0) if pending else _tracks()}
 
-    provider._fetch_fragment = _fake_fetch  # type: ignore[method-assign]
+    provider._api_request = _fake_api_request  # type: ignore[method-assign, assignment]
     return provider
 
 
@@ -66,19 +74,50 @@ async def test_first_request_returns_a_fragment() -> None:
 
 
 async def test_browse_then_play_returns_the_same_batch() -> None:
-    """A browse leaves the fragment unresolved, so play must still get its tracks."""
+    """A browse leaves the fragment live, so play must still get its tracks."""
     provider = _provider()
     browsed = await provider.get_playlist_tracks(STATION_ID)
     played = await provider.get_playlist_tracks(STATION_ID)
     assert [track.item_id for track in played] == [track.item_id for track in browsed]
 
 
-async def test_refill_withholds_while_the_fragment_is_live() -> None:
-    """Once a track is streaming, a refill must not pull a fragment that kills its URL."""
+async def test_refill_serves_the_live_fragment_without_refetching() -> None:
+    """
+    A refill mid-fragment must not pull a new one, but must still return tracks.
+
+    Returning [] here would read as end-of-playlist; the core de-duplicates the repeats.
+    """
+    provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
+    await provider.get_playlist_tracks(STATION_ID)
+    await provider.get_stream_details(f"{STATION_ID}_A0", MediaType.TRACK)
+    tracks = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in tracks] == [f"{STATION_ID}_A{i}" for i in range(4)]
+
+
+async def test_replay_after_stopping_mid_fragment_still_builds_a_queue() -> None:
+    """Stopping after one track and playing again must not yield an empty queue."""
     provider = _provider()
     await provider.get_playlist_tracks(STATION_ID)
     await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
-    assert await provider.get_playlist_tracks(STATION_ID) == []
+    # user stops, then presses play again on the same station
+    replayed = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in replayed] == [f"{STATION_ID}_S{i}" for i in range(4)]
+
+
+async def test_empty_fragment_is_not_retained() -> None:
+    """
+    A fragment with no playable tracks must raise, not become the live fragment.
+
+    Retaining it would make it current with nothing able to spend it, so the station
+    would serve nothing until the staleness window elapsed.
+    """
+    curator_only = [
+        {"musicId": "S0", "stationId": STATION_ID, "songTitle": "Curator Message", "audioURL": ""}
+    ]
+    provider = _provider([curator_only])
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_playlist_tracks(STATION_ID)
+    assert provider._sessions[STATION_ID].current is None
 
 
 async def test_refill_advances_once_the_last_track_is_resolved() -> None:
