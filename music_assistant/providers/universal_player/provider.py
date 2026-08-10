@@ -198,6 +198,12 @@ class UniversalPlayerProvider(PlayerProvider):
         if not device_key:
             return None
 
+        # Prefer the device key stored by an earlier universal player for this device.
+        # The player id derived from it is the identity API consumers (such as the
+        # Home Assistant integration) bind to, while the computed key varies with
+        # whichever protocol players happen to be registered at (re)creation time.
+        device_key = self._get_stored_device_key(protocol_players) or device_key
+
         universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
 
         # Use a per-device lock to prevent race conditions
@@ -571,6 +577,71 @@ class UniversalPlayerProvider(PlayerProvider):
             device_info=device_info,
             protocol_player_ids=[protocol_player.player_id],
         )
+
+    def _get_stored_device_key(self, protocol_players: list[Player]) -> str | None:
+        """
+        Return the stored device key of an earlier universal player for the same device.
+
+        :param protocol_players: The protocol players a universal player is (re)created for.
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return None
+        protocol_ids = {player.player_id for player in protocol_players}
+        identifiers: set[tuple[str, str]] = set()
+        for player in protocol_players:
+            for id_type, value in player.device_info.identifiers.items():
+                if normalized := self._normalize_identifier(id_type, value):
+                    identifiers.add((id_type.value, normalized))
+        identifier_match: str | None = None
+        for player_id in sorted(all_player_configs):
+            if not isinstance(player_id, str) or not player_id.startswith(UNIVERSAL_PLAYER_PREFIX):
+                continue
+            raw_conf = all_player_configs[player_id]
+            if not isinstance(raw_conf, dict):
+                continue
+            values = raw_conf.get("values")
+            values = values if isinstance(values, dict) else {}
+            # a protocol player that was already a member is the strongest match
+            stored_protocol_ids = values.get(CONF_LINKED_PROTOCOL_IDS)
+            if isinstance(stored_protocol_ids, list) and protocol_ids.intersection(
+                stored_protocol_ids
+            ):
+                return player_id.removeprefix(UNIVERSAL_PLAYER_PREFIX)
+            if identifier_match is not None:
+                continue
+            # otherwise match on the persisted device identifiers, which also covers
+            # players that were never a member (e.g. a re-keyed bridge player)
+            stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS)
+            stored_identifiers = stored_identifiers if isinstance(stored_identifiers, dict) else {}
+            for id_type_str, value in stored_identifiers.items():
+                try:
+                    id_type = IdentifierType(id_type_str)
+                except ValueError:
+                    continue
+                if not isinstance(value, str):
+                    continue
+                if (normalized := self._normalize_identifier(id_type, value)) and (
+                    id_type.value,
+                    normalized,
+                ) in identifiers:
+                    identifier_match = player_id
+                    break
+        if identifier_match is None:
+            return None
+        return identifier_match.removeprefix(UNIVERSAL_PLAYER_PREFIX)
+
+    @staticmethod
+    def _normalize_identifier(id_type: IdentifierType, value: str) -> str | None:
+        """Normalize a device identifier value for matching, or None if unusable."""
+        if not value:
+            return None
+        if id_type == IdentifierType.IP_ADDRESS:
+            # IP addresses change with DHCP and are shared by multi-instance hosts
+            return None
+        if id_type == IdentifierType.MAC_ADDRESS:
+            return normalize_mac_for_matching(value)
+        return value.replace("-", "").replace(":", "").replace("_", "").lower()
 
     def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
         """

@@ -544,8 +544,14 @@ class PlayerConfigMixin:
         """Set (or update) the default name for a player."""
         # skip if the player config root no longer exists, otherwise the
         # nested set would resurrect a partial entry (missing player_id etc).
-        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+        if not (existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}")):
             return
+        # a stored name equal to the default name was never renamed by the user, so
+        # move it along with the new default name; otherwise the stale auto-generated
+        # name would read as a user rename and keep shadowing the new default name
+        stored_name = existing_conf.get("name")
+        if stored_name and stored_name == existing_conf.get("default_name"):
+            self.set(f"{CONF_PLAYERS}/{player_id}/name", default_name)
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
@@ -575,9 +581,9 @@ class PlayerConfigMixin:
         """
         # return early if the config already exists
         if existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
-            # update default name if needed
+            # update default name if needed (keeps an untouched name in sync as well)
             if name and name != existing_conf.get("default_name"):
-                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+                self.set_player_default_name(player_id, name)
             # deliberately do NOT update player_type here: this is called from
             # Player.__init__ where the type can still be a transient class default.
             # Genuine type changes are persisted by update_state after registration.

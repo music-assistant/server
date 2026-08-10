@@ -42,3 +42,39 @@ async def test_existing_default_name_still_updated(mass_minimal: MusicAssistant)
         PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "new-name"
     )
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/default_name") == "new-name"
+
+
+async def test_untouched_name_follows_default_name(mass_minimal: MusicAssistant) -> None:
+    """
+    A name the user never changed moves along with the default name.
+
+    Regression test for music-assistant/support#5888: fresh configs store
+    name == default_name. A default name update that leaves the untouched name
+    behind makes the stale auto-generated name read as a user rename, which
+    shadows the new default name and gets carried over to any replacement
+    player, producing duplicated friendly names.
+    """
+    mass_minimal.config.create_default_player_config(
+        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "old-name"
+    )
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/name") == "old-name"
+
+    mass_minimal.config.set_player_default_name(PLAYER_ID, "new-name")
+
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/default_name") == "new-name"
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/name") == "new-name"
+
+
+async def test_user_renamed_name_preserved_on_default_name_update(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A real user rename is never overwritten by a default name update."""
+    mass_minimal.config.create_default_player_config(
+        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "old-name"
+    )
+    mass_minimal.config.set(f"{CONF_PLAYERS}/{PLAYER_ID}/name", "My Custom Name")
+
+    mass_minimal.config.set_player_default_name(PLAYER_ID, "new-name")
+
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/default_name") == "new-name"
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/name") == "My Custom Name"

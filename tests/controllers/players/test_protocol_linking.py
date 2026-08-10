@@ -849,6 +849,153 @@ class TestGetDeviceKeyFromPlayers:
         assert device_key == "sendspindeviceabc"
 
 
+class TestGetStoredDeviceKey:
+    """
+    Tests for reusing the stored device key of an earlier universal player.
+
+    Regression tests for music-assistant/support#5888: re-creating a universal
+    player must not change its player id, even when a different set of protocol
+    players or identifiers is available at re-creation time. Consumers such as
+    the Home Assistant integration bind entities to that id.
+    """
+
+    def test_stored_key_reused_via_linked_protocol_ids(self, mock_mass: MagicMock) -> None:
+        """A protocol player that was a member before yields the stored key."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "up5478c9e60da0": {
+                    "player_id": "up5478c9e60da0",
+                    "provider": "universal_player",
+                    "values": {"linked_protocol_ids": ["ap_123456", "sendspin_bridge_1"]},
+                },
+            }
+        )
+        provider = MockProvider("sendspin")
+        # the returning member has no MAC identifier at all this time
+        player = MockPlayer(
+            provider,
+            "sendspin_bridge_1",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.UUID: "12345678-1234-1234-1234-123456789abc"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) == "5478c9e60da0"
+        # sanity: the freshly computed key would have differed
+        assert universal_provider._get_device_key_from_players([player]) != "5478c9e60da0"
+
+    def test_stored_key_reused_via_identifiers(self, mock_mass: MagicMock) -> None:
+        """A never-before-seen protocol player of a known device yields the stored key."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "upuuid12345678": {
+                    "player_id": "upuuid12345678",
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["dlna_123456"],
+                        "device_identifiers": {"mac_address": "54:78:C9:E6:0D:A0"},
+                    },
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        # re-keyed player: unknown id, locally-administered MAC variant of the same device
+        player = MockPlayer(
+            provider,
+            "ap_999999",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) == "uuid12345678"
+
+    def test_stored_key_never_matches_on_ip_address(self, mock_mass: MagicMock) -> None:
+        """IP addresses are not identity: no stored key may be derived from them."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "upaabbccddeeff": {
+                    "player_id": "upaabbccddeeff",
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["dlna_123456"],
+                        "device_identifiers": {"ip_address": "192.168.1.100"},
+                    },
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        player = MockPlayer(
+            provider,
+            "ap_999999",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.IP_ADDRESS: "192.168.1.100"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) is None
+
+    def test_no_stored_key_for_unrelated_device(self, mock_mass: MagicMock) -> None:
+        """A device without an earlier universal player yields no stored key."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "upaabbccddeeff": {
+                    "player_id": "upaabbccddeeff",
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["ap_123456"],
+                        "device_identifiers": {"mac_address": "AA:BB:CC:DD:EE:FF"},
+                    },
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        player = MockPlayer(
+            provider,
+            "ap_999999",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "11:22:33:44:55:66"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) is None
+
+    async def test_ensure_universal_player_reuses_stored_key(self, mock_mass: MagicMock) -> None:
+        """Re-creating a universal player keeps the stored device key (and thus its id)."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "up5478c9e60da0": {
+                    "player_id": "up5478c9e60da0",
+                    "provider": "universal_player",
+                    "values": {"linked_protocol_ids": ["sendspin_bridge_1"]},
+                },
+            }
+        )
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        universal_provider.create_universal_player = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        provider = MockProvider("sendspin")
+        player = MockPlayer(
+            provider,
+            "sendspin_bridge_1",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.UUID: "12345678-1234-1234-1234-123456789abc"},
+        )
+
+        await universal_provider.ensure_universal_player_for_protocols([player])
+
+        universal_provider.create_universal_player.assert_awaited_once()
+        await_args = universal_provider.create_universal_player.await_args
+        assert await_args is not None
+        assert await_args.kwargs["device_key"] == "5478c9e60da0"
+
+
 class TestGetCleanPlayerName:
     """Tests for player name selection."""
 

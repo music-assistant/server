@@ -85,6 +85,8 @@ Universal players use the format: `up{device_key}`
 Where `device_key` is typically the normalized MAC address.
 If no stable MAC is available, the provider falls back to UUID-like identifiers and finally the first protocol player's ID.
 
+The player id is the identity API consumers (e.g. the Home Assistant integration) bind entities to, so it must stay stable for the lifetime of the device. When a universal player is (re)created for a device that already has a stored universal player config (matched via its stored protocol player memberships or device identifiers), the stored device key is reused, even if the identifiers available at that moment would compute a different key.
+
 ### File Structure
 
 ```
