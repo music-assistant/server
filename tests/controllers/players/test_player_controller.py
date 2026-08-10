@@ -13,9 +13,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -116,6 +116,32 @@ def _volume_step_config(step: int | None) -> CoreConfig:
             )
         },
     )
+
+
+@contextlib.contextmanager
+def _running_background_tasks(mock_mass: MagicMock) -> Iterator[None]:
+    """
+    Let ``mass.create_task`` actually run its coroutine on the running event loop.
+
+    :param mock_mass: The mocked MusicAssistant instance to patch.
+    """
+    errors: list[BaseException] = []
+
+    def _collect_exception(task: asyncio.Task[Any]) -> None:
+        # the real helper retrieves the exception of every task it creates, so a failing
+        # background task must fail the test instead of only warning at collection time
+        if not task.cancelled() and (err := task.exception()) is not None:
+            errors.append(err)
+
+    def _create_task(coro: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coro)
+        task.add_done_callback(_collect_exception)
+        return task
+
+    mock_mass.create_task = MagicMock(side_effect=_create_task)
+    yield
+    if errors:
+        raise errors[0]
 
 
 def _mute_natively(player: MockPlayer) -> AsyncMock:
@@ -3089,6 +3115,12 @@ class TestPlayAnnouncementCleanup:
 class TestPlayAnnouncementRestore:
     """Test the state restore of the default (fallback) announcement implementation."""
 
+    @pytest.fixture(autouse=True)
+    def _background_tasks(self, mock_mass: MagicMock) -> Iterator[None]:
+        """Run the (temporary and restored) volume commands the TaskManager dispatches."""
+        with _running_background_tasks(mock_mass):
+            yield
+
     def _make_player(
         self, mock_mass: MagicMock, prev_media: PlayerMedia
     ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
@@ -3101,11 +3133,7 @@ class TestPlayAnnouncementRestore:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
-        # the (temporary and restored) volume commands are dispatched through the
-        # TaskManager, so background tasks must actually run in these tests
-        mock_mass.create_task = MagicMock(
-            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
-        )
+        mock_mass.player_queues.get = MagicMock(return_value=None)
         resume_mock = AsyncMock()
         controller._handle_cmd_resume = resume_mock  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
@@ -3454,6 +3482,12 @@ class TestPlayAnnouncementRestore:
 class TestPlayNativeAnnouncement:
     """Test the mute handling around an announcement that a player plays natively."""
 
+    @pytest.fixture(autouse=True)
+    def _background_tasks(self, mock_mass: MagicMock) -> Iterator[None]:
+        """Run the mute commands the TaskManager dispatches."""
+        with _running_background_tasks(mock_mass):
+            yield
+
     def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
         """Create a controller and a player with native announcement support."""
         controller = PlayerController(mock_mass)
@@ -3463,11 +3497,7 @@ class TestPlayNativeAnnouncement:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
-        # the mute commands are dispatched through the TaskManager,
-        # so background tasks must actually run in these tests
-        mock_mass.create_task = MagicMock(
-            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
-        )
+        mock_mass.player_queues.get = MagicMock(return_value=None)
         controller.get_announcement_volume = MagicMock(return_value=None)  # type: ignore[method-assign]
         announce_mock = AsyncMock()
         player.play_announcement = announce_mock  # type: ignore[method-assign]
