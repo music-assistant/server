@@ -24,7 +24,8 @@ LIBRESPOT_SCOPE = ["streaming"]
 LIBRESPOT_REDIRECT_URI = "http://127.0.0.1:5588/login"
 # name advertised to the Spotify app while pairing; also shown in the setup flow instructions
 PAIRING_DEVICE_NAME = "Music Assistant"
-PAIRING_TIMEOUT = 300
+PAIRING_TIMEOUT = 300  # seconds the pairing step waits for the user to pick the device
+CHECK_AUTH_TIMEOUT = 30  # seconds
 CREDENTIALS_FILE = "credentials.json"
 
 # OAuth Settings

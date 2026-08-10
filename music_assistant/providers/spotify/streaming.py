@@ -81,10 +81,11 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
-                        if "INVALID_CREDENTIALS" in line:
+                        if "INVALID_CREDENTIALS" in line and self.provider.available:
                             # Spotify refused the stored playback credential: surface this as an
                             # auth failure so the provider asks for re-authorization instead of
-                            # reporting every track as unplayable.
+                            # reporting every track as unplayable. The availability check keeps
+                            # concurrent/queued streams from each scheduling their own unload.
                             self.provider.unload_with_error(
                                 LoginFailed(
                                     "Spotify playback authorization required",

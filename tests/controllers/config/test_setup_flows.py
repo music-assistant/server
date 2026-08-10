@@ -1594,11 +1594,14 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
             step.flow_id,
             {CONF_PLAYBACK_CALLBACK_URL: "http://127.0.0.1:5588/login?code=playback_code"},
         )
-        # after the token exchange the optional developer step is shown
+        # the developer key is offered as an opt-in once everything required is collected
         await _wait_for(
-            lambda: session.current_step is not None and session.current_step.step_id == "developer"
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "developer_optin"
+            )
         )
-        # skipping the developer client id (blank) finishes the flow
+        # declining the opt-in finishes the flow without asking for a client id
         finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {})
     assert finish_step.type == FlowStepType.FINISH
     # the pasted URL's code is what gets exchanged for the playback credential

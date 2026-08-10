@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
 import tempfile
@@ -14,7 +15,9 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
 
-from .constants import CREDENTIALS_FILE
+from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
+
+LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import aiohttp
@@ -68,7 +71,14 @@ async def librespot_credentials_via_pairing(librespot_bin: str, device_name: str
         ]
         # stdout carries decoded audio once the user hits play; discard it so the pairing
         # daemon never blocks on a pipe nobody reads
-        async with AsyncProcess(args, stdout=asyncio.subprocess.DEVNULL, name="librespot-pairing"):
+        async with AsyncProcess(
+            args, stdout=asyncio.subprocess.DEVNULL, stderr=True, name="librespot-pairing"
+        ) as librespot_proc:
+            # librespot advertises over mDNS, which fails silently in host-network-less
+            # containers; without its log the user would just watch the step time out
+            librespot_proc.attach_stderr_reader(
+                asyncio.create_task(_log_pairing_output(librespot_proc))
+            )
             return await _await_credentials_file(cache_dir)
 
 
@@ -82,7 +92,13 @@ async def librespot_credentials_via_token(librespot_bin: str, access_token: str)
     """
     with tempfile.TemporaryDirectory() as cache_dir:
         returncode, output = await check_output(
-            librespot_bin, "--cache", cache_dir, "--check-auth", "--access-token", access_token
+            librespot_bin,
+            "--cache",
+            cache_dir,
+            "--check-auth",
+            "--access-token",
+            access_token,
+            timeout=CHECK_AUTH_TIMEOUT,
         )
         if returncode != 0:
             raise LoginFailed(
@@ -143,6 +159,15 @@ async def get_spotify_token(
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
+
+
+async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:
+    """Log the pairing daemon's output so a failure to advertise is diagnosable."""
+    async for line in librespot_proc.iter_stderr():
+        if "ERROR" in line or "WARN" in line:
+            LOGGER.warning("[librespot-pairing] %s", line)
+        else:
+            LOGGER.debug("[librespot-pairing] %s", line)
 
 
 async def _await_credentials_file(cache_dir: str) -> str:

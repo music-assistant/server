@@ -28,6 +28,19 @@
     "sync_audiobook_progress": {
       "label": "Sync Audiobook Progress from Spotify",
       "description": "Automatically sync audiobook progress from Spotify to Music Assistant. Progress from Spotify app will sync to MA when audiobooks are accessed. Only enable this if you use both the Spotify app and Music Assistant for audiobook playback."
+    },
+    "playback_auth_method": {
+      "label": "How do you want to allow playback?",
+      "options": {
+        "spotify_app": "Use the Spotify app (recommended)",
+        "browser": "Use a web browser instead"
+      }
+    },
+    "playback_callback_url": {
+      "label": "Address of the error page"
+    },
+    "use_developer_key": {
+      "label": "Use my own Spotify developer key (advanced, optional)"
     }
   },
   "setup_flow": {
@@ -36,8 +49,8 @@
       "description": "A browser window will open so you can sign in to Spotify and authorize Music Assistant. Come back here once you're done."
     },
     "developer": {
-      "title": "Use your own Spotify developer key (optional)",
-      "description": "You're connected using Music Assistant's shared Spotify developer key — that's all most people need, so you can just press Finish.\n\nIf you'd rather use your own Spotify developer key, enter the Client ID below. This avoids shared rate limits, although recommendations and similar tracks will continue to use Music Assistant's shared key due to Spotify API restrictions.\n\nRegister {0} as a redirect URI in the Spotify Developer Dashboard. Leave the Client ID empty to continue using the shared key."
+      "title": "Use your own Spotify developer key",
+      "description": "1. Open the Spotify Developer Dashboard and create an app.\n\n2. Register this address as a redirect URI for that app:\n{0}\n\n3. Copy the app's Client ID and paste it below.\n\nLeave the field empty to keep using the shared key."
     },
     "authenticate_dev": {
       "title": "Authorize your Spotify app",
@@ -45,20 +58,19 @@
     },
     "playback_auth": {
       "title": "Allow Music Assistant to play Spotify audio",
-      "description": "Playing audio needs a separate one-time approval from Spotify, on top of the sign-in you just completed.\n\n**Recommended: use the Spotify app.** Pick this if you have Spotify installed on a phone, tablet or computer on the same network as Music Assistant. It's a few taps and nothing to copy or paste.\n\n**Use a web browser instead.** Pick this if Music Assistant won't show up in your Spotify app — for example when it runs on a different network or VLAN, or in a container without access to your home network. It takes a couple of extra steps.",
-      "playback_auth_method": {
-        "spotify_app": "Use the Spotify app (recommended)",
-        "browser": "Use a web browser instead"
-      }
+      "description": "Playing audio needs a separate one-time approval from Spotify, on top of the sign-in you just completed.\n\nUse the Spotify app (recommended) - pick this if you have Spotify on a phone, tablet or computer on the same network as Music Assistant. It takes a few taps and there is nothing to copy or paste.\n\nUse a web browser instead - pick this if Music Assistant will not show up in your Spotify app, for example when it runs on another network or VLAN, or in a container without access to your home network. It takes a couple of extra steps."
     },
     "playback_pairing": {
-      "title": "Connect to Music Assistant in your Spotify app",
-      "description": "Follow these steps in the Spotify app — this page continues on its own when you're done.\n\n1. Open the Spotify app on your phone, tablet or computer.\n2. Start playing any song, so the player bar appears.\n3. Tap the **speaker icon** (Connect to a device) in the player bar.\n4. Choose **{0}** from the list of devices.\n\nAudio won't actually play on it — selecting it is only used to grant permission, and you can switch back to your usual speaker straight after.\n\nNot showing up? Make sure the device running Spotify is on the same network as Music Assistant, then wait for this step to time out and choose the web browser option instead."
+      "title": "Select Music Assistant in your Spotify app",
+      "progress_text": "Waiting for you to select Music Assistant in the Spotify app.\n\n1. Open the Spotify app on your phone, tablet or computer.\n2. Start playing any song, so the player bar appears at the bottom.\n3. Tap the speaker icon in the player bar (Connect to a device).\n4. Choose \"Music Assistant\" from the list of devices.\n\nNo audio will play on it. Selecting it only grants permission, and you can switch back to your usual speaker right after. This screen continues by itself once you have done it.\n\nNot seeing it? Make sure the device running Spotify is on the same network as Music Assistant. You can also go back and choose the web browser option."
     },
     "playback_browser": {
       "title": "Approve playback in your browser",
-      "description": "Follow these steps in order:\n\n1. Open this link in a new tab: {0}\n2. Sign in to Spotify if asked, then press **Agree**.\n3. Your browser will end up on an error page that won't load — something like “This site can't be reached” for an address starting with 127.0.0.1. **That is expected and means it worked.**\n4. Copy the full web address of that error page from your browser's address bar.\n5. Paste it into the box below and press Submit.\n\nThe address is long and contains a one-time code, so paste the whole thing without editing it.",
-      "playback_callback_url": "Address of the error page"
+      "description": "1. Open this link in a new browser tab:\n{0}\n\n2. Sign in to Spotify if asked, then press Agree.\n\n3. Your browser then lands on a page that fails to load, showing something like \"This site can't be reached\" for an address starting with 127.0.0.1. That is expected and means it worked.\n\n4. Copy the full web address of that failing page from your browser's address bar and paste it below.\n\nThe address is long and contains a one-time code, so paste all of it without editing."
+    },
+    "developer_optin": {
+      "title": "You're all set",
+      "description": "Spotify has been added to Music Assistant. Press Finish to start.\n\nYour Spotify library is imported in the background, which takes a while the first time. Playlists, albums and artists keep appearing as the import progresses, so it is normal for them to look empty or incomplete for the first few minutes.\n\nOptionally, you can connect your own Spotify developer key. It makes browsing and searching faster, but it takes a few extra steps to set up. Most people can skip this, and you can always add it later."
     }
   },
   "media": {
@@ -88,7 +100,10 @@
     "refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify.",
     "pairing_not_completed": "Music Assistant wasn't selected in the Spotify app in time. Try again, or use the web browser option if Music Assistant doesn't appear in your Spotify app.",
     "playback_code_invalid": "That address could not be used. Make sure you copied the complete address of the error page, and note that each attempt can only be used once — start over to get a new link.",
-    "playback_auth_required": "Spotify needs you to approve audio playback again. Open the Spotify provider settings and run through the setup once more to restore playback."
+    "playback_auth_required": "Spotify needs you to approve audio playback again. Open the Spotify provider settings and run through the setup once more to restore playback.",
+    "playback_not_completed": "Playback wasn't approved in time. Open the link again and paste the address of the page your browser ends up on.",
+    "playback_auth_failed": "Approving playback didn't work. Please try again.",
+    "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here."
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."
