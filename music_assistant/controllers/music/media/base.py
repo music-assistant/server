@@ -2204,20 +2204,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
 
-        supported_order_keys = [
-            "name",
-            "name_desc",
-            "sort_name",
-            "sort_name_desc",
-            "timestamp_added",
-            "timestamp_added_desc",
-            "timestamp_modified",
-            "timestamp_modified_desc",
-            "last_played",
-            "last_played_desc",
-            "play_count",
-            "play_count_desc",
-        ]
+        # Define supported sort fields for collections
+        supported_sort_fields = {
+            SortField.NAME,
+            SortField.SORT_NAME,
+            SortField.TIMESTAMP_ADDED,
+            SortField.TIMESTAMP_MODIFIED,
+            SortField.LAST_PLAYED,
+            SortField.PLAY_COUNT,
+        }
 
         # additional order options subject to media type
         # single is targeting a single media item, collection the aggregated ones
@@ -2226,7 +2221,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if MediaType.AUDIOBOOK.value in self.api_base:
             single_extra_order_keys = "duration,"
             collection_extra_order_keys = "SUM(duration) as duration,"
-            supported_order_keys += ["duration", "duration_desc"]
+            supported_sort_fields.add(SortField.DURATION)
 
         sql_query = f"""
         SELECT * FROM (
@@ -2319,26 +2314,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += " WHERE search_name LIKE :search"
 
         if order_by:
-            # Normalize new format (field:direction) to legacy format (field_desc) for collections
             parsed = self._parse_order_by(order_by)
-            if parsed:
-                field, direction = parsed
-                normalized_key = (
-                    f"{field.value}_desc" if direction == SortDirection.DESC else field.value
-                )
-            else:
-                normalized_key = order_by
+            if not parsed:
+                self.logger.warning("Invalid order_by format: %s", order_by)
+                parsed = (SortField.NAME, SortDirection.ASC)
 
-            if normalized_key not in supported_order_keys:
+            field, direction = parsed
+            if field not in supported_sort_fields:
                 self.logger.warning(
-                    "%s is not supported for order_by key in collections", order_by
+                    "%s is not supported for order_by in collections", field.value
                 )
-                normalized_key = "name"  # fallback
+                field = SortField.NAME
+                direction = SortDirection.ASC
 
-            # Use legacy sort keys for collections
-            if parsed := LEGACY_SORT_KEYS.get(normalized_key):
-                field, direction = parsed
-                if sql_sort := self._get_sort_sql(field, direction):
-                    sql_query += f" ORDER BY {sql_sort}"
+            if sql_sort := self._get_sort_sql(field, direction):
+                sql_query += f" ORDER BY {sql_sort}"
 
         return sql_query
