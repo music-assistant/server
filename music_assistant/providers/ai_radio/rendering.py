@@ -241,6 +241,10 @@ class AIRadioRenderMixin:
         engine = await self._get_tts_engine(engine_uid)
         try:
             stream_details = await self._query_tts_engine(engine, text, language)
+        except (TimeoutError, MusicAssistantError):
+            # a timeout or our own structured failure is not a language rejection, so a
+            # language-less retry would not help and would only double the wait
+            raise
         except Exception as err:
             if language is None:
                 raise

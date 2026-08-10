@@ -272,6 +272,21 @@ async def test_render_tts_media_falls_back_without_language_on_rejection() -> No
     assert second_call.kwargs["language"] is None
 
 
+async def test_render_tts_media_does_not_retry_after_a_timeout_style_failure() -> None:
+    """A structured MusicAssistantError is not a language rejection, so it skips the retry."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(
+        side_effect=MusicAssistantError("engine did not respond within 5s")
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine.provider.get_tts_message.assert_awaited_once()
+
+
 async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
     """The session registry points the lookup at the queue that holds the clip."""
     renderer = DummyRenderer()
