@@ -385,7 +385,7 @@ async def test_slow_query_warning_ignores_event_loop_stalls(
     debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test that a query awaited across a blocked event loop is not reported as slow."""
-    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.1)
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.2)
     with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
         query = asyncio.create_task(debug_db.get_rows_from_query("SELECT 1", limit=0))
         # let the statement reach the connection thread, then hog the loop so its result

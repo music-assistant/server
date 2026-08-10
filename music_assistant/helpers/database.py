@@ -88,14 +88,13 @@ class _LoopStallTracker:
 
     def release(self) -> None:
         """Stop sampling once the last user has released the tracker."""
-        if not ENABLE_DEBUG:
-            return
         self._users = max(0, self._users - 1)
         if self._users == 0 and self._task is not None:
             self._task.cancel()
             self._task = None
 
     async def _sample(self) -> None:
+        """Record how late each wake-up is, which is the time the loop was unavailable."""
         loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(_STALL_SAMPLE_INTERVAL)
@@ -123,9 +122,11 @@ async def debug_query(
         LOGGER.error(f"{err}\n{sql_query}")
         raise
     finally:
-        # queries run on aiosqlite's connection thread, so the awaited wall time also covers
-        # any stretch the loop was blocked elsewhere and could not deliver the result. Discount
-        # that, otherwise an unrelated blocking callback reports as a slow query.
+        # queries run on aiosqlite's connection thread, so the awaited wall time also covers any
+        # stretch the loop was blocked elsewhere and could not deliver the result. Discounting
+        # that keeps an unrelated blocking callback from reporting as a slow query; a stall that
+        # overlaps a genuinely slow query is discounted too, so this under-reports rather than
+        # points at the wrong culprit.
         process_time = time.monotonic() - time_start - _loop_stalls.stalled_since(stalled_start)
         if process_time > SLOW_QUERY_THRESHOLD:
             # log slow queries
@@ -217,6 +218,7 @@ class DatabaseConnection:
         self._deferred_commit_depth: ContextVar[int] = ContextVar(
             "deferred_commit_depth", default=0
         )
+        self._tracking_loop_stalls = False
 
     async def setup(
         self,
@@ -252,13 +254,18 @@ class DatabaseConnection:
         await self.execute(f"PRAGMA cache_size = -{cache_size_kib};")
         await self.commit()
         _loop_stalls.acquire()
+        self._tracking_loop_stalls = True
 
     async def close(self) -> None:
         """Close db connection on exit."""
-        _loop_stalls.release()
         await self.execute("PRAGMA optimize;")
         await self.commit()
         await self._db.close()
+        # mirror the acquire in setup() exactly, so a connection that failed to set up or is
+        # closed twice cannot release a slot that belongs to one of the other connections
+        if self._tracking_loop_stalls:
+            self._tracking_loop_stalls = False
+            _loop_stalls.release()
 
     async def get_rows(
         self,
