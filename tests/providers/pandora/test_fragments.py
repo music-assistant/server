@@ -159,10 +159,16 @@ def test_is_stale_measures_time_since_last_activity() -> None:
     assert _fragment().is_stale(NOW + FRAGMENT_STALE_SECONDS) is False
 
 
+def test_session_without_fragments_has_no_current() -> None:
+    """A session that has never fetched has no live fragment."""
+    assert PandoraStationSession("4360491625318318161").current is None
+
+
 def test_session_current_is_the_newest_fragment() -> None:
     """Current always points at the fragment holding live audio URLs."""
+    # the empty case is asserted separately: narrowing `current` to None here would survive
+    # add_fragment (a property over a mutated deque), making the rest look unreachable
     session = PandoraStationSession("4360491625318318161")
-    assert session.current is None
     first = session.add_fragment(_tracks(prefix="A"), NOW)
     assert session.current is first
     second = session.add_fragment(_tracks(prefix="B"), NOW)
