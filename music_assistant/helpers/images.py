@@ -24,12 +24,13 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.util import join_task
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
@@ -325,14 +326,7 @@ async def get_image_data(
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
     )
-    # wait for the shared fetch instead of awaiting it directly: a caller awaiting a task
-    # holds it as its fut_waiter, so cancelling that caller would cancel the fetch for
-    # every other caller too. asyncio.shield achieves the same, but as of Python 3.14 a
-    # cancelled caller makes it report the fetch's exception through
-    # loop.call_exception_handler, even when another caller already handled it.
-    if not task.done():
-        await asyncio.wait((task,))
-    return task.result()
+    return await join_task(task)
 
 
 async def _resolve_own_imageproxy_url(mass: MusicAssistant, url: str) -> tuple[str, str] | None:
@@ -411,10 +405,12 @@ async def _fetch_and_cache_source_image(
 
     try:
         img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
-    except FileNotFoundError as err:
+    except (FileNotFoundError, MediaNotFoundError) as err:
         # remember the failure briefly and log it once, concisely: every
         # thumbnail/palette/metadata request for this source would otherwise
         # retry the origin and log the same error over and over
+        # a provider signals a missing source with MediaNotFoundError, which is not an
+        # OSError and would otherwise bypass this negative cache entirely
         _store_failed_source(cache_key, str(err))
         LOGGER.warning("%s (not retrying for %s seconds)", err, _FAILED_SOURCE_TTL)
         raise
@@ -639,10 +635,7 @@ async def _get_image_thumb(
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
     )
-    # wait for the shared generation rather than awaiting it: see get_image_data
-    if not task.done():
-        await asyncio.wait((task,))
-    thumb_data = task.result()
+    thumb_data = await join_task(task)
     _put_in_memory_cache(cache_filename, thumb_data)
     return thumb_data, cache_filepath
 

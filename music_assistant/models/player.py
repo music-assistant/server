@@ -63,6 +63,7 @@ from music_assistant.constants import (
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
+from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
@@ -132,7 +133,7 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # config-derived cached properties (propcache keys in Player._cache); these are
 # only invalidated by set_config, all other cached properties (including those
 # defined by player implementations) are invalidated on every update_state call
-_CONFIG_CACHED_PROPS = frozenset({"icon", "hide_in_ui", "expose_to_ha"})
+_CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
 
 
 def _reconcile_position_anchor(
@@ -671,7 +672,7 @@ class Player(ABC):
         # provider has a more efficient way to determine this
         if self.type == PlayerType.GROUP:
             return None
-        for player in self.mass.players.all_players(
+        for player in self.mass.players.iter_players(
             return_unavailable=False,
             provider_filter=self.provider.instance_id,
             return_protocol_players=True,
@@ -1206,6 +1207,17 @@ class Player(ABC):
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
+    @cached_property
+    @final
+    def default_icon(self) -> str:
+        """Return the default player icon."""
+        return get_default_player_icon(
+            self.type,
+            self.provider.domain,
+            self.device_info.manufacturer,
+            self.device_info.model,
+        )
+
     def _on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
         # optional callback for players that want to be informed when the final
@@ -1351,9 +1363,10 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        # players without an icon config entry (e.g. protocol players) serve the fallback id
-        icon = self._config.get_value(CONF_ENTRY_PLAYER_ICON.key)
-        return cast("str", icon or CONF_ENTRY_PLAYER_ICON.default_value)
+        icon = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_ENTRY_PLAYER_ICON.key
+        )
+        return icon if isinstance(icon, str) and icon else self.default_icon
 
     @cached_property
     @final
@@ -2538,7 +2551,7 @@ class Player(ABC):
             # protocol players should not have an active group,
             # they follow the group state of their parent player
             return None
-        for group_player in self.mass.players.all_players(
+        for group_player in self.mass.players.iter_players(
             return_unavailable=False, return_disabled=False
         ):
             if group_player.type != PlayerType.GROUP:
@@ -3034,7 +3047,7 @@ class Player(ABC):
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
             if provider := self.mass.get_provider(member_id):
-                for player in self.mass.players.all_players(
+                for player in self.mass.players.iter_players(
                     return_unavailable=False,  # Only include available players
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,

@@ -14,7 +14,8 @@ CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
 CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
-
+CONF_STREAM_SAMPLE_RATE = "snapcast_stream_sample_rate"
+CONF_STREAM_BIT_DEPTH = "snapcast_stream_bit_depth"
 
 CONF_CATEGORY_GENERIC = "generic"
 CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
@@ -46,10 +47,14 @@ MASS_ANNOUNCEMENT_POSTFIX = " (announcement)"
 SNAPWEB_DIR = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 CONTROL_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("control.py")
 
+# Supported PCM formats for the Music Assistant -> Snapserver TCP source.
+# 24-bit requires Snapserver packed_s24le ingest support (snapcast/snapcast#1532).
+SNAPCAST_SAMPLE_RATES = (48000, 96000, 192000)
+SNAPCAST_BIT_DEPTHS = (16, 24)
+
 DEFAULT_SNAPCAST_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
     sample_rate=48000,
-    # TODO: we can also use 32 bits here
     bit_depth=16,
     channels=2,
 )
@@ -62,3 +67,31 @@ DEFAULT_SNAPCAST_PCM_FORMAT = AudioFormat(
     bit_depth=16,
     channels=2,
 )
+
+
+def snapcast_stream_format(sample_rate: int, bit_depth: int) -> AudioFormat:
+    """Return the PCM AudioFormat used for the Snapcast TCP source stream."""
+    if sample_rate not in SNAPCAST_SAMPLE_RATES:
+        sample_rate = DEFAULT_SNAPCAST_FORMAT.sample_rate
+    if bit_depth not in SNAPCAST_BIT_DEPTHS:
+        bit_depth = DEFAULT_SNAPCAST_FORMAT.bit_depth
+    content_type = ContentType.PCM_S24LE if bit_depth == 24 else ContentType.PCM_S16LE
+    return AudioFormat(
+        content_type=content_type,
+        sample_rate=sample_rate,
+        bit_depth=bit_depth,
+        channels=2,
+    )
+
+
+def snapcast_sampleformat_query(audio_format: AudioFormat) -> str:
+    """
+    Build the sampleformat query fragment for a Snapcast TCP source URI.
+
+    For 24-bit streams, also enables packed_s24le so ffmpeg's packed s24le
+    output can be ingested by Snapserver (see snapcast/snapcast#1532).
+    """
+    sampleformat = f"{audio_format.sample_rate}:{audio_format.bit_depth}:{audio_format.channels}"
+    if audio_format.bit_depth == 24:
+        return f"sampleformat={sampleformat}&packed_s24le=true"
+    return f"sampleformat={sampleformat}"

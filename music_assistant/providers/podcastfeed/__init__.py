@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -31,7 +32,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_cached_podcast,

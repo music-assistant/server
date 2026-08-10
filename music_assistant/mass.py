@@ -1018,6 +1018,10 @@ class MusicAssistant:
         # down state the sync may still be using, such as the mount of a network share
         await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
+            # mark the provider as on its way out before anything is torn down: the steps
+            # below have await points, so without this a callback that is still in flight
+            # could register a player back onto a provider that is already gone
+            provider.unloading = True
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
@@ -1026,11 +1030,16 @@ class MusicAssistant:
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
-            if is_player_provider(provider):
-                # unregister all players of this provider
-                for player in provider.players:
-                    await self.players.unregister(player.player_id, permanent=is_removed)
             try:
+                if is_player_provider(provider):
+                    # unregister all players of this provider, straight from the registry: the
+                    # provider's own players listing hides disabled and still-initializing
+                    # players, which must be unregistered here too so their on_unload runs
+                    # and no stale entry is left behind
+                    for player in list(self.players):
+                        if player.provider.instance_id != instance_id:
+                            continue
+                        await self.players.unregister(player.player_id, permanent=is_removed)
                 await provider.unload(is_removed)
             except Exception as err:
                 LOGGER.warning(
@@ -1368,7 +1377,18 @@ class MusicAssistant:
 
         # execute post load actions
         async def _on_provider_loaded() -> None:
-            await provider.loaded_in_mass()
+            try:
+                await provider.loaded_in_mass()
+            except Exception as err:
+                # the provider stays registered and available either way, so the steps
+                # below still run: an event left unset makes every waiter pay the full
+                # timeout, on every attempt, until the provider reloads
+                LOGGER.warning(
+                    "Error in the post load step of provider %s: %s",
+                    provider.name,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
             provider.initialized.set()
             self.get_provider_ready_event(provider.domain).set()
             await self.run_provider_discovery(provider.instance_id)

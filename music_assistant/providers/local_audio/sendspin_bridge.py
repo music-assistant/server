@@ -17,6 +17,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.helpers.util import join_task
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -872,7 +873,7 @@ class SendspinLocalAudioBridge:
         :raises TimeoutError: The device did not open in time.
         """
         try:
-            return await asyncio.wait_for(asyncio.shield(open_future), _DEVICE_OPEN_TIMEOUT_SECONDS)
+            return await join_task(open_future, _DEVICE_OPEN_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             self._release_orphaned_stream(open_future, close_stream)
             raise

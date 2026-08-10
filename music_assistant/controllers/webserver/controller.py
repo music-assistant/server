@@ -31,7 +31,11 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
@@ -688,7 +692,7 @@ class WebserverController(CoreController):
             return self._localized_json_response(result, locale)
         except InsufficientPermissions as e:
             return web.Response(status=403, text=str(e))
-        except InvalidDataError as e:
+        except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace

@@ -1,38 +1,12 @@
 """Additional tests for Tidal Media Manager - Mix operations and similar tracks."""
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.providers.tidal.media import TidalMediaManager
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.country_code = "US"
-    provider.api = AsyncMock()
-    provider.api.get.return_value = {}
-    provider.logger = Mock()
-
-    def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=provider.instance_id,
-            name=name,
-        )
-
-    provider.get_item_mapping.side_effect = get_item_mapping
-
-    return provider
 
 
 @patch("music_assistant.providers.tidal.media.parse_playlist")

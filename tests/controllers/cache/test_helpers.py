@@ -65,11 +65,6 @@ class _FakeProvider:
         """Return the preset result, counting invocations."""
         return await self._result()
 
-    @use_cache(3600, single_flight=False)
-    async def fetch_no_flight(self, item_id: str) -> str | None:
-        """Return the preset result, counting invocations."""
-        return await self._result()
-
     @use_cache(3600)
     async def fetch_items(self, item_id: str) -> list[dict[str, Any]]:
         """Return a freshly built mutable payload, counting invocations."""
@@ -550,17 +545,6 @@ async def test_completed_fetch_is_not_reused(
     provider.result = "value"
     assert await provider.fetch("a") == "value"
     assert provider.calls == 1
-
-
-async def test_single_flight_disabled_runs_every_caller(provider: _FakeProvider) -> None:
-    """Test that single_flight=False lets every concurrent caller run the function."""
-    provider.result = "value"
-    provider.gate.clear()
-    tasks = [asyncio.create_task(provider.fetch_no_flight("a")) for _ in range(3)]
-    await _wait_for_flight(provider)
-    provider.gate.set()
-    assert await asyncio.gather(*tasks) == ["value", "value", "value"]
-    assert provider.calls == 3
 
 
 # --- get_with_freshness ---

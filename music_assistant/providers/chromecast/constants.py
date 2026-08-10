@@ -19,6 +19,9 @@ SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
 
+# Seconds to wait for a Cast receiver to acknowledge an app launch.
+APP_LAUNCH_TIMEOUT = 30.0
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 
