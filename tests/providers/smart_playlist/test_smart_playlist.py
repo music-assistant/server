@@ -1277,10 +1277,9 @@ async def test_get_playlist_loads_library_artwork(
     assert playlist.metadata.images[0].path == "generated_artwork.jpg"
     assert playlist.metadata.images[0].provider == "playlist_art"
 
-    # Verify library lookup was called
-    mass.music.playlists.get_library_item_by_prov_id.assert_awaited_once_with(
-        "abc", plugin.instance_id
-    )
+    # Library lookup called twice: once for provider_mapping, once for artwork
+    assert mass.music.playlists.get_library_item_by_prov_id.await_count == 2
+    mass.music.playlists.get_library_item_by_prov_id.assert_awaited_with("abc", plugin.instance_id)
 
 
 @pytest.mark.asyncio

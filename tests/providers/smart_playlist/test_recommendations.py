@@ -64,8 +64,8 @@ async def test_get_recommendation_items_builds_playlists() -> None:
     assert [item.item_id for item in result] == ["abc", "def"]
     assert all(isinstance(item, Playlist) for item in result)
     assert [item.name for item in result] == ["Playlist A", "Playlist B"]
-    # the per-playlist artwork lookup ran for each built playlist
-    assert mass.music.playlists.get_library_item_by_prov_id.await_count == 2
+    # library mapping lookup + artwork lookup for each playlist
+    assert mass.music.playlists.get_library_item_by_prov_id.await_count == 4
 
 
 async def test_get_recommendation_items_unknown_id_returns_empty() -> None:
@@ -77,3 +77,44 @@ async def test_get_recommendation_items_unknown_id_returns_empty() -> None:
 
     assert list(result) == []
     mass.music.playlists.get_library_item_by_prov_id.assert_not_awaited()
+
+
+async def test_get_recommendation_items_adds_library_mappings() -> None:
+    """Recommendation items include library provider_mappings for shortcut recognition."""
+    plugin, mass = _make_plugin()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=10)
+    plugin._names_store["abc"] = "Test Playlist"
+
+    lib_playlist = MagicMock()
+    lib_playlist.item_id = 123
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=lib_playlist)
+
+    result = await plugin.get_recommendation_items("smart_playlists")
+
+    assert len(result) == 1
+    playlist = result[0]
+    assert isinstance(playlist, Playlist)
+
+    library_mappings = [m for m in playlist.provider_mappings if m.provider_domain == "library"]
+    assert len(library_mappings) == 1
+    assert library_mappings[0].item_id == "123"
+    assert library_mappings[0].provider_instance == "library"
+
+
+async def test_get_playlist_adds_library_mapping() -> None:
+    """get_playlist includes library provider_mapping for shortcut recognition."""
+    plugin, mass = _make_plugin()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=10)
+    plugin._names_store["abc"] = "Test Playlist"
+
+    lib_playlist = MagicMock()
+    lib_playlist.item_id = 456
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=lib_playlist)
+
+    result = await plugin.get_playlist("abc")
+
+    assert isinstance(result, Playlist)
+    library_mappings = [m for m in result.provider_mappings if m.provider_domain == "library"]
+    assert len(library_mappings) == 1
+    assert library_mappings[0].item_id == "456"
+    assert library_mappings[0].provider_instance == "library"
