@@ -1,14 +1,17 @@
 """Tests for the DatabaseConnection helper."""
 
 import asyncio
+import logging
 import os
 import pathlib
+import time
 from collections.abc import AsyncGenerator
 from sqlite3 import OperationalError
 from typing import Any
 
 import pytest
 
+from music_assistant.helpers import database
 from music_assistant.helpers.database import (
     DatabaseConnection,
     get_sqlite_memory_settings,
@@ -27,6 +30,20 @@ TEMP_STORE_MEMORY = 2
 async def db_connection(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
     """Return an initialized DatabaseConnection backed by a temp file."""
     db = DatabaseConnection(str(tmp_path / "test.db"))
+    await db.setup()
+    yield db
+    await db.close()
+
+
+@pytest.fixture
+async def debug_db(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[DatabaseConnection]:
+    """Return an initialized DatabaseConnection with slow query logging enabled."""
+    monkeypatch.setattr(database, "ENABLE_DEBUG", True)
+    # a fresh tracker per test so neither its sampler task nor its totals outlive this loop
+    monkeypatch.setattr(database, "_loop_stalls", database._LoopStallTracker())
+    db = DatabaseConnection(str(tmp_path / "debug.db"))
     await db.setup()
     yield db
     await db.close()
@@ -362,3 +379,32 @@ def test_query_params_leaves_prefixed_placeholders_untouched() -> None:
     )
     assert query == "SELECT * FROM items WHERE id IN (:_param_0) AND other = :ids_extra"
     assert params == {"_param_0": 1, "ids_extra": 2}
+
+
+async def test_slow_query_warning_ignores_event_loop_stalls(
+    debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a query awaited across a blocked event loop is not reported as slow."""
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.1)
+    with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
+        query = asyncio.create_task(debug_db.get_rows_from_query("SELECT 1", limit=0))
+        # let the statement reach the connection thread, then hog the loop so its result
+        # cannot be delivered - exactly what a CPU-bound callback elsewhere would do
+        await asyncio.sleep(0)
+        time.sleep(0.5)  # noqa: ASYNC251  # blocking the loop is what is under test here
+        await query
+    assert "SQL Query took" not in caplog.text
+
+
+async def test_slow_query_warning_still_reports_a_slow_query(
+    debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a query which genuinely keeps sqlite busy is still reported as slow."""
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.02)
+    with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
+        await debug_db.get_rows_from_query(
+            "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 2000000) "
+            "SELECT count(*) FROM cnt",
+            limit=0,
+        )
+    assert "SQL Query took" in caplog.text

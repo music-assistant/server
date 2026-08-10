@@ -47,6 +47,65 @@ UNSET: _UnsetType = _UnsetType()
 
 ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 
+SLOW_QUERY_THRESHOLD = 0.5
+_STALL_SAMPLE_INTERVAL = 0.05
+
+
+class _LoopStallTracker:
+    """Samples how long the event loop spends unavailable, so query timings can discount it."""
+
+    def __init__(self) -> None:
+        """Initialize class."""
+        self._total = 0.0
+        self._last_tick = 0.0
+        self._task: asyncio.Task[None] | None = None
+        self._users = 0
+
+    @property
+    def total(self) -> float:
+        """Return the stall time recorded so far, to pass to `stalled_since` later on."""
+        return self._total
+
+    def stalled_since(self, total: float) -> float:
+        """Return how long the event loop was unavailable since the given `total`."""
+        if self._task is None:
+            return 0.0
+        # a stall that is still in progress cannot have been sampled yet: the loop only frees
+        # up at its end and hands the awaiting query its result first, so the time the sampler
+        # is currently overdue by counts towards this window as well
+        overdue = asyncio.get_running_loop().time() - self._last_tick - _STALL_SAMPLE_INTERVAL
+        return self._total - total + max(0.0, overdue)
+
+    def acquire(self) -> None:
+        """Start sampling (if not already running) on behalf of one more user."""
+        if not ENABLE_DEBUG:
+            return
+        self._users += 1
+        if self._task is None:
+            loop = asyncio.get_running_loop()
+            self._last_tick = loop.time()
+            self._task = loop.create_task(self._sample())
+
+    def release(self) -> None:
+        """Stop sampling once the last user has released the tracker."""
+        if not ENABLE_DEBUG:
+            return
+        self._users = max(0, self._users - 1)
+        if self._users == 0 and self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+    async def _sample(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(_STALL_SAMPLE_INTERVAL)
+            now = loop.time()
+            self._total += max(0.0, now - self._last_tick - _STALL_SAMPLE_INTERVAL)
+            self._last_tick = now
+
+
+_loop_stalls = _LoopStallTracker()
+
 
 @asynccontextmanager
 async def debug_query(
@@ -56,15 +115,19 @@ async def debug_query(
     if not ENABLE_DEBUG:
         yield
         return
-    time_start = time.time()
+    time_start = time.monotonic()
+    stalled_start = _loop_stalls.total
     try:
         yield
     except OperationalError as err:
         LOGGER.error(f"{err}\n{sql_query}")
         raise
     finally:
-        process_time = time.time() - time_start
-        if process_time > 0.5:
+        # queries run on aiosqlite's connection thread, so the awaited wall time also covers
+        # any stretch the loop was blocked elsewhere and could not deliver the result. Discount
+        # that, otherwise an unrelated blocking callback reports as a slow query.
+        process_time = time.monotonic() - time_start - _loop_stalls.stalled_since(stalled_start)
+        if process_time > SLOW_QUERY_THRESHOLD:
             # log slow queries
             for key, value in (query_params or {}).items():
                 sql_query = sql_query.replace(f":{key}", repr(value))
@@ -188,9 +251,11 @@ class DatabaseConnection:
         await self.execute(f"PRAGMA mmap_size = {mmap_size_bytes};")
         await self.execute(f"PRAGMA cache_size = -{cache_size_kib};")
         await self.commit()
+        _loop_stalls.acquire()
 
     async def close(self) -> None:
         """Close db connection on exit."""
+        _loop_stalls.release()
         await self.execute("PRAGMA optimize;")
         await self.commit()
         await self._db.close()
