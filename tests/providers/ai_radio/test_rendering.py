@@ -69,7 +69,7 @@ class DummyRenderer(AIRadioRenderMixin):
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
     async def _render_tts_media(
-        self, text: str, engine_uid: str | None = None
+        self, text: str, engine_uid: str | None = None, language: str | None = None
     ) -> tuple[str, StreamType, AudioFormat]:
         self.tts_texts.append(text)
         return (
@@ -235,6 +235,43 @@ async def test_cached_media_remints_once_it_expires() -> None:
     assert engine.provider.get_tts_message.await_count == 2
 
 
+async def test_render_tts_media_passes_the_locale_as_language() -> None:
+    """The DJ script's locale reaches the TTS engine as a hyphenated language code."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud"
+    )
+
+
+async def test_render_tts_media_falls_back_without_language_on_rejection() -> None:
+    """An engine that rejects the requested language is retried once without it."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(
+        side_effect=[
+            Exception("unsupported language"),
+            SimpleNamespace(
+                path="http://example.test/api/tts_proxy/abc123.mp3",
+                audio_format=AudioFormat(content_type=ContentType.MP3),
+            ),
+        ]
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.path == "http://example.test/api/tts_proxy/abc123.mp3"
+    assert engine.provider.get_tts_message.await_count == 2
+    first_call, second_call = engine.provider.get_tts_message.await_args_list
+    assert first_call.kwargs["language"] == "en-US"
+    assert second_call.kwargs["language"] is None
+
+
 async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
     """The session registry points the lookup at the queue that holds the clip."""
     renderer = DummyRenderer()
@@ -313,7 +350,7 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
 
     class UnspeakableRenderer(DummyRenderer):
         async def _render_tts_media(
-            self, text: str, engine_uid: str | None = None
+            self, text: str, engine_uid: str | None = None, language: str | None = None
         ) -> tuple[str, StreamType, AudioFormat]:
             raise RuntimeError("tts down")
 
@@ -473,7 +510,9 @@ async def test_render_tts_media_streams_a_url_over_http() -> None:
     assert audio_format.content_type == ContentType.MP3
     engine = cast("Any", renderer)._get_tts_engine.return_value
     # the provider-scoped engine.id, never engine.uid, and never omitted
-    engine.provider.get_tts_message.assert_awaited_once_with("hello world", engine_id="tts.cloud")
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "hello world", language=None, engine_id="tts.cloud"
+    )
 
 
 async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -> None:

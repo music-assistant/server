@@ -126,11 +126,16 @@ class AIRadioRenderMixin:
         # the caller holds the per-clip render lock, so of the several uncoordinated paths
         # that resolve the same clip only the first one mints; the rest hit the cache above
         path, stream_type, audio_format, duration = await self._mint_clip_media(
-            queue_item, text, clip_id
+            queue_item, text, clip_id, self._tts_language()
         )
         media = _CachedClipMedia(path, stream_type, audio_format, duration, now)
         self._media_cache[clip_id] = media
         return media
+
+    def _tts_language(self) -> str | None:
+        """Return the configured locale as a hyphenated language code, or None when unset."""
+        locale = self.mass.metadata.locale
+        return locale.replace("_", "-") if locale else None
 
     def _find_clip_item(self, clip_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, or None when no queue holds it."""
@@ -212,13 +217,15 @@ class AIRadioRenderMixin:
         return values
 
     async def _mint_clip_media(
-        self, queue_item: QueueItem, text: str, clip_id: str
+        self, queue_item: QueueItem, text: str, clip_id: str, language: str | None = None
     ) -> tuple[str, StreamType, AudioFormat, int | None]:
         """Convert the script to playable audio via the configured TTS engine."""
         host = self._hosts.get(str(queue_item.extra_attributes.get(ATTR_HOST_ID) or "")) or {}
         engine_uid = str(host.get("tts_engine") or "") or None
         try:
-            path, stream_type, audio_format = await self._render_tts_media(text, engine_uid)
+            path, stream_type, audio_format = await self._render_tts_media(
+                text, engine_uid, language
+            )
             # the probe is the first fetch, so a failed render surfaces here and not in playback
             duration = await self._probe_duration(path)
             return path, stream_type, audio_format, duration
@@ -228,20 +235,25 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
 
     async def _render_tts_media(
-        self, text: str, engine_uid: str | None = None
+        self, text: str, engine_uid: str | None = None, language: str | None = None
     ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
         engine = await self._get_tts_engine(engine_uid)
         try:
-            async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
-                stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
-        except TimeoutError as err:
-            # expired() tells our own cap apart from a timeout raised inside the engine
-            if not query_timeout.expired():
+            stream_details = await self._query_tts_engine(engine, text, language)
+        except Exception as err:
+            if language is None:
                 raise
-            raise MusicAssistantError(
-                f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
-            ) from err
+            # some engines reject a language they don't support; fall back to the engine's
+            # own default voice rather than losing the clip entirely
+            self.logger.warning(
+                "AI Radio TTS engine '%s' rejected language '%s' (%s), retrying with its "
+                "default voice",
+                engine.uid,
+                language,
+                err,
+            )
+            stream_details = await self._query_tts_engine(engine, text, None)
         path = str(getattr(stream_details, "path", "") or "").strip()
         if path.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             stream_type = StreamType.HTTP
@@ -257,6 +269,26 @@ class AIRadioRenderMixin:
         if audio_format.content_type == ContentType.UNKNOWN:
             audio_format = AudioFormat(content_type=ContentType.MP3)
         return path, stream_type, audio_format
+
+    async def _query_tts_engine(
+        self, engine: Any, text: str, language: str | None
+    ) -> StreamDetails:
+        """Query a TTS engine for audio, converting our own timeout cap into a clear error."""
+        try:
+            async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                return cast(
+                    "StreamDetails",
+                    await engine.provider.get_tts_message(
+                        text, language=language, engine_id=engine.id
+                    ),
+                )
+        except TimeoutError as err:
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            if not query_timeout.expired():
+                raise
+            raise MusicAssistantError(
+                f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
+            ) from err
 
     async def _probe_duration(self, path: str) -> int | None:
         """Return the clip duration in seconds, or None when it cannot be determined."""
