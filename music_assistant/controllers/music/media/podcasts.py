@@ -111,14 +111,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
-        if sort_field is not None:
-            final_order_by = (
-                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
-            )
-        elif order_by:
-            final_order_by = order_by
-        else:
-            final_order_by = "sort_name"
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
 
         result = await self.get_library_items_by_query(
             favorite=favorite,

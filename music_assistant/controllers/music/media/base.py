@@ -520,18 +520,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param collapse_collections: Collapse available collections. Items in a collection won't
             be returned individually.
         """
-        # Resolve sort parameters: prefer typed parameters over legacy order_by string
-        if sort_field is not None:
-            # Use new typed parameters
-            final_order_by = (
-                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
-            )
-        elif order_by:
-            # Use legacy string parameter for backward compatibility
-            final_order_by = order_by
-        else:
-            # Default
-            final_order_by = "sort_name"
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
 
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -1841,6 +1832,35 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.logger.warning("Invalid sort field: %s", order_by)
             return None
 
+    def _resolve_sort_parameters(
+        self,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
+        order_by: str | None,
+        default: str = "sort_name",
+    ) -> str:
+        """
+        Resolve sort parameters to final order_by string.
+
+        Applies proper defaults: if sort_field is given without sort_direction,
+        uses the field's default direction from SORT_FIELD_DEFINITIONS.
+
+        :param sort_field: Optional SortField enum value.
+        :param sort_direction: Optional SortDirection enum value.
+        :param order_by: Legacy string-based order_by parameter.
+        :param default: Default order_by string if none specified.
+        :return: Resolved order_by string in 'field:direction' format.
+        """
+        from music_assistant.controllers.music.sorting import get_default_direction
+
+        if sort_field is not None:
+            # Use per-field default direction if not specified
+            direction = sort_direction if sort_direction else get_default_direction(sort_field)
+            return f"{sort_field.value}:{direction.value}"
+        if order_by:
+            return order_by
+        return default
+
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str | None:
         """
         Get SQL ORDER BY clause for a sort field and direction.
@@ -2321,9 +2341,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             field, direction = parsed
             if field not in supported_sort_fields:
-                self.logger.warning(
-                    "%s is not supported for order_by in collections", field.value
-                )
+                self.logger.warning("%s is not supported for order_by in collections", field.value)
                 field = SortField.NAME
                 direction = SortDirection.ASC
 

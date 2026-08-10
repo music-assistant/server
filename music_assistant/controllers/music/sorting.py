@@ -184,7 +184,35 @@ MEDIA_TYPE_SORT_FIELDS: dict[MediaType, list[SortField]] = {
         SortField.RANDOM,
         SortField.RANDOM_PLAY_COUNT,
     ],
+    MediaType.PODCAST: [
+        SortField.NAME,
+        SortField.SORT_NAME,
+        SortField.TIMESTAMP_ADDED,
+        SortField.TIMESTAMP_MODIFIED,
+        SortField.LAST_PLAYED,
+        SortField.PLAY_COUNT,
+        SortField.RANDOM,
+        SortField.RANDOM_PLAY_COUNT,
+    ],
+    MediaType.GENRE: [
+        SortField.NAME,
+        SortField.SORT_NAME,
+        SortField.RANDOM,
+    ],
 }
+
+
+def get_default_direction(field: SortField) -> SortDirection:
+    """
+    Get the default sort direction for a field.
+
+    :param field: The SortField to get default direction for.
+    :return: Default SortDirection (ASC if none defined).
+    """
+    definition = SORT_FIELD_DEFINITIONS.get(field)
+    if definition and definition.default_direction:
+        return definition.default_direction
+    return SortDirection.ASC
 
 
 def get_sort_options_for_media_type(media_type: MediaType) -> list[SortOptionInfo]:

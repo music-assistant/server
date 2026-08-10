@@ -238,14 +238,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param collapse_collections: Collapse available collections. Items in a collection won't
             be returned individually.
         """
-        if sort_field is not None:
-            final_order_by = (
-                f"{sort_field.value}:{sort_direction.value if sort_direction else 'asc'}"
-            )
-        elif order_by:
-            final_order_by = order_by
-        else:
-            final_order_by = "sort_name"
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
 
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
