@@ -2319,11 +2319,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += " WHERE search_name LIKE :search"
 
         if order_by:
-            if order_by not in supported_order_keys:
-                self.logger.warning("%s is not supported for order_by key in collections", order_by)
-                order_by = "name"  # fallback
-            # Use legacy sort keys for collections (they use old string-based format)
-            if parsed := LEGACY_SORT_KEYS.get(order_by):
+            # Normalize new format (field:direction) to legacy format (field_desc) for collections
+            parsed = self._parse_order_by(order_by)
+            if parsed:
+                field, direction = parsed
+                normalized_key = (
+                    f"{field.value}_desc" if direction == SortDirection.DESC else field.value
+                )
+            else:
+                normalized_key = order_by
+
+            if normalized_key not in supported_order_keys:
+                self.logger.warning(
+                    "%s is not supported for order_by key in collections", order_by
+                )
+                normalized_key = "name"  # fallback
+
+            # Use legacy sort keys for collections
+            if parsed := LEGACY_SORT_KEYS.get(normalized_key):
                 field, direction = parsed
                 if sql_sort := self._get_sort_sql(field, direction):
                     sql_query += f" ORDER BY {sql_sort}"
