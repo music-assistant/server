@@ -265,7 +265,9 @@ def _make_replan_dj(
     """Build an armed replan harness around the given queue items."""
     queue = FakeQueue("queue-1", current_index, index_in_buffer)
     dummy = ReplanQueueDJ(tmp_path, queue, items, host or _must_host())
-    dummy._arm_dj_state("queue-1", "rick")
+    # set_queue_dj marks a state plannable once its clip cleanup ran, and these harnesses
+    # start from a queue whose switch already settled
+    dummy._arm_dj_state("queue-1", "rick").ready = True
     return dummy
 
 
@@ -276,12 +278,15 @@ async def test_set_queue_dj_enables_and_persists(tmp_path: Path) -> None:
     assert mapping == {"queue-1": "rick"}
     assert dummy._dj_queues["queue-1"].host_id == "rick"
     assert dummy._dj_queues["queue-1"].dj_session_id
+    assert dummy._dj_queues["queue-1"].ready is True
     assert dummy.replanned == ["queue-1"]
     assert dummy._dj_file.exists()
 
     fresh = DummyQueueDJ(tmp_path)
     await fresh._load_queue_dj()
     assert fresh._dj_queues["queue-1"].host_id == "rick"
+    # nothing has to be cleaned up before a boot arm, so it may plan on the first event
+    assert fresh._dj_queues["queue-1"].ready is True
 
 
 async def test_set_queue_dj_rejects_unknown_host(tmp_path: Path) -> None:
@@ -570,9 +575,9 @@ async def test_failing_pass_clears_the_state_the_queue_was_rearmed_with(tmp_path
     working_build_program = dummy._build_program
 
     def _failing_build_program(_station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
-        # set_queue_dj re-arms the queue mid-pass and latches the fresh state's request
-        # onto the still running task
-        dummy._arm_dj_state("queue-1", host["id"])
+        # set_queue_dj re-arms the queue mid-pass, marks the fresh state plannable once its
+        # clip cleanup ran, and latches its request onto the still running task
+        dummy._arm_dj_state("queue-1", host["id"]).ready = True
         dummy._schedule_replan("queue-1")
         raise MusicAssistantError("misconfigured host")
 
@@ -647,6 +652,59 @@ async def test_stale_pass_inserts_nothing_after_a_mid_pass_dj_switch(tmp_path: P
     new_state = dummy._dj_queues["queue-1"]
     assert new_state is not old_state
     assert new_state.last_planned_item_id is None
+
+
+async def test_replan_holds_off_until_the_switch_cleanup_ran(tmp_path: Path) -> None:
+    """A pass entering between arming a host and clearing the old clips must not plan."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    # stands in for set_queue_dj arming the new host while a drain task is already awake
+    state = dummy._arm_dj_state("queue-1", "rick")
+    state.replan_pending = True
+
+    await dummy._replan_queue("queue-1")
+
+    assert dummy.player_queues.loads == []
+    assert state.last_planned_item_id is None
+    # the request is dropped, not kept, or the drain loop would spin on the bail
+    assert state.replan_pending is False
+
+
+async def test_switch_refills_the_gaps_its_own_cleanup_frees(tmp_path: Path) -> None:
+    """A replan racing a host switch must not leave the gaps its cleanup frees unplanned."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    old_clip_ids = {
+        item.queue_item_id
+        for item in queues.items("queue-1")
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    }
+    assert len(old_clip_ids) == 2  # sanity: rick filled both gaps
+
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    dummy._hosts["daisy"] = daisy
+    write_queue_dj = dummy._write_queue_dj
+
+    async def _write_and_replan() -> None:
+        # a queue event wakes the drain task while the switch sits between arming the new
+        # state and clearing the previous host's clips
+        await write_queue_dj()
+        await dummy._replan_queue("queue-1")
+
+    dummy._write_queue_dj = _write_and_replan  # type: ignore[method-assign]
+    await dummy.set_queue_dj("queue-1", "daisy")
+    await asyncio.gather(*dummy.mass.tasks)
+
+    assert old_clip_ids <= set(queues.deleted)
+    remaining = [
+        item for item in queues.items("queue-1") if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    ]
+    assert len(remaining) == 2
+    for clip in remaining:
+        assert clip.extra_attributes[ATTR_HOST_ID] == "daisy"
 
 
 async def test_marker_holds_back_when_a_gap_vanished_during_the_pass(tmp_path: Path) -> None:

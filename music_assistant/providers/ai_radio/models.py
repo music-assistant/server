@@ -48,6 +48,8 @@ class DJQueueState:
     minutes_before_window: float = 0.0
     last_planned_item_id: str | None = None
     history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
+    # a freshly armed state may only plan once the previous host's clips are cleared
+    ready: bool = False
     replan_pending: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)

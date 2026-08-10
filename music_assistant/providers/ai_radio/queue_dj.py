@@ -64,21 +64,26 @@ class AIRadioQueueDJMixin:
         queue_id = str(queue_id).strip()
         if not queue_id:
             raise InvalidDataError("queue_id is required")
+        armed: DJQueueState | None = None
         async with self._dj_lock:
             if host_id is None:
                 self._dj_queues.pop(queue_id, None)
-                await self._write_queue_dj()
             else:
                 host_id = str(host_id).strip()
                 if host_id not in self._hosts:
                     raise InvalidDataError(f"Unknown host id: {host_id}")
-                self._arm_dj_state(queue_id, host_id)
-                await self._write_queue_dj()
+                armed = self._arm_dj_state(queue_id, host_id)
+            await self._write_queue_dj()
         # any pending clip other than the armed session's own carries a persona and voice
         # that is no longer the queue's, so it has to go before the replan can plant this
         # host's clips into the gaps it frees up
         await self._remove_pending_dj_clips(queue_id)
-        if host_id is not None:
+        if armed is not None:
+            # only now may this state plan: a pass racing the cleanup above would see the
+            # gaps the old clips still occupy, mark them served and leave them empty.
+            # a newer switch may already have replaced us, and marks its own state
+            if self._dj_queues.get(queue_id) is armed:
+                armed.ready = True
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
 
@@ -109,7 +114,8 @@ class AIRadioQueueDJMixin:
                         "Dropping queue DJ for %s: host %s no longer exists", queue_id, host_id
                     )
                     continue
-                self._arm_dj_state(str(queue_id), host_id)
+                # no clip cleanup precedes a boot arm, so this state may plan right away
+                self._arm_dj_state(str(queue_id), host_id).ready = True
 
     async def _write_queue_dj(self) -> None:
         """Persist queue DJ assignments to disk."""
@@ -185,6 +191,12 @@ class AIRadioQueueDJMixin:
         async with state.lock:
             # cleared up front so an event landing mid-pass requests a fresh pass
             state.replan_pending = False
+            if not state.ready:
+                # a switch armed this state and is still clearing the previous host's clips.
+                # planning now would mark the gaps those clips still hold as served, so this
+                # request is dropped: the switch schedules its own pass once it is done
+                self.logger.debug("Queue %s is waiting for its DJ switch cleanup", queue_id)
+                return
             if any(
                 session.status == "running" and session.queue_id == queue_id
                 for session in self._sessions.values()
