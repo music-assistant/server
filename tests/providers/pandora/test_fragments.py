@@ -165,7 +165,7 @@ def test_session_current_is_the_newest_fragment() -> None:
     assert session.current is None
     first = session.add_fragment(_tracks(prefix="A"), NOW)
     assert session.current is first
-    second = session.add_fragment(_tracks(prefix="B"), NOW)  # type: ignore[unreachable]
+    second = session.add_fragment(_tracks(prefix="B"), NOW)
     assert session.current is second
 
 
