@@ -475,8 +475,8 @@ def test_morning_show_preset_section_order_matches_frontend_compiler() -> None:
     ]
 
 
-def test_music_nerd_preset_compiles_every_song_segment_as_must() -> None:
-    """Compile an every-song segment into a MUST and an every-2-songs one into a certain OPTIONAL."""
+def test_music_nerd_preset_compiles_its_recurring_segments_as_optional() -> None:
+    """Compile an every-2-songs segment into a certain OPTIONAL and an occasional one by chance."""
     dummy = DummyHosts()
     hosts = {host["id"]: host for host, _ in dummy._default_preset_hosts()}
 
@@ -496,7 +496,17 @@ def test_music_nerd_preset_compiles_every_song_segment_as_must() -> None:
                         },
                     }
                 },
-                {"MUST": "music_nerd_transition"},
+                {
+                    "OPTIONAL": {
+                        "section": "music_nerd_transition",
+                        "chance": 0.2,
+                        "guards": {
+                            "min_gap_songs": 1,
+                            "max_per_60min": 0,
+                            "require_placeholders_present": [],
+                        },
+                    }
+                },
             ],
         },
     ]

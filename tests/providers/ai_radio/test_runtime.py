@@ -343,6 +343,38 @@ async def test_prepare_runtime_tokens_refetches_the_weather_once_the_ttl_expired
     assert fetches == ["Berlin", "Berlin"]
 
 
+def test_weather_strings_are_rounded_to_whole_numbers() -> None:
+    """A host reads the forecast out loud, so it says 19 degrees and never 19.2."""
+    runtime = DummyRuntime()
+    payload = {
+        "current": {
+            "time": "2026-08-10T09:00",
+            "temperature_2m": 19.2,
+            "apparent_temperature": 18.7,
+        },
+        "hourly": {
+            "time": ["2026-08-10T09:00", "2026-08-10T10:00"],
+            "temperature_2m": [19.2, 20.6],
+            "precipitation_probability": [12.4, 0],
+        },
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_min": [11.4],
+            "temperature_2m_max": [21.49],
+            "precipitation_probability_max": [30.6],
+        },
+    }
+
+    hourly, daily = runtime._format_weather_strings(payload)
+
+    assert hourly == (
+        "now 19C (feels 19C); "
+        "2026-08-10 09:00: 19C, rain 12%; "
+        "2026-08-10 10:00: 21C, rain 0%"
+    )
+    assert daily == "2026-08-10: 11-21C, rain 31%"
+
+
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
     """Skip weather preparation when the configured location is incomplete."""
     runtime = DummyRuntime()

@@ -1131,12 +1131,11 @@ class AIRadioRuntimeMixin:
     def _format_number(self, value: Any) -> str:
         """Format weather numeric values compactly for prompts."""
         try:
-            numeric = float(value)
+            # the host reads these out loud, where a decimal place only clutters the line
+            numeric = round(float(value))
         except Exception:
             return str(value)
-        if numeric.is_integer():
-            return str(int(numeric))
-        return f"{numeric:.1f}"
+        return str(numeric)
 
     def _resolve_placeholders(
         self,

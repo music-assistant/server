@@ -202,7 +202,7 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 prompt=SONG_TRANSITION_PROMPT,
                 web_search="allow",
                 max_chars=650,
-                plays=_Plays("every_song"),
+                plays=_Plays("occasionally", 20),
             ),
         ),
     ),
