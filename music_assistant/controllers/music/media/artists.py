@@ -373,11 +373,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         # initialize unique_ids with db_items to prevent duplicates
         unique_ids: set[str] = set()
         for item in db_items:
-            if isinstance(item, Audiobook):
-                unique_ids.add(f"{item.name}.{item.version}")
-            else:
+            if isinstance(item, MediaCollection):
                 for collection_item in item.items:
                     unique_ids.add(f"{collection_item.name}.{collection_item.version}")
+            else:
+                unique_ids.add(f"{item.name}.{item.version}")
         unique_providers = self.mass.music.get_unique_providers()
         audiobook_method = (
             self.get_provider_author_audiobooks
