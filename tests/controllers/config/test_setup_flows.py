@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import replace
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     EventType,
     FlowStepType,
     PlayerType,
+    ProviderFeature,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -32,6 +33,7 @@ from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
+from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player, _state_fingerprint
@@ -97,6 +99,12 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     mass_minimal.music.on_provider_loaded = AsyncMock()
     # awaited at the head of the real provider unload path
     mass_minimal.music.unschedule_provider_sync = AsyncMock()
+    # the real implementation, so the FINISH step's library-import copy is decided by the
+    # loaded provider's actual LIBRARY_* features rather than by a permissive mock;
+    # binding it to the mock is only sound because the method does not read self
+    mass_minimal.music.library_supported = MethodType(
+        MusicController.library_supported, mass_minimal.music
+    )
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
     try:
@@ -199,7 +207,9 @@ class _FlowlessProvider(MusicProvider):
         return self.declared_entries
 
 
-def _use_provider_module(entries: tuple[ConfigEntry, ...]) -> Any:
+def _use_provider_module(
+    entries: tuple[ConfigEntry, ...], features: set[ProviderFeature] | None = None
+) -> Any:
     """
     Patch the module loader so the fake domain really loads a provider instance.
 
@@ -207,12 +217,13 @@ def _use_provider_module(entries: tuple[ConfigEntry, ...]) -> Any:
     is served a stub module whose ``setup`` returns a real provider declaring the given entries.
 
     :param entries: The (options) config entries the loaded provider declares.
+    :param features: The provider features the loaded provider declares.
     """
 
     async def setup(
         mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> _FlowlessProvider:
-        provider = _FlowlessProvider(mass, manifest, config)
+        provider = _FlowlessProvider(mass, manifest, config, supported_features=features)
         provider.declared_entries = entries
         return provider
 
@@ -242,6 +253,41 @@ async def test_flowless_provider_loads_with_resolvable_entries(flow_mass: MusicA
     provider.config.validate()
     assert provider.config.get_value("port") == 80
     assert provider.config.get_value("region") == "eu"
+
+
+@pytest.mark.parametrize(
+    ("features", "expected_step_id"),
+    [
+        ({ProviderFeature.LIBRARY_TRACKS}, "finish_library_sync"),
+        (set(), "finish"),
+    ],
+    ids=["library_provider", "browse_only_provider"],
+)
+async def test_finish_step_id_reflects_library_import(
+    flow_mass: MusicAssistant, features: set[ProviderFeature], expected_step_id: str
+) -> None:
+    """Only a provider that imports a library gets the FINISH step explaining the import."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([USERNAME_ENTRY], step_id="credentials")
+        await session.finish(values)
+
+    with _use_flow(flow_mass, run_setup), _use_provider_module((), features):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "marcel"})
+    assert finish_step.type == FlowStepType.FINISH
+    assert finish_step.step_id == expected_step_id
+
+
+async def test_zero_input_library_provider_finish_step_id(flow_mass: MusicAssistant) -> None:
+    """A flow-less provider's synthesized FINISH step carries the library-import copy too."""
+    with (
+        patch.object(flow_mass.config, "_get_setup_flow_module", AsyncMock(return_value=None)),
+        _use_provider_module((), {ProviderFeature.LIBRARY_PLAYLISTS}),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.type == FlowStepType.FINISH
+    assert step.step_id == "finish_library_sync"
 
 
 async def test_flowless_provider_required_entry_without_default_rolls_back(
@@ -989,6 +1035,8 @@ async def test_reconfigure_prefill_and_success(flow_mass: MusicAssistant) -> Non
         )
     assert finish_step.type == FlowStepType.FINISH
     assert finish_step.result == {"instance_id": instance_id}
+    # the library of an existing instance is already there, so no import copy is offered
+    assert finish_step.step_id == "finish"
     mock_load.assert_awaited_once()
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     # new value merged in (encrypted), untouched keys preserved, last_error cleared
