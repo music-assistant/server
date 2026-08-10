@@ -779,6 +779,8 @@
   "core.player_queues.config_entries.volume_normalization.options.global": "Global",
   "core.player_queues.manifest.description": "Configuration of the core player queue management module",
   "core.player_queues.manifest.name": "Player Queues",
+  "core.players.config_entries.volume_step.description": "How much the volume changes per step when using volume up/down commands, For example within the web interface by using the scroll wheel, tapping the ends of a volume slider or when using Home Assistant to issue a volume up or down command.\n\nLeave at 0 to use the adaptive default, which takes smaller steps near the ends of the range.",
+  "core.players.config_entries.volume_step.label": "Volume step size",
   "core.players.manifest.description": "Configuration of the core player management module",
   "core.players.manifest.name": "Players",
   "core.streams.config_entries.allow_crossfade_same_album.description": "Enabling this option allows for crossfading between tracks that are part of the same album.",
