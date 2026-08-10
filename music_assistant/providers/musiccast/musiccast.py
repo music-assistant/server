@@ -199,7 +199,7 @@ class MusicCastZoneDevice:
             _main = self.physical_device.zone_devices.get(MC_DEFAULT_ZONE)
             _tracks_netusb = self.is_netusb or (
                 self.source_id == MC_SOURCE_MAIN_SYNC and _main is not None and _main.is_netusb
-)
+            )
             if _tracks_netusb and self.device.data.netusb_playback == "pause":
                 return MusicCastPlayerState.PAUSED
             if _tracks_netusb and self.device.data.netusb_playback == "stop":
