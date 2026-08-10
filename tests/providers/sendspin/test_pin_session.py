@@ -123,11 +123,14 @@ class _FakeConnection:
         self._calls = calls
         self.management_active = False
         self.window_result = ManagementResult.OK
+        self.window_error: BaseException | None = None
         self.window_calls = 0
 
     async def open_pairing_window(self) -> ManagementResult:
         self._calls.append("window")
         self.window_calls += 1
+        if self.window_error is not None:
+            raise self.window_error
         return self.window_result
 
     def disable_management(self) -> None:
@@ -615,6 +618,19 @@ async def test_cancel_closes_a_management_session_we_opened(
     assert session.opened_management
     await provider.cancel_pin_pairing("c")
     assert provider.get_management_session("c") is None
+
+
+async def test_cancelled_window_request_closes_the_management_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Abandoning the flow mid-request still gives back the management session it opened."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True)
+    api.connection.window_error = asyncio.CancelledError()
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.start_pin_pairing("c", static=True)
+    assert provider.get_management_session("c") is None
+    assert not api.connection.management_active
 
 
 async def test_existing_management_session_is_reused_and_kept(

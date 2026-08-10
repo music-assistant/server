@@ -1103,15 +1103,18 @@ class SendspinProvider(PlayerProvider):
         for the caller to close once the pairing session ends.
         """
         opened = self.get_management_session(client_id) is None
+        keep = False
         try:
             self.enter_management(client_id)
             await self.management_open_pairing_window(client_id)
+            keep = opened
         except SecurityActionError as err:
             self.logger.debug("No pairing window opened on %s: %s", client_id, err)
-            if opened:
+        finally:
+            # Hand back a session opened here unless the caller inherits it, cancellation included.
+            if opened and not keep:
                 self.exit_management(client_id)
-            return False
-        return opened
+        return keep
 
     def _begin_pin_attempt(self, session: PinPairingSession) -> None:
         """Start or restart a pairing attempt for the session, resetting per-attempt state."""
