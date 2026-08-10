@@ -460,7 +460,9 @@ async def test_resolve_live_track_id_cache_hit_different(
     """Test resolve_live_track_id returns the cached id when it is still live."""
     mass_mock.cache.get = AsyncMock(return_value="live_456")
 
-    with patch.object(provider, "get_track", new_callable=AsyncMock):
+    # The liveness check must bypass the cached provider wrapper, so it is
+    # served by the media manager directly.
+    with patch.object(provider.media, "get_track", new_callable=AsyncMock):
         result = await provider.resolve_live_track_id("stale_123")
 
     assert result == "live_456"
@@ -481,7 +483,7 @@ async def test_resolve_live_track_id_cache_hit_dead_reresolves(
 
     with (
         patch.object(
-            provider,
+            provider.media,
             "get_track",
             new_callable=AsyncMock,
             side_effect=MediaNotFoundError("gone"),

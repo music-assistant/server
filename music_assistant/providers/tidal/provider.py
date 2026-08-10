@@ -337,11 +337,13 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         ):
             if cached_id == item_id:
                 return None
-            # Best-effort re-check of the cached live id (bounded by get_track's own
-            # cache): if it has itself gone dead, drop the entry and re-resolve from
-            # the ISRC below.
+            # Liveness-check the cached redirect via the UNCACHED media manager: the
+            # cached get_track would keep serving a redirect target that has itself
+            # churned (for up to its full TTL), making every resolve of this id
+            # return a dead track. This path only runs on failures, so the extra
+            # request is rare; a dead target drops the entry and re-resolves below.
             try:
-                await self.get_track(cached_id)
+                await self.media.get_track(cached_id)
             except MediaNotFoundError:
                 await self.mass.cache.delete(
                     item_id, provider=self.instance_id, category=CACHE_CATEGORY_ISRC_MAP
