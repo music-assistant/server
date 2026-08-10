@@ -8,7 +8,9 @@ import time
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -52,10 +54,16 @@ from .const import (
 from .helpers import extract_preset_id, source_id
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
-
     from .client import SoundtouchDevice
     from .provider import BoseSoundTouchProvider
+
+ACTION_OVERWRITE_PRESET_1 = "action_overwrite_preset_1"
+ACTION_OVERWRITE_PRESET_2 = "action_overwrite_preset_2"
+ACTION_OVERWRITE_PRESET_3 = "action_overwrite_preset_3"
+ACTION_OVERWRITE_PRESET_4 = "action_overwrite_preset_4"
+ACTION_OVERWRITE_PRESET_5 = "action_overwrite_preset_5"
+ACTION_OVERWRITE_PRESET_6 = "action_overwrite_preset_6"
+ACTION_OVERWRITE_PRESET = "action_overwrite_preset"
 
 
 class BoseSoundTouchPlayer(Player):
@@ -327,7 +335,54 @@ class BoseSoundTouchPlayer(Player):
             CONF_ENTRY_FLOW_MODE,
             create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
         ]
-        return base_entries + default_entries
+
+        current_presets = await self._client.get_presets()
+        preset_ids = [x.id_ for x in current_presets.presets if isinstance(x.id_, int)]
+
+        preset_entries = [
+            ConfigEntry(
+                key=preset_action,
+                type=ConfigEntryType.ACTION,
+                translation_key=preset_action
+                if preset_id not in preset_ids
+                else preset_action + "_preset_available",
+                action=preset_action,
+            )
+            for preset_id, preset_action in enumerate(
+                (
+                    ACTION_OVERWRITE_PRESET_1,
+                    ACTION_OVERWRITE_PRESET_2,
+                    ACTION_OVERWRITE_PRESET_3,
+                    ACTION_OVERWRITE_PRESET_4,
+                    ACTION_OVERWRITE_PRESET_5,
+                    ACTION_OVERWRITE_PRESET_6,
+                ),
+                1,
+            )
+        ]
+        return base_entries + default_entries + preset_entries
+
+    async def handle_config_action(
+        self, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult | None:
+        """Handle config actions."""
+        mapping_preset_int = {
+            ACTION_OVERWRITE_PRESET_1: 1,
+            ACTION_OVERWRITE_PRESET_2: 2,
+            ACTION_OVERWRITE_PRESET_3: 3,
+            ACTION_OVERWRITE_PRESET_4: 4,
+            ACTION_OVERWRITE_PRESET_5: 5,
+            ACTION_OVERWRITE_PRESET_6: 6,
+        }
+        if action in mapping_preset_int:
+            preset_id = mapping_preset_int.get(action, 1)
+            await self._client.store_preset(
+                preset_id,
+                f"{self.mass.streams.base_url}/{self.provider.instance_id}_preset?preset_id={preset_id}",
+            )
+            return await self.get_config_entries()
+
+        return await super().handle_config_action(action)
 
     # --- Private helpers ---
 

@@ -125,7 +125,7 @@ class Volume(DataClassJSONMixin):
 class Preset(DataClassJSONMixin):
     """Preset."""
 
-    id_: Annotated[str | None, Alias("id")] = None
+    id_: Annotated[int | None, Alias("id")] = None
     created_on: Annotated[int | None, Alias("createdOn")] = None
     update_on: Annotated[int | None, Alias("updateOn")] = None
     content_item: ContentItem | None = None
