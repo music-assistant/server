@@ -6,8 +6,8 @@ import logging
 import os
 import select
 import threading
-from collections.abc import AsyncGenerator, Callable, Coroutine
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -34,6 +34,23 @@ from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
+
+
+def _make_cli_proc(*, quiesced: bool = True, calls: list[str] | None = None) -> MagicMock:
+    """
+    Build a mock cliairplay process that answers its awaited calls.
+
+    :param quiesced: What holding stdin quiet reports about emptying the buffer.
+    :param calls: Records "quiesce" as stdin is held, for ordering assertions.
+    """
+
+    @asynccontextmanager
+    async def _stdin_quiesced(*_args: object) -> AsyncIterator[bool]:
+        if calls is not None:
+            calls.append("quiesce")
+        yield quiesced
+
+    return MagicMock(closed=False, stdin_quiesced=_stdin_quiesced)
 
 
 def _make_player() -> MagicMock:
@@ -1129,7 +1146,7 @@ async def test_cli_command_updates_timestamp_after_successful_delivery() -> None
     player = _make_player()
     player.last_command_sent = 10.0
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with (
         patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)),
@@ -1146,7 +1163,7 @@ async def test_cli_command_preserves_timestamp_when_delivery_fails() -> None:
     player = _make_player()
     player.last_command_sent = 10.0
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
         assert await stream.send_cli_command("ACTION=STANDBY") is False
@@ -1160,7 +1177,7 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
     player = _make_player()
     player.last_command_sent = 10.0
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with (
         patch.object(
@@ -1247,7 +1264,7 @@ async def test_start_sends_command_and_stamps_position() -> None:
     """START is delivered over the command pipe and stamps the media position."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(
@@ -1268,7 +1285,7 @@ async def test_start_join_marks_the_command() -> None:
     """A late-join START carries START_JOIN=1 so the binary enforces clock readiness."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(
@@ -1294,7 +1311,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
     """START keeps already-delivered transition artwork settled and retries a superseded render."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     metadata = MagicMock(
         corrected_elapsed_time=0,
@@ -1373,7 +1390,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
 async def test_start_requires_connected_process() -> None:
     """START is rejected without a connected cliairplay process."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     # not connected: _connected event never set
 
     with (
@@ -1389,7 +1406,7 @@ async def test_start_requires_connected_process() -> None:
 async def test_flush_sends_command_and_awaits_ack() -> None:
     """FLUSH is delivered and resolves once the binary reports it flushed."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(
@@ -1407,7 +1424,7 @@ async def test_flush_sends_command_and_awaits_ack() -> None:
 async def test_flush_times_out_without_ack() -> None:
     """FLUSH returns False when the binary never acknowledges it."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1418,7 +1435,7 @@ async def test_flush_times_out_without_ack() -> None:
 async def test_flush_returns_false_when_command_not_delivered() -> None:
     """FLUSH reports failure when the command cannot be delivered."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False):
@@ -1429,7 +1446,7 @@ async def test_flush_returns_false_when_command_not_delivered() -> None:
 async def test_start_raises_when_command_not_delivered() -> None:
     """A dropped START surfaces as an error so the caller can fall back cold."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with (
@@ -1443,7 +1460,7 @@ async def test_start_raises_when_command_not_delivered() -> None:
 async def test_start_fails_fast_on_reported_start_failure() -> None:
     """A reported start failure ends the ack wait at once instead of timing out."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1463,7 +1480,7 @@ async def test_start_fails_fast_on_reported_start_failure() -> None:
 async def test_flush_fails_fast_on_reported_flush_failure() -> None:
     """A reported flush failure resolves the ack wait as a failure, not a timeout."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1481,7 +1498,7 @@ async def test_flush_fails_fast_on_reported_flush_failure() -> None:
 async def test_start_failure_does_not_outlive_its_command() -> None:
     """A failed START leaves no error behind that would fail the next one."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     stream._handle_status_line("[STATUS] error code=start_failed")
 
@@ -1498,7 +1515,7 @@ async def test_start_failure_does_not_outlive_its_command() -> None:
 async def test_start_returns_the_instant_the_binary_scheduled() -> None:
     """A corrected ack, not the commanded instant, is what the caller maps content onto."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     corrected = START_UNIX_MS + 700
 
@@ -1515,7 +1532,7 @@ async def test_start_returns_the_instant_the_binary_scheduled() -> None:
 async def test_start_fails_when_the_ack_never_arrives() -> None:
     """An unacknowledged START fails: nothing may be mapped onto an unconfirmed instant."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with (
@@ -1534,7 +1551,7 @@ async def test_start_fails_when_the_ack_never_arrives() -> None:
 async def test_start_accepts_a_malformed_ack_as_the_commanded_instant() -> None:
     """An ack that cannot be parsed still answered the START, so the commanded instant stands."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1548,7 +1565,7 @@ async def test_start_accepts_a_malformed_ack_as_the_commanded_instant() -> None:
 async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
     """An ack without at_unix_ms parses cleanly to 0, which must never be returned."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1570,7 +1587,7 @@ async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
 async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: float) -> None:
     """A join's ack is held for clock verification, so it waits far longer than a plain start."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     timeouts: list[float] = []
 
@@ -1596,7 +1613,7 @@ async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: fl
 async def test_flush_returns_false_when_not_connected() -> None:
     """FLUSH is a no-op returning False before the device connects."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     # not connected
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
@@ -1613,6 +1630,92 @@ def test_flushed_status_sets_flush_event() -> None:
     assert stream._handle_status_line("[STATUS] flushed") is False
 
     assert stream._flushed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_flush_holds_stdin_quiet_before_commanding_the_flush() -> None:
+    """
+    Queued stdin audio is cleared before FLUSH, so the binary's drain removes it.
+
+    The command travels on a pipe of its own, so audio still in flight when the
+    binary drains would survive to be anchored as the next start's first sample.
+    """
+    calls: list[str] = []
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc(calls=calls)
+    stream._connected.set()
+
+    async def _record_command(command: str) -> bool:
+        calls.append(command)
+        return True
+
+    with patch.object(stream, "_write_cli_command", side_effect=_record_command):
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        assert stream._handle_status_line("[STATUS] flushed") is False
+        assert await flush_task is True
+
+    assert calls == ["quiesce", "ACTION=FLUSH"]
+
+
+@pytest.mark.asyncio
+async def test_flush_fails_when_queued_audio_cannot_be_cleared() -> None:
+    """A drain that never completes fails the flush instead of anchoring stale audio."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc(quiesced=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        assert await stream.flush() is False
+
+    write_command.assert_not_awaited()
+
+
+def test_audio_status_records_the_pending_stdin_depth() -> None:
+    """The [STATUS] audio line reports how much audio is pending on the binary's stdin."""
+    stream = AirPlayStream(_make_player())
+    assert stream.audio_pending_ms == 0
+
+    assert stream._handle_status_line("[STATUS] audio buffered_ms=92") is False
+
+    assert stream.audio_pending_ms == 92
+
+
+def test_unparsable_audio_status_reports_no_pending_audio() -> None:
+    """A malformed depth reports none rather than carrying the previous value."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    assert stream._handle_status_line("[STATUS] audio buffered_ms=nonsense") is False
+
+    assert stream.audio_pending_ms == 0
+
+
+def test_audio_status_without_a_depth_reports_no_pending_audio() -> None:
+    """A line omitting the depth reports none rather than carrying the previous value."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    assert stream._handle_status_line("[STATUS] audio ") is False
+
+    assert stream.audio_pending_ms == 0
+
+
+@pytest.mark.asyncio
+async def test_flush_clears_the_pending_stdin_depth() -> None:
+    """A flush drops the previous cycle's depth so the next report describes the new one."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        stream._handle_status_line("[STATUS] flushed")
+        assert await flush_task is True
+
+    assert stream.audio_pending_ms == 0
 
 
 @pytest.mark.asyncio
@@ -1812,7 +1915,7 @@ def test_reanchor_status_ignores_line_without_total() -> None:
 async def test_start_resets_reanchor_shift() -> None:
     """A START re-anchors from scratch, clearing the accumulated shift."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     stream.cumulative_shift_seconds = 3.078
 
@@ -1858,7 +1961,7 @@ async def test_initial_metadata_skips_artwork() -> None:
     """The pre-connect metadata push cannot delay setup on artwork rendering."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     metadata = MagicMock(
         title="Track",
         artist="Artist",
@@ -1969,7 +2072,7 @@ async def test_wait_for_connection_fails_on_an_unread_command_pipe() -> None:
     player.volume_muted = False
     stream = AirPlayStream(player)
     stream._connected.set()
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with (
         patch.object(
@@ -1993,7 +2096,7 @@ async def test_wait_for_connection_stays_quiet_about_a_stopped_stream() -> None:
     player.volume_muted = False
     stream = AirPlayStream(player)
     stream._connected.set()
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._stopping = True
 
     with (
@@ -2349,7 +2452,7 @@ async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
     """Alternating URL forms of the same imageproxy image send artwork only once."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     def make_metadata(image_url: str) -> MagicMock:
         return MagicMock(
@@ -2566,7 +2669,7 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
 async def test_track_change_bundles_ready_artwork_into_a_single_push() -> None:
     """A track change whose artwork renders within budget lands as ONE bundled write."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     metadata = MagicMock(
         queue_item_id="item-1",
         duration=180,
@@ -2597,7 +2700,7 @@ async def test_track_change_bundles_ready_artwork_into_a_single_push() -> None:
 async def test_track_change_artwork_missing_the_budget_follows_as_artwork_command() -> None:
     """A render missing the bundling budget still delivers via ARTWORK once it completes."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     metadata = MagicMock(
         queue_item_id="item-1",
         duration=180,
@@ -2642,7 +2745,7 @@ async def test_pending_start_interrupts_the_artwork_wait() -> None:
     """A pending START releases the bounded artwork wait instead of queueing behind it."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     metadata = MagicMock(
         queue_item_id="item-1",
@@ -2689,7 +2792,7 @@ async def test_pending_start_interrupts_the_artwork_wait() -> None:
 async def test_track_change_starting_mid_track_sends_a_progress_correction() -> None:
     """A track change landing mid-position corrects the timeline after the bundle."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     metadata = MagicMock(
         queue_item_id="item-1",
         duration=180,
