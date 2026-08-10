@@ -277,11 +277,14 @@ class BuiltinProvider(MusicProvider):
                 )
             },
             owner="Music Assistant",
+            # MediaType.SOUND_EFFECT is deliberately left out here: clients that do not
+            # know this media type yet reject the entire playlist listing when they
+            # receive it. Sound effects can still be added to these playlists, as the
+            # builtin provider accepts any uri regardless of this (advisory) set.
             supported_mediatypes={
                 MediaType.AUDIOBOOK,
                 MediaType.PODCAST_EPISODE,
                 MediaType.RADIO,
-                MediaType.SOUND_EFFECT,
                 MediaType.TRACK,
             },
             is_editable=True,
@@ -633,7 +636,12 @@ class BuiltinProvider(MusicProvider):
 
             matched_uri = await self._match_track_by_metadata(item, match_providers=match_providers)
             if matched_uri:
-                item.path = matched_uri
+                # enrich the entry with full metadata (#EXTPROV etc.) so it resolves to a
+                # playable item - just storing the URI leaves it without provider mappings
+                try:
+                    parsed_items[index] = await self._build_m3u_entry_from_uri(matched_uri)
+                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
+                    item.path = matched_uri
                 changed = True
                 matched_count += 1
             else:

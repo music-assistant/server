@@ -13,13 +13,17 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .client import SoundTouchClient
 from .config import (
+    ACTION_ASSIGN,
+    ACTION_SEARCH,
+    CONF_SEARCH_MEDIA_TYPE,
+    CONF_SEARCH_QUERY,
+    CONF_SEARCH_RESULT,
+    CONF_SEARCH_TARGET,
     PRESET_KEY_PREFIX,
     build_preset_config_entries,
-    parse_preset_action,
     preset_media_key,
-    preset_selected_media_key,
 )
-from .const import PLAYER_ID_PREFIX
+from .const import PLAYER_ID_PREFIX, PRESET_IDS
 from .player import BoseSoundTouchPlayer
 
 if TYPE_CHECKING:
@@ -29,6 +33,17 @@ if TYPE_CHECKING:
         ProviderConfig,
     )
     from zeroconf.asyncio import AsyncServiceInfo
+
+
+def _search_values_to_reset(changed_keys: set[str]) -> tuple[str, ...]:
+    """Return search fields invalidated by an earlier step changing."""
+    if f"values/{CONF_SEARCH_MEDIA_TYPE}" in changed_keys:
+        return (CONF_SEARCH_QUERY, CONF_SEARCH_RESULT, CONF_SEARCH_TARGET)
+    if f"values/{CONF_SEARCH_QUERY}" in changed_keys:
+        return (CONF_SEARCH_RESULT, CONF_SEARCH_TARGET)
+    if f"values/{CONF_SEARCH_RESULT}" in changed_keys:
+        return (CONF_SEARCH_TARGET,)
+    return ()
 
 
 class BoseSoundTouchProvider(PlayerProvider):
@@ -42,34 +57,39 @@ class BoseSoundTouchProvider(PlayerProvider):
         self, action: str
     ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
-        Handle a preset search/select button press and re-render the entries.
+        Handle a preset search/assignment button press and re-render the entries.
 
-        A select button persists the currently selected search result as that preset's
-        media URI; a search button only re-runs that preset's media search. Values are
-        read from the (already persisted) stored config; no in-flight form is passed.
+        The search button refreshes the shared result list. The assignment button copies
+        the selected result to the chosen physical preset.
 
         :param action: The action id of the pressed button.
         """
-        preset_id, is_select = parse_preset_action(action)
-        if preset_id is None:
+        if action not in (ACTION_SEARCH, ACTION_ASSIGN):
             return await super().handle_config_action(action)
-        if is_select and (
-            selected := str(self.get_config_value(preset_selected_media_key(preset_id), "") or "")
-        ):
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, preset_media_key(preset_id), selected
-            )
-        # only the search button runs a (slow) media search; selecting merely persists the
-        # already fetched choice, which stays selectable without searching again
+        if action == ACTION_SEARCH:
+            self._reset_search_values(CONF_SEARCH_RESULT, CONF_SEARCH_TARGET)
+        if action == ACTION_ASSIGN:
+            selected = str(self.get_config_value(CONF_SEARCH_RESULT, "") or "")
+            target = str(self.get_config_value(CONF_SEARCH_TARGET, "") or "")
+            if selected and target.isdigit() and (preset_id := int(target)) in PRESET_IDS:
+                self._update_config_value(preset_media_key(preset_id), selected, immediate=True)
+                self._reset_search_values(
+                    CONF_SEARCH_MEDIA_TYPE,
+                    CONF_SEARCH_QUERY,
+                    CONF_SEARCH_RESULT,
+                    CONF_SEARCH_TARGET,
+                )
         return (
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
-            *await build_preset_config_entries(
-                self, refresh_preset_id=None if is_select else preset_id
-            ),
+            *await build_preset_config_entries(self, refresh_results=action == ACTION_SEARCH),
         )
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
+        for key in _search_values_to_reset(changed_keys):
+            self._update_config_value(key, "", immediate=True)
+            if entry := config.values.get(key):
+                entry.value = ""
         # the preset mappings are read on demand when a button is pressed, so hide those
         # keys from the base implementation: reloading the provider for a preset edit
         # would needlessly drop and rediscover every speaker
@@ -139,6 +159,11 @@ class BoseSoundTouchProvider(PlayerProvider):
             await player.on_unload()
             return
         self.logger.info("Registered Bose SoundTouch player: %s (%s)", info.name, ip_address)
+
+    def _reset_search_values(self, *keys: str) -> None:
+        """Reset persisted fields that belong to later search steps."""
+        for key in keys:
+            self._update_config_value(key, "", immediate=True)
 
     def _get_player_by_ip(self, ip_address: str) -> BoseSoundTouchPlayer | None:
         """Return an existing SoundTouch player with the given IP address (if any)."""

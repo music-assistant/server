@@ -68,8 +68,9 @@ class SnapCastPlayer(Player):
         self.snap_client = snap_client
         super().__init__(provider, player_id)
 
-        # snapcast has fixed sample rate/bit depth
-        self._attr_supported_sample_rates = [(48000, 16)]
+        # Snapcast stream format is fixed for a provider instance (from advanced settings)
+        stream_format = provider.stream_audio_format
+        self._attr_supported_sample_rates = [(stream_format.sample_rate, stream_format.bit_depth)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
 

@@ -14,6 +14,7 @@ from scripts.audit_changed_packages import (
     main,
     normalize,
     requirement_versions,
+    resolved_findings,
     vulnerable_packages,
 )
 
@@ -138,6 +139,21 @@ def test_introduced_packages_reads_a_url_pin_from_the_changed_requirements() -> 
     assert introduced_packages(findings, resolved, {"aiolibdatachannel"}) == findings
 
 
+def test_resolved_findings_keeps_what_the_set_installs() -> None:
+    """Only findings the resolved set carries count; a URL requirement matches on name alone."""
+    resolved = {"aiohttp": {"3.14.1"}, "aiolibdatachannel": set()}
+    findings = {
+        ("aiohttp", "3.14.1"),
+        ("aiohttp", "3.14.3"),
+        ("transformers", "5.14.1"),
+        ("aiolibdatachannel", "0.1.0"),
+    }
+    assert resolved_findings(findings, resolved) == {
+        ("aiohttp", "3.14.1"),
+        ("aiolibdatachannel", "0.1.0"),
+    }
+
+
 def test_no_findings_passes() -> None:
     """A clean audit passes even when the pull request changes dependencies."""
     assert audit_status(audit_report(), "aiohttp==3.14.1", BASE_CLOSURE) == "pass"
@@ -145,9 +161,10 @@ def test_no_findings_passes() -> None:
 
 def test_findings_the_target_branch_has_too_are_preexisting() -> None:
     """Vulnerabilities the target branch already installs describe it, not the pull request."""
-    assert audit_status(audit_report("aiohttp==3.14.1"), "aiohttp==3.14.1", BASE_CLOSURE) == (
-        "preexisting"
-    )
+    report = audit_report("aiohttp==3.14.1")
+
+    assert audit_status(report, "aiohttp==3.14.1", BASE_CLOSURE) == "preexisting"
+    assert audit_status(report, "aiohttp==3.14.1", BASE_CLOSURE, BASE_CLOSURE) == "preexisting"
 
 
 def test_findings_in_a_bumped_package_fail() -> None:
@@ -162,6 +179,58 @@ def test_findings_in_a_new_transitive_package_fail() -> None:
     )
 
 
+def test_a_release_published_during_the_run_is_not_gated() -> None:
+    """The environment is installed before either branch is resolved; that skew must not gate."""
+    # Both branches resolve to the release that landed after the environment was installed
+    closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
+    report = audit_report("aiohttp==3.14.1")
+    changed = "music-assistant-models==1.1.183"
+
+    assert audit_status(report, changed, closure) == "fail"
+    assert audit_status(report, changed, closure, closure) == "preexisting"
+
+
+def test_findings_not_gated_on_are_named(capsys: pytest.CaptureFixture[str]) -> None:
+    """What the pull request's resolution carries instead tells an artifact from a mistake."""
+    closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
+    report = audit_report("aiohttp==3.14.1", "transformers==5.14.1")
+
+    assert audit_status(report, "music-assistant-models==1.1.183", closure, closure) == (
+        "preexisting"
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "`aiohttp 3.14.1` (resolved to 3.14.3)" in captured.err
+    assert "`transformers 5.14.1` (not in the resolved set)" in captured.err
+
+
+def test_findings_are_named_alongside_a_gating_one(capsys: pytest.CaptureFixture[str]) -> None:
+    """A pull request that introduces one finding can have another set aside at the same time."""
+    head_closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
+    report = audit_report("aiohttp==3.14.3", "transformers==5.14.1")
+
+    assert audit_status(report, "aiohttp==3.14.3", BASE_CLOSURE, head_closure) == "fail"
+    captured = capsys.readouterr()
+    assert "`transformers 5.14.1` (not in the resolved set)" in captured.err
+    assert "aiohttp" not in captured.err
+
+
+def test_gated_findings_are_not_named(capsys: pytest.CaptureFixture[str]) -> None:
+    """Nothing is set aside when the pull request's own resolution carries every finding."""
+    head_closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
+
+    assert audit_status(audit_report("aiohttp==3.14.3"), "", BASE_CLOSURE, head_closure) == "fail"
+    assert capsys.readouterr().err == ""
+
+
+def test_findings_the_pull_request_resolves_to_still_fail() -> None:
+    """A bumped version the pull request's own resolution carries is genuinely introduced."""
+    head_closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
+    report = audit_report("aiohttp==3.14.3")
+
+    assert audit_status(report, "aiohttp==3.14.3", BASE_CLOSURE, head_closure) == "fail"
+
+
 def test_swapping_a_url_pin_for_a_vulnerable_release_fails() -> None:
     """Replacing a URL requirement with a published version brings that version in."""
     base_closure = "aiolibdatachannel @ git+https://github.com/example/aiolibdatachannel@v1"
@@ -171,10 +240,30 @@ def test_swapping_a_url_pin_for_a_vulnerable_release_fails() -> None:
     assert audit_status(report, "", base_closure) == "preexisting"
 
 
+def test_a_changed_url_pin_fails_against_both_resolutions() -> None:
+    """A URL requirement pins no version, so the pull request's resolution matches on name."""
+    base_closure = "aiolibdatachannel @ git+https://github.com/example/aiolibdatachannel@v1"
+    head_closure = "aiolibdatachannel @ git+https://github.com/example/aiolibdatachannel@v2"
+    report = audit_report("aiolibdatachannel==0.1.0")
+
+    assert audit_status(report, head_closure, base_closure, head_closure) == "fail"
+
+
 def test_an_unreadable_target_branch_set_raises() -> None:
     """A resolved set no package can be read from must fail loudly rather than gate everything."""
     with pytest.raises(ValueError, match="No packages"):
         audit_status(audit_report("aiohttp"), "", '{"packages": [{"name": "aiohttp"}]}')
+
+
+def test_an_unreadable_pull_request_set_raises() -> None:
+    """The same holds the other way around: it would clear every finding instead."""
+    with pytest.raises(ValueError, match="No packages"):
+        audit_status(
+            audit_report("aiohttp==3.14.3"),
+            "aiohttp==3.14.3",
+            BASE_CLOSURE,
+            '{"packages": [{"name": "aiohttp"}]}',
+        )
 
 
 def test_findings_without_a_target_branch_set_compare_changed_requirements() -> None:
@@ -204,6 +293,43 @@ def test_main_prints_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
 
     assert main([str(audit), str(requirements), str(base_closure)]) == 0
     assert capsys.readouterr().out.strip() == "fail"
+
+
+def test_main_reads_the_resolutions_in_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The target branch is the third argument, the pull request's own set the fourth."""
+    audit = tmp_path / "audit.json"
+    audit.write_text(audit_report("aiohttp==3.14.1"))
+    requirements = tmp_path / "new_deps.txt"
+    requirements.write_text("music-assistant-models==1.1.183\n")
+    without = tmp_path / "without.txt"
+    without.write_text("aiohttp==3.14.3\n")
+    carrying = tmp_path / "carrying.txt"
+    carrying.write_text("aiohttp==3.14.1\n")
+
+    assert main([str(audit), str(requirements), str(without), str(carrying)]) == 0
+    assert capsys.readouterr().out.strip() == "fail"
+
+    assert main([str(audit), str(requirements), str(carrying), str(without)]) == 0
+    assert capsys.readouterr().out.strip() == "preexisting"
+
+
+def test_main_keeps_the_status_alone_on_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The workflow captures stdout into its status variable, so the note goes to stderr."""
+    audit = tmp_path / "audit.json"
+    audit.write_text(audit_report("aiohttp==3.14.1"))
+    requirements = tmp_path / "new_deps.txt"
+    requirements.write_text("music-assistant-models==1.1.183\n")
+    closure = tmp_path / "closure.txt"
+    closure.write_text("aiohttp==3.14.3\nclean-package==1.0.0\n")
+
+    assert main([str(audit), str(requirements), str(closure), str(closure)]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "preexisting\n"
+    assert "`aiohttp 3.14.1` (resolved to 3.14.3)" in captured.err
 
 
 def test_main_without_a_base_closure_file(

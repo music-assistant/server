@@ -6,6 +6,7 @@ import asyncio
 import functools
 import html
 import importlib
+import inspect
 import logging
 import os
 import platform
@@ -25,6 +26,7 @@ from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from itertools import islice
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
@@ -1010,14 +1012,7 @@ async def _get_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         pending = asyncio.create_task(_probe())
         pending.add_done_callback(_log_ip_probe_failure)
         _ip_addresses_pending[cache_key] = pending
-    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
-    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
-    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
-    # cancelled caller makes it report the probe's exception through
-    # loop.call_exception_handler, even when another caller already handled it.
-    if not pending.done():
-        await asyncio.wait((pending,))
-    return pending.result()
+    return await join_task(pending)
 
 
 def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
@@ -2087,11 +2082,16 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equally
-    represented arguments.
+    unaffected. Calls count as identical when they are made on the same object with equal
+    arguments, no matter whether those were passed positionally or by keyword; the request
+    runs with the arguments of the caller that started it.
+
+    Every argument must be a scalar or an object identified by its ``uri``, so that equal
+    arguments are guaranteed to produce an equal key.
 
     :param func: The coroutine method to guard.
     """
+    signature = inspect.signature(func)
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -2103,10 +2103,23 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         # (e.g. a provider set up twice), which must never join each other's flight.
         # id(self) is stable while a flight is live because the task references self;
         # the class name only serves to keep the task_id readable while debugging.
-        cache_key_parts = [type(self).__name__, id(self), func.__qualname__, *args]
-        for key in sorted(kwargs.keys()):
-            cache_key_parts.append(f"{key}{kwargs[key]}")
-        task_id = ".".join(map(str, cache_key_parts))
+        # binding the arguments to their parameter names and filling in the defaults keys a
+        # call the same however it was spelled; repr of the resulting tuple keeps the parts
+        # apart, so an id that itself contains punctuation cannot run into the next one.
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        task_id = repr(
+            (
+                type(self).__name__,
+                id(self),
+                func.__qualname__,
+                # skip the instance: it is the first parameter and is keyed by id() above
+                *(
+                    (name, _canonical_key_part(value))
+                    for name, value in islice(bound.arguments.items(), 1, None)
+                ),
+            )
+        )
         task: asyncio.Task[R] = mass.create_task(
             func,
             self,
@@ -2116,13 +2129,17 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             eager_start=True,
             **kwargs,
         )
-        # wait for the shared task instead of awaiting it directly: a caller awaiting a
-        # task holds it as its fut_waiter, so cancelling that caller would cancel the
-        # request for every other caller too. asyncio.shield achieves the same, but as of
-        # Python 3.14 a cancelled caller makes it report the request's exception through
-        # loop.call_exception_handler, even when another caller already handled it.
-        if not task.done():
-            await asyncio.wait((task,))
-        return task.result()
+        return await join_task(task)
 
     return wrapper
+
+
+def _canonical_key_part(value: Any) -> Any:
+    """Return a stable stand-in for a single argument of a guarded request."""
+    if (uri := getattr(value, "uri", None)) is not None:
+        # a media item renders as a multi-kilobyte dataclass repr in which the set-typed
+        # fields (provider_mappings, external_ids) can iterate in different orders for two
+        # equal items. the uri identifies the item, and the type travels with it because a
+        # full item and an ItemMapping for that same item are not handled the same.
+        return (type(value).__name__, uri)
+    return value

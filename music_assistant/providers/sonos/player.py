@@ -206,8 +206,6 @@ class SonosPlayer(Player):
             # so both are needed to cover the pending and the running case
             self.mass.cancel_timer(task_id)
             self.mass.cancel_task(task_id)
-        # unregister does not guard this call, and it runs before the provider's
-        # remaining players are unregistered: a raise here would strand them
         try:
             await self._disconnect()
         except Exception:
