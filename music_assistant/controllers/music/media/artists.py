@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -319,6 +319,30 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.get_provider_artist_similar_artists(
             item_id, provider_instance_id_or_domain, limit=limit
         )
+
+    if TYPE_CHECKING:
+
+        @overload
+        async def audiobooks(
+            self,
+            item_id: str,
+            provider_instance_id_or_domain: str,
+            artist_type: ArtistType = ArtistType.AUTHOR,
+            in_library_only: bool = False,
+            *,
+            collapse_collections: Literal[False] = False,
+        ) -> list[Audiobook]: ...
+
+        @overload
+        async def audiobooks(
+            self,
+            item_id: str,
+            provider_instance_id_or_domain: str,
+            artist_type: ArtistType = ArtistType.AUTHOR,
+            in_library_only: bool = False,
+            *,
+            collapse_collections: Literal[True],
+        ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
 
     async def audiobooks(
         self,
