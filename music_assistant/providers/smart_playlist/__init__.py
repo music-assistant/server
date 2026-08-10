@@ -318,8 +318,29 @@ class SmartPlaylistProvider(PluginProvider):
         items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
         if item_id != "smart_playlists":
             return items
+
+        library_mappings: dict[str, str] = {}
+        for pid in self._rules_store:
+            try:
+                lib_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                    pid, self.instance_id
+                )
+                if lib_item:
+                    library_mappings[pid] = str(lib_item.item_id)
+            except Exception as err:
+                self.logger.debug("Could not get library item for %s: %s", pid, err)
+
         for pid, rules in self._rules_store.items():
-            items.append(await self._build_playlist(pid, rules))
+            playlist = await self._build_playlist(pid, rules)
+            if pid in library_mappings:
+                playlist.provider_mappings.add(
+                    ProviderMapping(
+                        item_id=library_mappings[pid],
+                        provider_domain="library",
+                        provider_instance="library",
+                    )
+                )
+            items.append(playlist)
         return items
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -329,8 +350,24 @@ class SmartPlaylistProvider(PluginProvider):
             msg = f"Smart playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg)
 
-        # Build playlist from rules
-        return await self._build_playlist(resolved_id, rules)
+        playlist = await self._build_playlist(resolved_id, rules)
+
+        try:
+            lib_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                resolved_id, self.instance_id
+            )
+            if lib_item:
+                playlist.provider_mappings.add(
+                    ProviderMapping(
+                        item_id=str(lib_item.item_id),
+                        provider_domain="library",
+                        provider_instance="library",
+                    )
+                )
+        except Exception as err:
+            self.logger.debug("Could not get library item for %s: %s", resolved_id, err)
+
+        return playlist
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
