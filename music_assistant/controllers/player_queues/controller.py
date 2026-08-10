@@ -1288,23 +1288,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"save_queue_cache_{player_id}")
         self._set_transitioning(player_id, False)
         if permanent:
-            # if the player is permanently removed, we also remove the cached queue data
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                )
-            )
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
-                )
-            )
+            self.purge_saved_queue(player_id)
         self._queue_data.pop(player_id, None)
         self._managed_pool.forget(player_id)
+
+    def purge_saved_queue(self, queue_id: str) -> None:
+        """Delete the persisted state and items of the given queue."""
+        for category in (CACHE_CATEGORY_PLAYER_QUEUE_STATE, CACHE_CATEGORY_PLAYER_QUEUE_ITEMS):
+            # a removal runs both the player teardown and the config cleanup, so keep the
+            # delete to one task per category instead of one per caller
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=queue_id,
+                    provider=self.domain,
+                    category=category,
+                ),
+                task_id=f"purge_saved_queue_{queue_id}_{category}",
+            )
 
     async def load_next_queue_item(
         self,
