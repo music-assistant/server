@@ -976,6 +976,22 @@ async def migrate_database(  # noqa: PLR0915
             " AND supported_mediatypes LIKE '%sound_effect%'"
         )
 
+    if prev_version <= 56:
+        # the stable branch numbers its schema versions independently of this one, so a
+        # stable database can report a version that leapfrogs steps it never ran: stable
+        # 41-43 never got the columns this branch adds at <= 41 and <= 42. Re-add them for
+        # every pre-57 database; the ALTERs are no-ops where the column already exists.
+        for table, column in (
+            (DB_TABLE_PLAYLISTS, "[translation_key] TEXT"),
+            (DB_TABLE_PLAYLISTS, "[translation_params] json"),
+            (DB_TABLE_PLAYLOG, "[playback_speed] REAL NOT NULL DEFAULT 1.0"),
+        ):
+            try:
+                await database.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:
