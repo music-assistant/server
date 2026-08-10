@@ -687,7 +687,8 @@ class SendspinProvider(PlayerProvider):
         if session is not None and session.attempt_running:
             return session
         client = self.server_api.get_client(client_id)
-        info = client.info_or_none if client is not None else None
+        # A disconnected client keeps its last hello, so info alone does not prove it is connected.
+        info = client.info_or_none if client is not None and client.is_connected else None
         if info is None:
             raise SecurityActionError("pairing_error_not_connected")
         offered = effective_pair_methods(info, self.pairing_config_snapshot(client_id))

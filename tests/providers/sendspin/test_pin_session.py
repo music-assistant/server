@@ -144,6 +144,7 @@ class _FakeServerApi:
         await_pin: bool = True,
         gesture: asyncio.Event | None = None,
         management_capable: bool = False,
+        connected: bool = True,
     ) -> None:
         self.calls: list[str] = []
         self.connection = _FakeConnection(self.calls)
@@ -152,10 +153,12 @@ class _FakeServerApi:
             SimpleNamespace(
                 info_or_none=SimpleNamespace(supported_pair_methods=methods),
                 connection=self.connection,
+                is_connected=connected,
             ),
         )
         self._await_pin = await_pin
         self._gesture = gesture
+        self._connected = connected
         self.min_pin_length = 6
         self.management_capable = management_capable
         self._active_cancel: asyncio.Event | None = None
@@ -169,6 +172,9 @@ class _FakeServerApi:
         return self._client
 
     def enable_management(self, client_id: str) -> _FakeConnection:
+        if not self._connected:
+            # Mirrors aiosendspin, which resolves the connection before enabling management.
+            raise ValueError(f"client {client_id} is not connected")
         if not self.management_capable:
             msg = "management requires a paired (long-term Sendspin PSK) connection"
             raise RuntimeError(msg)
@@ -565,6 +571,20 @@ async def test_unpaired_device_gets_no_pairing_window(monkeypatch: pytest.Monkey
     assert api.connection.window_calls == 0
     assert not session.opened_management
     assert provider.get_management_session("c") is None
+
+
+async def test_disconnected_device_is_refused_before_management(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that only left its hello behind is refused instead of reaching management."""
+    api = _FakeServerApi(
+        [_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True, connected=False
+    )
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    with pytest.raises(SecurityActionError) as excinfo:
+        await provider.start_pin_pairing("c", static=True)
+    assert excinfo.value.alert_key == "pairing_error_not_connected"
+    assert api.calls == []
 
 
 async def test_paired_device_opens_the_window_before_the_attempt(
