@@ -8,13 +8,15 @@ from typing import TYPE_CHECKING
 from aiosendspin.models.core import PairMethodDescriptor
 from aiosendspin.models.types import PairAbortReason, PairMethod
 from aiosendspin.noise.driver import HandshakeAbortedError
-from aiosendspin.noise.pairing import PairingAbortError, PairingError
+from aiosendspin.noise.pairing import PairingAbortError, PairingError, PairingTimeoutError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from .constants import BRIDGE_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData
 
@@ -40,7 +42,6 @@ class AlertText:
 _PAIR_ABORT_KEYS = {
     PairAbortReason.ATTEMPT_TIMEOUT: "pairing_error_timeout",
     PairAbortReason.CONCURRENT_ATTEMPT: "pairing_error_concurrent",
-    PairAbortReason.LOCKED_OUT: "pairing_error_locked_out",
     PairAbortReason.METHOD_NOT_SUPPORTED: "pairing_error_method_unsupported",
     PairAbortReason.PIN_LENGTH_UNACCEPTABLE: "pairing_error_pin_length",
     PairAbortReason.PIN_MISMATCH: "pairing_error_pin_mismatch",
@@ -57,7 +58,7 @@ def error_alert(err: Exception) -> AlertText:
         if key is not None:
             return AlertText(key)
         return AlertText("pairing_error_aborted", [err.reason.value])
-    if isinstance(err, TimeoutError):
+    if isinstance(err, TimeoutError | PairingTimeoutError):
         return AlertText("pairing_error_timeout")
     if isinstance(err, OSError):
         return AlertText("pairing_error_storage", [str(err)])
@@ -101,14 +102,26 @@ def effective_pair_methods(
         if method_config is None or not method_config.enabled:
             continue
         descriptor = advertised.get(method) or PairMethodDescriptor(method=method)
-        methods.append(
-            replace(
-                descriptor,
-                locked_out=method_config.locked_out,
-                min_pin_length=method_config.min_pin_length,
-            )
-        )
+        methods.append(replace(descriptor, min_pin_length=method_config.min_pin_length))
     return methods
+
+
+def negotiated_pin_length(descriptor: PairMethodDescriptor | None, server_min: int) -> int:
+    """
+    Return the dynamic PIN length this session will use.
+
+    Mirrors the server's own negotiation so the operator prompt can name the digit count
+    before the device reports it.
+    """
+    client_min = descriptor.min_pin_length if descriptor is not None else None
+    return max(client_min or 0, server_min)
+
+
+def pair_method_descriptor(
+    methods: Iterable[PairMethodDescriptor], method: PairMethod
+) -> PairMethodDescriptor | None:
+    """Return the descriptor for ``method``, or None when the device does not offer it."""
+    return next((d for d in methods if d.method is method), None)
 
 
 def effective_unpaired_access(
