@@ -9,6 +9,23 @@ CONF_REFRESH_TOKEN_GLOBAL = "refresh_token_global"  # Token authenticated with M
 CONF_REFRESH_TOKEN_DEV = "refresh_token_dev"  # Token authenticated with user's custom client ID
 CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
+CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
+
+# Librespot playback authorization
+#
+# Spotify's login5 endpoint only accepts a stored credential that was minted with the same
+# client id librespot presents, which is always Spotify's own "keymaster" id. A credential
+# minted with MA's (or a user's) client id is rejected, so the playback credential has to be
+# obtained separately from the Web API tokens.
+KEYMASTER_CLIENT_ID = "65b708073fc0480ea92a077233ca87bd"
+LIBRESPOT_SCOPE = ["streaming"]
+# keymaster accepts loopback redirect URIs only, so the browser fallback cannot use MA's hosted
+# callback: the browser lands on a dead loopback URL and the user pastes it back into the flow
+LIBRESPOT_REDIRECT_URI = "http://127.0.0.1:5588/login"
+# name advertised to the Spotify app while pairing; also shown in the setup flow instructions
+PAIRING_DEVICE_NAME = "Music Assistant"
+PAIRING_TIMEOUT = 300
+CREDENTIALS_FILE = "credentials.json"
 
 # OAuth Settings
 SCOPE = [

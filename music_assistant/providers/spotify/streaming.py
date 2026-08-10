@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, LoginFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
@@ -81,6 +81,17 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
+                        if "INVALID_CREDENTIALS" in line:
+                            # Spotify refused the stored playback credential: surface this as an
+                            # auth failure so the provider asks for re-authorization instead of
+                            # reporting every track as unplayable.
+                            self.provider.unload_with_error(
+                                LoginFailed(
+                                    "Spotify playback authorization required",
+                                    translation_key="playback_auth_required",
+                                    translation_owner="provider.spotify",
+                                )
+                            )
                         if "unable to" in line.lower() or "skipping" in line.lower():
                             # if librespot reports a fatal error (e.g. unable to load
                             # or read audio), terminate the process to avoid hanging

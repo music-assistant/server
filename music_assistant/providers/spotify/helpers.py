@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import tempfile
 import time
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.helpers.process import check_output
+from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.process import AsyncProcess, check_output
+
+from .constants import CREDENTIALS_FILE
 
 if TYPE_CHECKING:
     import aiohttp
@@ -39,6 +43,55 @@ async def get_librespot_binary() -> str:
 
     msg = f"Unable to locate Librespot for {system}/{architecture}"
     raise RuntimeError(msg)
+
+
+async def librespot_credentials_via_pairing(librespot_bin: str, device_name: str) -> str:
+    """
+    Advertise a Spotify Connect device and return the credential librespot stores once paired.
+
+    Blocks until the user selects the device in the official Spotify app; the caller is expected
+    to bound the wait (the setup flow's step deadline cancels it).
+
+    :param librespot_bin: Path to the librespot binary.
+    :param device_name: Device name to advertise to the Spotify app.
+    """
+    with tempfile.TemporaryDirectory() as cache_dir:
+        args = [
+            librespot_bin,
+            "--cache",
+            cache_dir,
+            "--disable-audio-cache",
+            "--backend",
+            "pipe",
+            "--name",
+            device_name,
+        ]
+        # stdout carries decoded audio once the user hits play; discard it so the pairing
+        # daemon never blocks on a pipe nobody reads
+        async with AsyncProcess(args, stdout=asyncio.subprocess.DEVNULL, name="librespot-pairing"):
+            return await _await_credentials_file(cache_dir)
+
+
+async def librespot_credentials_via_token(librespot_bin: str, access_token: str) -> str:
+    """
+    Exchange a keymaster access token for librespot's reusable stored credential.
+
+    :param librespot_bin: Path to the librespot binary.
+    :param access_token: Spotify access token minted with the keymaster client id.
+    :raises LoginFailed: When librespot could not turn the token into a stored credential.
+    """
+    with tempfile.TemporaryDirectory() as cache_dir:
+        returncode, output = await check_output(
+            librespot_bin, "--cache", cache_dir, "--check-auth", "--access-token", access_token
+        )
+        if returncode != 0:
+            raise LoginFailed(
+                f"Librespot rejected the playback authorization: {output.decode().strip()}"
+            )
+        credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
+        if not os.path.exists(credentials_file):
+            raise LoginFailed("Librespot did not store a playback credential")
+        return await asyncio.to_thread(_read_credentials_file, credentials_file)
 
 
 async def get_spotify_token(
@@ -90,3 +143,26 @@ async def get_spotify_token(
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
+
+
+async def _await_credentials_file(cache_dir: str) -> str:
+    """Poll librespot's cache directory until it holds a complete credential file."""
+    credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
+    while True:
+        if os.path.exists(credentials_file):
+            try:
+                return await asyncio.to_thread(_read_credentials_file, credentials_file)
+            except OSError, ValueError:
+                # the file was caught mid-write; fall through and retry
+                pass
+        await asyncio.sleep(1)
+
+
+def _read_credentials_file(credentials_file: str) -> str:
+    """Read and validate librespot's credential file, returning its raw contents."""
+    with open(credentials_file, encoding="utf-8") as fileobj:
+        contents = fileobj.read()
+    if not json_loads(contents).get("auth_data"):
+        msg = "Incomplete librespot credential file"
+        raise ValueError(msg)
+    return contents

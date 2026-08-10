@@ -1521,18 +1521,36 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
 async def test_spotify_flow_hosted_bounce_roundtrip(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real Spotify flow: hosted-bounce external auth then a stored refresh token."""
+    """The real Spotify flow: hosted-bounce auth, playback authorization, stored credentials."""
     from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        CONF_LIBRESPOT_CREDENTIALS,
         CONF_REFRESH_TOKEN_GLOBAL,
     )
-    from music_assistant.providers.spotify.setup_flow import run_setup  # noqa: PLC0415
+    from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
+        CONF_PLAYBACK_AUTH_METHOD,
+        CONF_PLAYBACK_CALLBACK_URL,
+        PLAYBACK_AUTH_BROWSER,
+        run_setup,
+    )
 
     monkeypatch.setattr(
         "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
     )
     # seed the lazy http_session backing field so the token exchange uses our stub
     monkeypatch.setattr(
-        flow_mass, "_http_session", _fake_json_session({"refresh_token": "rt_global"})
+        flow_mass,
+        "_http_session",
+        _fake_json_session({"refresh_token": "rt_global", "access_token": "at_keymaster"}),
+    )
+    # the playback steps shell out to librespot; stub the binary lookup and the exchange
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.get_librespot_binary",
+        AsyncMock(return_value="/bin/librespot"),
+    )
+    credentials_via_token = AsyncMock(return_value='{"username": "u", "auth_data": "d"}')
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
+        credentials_via_token,
     )
     with (
         _use_flow(flow_mass, run_setup),
@@ -1549,6 +1567,33 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert step.flow_id in step.url
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        # playback needs its own authorization; pick the browser fallback
+        await _wait_for(
+            lambda: (
+                session.current_step is not None and session.current_step.step_id == "playback_auth"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_AUTH_METHOD: PLAYBACK_AUTH_BROWSER}
+        )
+        # the browser step advertises the keymaster client id on a loopback redirect, which is
+        # the only redirect Spotify accepts for it, so the user pastes the URL back
+        browser_step = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.step_id == "playback_browser"
+                else None
+            )
+        )
+        assert browser_step.translation_params is not None
+        authorize_url = browser_step.translation_params[0]
+        assert "65b708073fc0480ea92a077233ca87bd" in authorize_url
+        assert "127.0.0.1" in authorize_url
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id,
+            {CONF_PLAYBACK_CALLBACK_URL: "http://127.0.0.1:5588/login?code=playback_code"},
+        )
         # after the token exchange the optional developer step is shown
         await _wait_for(
             lambda: session.current_step is not None and session.current_step.step_id == "developer"
@@ -1556,10 +1601,17 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         # skipping the developer client id (blank) finishes the flow
         finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {})
     assert finish_step.type == FlowStepType.FINISH
+    # the pasted URL's code is what gets exchanged for the playback credential
+    assert credentials_via_token.await_args is not None
+    assert credentials_via_token.await_args.args == ("/bin/librespot", "at_keymaster")
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
     assert (
         flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_REFRESH_TOKEN_GLOBAL])
         == "rt_global"
+    )
+    assert (
+        flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_LIBRESPOT_CREDENTIALS])
+        == '{"username": "u", "auth_data": "d"}'
     )
 
 
