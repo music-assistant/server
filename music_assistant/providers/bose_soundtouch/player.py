@@ -38,6 +38,12 @@ from .client.exceptions import ApiError
 from .client.schema.enums import Key, PlayStatus, SourceStatus
 from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
+    ACTION_OVERWRITE_PRESET_1,
+    ACTION_OVERWRITE_PRESET_2,
+    ACTION_OVERWRITE_PRESET_3,
+    ACTION_OVERWRITE_PRESET_4,
+    ACTION_OVERWRITE_PRESET_5,
+    ACTION_OVERWRITE_PRESET_6,
     CONF_APP_KEY,
     IDLE_POLL_INTERVAL,
     NOTIFICATION_PORT,
@@ -56,14 +62,6 @@ from .helpers import extract_preset_id, source_id
 if TYPE_CHECKING:
     from .client import SoundtouchDevice
     from .provider import BoseSoundTouchProvider
-
-ACTION_OVERWRITE_PRESET_1 = "action_overwrite_preset_1"
-ACTION_OVERWRITE_PRESET_2 = "action_overwrite_preset_2"
-ACTION_OVERWRITE_PRESET_3 = "action_overwrite_preset_3"
-ACTION_OVERWRITE_PRESET_4 = "action_overwrite_preset_4"
-ACTION_OVERWRITE_PRESET_5 = "action_overwrite_preset_5"
-ACTION_OVERWRITE_PRESET_6 = "action_overwrite_preset_6"
-ACTION_OVERWRITE_PRESET = "action_overwrite_preset"
 
 
 class BoseSoundTouchPlayer(Player):
@@ -152,7 +150,6 @@ class BoseSoundTouchPlayer(Player):
                 await self._refresh_volume()
                 await self._refresh_zone()
                 await self._refresh_options()
-                await self._client.get_presets()
             except (aiohttp.ClientError, TimeoutError, OSError) as err:
                 self.logger.debug("Poll failed for %s: %s", self.name, err)
                 self._attr_available = False

@@ -35,6 +35,14 @@ PRESET_IDS = range(1, 7)
 SOURCE_STANDBY = "STANDBY"
 SOURCE_INVALID = "INVALID_SOURCE"
 
+# strings for overwriting a preset
+ACTION_OVERWRITE_PRESET_1 = "action_overwrite_preset_1"
+ACTION_OVERWRITE_PRESET_2 = "action_overwrite_preset_2"
+ACTION_OVERWRITE_PRESET_3 = "action_overwrite_preset_3"
+ACTION_OVERWRITE_PRESET_4 = "action_overwrite_preset_4"
+ACTION_OVERWRITE_PRESET_5 = "action_overwrite_preset_5"
+ACTION_OVERWRITE_PRESET_6 = "action_overwrite_preset_6"
+
 
 class PlayerOptionKeys(StrEnum):
     """PlayerOptionKeys."""
