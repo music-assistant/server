@@ -287,11 +287,11 @@
       }
     },
     "protocol_enable": {
-      "label": "Enable",
+      "label": "Enable this protocol on this player",
       "description": "Enable or disable this output protocol for the player."
     },
     "protocol_enable_via": {
-      "label": "Enable",
+      "label": "Enable this protocol on this player",
       "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
     },
     "pre_announcement_chime_url": {
