@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -42,6 +43,17 @@ if TYPE_CHECKING:
     from .models import SessionState
 
 
+@dataclass(slots=True)
+class _CachedClipMedia:
+    """Media previously minted for a clip, kept until it expires."""
+
+    path: str
+    stream_type: StreamType
+    audio_format: AudioFormat
+    duration: int | None
+    minted_at: float
+
+
 class AIRadioRenderMixin:
     """Renders an AI Radio clip at the moment MA needs its audio."""
 
@@ -52,6 +64,7 @@ class AIRadioRenderMixin:
         _sessions: dict[str, SessionState]
 
     _render_locks: dict[str, asyncio.Lock]
+    _media_cache: dict[str, _CachedClipMedia]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -75,18 +88,16 @@ class AIRadioRenderMixin:
                 queue_item.extra_attributes[ATTR_RENDERED_TEXT] = text
                 # the signal is what marks the items cache dirty and schedules the persist
                 self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
-            path, stream_type, audio_format, duration = await self._mint_clip_media(
-                queue_item, text, item_id
-            )
+            media = await self._cached_clip_media(queue_item, text, item_id)
 
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=audio_format,
+            audio_format=media.audio_format,
             media_type=media_type,
-            stream_type=stream_type,
-            path=path,
-            duration=duration,
+            stream_type=media.stream_type,
+            path=media.path,
+            duration=media.duration,
             # a talk clip has nothing worth seeking to, and a seek is the one path that
             # would re-fetch a possibly-expired HA url mid-playback
             can_seek=False,
@@ -101,6 +112,25 @@ class AIRadioRenderMixin:
         if clip_id not in self._render_locks:
             self._render_locks[clip_id] = asyncio.Lock()
         return self._render_locks[clip_id]
+
+    async def _cached_clip_media(
+        self, queue_item: QueueItem, text: str, clip_id: str
+    ) -> _CachedClipMedia:
+        """Return the clip's minted media, re-minting only once the cache entry has expired."""
+        if not hasattr(self, "_media_cache"):
+            self._media_cache = {}
+        now = asyncio.get_running_loop().time()
+        cached = self._media_cache.get(clip_id)
+        if cached is not None and now - cached.minted_at < CLIP_STREAMDETAILS_EXPIRATION:
+            return cached
+        # the caller holds the per-clip render lock, so of the several uncoordinated paths
+        # that resolve the same clip only the first one mints; the rest hit the cache above
+        path, stream_type, audio_format, duration = await self._mint_clip_media(
+            queue_item, text, clip_id
+        )
+        media = _CachedClipMedia(path, stream_type, audio_format, duration, now)
+        self._media_cache[clip_id] = media
+        return media
 
     def _find_clip_item(self, clip_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, or None when no queue holds it."""

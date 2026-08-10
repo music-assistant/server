@@ -29,6 +29,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
+    CLIP_STREAMDETAILS_EXPIRATION,
     DEFAULT_LLM_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import SessionState
@@ -174,8 +175,8 @@ async def test_render_resolves_deferred_placeholders_at_render_time() -> None:
     assert streamdetails.allow_seek is False
 
 
-async def test_render_caches_the_script_and_remints_the_url() -> None:
-    """A second render reuses the stored script but mints a fresh URL."""
+async def test_render_caches_the_script_and_the_minted_media() -> None:
+    """A second render within the cache window reuses both the stored script and media."""
     renderer = DummyRenderer()
     item = _clip_item("sess_001")
     signals = _attach_queue(renderer, [item])
@@ -184,11 +185,8 @@ async def test_render_caches_the_script_and_remints_the_url() -> None:
     second = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert len(renderer.llm_prompts) == 1
-    assert renderer.tts_texts == [
-        "Good evening, it is warm out.",
-        "Good evening, it is warm out.",
-    ]
-    assert first.path != second.path
+    assert renderer.tts_texts == ["Good evening, it is warm out."]
+    assert first.path == second.path
     assert item.extra_attributes[ATTR_RENDERED_TEXT] == "Good evening, it is warm out."
     assert signals == [True]
 
@@ -204,6 +202,37 @@ async def test_concurrent_renders_call_the_llm_once() -> None:
     )
 
     assert len(renderer.llm_prompts) == 1
+
+
+async def test_concurrent_renders_mint_the_clip_only_once() -> None:
+    """Three simultaneous requests for one clip share a single minted TTS render."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    results = await asyncio.gather(
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+    )
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once()
+    assert len({result.path for result in results}) == 1
+
+
+async def test_cached_media_remints_once_it_expires() -> None:
+    """A render requested after the cache window elapses mints a fresh clip."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    cached = cast("Any", renderer)._media_cache["sess_001"]
+    cached.minted_at -= CLIP_STREAMDETAILS_EXPIRATION + 1
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    assert engine.provider.get_tts_message.await_count == 2
 
 
 async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
