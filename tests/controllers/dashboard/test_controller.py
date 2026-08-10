@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -615,7 +616,8 @@ async def test_show_dashboard_api_path_now_playing_requires_player_id() -> None:
     [
         (DashboardType.PARTY, None, "/party"),
         (DashboardType.NOW_PLAYING, "player1", "/now-playing?player=player1"),
-        (DashboardType.MUSIC_QUIZ, None, "/music-quiz"),
+        # the viewer-only kiosk view, not the host page (which needs USERS_INVITE)
+        (DashboardType.MUSIC_QUIZ, None, "/music-quiz/dashboard"),
     ],
 )
 def test_dashboard_route_resolves_expected_path(
@@ -690,6 +692,38 @@ async def test_hide_dashboard_unknown_id_is_graceful_noop() -> None:
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
     )
+
+
+async def test_end_session_removes_session_and_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ending an active session drops it, signals sessions updated, and logs a warning."""
+    controller = _make_controller()
+    controller.logger = logging.getLogger("test.dashboard")
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+
+    with caplog.at_level(logging.WARNING, logger="test.dashboard"):
+        controller.end_session("dash1", "the receiver app was closed")
+
+    assert "dash1" not in controller._sessions
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )
+    assert "Living Room" in caplog.text
+    assert "the receiver app was closed" in caplog.text
+
+
+async def test_end_session_unknown_id_is_noop() -> None:
+    """Ending a session for an id without an active session is a silent no-op."""
+    controller = _make_controller()
+
+    controller.end_session("unknown", "some reason")
+
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
 
 
 async def test_get_dashboard_sessions_returns_stored_sessions() -> None:

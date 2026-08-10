@@ -245,6 +245,10 @@ class BoseSoundTouchPlayer(Player):
             return
         self.logger.debug("Playing announcement %s on %s", announcement.uri, self.name)
         await self._client.play_notification(self._app_key, announcement.uri, volume_level)
+        # the notification API reports no completion, so wait out the announcement here:
+        # its audio is only served for as long as this call is running
+        duration = await self.mass.streams.get_announcement_duration(announcement)
+        await asyncio.sleep(duration or 10)
 
     async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
         """Set player option."""

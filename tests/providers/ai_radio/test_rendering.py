@@ -19,6 +19,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
     ATTR_MAX_CHARS,
@@ -308,6 +309,57 @@ async def test_probe_failure_is_not_fatal() -> None:
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert streamdetails.duration is None
+
+
+class RealProbeRenderer(DummyRenderer):
+    """Harness that exercises the mixin's real duration probe instead of the stub."""
+
+    _probe_duration = AIRadioRenderMixin._probe_duration
+
+
+def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRenderer:
+    """Build a renderer whose duration probe fails with the given ffprobe message."""
+
+    async def _raise(*_args: Any, **_kwargs: Any) -> AudioTags:
+        raise InvalidDataError(message)
+
+    monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.async_parse_tags", _raise)
+    renderer = RealProbeRenderer()
+    renderer._sessions = {"sess": SessionState(session_id="sess", station_id="st")}
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    return renderer
+
+
+async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine that hands out a URL it cannot render fails the clip, not the playback."""
+    renderer = _failing_probe(
+        "Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 "
+        "(Server returned 5XX Server Error reply)",
+        monkeypatch,
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    session = renderer._sessions["sess"]
+    assert session.skipped_sections == 1
+    assert "enough credit" in session.last_render_error
+
+
+async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A probe that only fails to measure the audio leaves the clip playable."""
+    renderer = _failing_probe(
+        "Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 "
+        "(Invalid or unsupported media file)",
+        monkeypatch,
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.duration is None
+    assert renderer._sessions["sess"].skipped_sections == 0
 
 
 async def test_render_tts_media_streams_a_url_over_http() -> None:

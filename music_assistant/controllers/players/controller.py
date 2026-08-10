@@ -84,6 +84,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PROTOCOL_PARENT_ID,
@@ -1405,7 +1406,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     async def register(self, player: Player) -> None:
         """Register a player on the Player Controller."""
-        if self.mass.closing:
+        if self._teardown_in_progress(player):
             return
 
         # Use lock to prevent race conditions during concurrent player registrations
@@ -1440,6 +1441,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 )
                 if cached_value is not None:
                     player.extra_data[ATTR_FAKE_POWER] = cached_value
+
+            # _registration_aborted below only works once the player is in the registry;
+            # until then the unregister pass of a provider unload cannot see it, so re-check
+            # the guard from the top of this method, which the awaits above may have staled
+            if self._teardown_in_progress(player):
+                return
 
             # finally actually register it
 
@@ -1499,7 +1506,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
-        if self.mass.closing:
+        if self._teardown_in_progress(player):
             return
 
         # the register lock ensures a replacement is never swapped in while register()
@@ -1631,15 +1638,33 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     def delete_player_config(self, player_id: str) -> None:
         """
-        Permanently delete a player's configuration.
+        Permanently delete a player's configuration, including its DSP and queue settings.
 
-        Should only be called for players that are not registered by the player controller.
+        The saved queue of a player that is no longer registered is dropped along with it,
+        so a device that returns under the same id starts out fresh. The player itself is
+        not unregistered.
+        The config of a linked protocol player is wiped along with it, so the device
+        returns as a brand new player once it is discovered again. Protocol players that
+        are still registered or that already moved to another parent keep their config;
+        registered ones are detached from the removed player and re-evaluated.
         """
-        # we simply permanently delete the player by wiping its config
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
-        for key in (conf_key, dsp_conf_key):
-            self.mass.config.remove(key)
+        self._detach_protocol_children(player_id)
+        player_ids = [
+            protocol_id
+            for protocol_id in self.mass.config.get(CONF_PLAYERS, {})
+            if self._get_cached_protocol_parent_id(protocol_id) == player_id
+            and self.get_player(protocol_id) is None
+        ]
+        player_ids.append(player_id)
+        for pid in player_ids:
+            for key in (
+                f"{CONF_PLAYERS}/{pid}",
+                f"{CONF_PLAYER_DSP}/{pid}",
+                f"{CONF_PLAYER_QUEUES}/{pid}",
+            ):
+                self.mass.config.remove(key)
+            if self.get_player(pid) is None:
+                self.mass.player_queues.purge_saved_queue(pid)
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
@@ -2268,6 +2293,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                     self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
                 else:
                     player.extra_data["reported_mac"] = cached_reported_mac
+
+    def _teardown_in_progress(self, player: Player) -> bool:
+        """
+        Return True if the server or this player's provider is shutting down.
+
+        :param player: The player that is in the process of being registered.
+        """
+        return self.mass.closing or player.provider.unloading
 
     def _registration_aborted(self, player: Player) -> bool:
         """

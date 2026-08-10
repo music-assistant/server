@@ -17,6 +17,7 @@ DEFAULT_MIN_PIN_LENGTH = 4
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"
 PAIR_METHOD_PIN = "pin"
+PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
 PAIR_METHOD_TOKEN = "token"
 PAIR_METHOD_UNPAIRED = "unpaired"
