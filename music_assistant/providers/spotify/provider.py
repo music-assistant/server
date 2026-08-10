@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
@@ -47,18 +48,20 @@ from orjson import JSONDecodeError
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_CLIENT_ID,
+    CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
+    CREDENTIALS_FILE,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
+    PLAYBACK_AUTH_REQUIRED_ERROR,
 )
 from .helpers import get_librespot_binary, get_spotify_token
 from .parsers import (
@@ -100,6 +103,8 @@ class SpotifyProvider(MusicProvider):
 
         # check if we have a librespot binary for this arch
         self._librespot_bin = await get_librespot_binary()
+        # playback authorization is independent of the Web API tokens
+        await self._setup_librespot_auth()
         # try login which will raise if it fails (logs in global session)
         await self.login()
 
@@ -127,6 +132,10 @@ class SpotifyProvider(MusicProvider):
                 "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
                 "for supported countries."
             )
+
+    def discard_playback_credentials(self) -> None:
+        """Forget the stored playback credential, so the settings ask to authorize again."""
+        self._update_config_value(CONF_LIBRESPOT_CREDENTIALS, None)
 
     @property
     def audiobooks_supported(self) -> bool:
@@ -889,11 +898,6 @@ class SpotifyProvider(MusicProvider):
             CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
         )
 
-        # Setup librespot with global token only if dev token is not configured
-        # (if dev token exists, librespot will be set up in login_dev instead)
-        if not self.config.get_value(CONF_REFRESH_TOKEN_DEV):
-            await self._setup_librespot_auth(auth_info["access_token"])
-
         # get logged-in user info
         if not self._sp_user:
             self._sp_user = userinfo = await self._get_data(
@@ -948,41 +952,33 @@ class SpotifyProvider(MusicProvider):
             CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True
         )
 
-        # Setup librespot with dev token (preferred over global token)
-        await self._setup_librespot_auth(auth_info["access_token"])
-
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
 
-    async def _setup_librespot_auth(self, access_token: str) -> None:
+    async def _setup_librespot_auth(self) -> None:
         """
-        Set up librespot authentication with the given access token.
+        Install the stored playback credential into librespot's cache directory.
 
-        :param access_token: Spotify access token to use for librespot authentication.
+        :raises LoginFailed: When no playback credential is configured, which requires the
+            user to authorize playback from the provider settings.
         """
         if self._librespot_bin is None:
             raise LoginFailed("Librespot binary not available")
+        credentials = self.config.get_value(CONF_LIBRESPOT_CREDENTIALS)
+        if not credentials:
+            # Spotify's login5 refuses credentials minted with any client id other than the one
+            # librespot presents, so installs predating the dedicated playback credential (and
+            # anything cached from before) cannot stream and must authorize playback again.
+            raise LoginFailed(PLAYBACK_AUTH_REQUIRED_ERROR)
+        await asyncio.to_thread(self._write_librespot_credentials, self.cache_dir, str(credentials))
 
-        args = [
-            self._librespot_bin,
-            "--cache",
-            self.cache_dir,
-            "--check-auth",
-        ]
-        ret_code, stdout = await check_output(*args)
-        if ret_code != 0:
-            # cached librespot creds are invalid, re-authenticate
-            # we can use the check-token option to send a new token to librespot
-            # librespot will then get its own token from spotify (somehow) and cache that.
-            args += [
-                "--access-token",
-                access_token,
-            ]
-            ret_code, stdout = await check_output(*args)
-            if ret_code != 0:
-                # this should not happen, but guard it just in case
-                err_str = stdout.decode("utf-8").strip()
-                raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
+    @staticmethod
+    def _write_librespot_credentials(cache_dir: str, credentials: str) -> None:
+        """Write the stored credential to librespot's cache, replacing any stale one."""
+        os.makedirs(cache_dir, exist_ok=True)
+        credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
+        with open(credentials_file, "w", encoding="utf-8") as fileobj:
+            fileobj.write(credentials)
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """

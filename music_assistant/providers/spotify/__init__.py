@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+import pkce
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
@@ -15,16 +18,37 @@ from .constants import (
     CALLBACK_REDIRECT_URL,
     CONF_ACTION_AUTH,
     CONF_ACTION_AUTH_DEV,
+    CONF_ACTION_AUTH_PLAYBACK,
+    CONF_ACTION_AUTH_PLAYBACK_BROWSER,
+    CONF_ACTION_AUTH_PLAYBACK_SUBMIT,
     CONF_ACTION_CLEAR_AUTH,
     CONF_ACTION_CLEAR_AUTH_DEV,
+    CONF_ACTION_CLEAR_AUTH_PLAYBACK,
     CONF_CLIENT_ID,
+    CONF_LIBRESPOT_CREDENTIALS,
+    CONF_PLAYBACK_CALLBACK_URL,
     CONF_REFRESH_TOKEN_DEPRECATED,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
+    LIBRESPOT_REDIRECT_PATH,
+    LIBRESPOT_REDIRECT_PORT,
+    LOOPBACK_WAIT_TIMEOUT,
+    PAIRING_DEVICE_NAME,
+    PAIRING_TIMEOUT,
 )
-from .helpers import pkce_auth_flow
+from .helpers import (
+    authorization_code_from_params,
+    authorization_code_from_url,
+    await_loopback_authorization,
+    get_librespot_binary,
+    keymaster_access_token,
+    keymaster_authorize_url,
+    librespot_credentials_via_pairing,
+    librespot_credentials_via_token,
+    pkce_auth_flow,
+)
 from .provider import SpotifyProvider
 
 if TYPE_CHECKING:
@@ -54,6 +78,14 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
+# A browser sign-in that could not report back parks its PKCE verifier here, keyed by the config
+# dialog's session id, until the user pastes the address their browser ended up on. Kept in
+# memory only: the authorization code it belongs to expires within minutes anyway.
+_PENDING_BROWSER_AUTH: dict[str, str] = {}
+# The pairing daemon keeps advertising until it is selected or times out, so it is tracked to
+# make a second attempt replace the first one.
+_PAIRING_ATTEMPT: dict[str, asyncio.Task[str]] = {}
+
 
 async def _handle_auth_actions(
     mass: MusicAssistant,
@@ -69,6 +101,8 @@ async def _handle_auth_actions(
         values[CONF_REFRESH_TOKEN_GLOBAL] = refresh_token
         values[CONF_REFRESH_TOKEN_DEV] = None  # Clear dev token on new global auth
         values[CONF_CLIENT_ID] = None  # Clear client ID on new global auth
+        # the playback credential belongs to the account that was just replaced
+        _clear_playback_auth_values(values)
 
     elif action == CONF_ACTION_AUTH_DEV:
         custom_client_id = values.get(CONF_CLIENT_ID)
@@ -81,10 +115,152 @@ async def _handle_auth_actions(
 
     elif action == CONF_ACTION_CLEAR_AUTH:
         values[CONF_REFRESH_TOKEN_GLOBAL] = None
+        _clear_playback_auth_values(values)
 
     elif action == CONF_ACTION_CLEAR_AUTH_DEV:
         values[CONF_REFRESH_TOKEN_DEV] = None
         values[CONF_CLIENT_ID] = None
+
+
+async def _handle_playback_auth_actions(
+    mass: MusicAssistant,
+    action: str | None,
+    values: dict[str, ConfigValueType] | None,
+) -> None:
+    """
+    Handle the playback authorization actions for config entries.
+
+    :param mass: MusicAssistant instance.
+    :param action: Action key called from the config entries UI, if any.
+    :param values: The intermediate config values, updated in place with the result.
+    """
+    if values is None:
+        return
+
+    if action == CONF_ACTION_CLEAR_AUTH_PLAYBACK:
+        _clear_playback_auth_values(values)
+        return
+
+    if action not in (
+        CONF_ACTION_AUTH_PLAYBACK,
+        CONF_ACTION_AUTH_PLAYBACK_BROWSER,
+        CONF_ACTION_AUTH_PLAYBACK_SUBMIT,
+    ):
+        return
+
+    librespot_bin = await get_librespot_binary()
+    credentials: str | None
+    if action == CONF_ACTION_AUTH_PLAYBACK:
+        try:
+            credentials = await _pair_with_spotify_app(librespot_bin)
+        except TimeoutError as err:
+            raise LoginFailed(
+                f"'{PAIRING_DEVICE_NAME}' was not selected in the Spotify app in time. "
+                "Try again, or use the web browser option if it does not appear at all."
+            ) from err
+    elif action == CONF_ACTION_AUTH_PLAYBACK_BROWSER:
+        credentials = await _authorize_playback_via_browser(mass, values, librespot_bin)
+    else:
+        credentials = await _complete_playback_auth_via_browser(mass, values, librespot_bin)
+
+    if credentials is None:
+        # the browser could not report back, so the user pastes the address instead
+        return
+    _clear_playback_auth_values(values)
+    values[CONF_LIBRESPOT_CREDENTIALS] = credentials
+
+
+async def _pair_with_spotify_app(librespot_bin: str) -> str:
+    """
+    Advertise Music Assistant to the Spotify app and return the credential once it is selected.
+
+    A still-running attempt is cancelled first, so pressing the button again restarts pairing
+    instead of advertising a second device under the same name.
+
+    :param librespot_bin: Path to the librespot binary.
+    :raises TimeoutError: When the device was not selected within PAIRING_TIMEOUT.
+    """
+    if attempt := _PAIRING_ATTEMPT.pop("task", None):
+        attempt.cancel()
+        # wait for it to actually stop advertising before starting the replacement
+        with suppress(asyncio.CancelledError):
+            await attempt
+    attempt = asyncio.create_task(
+        librespot_credentials_via_pairing(librespot_bin, PAIRING_DEVICE_NAME, PAIRING_TIMEOUT)
+    )
+    _PAIRING_ATTEMPT["task"] = attempt
+    try:
+        return await attempt
+    finally:
+        if _PAIRING_ATTEMPT.get("task") is attempt:
+            del _PAIRING_ATTEMPT["task"]
+
+
+async def _authorize_playback_via_browser(
+    mass: MusicAssistant,
+    values: dict[str, ConfigValueType],
+    librespot_bin: str,
+) -> str | None:
+    """
+    Start the playback sign-in in the user's browser.
+
+    Returns the stored credential when the browser reported back to Music Assistant directly,
+    or None when the user has to paste the address their browser ended up on.
+
+    :param mass: MusicAssistant instance.
+    :param values: The intermediate config values, updated in place with the pending state.
+    :param librespot_bin: Path to the librespot binary.
+    """
+    session_id = cast("str", values["session_id"])
+    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    # signalled directly instead of through AuthenticationHelper: Spotify only accepts a
+    # loopback redirect for this client id, so the helper's callback URL can never be reached.
+    # The frontend opens the URL right away, so the loopback target below is already served
+    # by the time the user approves.
+    mass.signal_event(EventType.AUTH_SESSION, session_id, keymaster_authorize_url(code_challenge))
+    try:
+        callback_params = await await_loopback_authorization(
+            LIBRESPOT_REDIRECT_PORT, LIBRESPOT_REDIRECT_PATH, LOOPBACK_WAIT_TIMEOUT
+        )
+    except TimeoutError, OSError:
+        # the loopback target is only reachable when the browser runs on this host; everyone
+        # else copies the address from their browser into the config instead
+        _clear_playback_auth_values(values)
+        _PENDING_BROWSER_AUTH[session_id] = code_verifier
+        return None
+
+    access_token = await keymaster_access_token(
+        mass.http_session, authorization_code_from_params(callback_params), code_verifier
+    )
+    return await librespot_credentials_via_token(librespot_bin, access_token)
+
+
+async def _complete_playback_auth_via_browser(
+    mass: MusicAssistant,
+    values: dict[str, ConfigValueType],
+    librespot_bin: str,
+) -> str:
+    """
+    Redeem the address the user pasted back after approving playback in their browser.
+
+    :param mass: MusicAssistant instance.
+    :param values: The intermediate config values holding the pasted address.
+    :param librespot_bin: Path to the librespot binary.
+    :raises InvalidDataError: When the browser sign-in was not started first.
+    """
+    code_verifier = _PENDING_BROWSER_AUTH.pop(cast("str", values["session_id"]), None)
+    if not code_verifier:
+        raise InvalidDataError("Start the browser authorization first")
+    code = authorization_code_from_url(str(values.get(CONF_PLAYBACK_CALLBACK_URL) or ""))
+    access_token = await keymaster_access_token(mass.http_session, code, code_verifier)
+    return await librespot_credentials_via_token(librespot_bin, access_token)
+
+
+def _clear_playback_auth_values(values: dict[str, ConfigValueType]) -> None:
+    """Reset the playback authorization values, including any half-finished browser sign-in."""
+    _PENDING_BROWSER_AUTH.clear()
+    values[CONF_LIBRESPOT_CREDENTIALS] = None
+    values[CONF_PLAYBACK_CALLBACK_URL] = None
 
 
 async def get_config_entries(
@@ -103,6 +279,7 @@ async def get_config_entries(
 
     # Handle any authentication actions
     await _handle_auth_actions(mass, action, values)
+    await _handle_playback_auth_actions(mass, action, values)
 
     # Determine authentication states from current values
     # Note: encrypted values are sent as placeholder text, which indicates value IS set
@@ -110,6 +287,9 @@ async def get_config_entries(
     dev_token = (values or {}).get(CONF_REFRESH_TOKEN_DEV)
     global_authenticated = global_token not in (None, "")
     dev_authenticated = dev_token not in (None, "")
+    playback_authorized = (values or {}).get(CONF_LIBRESPOT_CREDENTIALS) not in (None, "")
+    # a browser sign-in waiting to be finished is what reveals the paste field
+    browser_auth_pending = (values or {}).get("session_id") in _PENDING_BROWSER_AUTH
 
     # Build label text based on state - these are dynamic based on current values
     if not global_authenticated:
@@ -123,6 +303,35 @@ async def get_config_entries(
         label_text = "Authenticated to Spotify. Don't forget to save to complete setup."
     else:
         label_text = "Authenticated to Spotify. No further action required."
+
+    # Build playback authorization label text
+    if browser_auth_pending:
+        playback_label_text = (
+            "Approve playback in the browser tab that was just opened. Your browser then ends "
+            "up on a page that cannot be reached, which is expected.\n\n"
+            "Copy the full address of that page into the field below and press "
+            "'Complete authorization'."
+        )
+    elif not playback_authorized:
+        playback_label_text = (
+            "Spotify authorizes playback separately from the connection above, so one more "
+            "step is needed before Music Assistant can play your music.\n\n"
+            "1. Open the Spotify app on your phone, tablet or computer, signed in with this "
+            "same account.\n"
+            f"2. Press the button below, then pick '{PAIRING_DEVICE_NAME}' in the Spotify app, "
+            "the way you would pick a speaker.\n\n"
+            f"If '{PAIRING_DEVICE_NAME}' does not appear in the Spotify app, for example "
+            "because Music Assistant runs in a container without access to your home network, "
+            "use the web browser option instead."
+        )
+    elif action in (
+        CONF_ACTION_AUTH_PLAYBACK,
+        CONF_ACTION_AUTH_PLAYBACK_BROWSER,
+        CONF_ACTION_AUTH_PLAYBACK_SUBMIT,
+    ):
+        playback_label_text = "Playback authorized. Don't forget to save to complete setup."
+    else:
+        playback_label_text = "Playback is authorized. No further action required."
 
     # Build dev label text
     if action == CONF_ACTION_AUTH_DEV:
@@ -173,6 +382,81 @@ async def get_config_entries(
             required=False,
             # Show only when authenticated
             hidden=not global_authenticated,
+        ),
+        # Playback authorization section
+        ConfigEntry(
+            key="playback_label_text",
+            type=ConfigEntryType.LABEL,
+            label=playback_label_text,
+            # Show only when global auth is complete
+            hidden=not global_authenticated,
+        ),
+        ConfigEntry(
+            key=CONF_LIBRESPOT_CREDENTIALS,
+            type=ConfigEntryType.SECURE_STRING,
+            label=CONF_LIBRESPOT_CREDENTIALS,
+            hidden=True,
+            # required without a default keeps the config from being saved (and the provider
+            # from being loaded and failing) before playback has been authorized
+            required=True,
+            value=values.get(CONF_LIBRESPOT_CREDENTIALS) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_AUTH_PLAYBACK,
+            type=ConfigEntryType.ACTION,
+            label="Authorize playback with the Spotify app",
+            description="Advertises Music Assistant in the Spotify app for a few minutes, "
+            "so you can select it there to authorize playback.",
+            action=CONF_ACTION_AUTH_PLAYBACK,
+            action_label="Authorize playback",
+            required=False,
+            # Show only when the account is connected but playback is not authorized yet
+            hidden=not global_authenticated or playback_authorized,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_AUTH_PLAYBACK_BROWSER,
+            type=ConfigEntryType.ACTION,
+            label="Authorize playback with a web browser",
+            description="Opens Spotify in a new browser tab to authorize playback. Use this "
+            "when Music Assistant does not appear in the Spotify app.",
+            action=CONF_ACTION_AUTH_PLAYBACK_BROWSER,
+            action_label="Authorize in browser",
+            required=False,
+            hidden=not global_authenticated or playback_authorized,
+        ),
+        ConfigEntry(
+            key=CONF_PLAYBACK_CALLBACK_URL,
+            type=ConfigEntryType.STRING,
+            label="Address from your browser",
+            description="After approving playback, your browser ends up on a page that cannot "
+            "be reached. That is expected: copy the full address of that page to here and press "
+            "the button below.",
+            required=False,
+            default_value="",
+            value=values.get(CONF_PLAYBACK_CALLBACK_URL, "") if values else "",
+            # Show only while a browser sign-in is waiting to be finished
+            hidden=not browser_auth_pending,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_AUTH_PLAYBACK_SUBMIT,
+            type=ConfigEntryType.ACTION,
+            label="Complete the browser authorization",
+            description="Finishes the authorization with the address you copied above.",
+            action=CONF_ACTION_AUTH_PLAYBACK_SUBMIT,
+            action_label="Complete authorization",
+            required=False,
+            hidden=not browser_auth_pending,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_CLEAR_AUTH_PLAYBACK,
+            type=ConfigEntryType.ACTION,
+            label="Clear playback authorization",
+            description="Clear the current playback authorization to authorize it again.",
+            action=CONF_ACTION_CLEAR_AUTH_PLAYBACK,
+            action_label="Clear playback authorization",
+            required=False,
+            # Show only when playback is authorized
+            hidden=not playback_authorized,
         ),
         # Developer API section
         ConfigEntry(
