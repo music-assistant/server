@@ -32,6 +32,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.json import make_utf8_safe
 from music_assistant.models.core_controller import CoreController
 
 from .constants import (
@@ -458,7 +459,7 @@ class TasksController(CoreController):
         if not (managed := self._tasks.get(task_id)):
             return
         managed.task_info.progress = self._validate_progress(progress)
-        managed.task_info.progress_text = text
+        managed.task_info.progress_text = make_utf8_safe(text)
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
@@ -474,7 +475,7 @@ class TasksController(CoreController):
             return
         if not (managed := self._tasks.get(task_id)):
             return
-        managed.task_info.progress_text = text
+        managed.task_info.progress_text = make_utf8_safe(text)
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
@@ -503,7 +504,9 @@ class TasksController(CoreController):
             return
         task_info = managed.task_info
         task_info.failure_count += 1
-        message = message.strip()
+        # providers build this text from filesystem paths, which are not always valid
+        # UTF-8: escape those or neither the event nor the persisted state serializes
+        message = make_utf8_safe(message).strip()
         if message:
             task_info.failure_messages.append(message)
             if len(task_info.failure_messages) > DEFAULT_TASK_FAILURE_MESSAGES:
@@ -574,7 +577,7 @@ class TasksController(CoreController):
         if not (managed := self._tasks.get(task_id)):
             return
         logs = managed.task_info.logs
-        logs.append(line)
+        logs.append(make_utf8_safe(line))
         if len(logs) > managed.max_log_lines:
             del logs[: len(logs) - managed.max_log_lines]
         managed.task_info.updated_at = utcnow()

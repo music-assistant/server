@@ -19,8 +19,9 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.helpers.json import make_utf8_safe
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports, utf8_safe
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
 
 NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
 
@@ -57,7 +58,7 @@ def pytest_report_to_serializable() -> Generator[None, object, object]:
     (warnings, log-start nodeids) are serialized outside this hook.
     """
     data = yield
-    return utf8_safe(data)
+    return make_utf8_safe(data)
 
 
 @pytest.fixture(autouse=True)

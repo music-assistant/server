@@ -22,28 +22,6 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
 
-def utf8_safe(value: object) -> object:
-    """
-    Return ``value`` with any non-UTF-8-encodable strings made encodable.
-
-    Lone surrogates (e.g. from undecodable filesystem paths) are replaced with
-    their backslash escapes so the value survives strict-UTF-8 serialization.
-    """
-    if isinstance(value, str):
-        try:
-            value.encode()
-        except UnicodeEncodeError:
-            return value.encode("utf-8", "backslashreplace").decode()
-        return value
-    if isinstance(value, list):
-        return [utf8_safe(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(utf8_safe(item) for item in value)
-    if isinstance(value, dict):
-        return {utf8_safe(key): utf8_safe(item) for key, item in value.items()}
-    return value
-
-
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
     tests_base = pathlib.Path(__file__).parent
     if provider:

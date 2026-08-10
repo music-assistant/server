@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import enum
 import uuid
 from typing import Any
 
 import pytest
+from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 from music_assistant.helpers.json import (
     get_serializable_value,
     json_dumps,
+    make_utf8_safe,
     serialize_to_json,
     strip_code_fence,
 )
+
+# a filename byte that is not valid UTF-8 arrives as a lone surrogate, here the
+# latin-1 encoded "ß" of a folder named "Straße"
+UNDECODABLE_PATH = "Musik/Stra\udcdfe/cover.jpg"
+ESCAPED_PATH = "Musik/Stra\\xdfe/cover.jpg"
 
 
 @pytest.mark.parametrize(
@@ -130,3 +138,29 @@ def test_get_serializable_value_still_returns_unhandled_values() -> None:
     """The direct helper stays lenient, only the orjson hook raises."""
     obj = _Unhandled()
     assert get_serializable_value(obj) is obj
+
+
+@dataclasses.dataclass
+class _Message(DataClassORJSONMixin):
+    """Stands in for the (mashumaro) api message models."""
+
+    text: str
+
+
+def test_make_utf8_safe_escapes_lone_surrogates() -> None:
+    """Strings that are not valid UTF-8 are replaced by their escaped form."""
+    assert make_utf8_safe(UNDECODABLE_PATH) == ESCAPED_PATH
+    # nested containers are covered as well, keys included
+    assert make_utf8_safe({UNDECODABLE_PATH: [(UNDECODABLE_PATH,)]}) == {
+        ESCAPED_PATH: [(ESCAPED_PATH,)]
+    }
+    # objects only expose their strings once converted
+    assert make_utf8_safe(_Message(UNDECODABLE_PATH)) == {"text": ESCAPED_PATH}
+    # a lone surrogate that does not stand for a byte has to be escaped as itself
+    assert make_utf8_safe("half a pair: \ud800").encode() == b"half a pair: \\ud800"
+
+
+@pytest.mark.parametrize("value", ["plain", "Straße", "日本語", "", {"a": [1, None]}])
+def test_make_utf8_safe_leaves_valid_values_untouched(value: Any) -> None:
+    """Anything that is already valid UTF-8 comes back unchanged."""
+    assert make_utf8_safe(value) == value
