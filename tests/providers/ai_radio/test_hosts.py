@@ -347,3 +347,156 @@ def test_load_stations_migrates_v2_file_on_disk(tmp_path: Any) -> None:
 
     stations_payload = json.loads(stations_file.read_text())
     assert stations_payload["version"] == 3
+
+
+def _preset_dummy(tmp_path: Any) -> DummyHosts:
+    """Build a host harness pointed at an empty storage dir."""
+    dummy = DummyHosts()
+    dummy._hosts_file = tmp_path / "hosts.json"
+    dummy._stations_file = tmp_path / "stations.json"
+    dummy._sections_file = tmp_path / "sections.json"
+    return dummy
+
+
+def test_seed_preset_hosts_seeds_four_hosts_on_fresh_install(tmp_path: Any) -> None:
+    """Seed the four preset hosts with host-scoped sections and persist both files."""
+    dummy = _preset_dummy(tmp_path)
+
+    asyncio.run(dummy._seed_preset_hosts())
+
+    assert list(dummy._hosts) == ["morning_show", "minimal_dj", "music_nerd", "party_host"]
+    host = dummy._hosts["morning_show"]
+    assert host["name"] == "Morning show"
+    assert host["section_ids"] == [
+        "morning_show_intro",
+        "morning_show_transition",
+        "morning_show_weather",
+        "morning_show_news",
+        "morning_show_sign_off",
+        "morning_show_smoother",
+    ]
+    assert host["merge_section_id"] == "morning_show_smoother"
+    assert all(section_id in dummy._sections for section_id in host["section_ids"])
+    # the same segment name on two hosts must not share a section
+    assert dummy._sections["minimal_dj_transition"]["constraints"] == {"max_chars": 300}
+    assert dummy._sections["morning_show_transition"]["constraints"] == {"max_chars": 650}
+
+    hosts_payload = json.loads(dummy._hosts_file.read_text())
+    assert [item["id"] for item in hosts_payload["hosts"]] == [
+        "minimal_dj",
+        "morning_show",
+        "music_nerd",
+        "party_host",
+    ]
+    section_ids = {item["id"] for item in json.loads(dummy._sections_file.read_text())["sections"]}
+    assert section_ids == set(dummy._sections)
+    assert not dummy._stations_file.exists()
+
+
+def test_seed_preset_hosts_skipped_for_migrated_install(tmp_path: Any) -> None:
+    """Leave a pre-v3 install alone: its hosts come from the station migration."""
+    dummy = _preset_dummy(tmp_path)
+    dummy._stations_file.write_text(json.dumps({"version": 2, "stations": []}))
+
+    asyncio.run(dummy._seed_preset_hosts())
+
+    assert dummy._hosts == {}
+    assert dummy._sections == {}
+    assert not dummy._hosts_file.exists()
+
+
+def test_seed_preset_hosts_skipped_when_hosts_file_exists(tmp_path: Any) -> None:
+    """Never re-seed once a hosts file exists, even when the user emptied it."""
+    dummy = _preset_dummy(tmp_path)
+    dummy._hosts_file.write_text(json.dumps({"version": 1, "hosts": []}))
+
+    asyncio.run(dummy._seed_preset_hosts())
+
+    assert dummy._hosts == {}
+    assert dummy._sections == {}
+
+
+def test_preset_hosts_and_sections_are_already_normalized() -> None:
+    """Ensure every seeded preset passes host and section validation untouched."""
+    dummy = DummyHosts()
+    for host, sections in dummy._default_preset_hosts():
+        for section in sections:
+            assert dummy._normalize_section(section) == section
+            dummy._sections[section["id"]] = section
+        assert dummy._normalize_host(host) == host
+
+
+def test_morning_show_preset_section_order_matches_frontend_compiler() -> None:
+    """Pin the compiled cadence of the morning show preset to the frontend's compiler output."""
+    dummy = DummyHosts()
+    hosts = {host["id"]: host for host, _ in dummy._default_preset_hosts()}
+
+    assert hosts["morning_show"]["section_order"] == [
+        {"when": "start_of_playlist", "flow": [{"MUST": "morning_show_intro"}]},
+        {
+            "when": "between_songs",
+            "flow": [
+                {
+                    "OPTIONAL": {
+                        "section": "morning_show_transition",
+                        "chance": 2 / 3,
+                        "guards": {
+                            "min_gap_songs": 2,
+                            "max_per_60min": 0,
+                            "require_placeholders_present": [],
+                        },
+                    }
+                },
+                {
+                    "OPTIONAL": {
+                        "section": "morning_show_weather",
+                        "chance": 1.0,
+                        "guards": {
+                            "min_gap_songs": 0,
+                            "max_per_60min": 1,
+                            "require_placeholders_present": ["<weather_hourly>", "<timestamp>"],
+                        },
+                    }
+                },
+                {
+                    "OPTIONAL": {
+                        "section": "morning_show_news",
+                        "chance": 1.0,
+                        "guards": {
+                            "min_gap_songs": 0,
+                            "max_per_60min": 1,
+                            "require_placeholders_present": ["<timestamp>"],
+                        },
+                    }
+                },
+            ],
+        },
+        {"when": "end_of_playlist", "flow": [{"MUST": "morning_show_sign_off"}]},
+    ]
+
+
+def test_music_nerd_preset_compiles_every_song_segment_as_must() -> None:
+    """Compile an every-song segment into a MUST and an every-2-songs one into a certain OPTIONAL."""
+    dummy = DummyHosts()
+    hosts = {host["id"]: host for host, _ in dummy._default_preset_hosts()}
+
+    assert hosts["music_nerd"]["section_order"] == [
+        {"when": "start_of_playlist", "flow": [{"MUST": "music_nerd_intro"}]},
+        {
+            "when": "between_songs",
+            "flow": [
+                {
+                    "OPTIONAL": {
+                        "section": "music_nerd_artist_fact",
+                        "chance": 1.0,
+                        "guards": {
+                            "min_gap_songs": 1,
+                            "max_per_60min": 0,
+                            "require_placeholders_present": [],
+                        },
+                    }
+                },
+                {"MUST": "music_nerd_transition"},
+            ],
+        },
+    ]

@@ -45,6 +45,12 @@ TTS_PRONUNCIATION_INSTRUCTIONS = (
     "mispronounced by the TTS engine, rewrite it into the clearest natural spoken form "
     "without explaining the change."
 )
+MERGE_SECTION_PROMPT = (
+    "Merge the drafts below into one coherent radio break. "
+    "Preserve factual content, remove duplication, and make the "
+    "final segment sound like one host speaking naturally.\n"
+    "<section_drafts>"
+)
 DEFAULT_WEATHER_PROVIDER = "open_meteo"
 DEFAULT_WEATHER_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_CONCURRENT_RUNS = 1

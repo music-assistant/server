@@ -16,7 +16,7 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_dumps, async_json_loads
 
-from .constants import EMPTY_SECTION_ID, VALID_WEB_SEARCH_MODES
+from .constants import EMPTY_SECTION_ID, MERGE_SECTION_PROMPT, VALID_WEB_SEARCH_MODES
 from .helpers import slugify
 
 _slugify = slugify
@@ -375,12 +375,7 @@ class AIRadioStorageMixin:
                 "id": "Between_Songs_Smoother",
                 "name": "Between Songs Mix",
                 "type": "ai_meta",
-                "prompt": (
-                    "Merge the drafts below into one coherent radio break. "
-                    "Preserve factual content, remove duplication, and make the "
-                    "final segment sound like one host speaking naturally.\n"
-                    "<section_drafts>"
-                ),
+                "prompt": MERGE_SECTION_PROMPT,
             },
         ]
 

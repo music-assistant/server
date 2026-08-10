@@ -103,6 +103,8 @@ class AIRadioProvider(
         await self._load_sections()
         await self._load_hosts()
         await self._load_stations()
+        # after loading, so a v2 stations file has had its chance to migrate its own hosts
+        await self._seed_preset_hosts()
         await self._load_queue_dj()
         await self._wait_for_engines()
         self.logger.info(
