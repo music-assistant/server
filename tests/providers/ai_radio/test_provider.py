@@ -297,6 +297,31 @@ async def test_validate_station_does_not_mutate_shared_sections() -> None:
 
 
 @pytest.mark.asyncio
+async def test_station_template_points_at_an_existing_host(provider: Any) -> None:
+    """The template's host has to be one the install really has, or saving it is rejected."""
+    provider._hosts = {
+        "music_nerd": {"id": "music_nerd", "name": "Music nerd"},
+        "chill_dj": {"id": "chill_dj", "name": "Chill DJ"},
+    }
+
+    template = await provider.station_template()
+
+    # lowest by name, the order hosts are listed in
+    assert template["host_id"] == "chill_dj"
+    # the station validator rejects any other host, playlist aside
+    filled_in = {**template, "source_playlist_id": "playlist-1"}
+    assert (await provider.validate_station(filled_in))["host_id"] == "chill_dj"
+
+
+@pytest.mark.asyncio
+async def test_station_template_falls_back_to_the_host_template_id(provider: Any) -> None:
+    """With no hosts yet, the template pairs with the host the host template creates."""
+    template = await provider.station_template()
+
+    assert template["host_id"] == "default_host"
+
+
+@pytest.mark.asyncio
 async def test_host_crud_roundtrip(provider: Any) -> None:
     """Create, list, fetch and delete a host through the public CRUD API."""
     template = await provider.host_template()

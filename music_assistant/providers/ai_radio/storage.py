@@ -381,6 +381,10 @@ class AIRadioStorageMixin:
 
     def _default_station_template(self) -> dict[str, Any]:
         """Return the built-in station template."""
+        # the template has to validate when it is saved verbatim, so it points at a host that
+        # exists: the first one as hosts are listed. only a bare install has none, and there
+        # the host template creates default_host
+        hosts = sorted(self._hosts.values(), key=lambda item: item["name"])
         return {
             "id": "example_station",
             "name": "Example AI Radio Station",
@@ -389,7 +393,7 @@ class AIRadioStorageMixin:
             "default_player_id": "",
             "max_duration_minutes": 0,
             "shuffle_source_tracks": True,
-            "host_id": "default_host",
+            "host_id": str(hosts[0]["id"]) if hosts else "default_host",
         }
 
     def _sync_write_json_file(self, target: Path, content: str) -> None:
