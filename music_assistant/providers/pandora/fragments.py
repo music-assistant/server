@@ -1,9 +1,10 @@
 """
 Fragment retention and playback gating for the Pandora provider.
 
-Pandora serves its stations in fragments of ~4 tracks. Requesting a new fragment invalidates the
-previous fragment's audio URLs account-wide, so the provider may only advance once every URL it
-handed out has already reached the audio pipeline.
+Pandora serves its stations in fragments of ~4 tracks whose audio URLs are time-limited: they
+are signed CDN links that expire, so a fragment is worth serving only while it is fresh. The
+provider therefore fetches a new fragment once the current one has been played through or has
+gone stale, and keeps serving the current one in between.
 """
 
 from __future__ import annotations
@@ -79,8 +80,8 @@ def should_fetch_fragment(fragment: PandoraFragment | None, now: float) -> bool:
     """
     Return whether a station needs a new fragment fetched from Pandora.
 
-    False means the current fragment's audio URLs are still live and must not be invalidated —
-    its tracks are served again instead. It never means "this station has no tracks".
+    False means the current fragment's audio URLs are still fresh and should keep being served.
+    It never means "this station has no tracks".
 
     :param fragment: The station's current (newest) fragment, or None if it has none yet.
     :param now: Current wall-clock time, used for the staleness check.
