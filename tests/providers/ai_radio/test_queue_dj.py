@@ -48,6 +48,8 @@ class FakeQueueItem:
         """Initialize the fake queue item with a unique id."""
         FakeQueueItem._counter += 1
         self.queue_item_id = f"qi{FakeQueueItem._counter}"
+        # mirrors the insert order a real queue restores when it is un-shuffled
+        self.sort_index = FakeQueueItem._counter
         self.name = name
         self.duration = duration
         self.media_item = None
@@ -61,10 +63,13 @@ class FakePlayerQueues:
         """Initialize with one queue and its items."""
         self._queue = queue
         self._items = items
+        # what each update_items call added, as (items, index), and what it dropped. the real
+        # controller only ever replaces the whole list, so both are derived from the diff
         self.loads: list[tuple[list[Any], int]] = []
         self.deleted: list[str] = []
-        # stands in for the QUEUE_ITEMS_UPDATED event a real load() emits
-        self.on_load: Callable[[], None] | None = None
+        self.update_calls = 0
+        # stands in for the QUEUE_ITEMS_UPDATED event a real update_items emits
+        self.on_items_updated: Callable[[], None] | None = None
 
     def get(self, queue_id: str) -> FakeQueue | None:
         """Return the queue when the id matches."""
@@ -74,31 +79,22 @@ class FakePlayerQueues:
         """Return one page of queue items."""
         return self._items[offset : offset + limit]
 
-    def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
-        """Return the current index of the given item."""
-        for index, item in enumerate(self._items):
-            if item.queue_item_id == queue_item_id:
-                return index
-        return None
-
-    async def load(
-        self,
-        queue_id: str,
-        queue_items: list[Any],
-        insert_at_index: int,
-        keep_remaining: bool,
-        keep_played: bool,
-    ) -> None:
-        """Insert the given items at the requested index."""
-        self.loads.append((queue_items, insert_at_index))
-        self._items[insert_at_index:insert_at_index] = queue_items
-        if self.on_load is not None:
-            self.on_load()
-
-    def delete_item(self, queue_id: str, item_id: str) -> None:
-        """Delete the given item from the queue."""
-        self.deleted.append(item_id)
-        self._items = [i for i in self._items if i.queue_item_id != item_id]
+    def update_items(self, queue_id: str, queue_items: list[Any]) -> None:
+        """Replace the queue items with the given list."""
+        self.update_calls += 1
+        previous_ids = {item.queue_item_id for item in self._items}
+        current_ids = {item.queue_item_id for item in queue_items}
+        self.deleted.extend(
+            item.queue_item_id for item in self._items if item.queue_item_id not in current_ids
+        )
+        self.loads.extend(
+            ([item], index)
+            for index, item in enumerate(queue_items)
+            if item.queue_item_id not in previous_ids
+        )
+        self._items = queue_items
+        if self.on_items_updated is not None:
+            self.on_items_updated()
 
 
 class FakeMass:
@@ -530,7 +526,7 @@ async def test_scheduled_replan_serves_requests_landing_during_a_pass(tmp_path: 
     tracks = [_track(index) for index in range(4)]
     dummy = _make_replan_dj(tmp_path, list(tracks))
     queues = dummy.player_queues
-    queues.on_load = lambda: dummy._schedule_replan("queue-1")
+    queues.on_items_updated = lambda: dummy._schedule_replan("queue-1")
 
     dummy._schedule_replan("queue-1")
     await asyncio.gather(*dummy.mass.tasks)
@@ -707,6 +703,49 @@ async def test_switch_refills_the_gaps_its_own_cleanup_frees(tmp_path: Path) -> 
         assert clip.extra_attributes[ATTR_HOST_ID] == "daisy"
 
 
+async def test_a_pass_applies_all_its_clips_in_one_queue_update(tmp_path: Path) -> None:
+    """A whole window of clips reaches the clients as one update, not one per clip."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+
+    await dummy._replan_queue("queue-1")
+
+    queues = dummy.player_queues
+    assert len(queues.loads) == 4  # one clip per plannable gap
+    assert queues.update_calls == 1
+    for clip_items, _index in queues.loads:
+        clip = clip_items[0]
+        target = next(
+            item
+            for item in queues.items("queue-1")
+            if item.queue_item_id == clip.extra_attributes[ATTR_GAP_NEXT_ID]
+        )
+        # sharing the target's sort index keeps the clip next to it when un-shuffling
+        assert clip.sort_index == target.sort_index
+
+
+async def test_a_switch_clears_and_refills_in_one_update_per_phase(tmp_path: Path) -> None:
+    """The cleanup and the refill of a switch each replace the queue exactly once."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.update_calls == 1
+    daisy = _must_host()
+    daisy["id"] = "daisy"
+    dummy._hosts["daisy"] = daisy
+
+    await dummy.set_queue_dj("queue-1", "daisy")
+
+    assert queues.update_calls == 2
+    assert len(queues.deleted) == 4
+
+    await asyncio.gather(*dummy.mass.tasks)
+
+    assert queues.update_calls == 3
+    assert len(queues.loads) == 8
+
+
 async def test_a_vanished_target_leaves_its_gap_open(tmp_path: Path) -> None:
     """A gap whose target left the queue mid-pass stays open, so its return is planned."""
     tracks = [_track(index) for index in range(6)]
@@ -716,7 +755,10 @@ async def test_a_vanished_target_leaves_its_gap_open(tmp_path: Path) -> None:
     async def _slow_prepare(program: dict[str, Any]) -> dict[str, str]:
         # stands in for a slow token source: the planned tracks are already fixed when the
         # user removes one of them from the queue
-        dummy.player_queues.delete_item("queue-1", tracks[3].queue_item_id)
+        dummy.player_queues.update_items(
+            "queue-1",
+            [item for item in dummy.player_queues.items("queue-1") if item is not tracks[3]],
+        )
         return await prepare_runtime_tokens(program)
 
     dummy._prepare_runtime_tokens = _slow_prepare  # type: ignore[method-assign]

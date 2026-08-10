@@ -269,14 +269,22 @@ class AIRadioQueueDJMixin:
                 runtime_tokens=runtime_tokens,
                 decided_next_item_ids=state.decided_gap_ids,
             )
-            # insert order is not load bearing: every clip resolves its own target index
-            # by item id right before inserting. descending walks back from the queue tail
+            # the clips are spliced into a working copy of the whole queue and applied in one
+            # update: a call per clip floods every connected client with queue events.
+            # the guard is re-read once here because the planning awaits above can take
+            # seconds, in which the player may have buffered ahead
+            working = self._dj_queue_items(queue_id)
+            guard_index = self._dj_guard_index(queue)
+            # insert order is not load bearing: every clip resolves its own target position
+            # in the working copy. descending walks back from the queue tail
             injected = 0
             skipped: dict[str, int] = {}
             for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
                 target = window_tracks[section.insert_at_index]
-                outcome = await self._inject_dj_clip(
+                outcome = self._splice_dj_clip(
                     queue_id=queue_id,
+                    items=working,
+                    guard_index=guard_index,
                     state=state,
                     program=program,
                     target=target,
@@ -290,10 +298,8 @@ class AIRadioQueueDJMixin:
                         # the target moved or left the queue, so nothing was decided about
                         # its gap and a later pass has to look at it again
                         evaluated_gap_ids.discard(str(target["item_id"]))
-                if self._dj_queues.get(queue_id) is not state:
-                    # same race caught mid-loop: one clip may already have landed for the
-                    # replaced session, the rest must not follow it in
-                    return
+            if injected:
+                self.mass.player_queues.update_items(queue_id, working)
             # only the newest events matter to the guards (the last one for min_gap_songs,
             # a 60 minute window for max_per_60min), so the tail is dropped
             state.history = {
@@ -313,28 +319,30 @@ class AIRadioQueueDJMixin:
                 len(state.decided_gap_ids),
             )
 
-    async def _inject_dj_clip(
+    def _splice_dj_clip(
         self,
         queue_id: str,
+        items: list[QueueItem],
+        guard_index: int,
         state: DJQueueState,
         program: dict[str, Any],
         target: dict[str, Any],
         section: PlannedSection,
     ) -> DJInjectOutcome:
         """Insert one planned clip in front of its target track and report the outcome."""
-        # both the target position and the guard are re-read here: planning awaits can take
-        # seconds, in which the queue may have been reordered and the player buffered ahead
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
-            return "gap_gone"
-        guard_index = self._dj_guard_index(queue)
-        target_index = self.mass.player_queues.index_by_id(queue_id, target["item_id"])
+        target_index = next(
+            (
+                index
+                for index, item in enumerate(items)
+                if item.queue_item_id == target["item_id"]
+            ),
+            None,
+        )
         if target_index is None:
             return "gap_gone"
         if target_index <= guard_index + 1:
             return "too_close"
-        preceding = self.mass.player_queues.items(queue_id, limit=1, offset=target_index - 1)
-        if preceding and preceding[0].extra_attributes.get(ATTR_QUEUE_DJ):
+        if items[target_index - 1].extra_attributes.get(ATTR_QUEUE_DJ):
             return "occupied"
         # the planner numbers its clips from zero every pass, so the id comes from the
         # state counter instead to stay unique for the lifetime of the session
@@ -343,13 +351,10 @@ class AIRadioQueueDJMixin:
         clip = self._section_to_clip_item(queue_id, state.dj_session_id, program, section)
         clip.extra_attributes[ATTR_QUEUE_DJ] = True
         clip.extra_attributes[ATTR_GAP_NEXT_ID] = target["item_id"]
-        await self.mass.player_queues.load(
-            queue_id,
-            [clip],
-            insert_at_index=target_index,
-            keep_remaining=True,
-            keep_played=True,
-        )
+        # sharing the target's sort index keeps the clip in front of the track it announces
+        # when the queue is un-shuffled, without renumbering everything behind it
+        clip.sort_index = items[target_index].sort_index
+        items.insert(target_index, clip)
         return "injected"
 
     async def _remove_pending_dj_clips(self, queue_id: str) -> None:
@@ -364,19 +369,23 @@ class AIRadioQueueDJMixin:
         live_state = self._dj_queues.get(queue_id)
         keep_session_id = live_state.dj_session_id if live_state is not None else None
         guard_index = self._dj_guard_index(queue)
-        removed = 0
-        for item in self._dj_queue_items(queue_id)[guard_index + 1 :]:
-            if not item.extra_attributes.get(ATTR_QUEUE_DJ):
-                continue
-            if (
+        items = self._dj_queue_items(queue_id)
+        # one update for the whole cleanup: a delete per clip floods every connected client
+        # with queue events. items up to the guard are what the player already owns
+        kept = [
+            item
+            for index, item in enumerate(items)
+            if index <= guard_index
+            or not item.extra_attributes.get(ATTR_QUEUE_DJ)
+            or (
                 keep_session_id is not None
                 and item.extra_attributes.get(ATTR_SESSION_ID) == keep_session_id
-            ):
-                continue
-            self.mass.player_queues.delete_item(queue_id, item.queue_item_id)
-            removed += 1
-        if removed:
-            self.logger.debug("Removed %s pending DJ clip(s) from queue %s", removed, queue_id)
+            )
+        ]
+        if (removed := len(items) - len(kept)) == 0:
+            return
+        self.mass.player_queues.update_items(queue_id, kept)
+        self.logger.debug("Removed %s pending DJ clip(s) from queue %s", removed, queue_id)
 
     def _dj_guard_index(self, queue: PlayerQueue) -> int:
         """Return the highest queue index the player already owns."""
@@ -390,7 +399,7 @@ class AIRadioQueueDJMixin:
         self, queue_id: str, state: DJQueueState, items: list[QueueItem], guard_index: int
     ) -> bool:
         """Delete DJ clips that no longer sit in front of the track they announce."""
-        deleted = 0
+        stale_ids: set[str] = set()
         for index in range(guard_index + 2, len(items)):
             item = items[index]
             if not item.extra_attributes.get(ATTR_QUEUE_DJ):
@@ -400,14 +409,20 @@ class AIRadioQueueDJMixin:
                 ATTR_GAP_NEXT_ID
             ):
                 continue
-            self.mass.player_queues.delete_item(queue_id, item.queue_item_id)
+            stale_ids.add(item.queue_item_id)
             # the gap this clip was serving is open again, so let a later pass decide it anew
             if (gap_next_id := item.extra_attributes.get(ATTR_GAP_NEXT_ID)) is not None:
                 state.decided_gap_ids.discard(str(gap_next_id))
-            deleted += 1
-        if deleted:
-            self.logger.debug("Repaired queue %s: deleted %s stale DJ clip(s)", queue_id, deleted)
-        return bool(deleted)
+        if not stale_ids:
+            return False
+        # one update for all of them, so the clients see a single queue change
+        self.mass.player_queues.update_items(
+            queue_id, [item for item in items if item.queue_item_id not in stale_ids]
+        )
+        self.logger.debug(
+            "Repaired queue %s: deleted %s stale DJ clip(s)", queue_id, len(stale_ids)
+        )
+        return True
 
     def _dj_window(self, items: list[QueueItem], guard_index: int) -> list[QueueItem]:
         """Return the upcoming music items that this pass may plan against."""
