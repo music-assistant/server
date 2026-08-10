@@ -326,6 +326,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
         artist_type: ArtistType = ArtistType.AUTHOR,
         in_library_only: bool = False,
+        *,
         collapse_collections: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
