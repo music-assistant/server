@@ -718,23 +718,14 @@ class MusicCastPlayer(Player):
                 zone_device_player.update_state()
 
     async def _set_player_available(self) -> None:
-        """Re-enable UDP polling and refresh zone players after recovery."""
+        """Re-enable UDP polling after recovery."""
         assert self.zone_device.zone_name == "main", "Call only from main player!"
         self.logger.debug("Player %s became available again.", self.display_name)
-        await self.physical_device.enable_polling()
-        for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.mass.players.get_player(
-                self._get_player_id_from_zone_device(zone_device)
-            ):
-                assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
-                async with zone_device_player.update_lock:
-                    await zone_device_player.set_dynamic_attributes()
+        if self.physical_device.device.device.transport is None:
+            await self.physical_device.enable_polling()
 
     async def poll(self) -> None:
         """Poll player."""
-        if self.update_lock.locked():
-            # udp updates come in roughly every second when playing, so discard
-            return
         if self.zone_device.zone_name != "main":
             # we only poll main, which polls the whole device
             return
@@ -750,6 +741,14 @@ class MusicCastPlayer(Player):
             if _was_unavailable:
                 await self._set_player_available()
             await self.set_dynamic_attributes()
+            # fetch() above covers every zone; push it to the other zone players too
+            for zone_device in self.zone_device.other_zones:
+                if zone_device_player := self.mass.players.get_player(
+                    self._get_player_id_from_zone_device(zone_device)
+                ):
+                    assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
+                    async with zone_device_player.update_lock:
+                        await zone_device_player.set_dynamic_attributes()
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:
         """Call on UDP updates."""
