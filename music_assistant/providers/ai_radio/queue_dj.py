@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import aiofiles
@@ -34,6 +34,10 @@ QUEUE_PAGE_SIZE = 500
 
 # per section history cap, generous for the widest guard window (60 minutes)
 HISTORY_EVENTS_PER_SECTION = 50
+
+# result of one injection attempt. only "gap_gone" leaves its gap unserved: a gap that is
+# too close to the player or already holds a clip is deliberately served or forever gone
+DJInjectOutcome = Literal["injected", "gap_gone", "too_close", "occupied"]
 
 
 class AIRadioQueueDJMixin:
@@ -204,6 +208,9 @@ class AIRadioQueueDJMixin:
             window = self._dj_window(items, guard_index, state.last_planned_item_id)
             if len(window) < 2:
                 state.last_planned_item_id = window[-1].queue_item_id if window else None
+                self.logger.debug(
+                    "Queue %s has no plannable gap ahead of the player, skipping replan", queue_id
+                )
                 return
             # the planner counts songs and minutes from the first window track, so the
             # offsets have to be measured to that same point or the axis shifts between
@@ -243,14 +250,23 @@ class AIRadioQueueDJMixin:
             )
             # insert order is not load bearing: every clip resolves its own target index
             # by item id right before inserting. descending walks back from the queue tail
+            injected = 0
+            skipped: dict[str, int] = {}
+            unserved_indexes: list[int] = []
             for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
-                await self._inject_dj_clip(
+                outcome = await self._inject_dj_clip(
                     queue_id=queue_id,
                     state=state,
                     program=program,
                     target=window_tracks[section.insert_at_index],
                     section=section,
                 )
+                if outcome == "injected":
+                    injected += 1
+                else:
+                    skipped[outcome] = skipped.get(outcome, 0) + 1
+                    if outcome == "gap_gone":
+                        unserved_indexes.append(section.insert_at_index)
                 if self._dj_queues.get(queue_id) is not state:
                     # same race caught mid-loop: one clip may already have landed for the
                     # replaced session, the rest must not follow it in
@@ -261,7 +277,21 @@ class AIRadioQueueDJMixin:
                 section_id: events[-HISTORY_EVENTS_PER_SECTION:]
                 for section_id, events in history.items()
             }
-            state.last_planned_item_id = window_tracks[-1]["item_id"]
+            if not unserved_indexes:
+                state.last_planned_item_id = window_tracks[-1]["item_id"]
+            elif (resume_index := min(unserved_indexes)) > 1:
+                # anchor the next window on the track in front of the earliest unserved gap,
+                # or the DJ goes silent for good on everything this pass left behind. an
+                # index of 0 or 1 means the window already starts there, so the marker stays
+                state.last_planned_item_id = window_tracks[resume_index - 1]["item_id"]
+            self.logger.debug(
+                "Replanned queue %s: window %s tracks, planned %s, injected %s, skipped %s",
+                queue_id,
+                len(window_tracks),
+                len(planned),
+                injected,
+                skipped,
+            )
 
     async def _inject_dj_clip(
         self,
@@ -270,20 +300,22 @@ class AIRadioQueueDJMixin:
         program: dict[str, Any],
         target: dict[str, Any],
         section: PlannedSection,
-    ) -> None:
-        """Insert one planned clip in front of its target track, unless the gap is unusable."""
+    ) -> DJInjectOutcome:
+        """Insert one planned clip in front of its target track and report the outcome."""
         # both the target position and the guard are re-read here: planning awaits can take
         # seconds, in which the queue may have been reordered and the player buffered ahead
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
-            return
+            return "gap_gone"
         guard_index = self._dj_guard_index(queue)
         target_index = self.mass.player_queues.index_by_id(queue_id, target["item_id"])
-        if target_index is None or target_index <= guard_index + 1:
-            return
+        if target_index is None:
+            return "gap_gone"
+        if target_index <= guard_index + 1:
+            return "too_close"
         preceding = self.mass.player_queues.items(queue_id, limit=1, offset=target_index - 1)
         if preceding and preceding[0].extra_attributes.get(ATTR_QUEUE_DJ):
-            return
+            return "occupied"
         # the planner numbers its clips from zero every pass, so the id comes from the
         # state counter instead to stay unique for the lifetime of the session
         section.clip_id = f"{state.dj_session_id}_{state.clip_counter:03d}"
@@ -298,6 +330,7 @@ class AIRadioQueueDJMixin:
             keep_remaining=True,
             keep_played=True,
         )
+        return "injected"
 
     async def _remove_pending_dj_clips(self, queue_id: str) -> None:
         """Remove not-yet-played DJ clips from the queue, except the armed session's own."""
@@ -335,7 +368,7 @@ class AIRadioQueueDJMixin:
 
     def _repair_dj_clips(self, queue_id: str, items: list[QueueItem], guard_index: int) -> bool:
         """Delete DJ clips that no longer sit in front of the track they announce."""
-        deleted = False
+        deleted = 0
         for index in range(guard_index + 2, len(items)):
             item = items[index]
             if not item.extra_attributes.get(ATTR_QUEUE_DJ):
@@ -346,8 +379,10 @@ class AIRadioQueueDJMixin:
             ):
                 continue
             self.mass.player_queues.delete_item(queue_id, item.queue_item_id)
-            deleted = True
-        return deleted
+            deleted += 1
+        if deleted:
+            self.logger.debug("Repaired queue %s: deleted %s stale DJ clip(s)", queue_id, deleted)
+        return bool(deleted)
 
     def _dj_window(
         self, items: list[QueueItem], guard_index: int, marker_item_id: str | None

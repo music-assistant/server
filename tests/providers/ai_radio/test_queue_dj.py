@@ -649,6 +649,45 @@ async def test_stale_pass_inserts_nothing_after_a_mid_pass_dj_switch(tmp_path: P
     assert new_state.last_planned_item_id is None
 
 
+async def test_marker_holds_back_when_a_gap_vanished_during_the_pass(tmp_path: Path) -> None:
+    """A gap whose target left the queue mid-pass is re-covered instead of marked as done."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    prepare_runtime_tokens = dummy._prepare_runtime_tokens
+
+    async def _slow_prepare(program: dict[str, Any]) -> dict[str, str]:
+        # stands in for a slow token source: the planned tracks are already fixed when the
+        # user removes one of them from the queue
+        dummy.player_queues.delete_item("queue-1", tracks[3].queue_item_id)
+        return await prepare_runtime_tokens(program)
+
+    dummy._prepare_runtime_tokens = _slow_prepare  # type: ignore[method-assign]
+    await dummy._replan_queue("queue-1")
+
+    queues = dummy.player_queues
+    announced = {items[0].extra_attributes[ATTR_GAP_NEXT_ID] for items, _ in queues.loads}
+    assert announced == {
+        tracks[2].queue_item_id,
+        tracks[4].queue_item_id,
+        tracks[5].queue_item_id,
+    }
+    state = dummy._dj_queues["queue-1"]
+    # the marker anchors the gap the vanished track left behind, not the window tail
+    assert state.last_planned_item_id == tracks[2].queue_item_id
+
+    clip_before_track_4 = next(
+        item
+        for item in queues.items("queue-1")
+        if item.extra_attributes.get(ATTR_GAP_NEXT_ID) == tracks[4].queue_item_id
+    )
+    queues.delete_item("queue-1", clip_before_track_4.queue_item_id)
+    await dummy._replan_queue("queue-1")
+
+    # the next pass covers the gap again, and converges on the tail now nothing is left open
+    assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[4].queue_item_id
+    assert state.last_planned_item_id == tracks[5].queue_item_id
+
+
 async def test_replan_yields_the_queue_to_a_running_show(tmp_path: Path) -> None:
     """A show owning the queue plans its own breaks, so the sticky DJ stays out of it."""
     dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
