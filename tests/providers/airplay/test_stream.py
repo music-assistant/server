@@ -6,8 +6,8 @@ import logging
 import os
 import select
 import threading
-from collections.abc import AsyncGenerator, Callable, Coroutine
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -36,9 +36,21 @@ START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
 
 
-def _make_cli_proc() -> MagicMock:
-    """Build a mock cliairplay process that answers its awaited calls."""
-    return MagicMock(closed=False, drain_stdin=AsyncMock(return_value=True))
+def _make_cli_proc(*, quiesced: bool = True, calls: list[str] | None = None) -> MagicMock:
+    """
+    Build a mock cliairplay process that answers its awaited calls.
+
+    :param quiesced: What holding stdin quiet reports about emptying the buffer.
+    :param calls: Records "quiesce" as stdin is held, for ordering assertions.
+    """
+
+    @asynccontextmanager
+    async def _stdin_quiesced(*_args: object) -> AsyncIterator[bool]:
+        if calls is not None:
+            calls.append("quiesce")
+        yield quiesced
+
+    return MagicMock(closed=False, stdin_quiesced=_stdin_quiesced)
 
 
 def _make_player() -> MagicMock:
@@ -1621,27 +1633,21 @@ def test_flushed_status_sets_flush_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flush_drains_queued_audio_before_commanding_the_flush() -> None:
+async def test_flush_holds_stdin_quiet_before_commanding_the_flush() -> None:
     """
     Queued stdin audio is cleared before FLUSH, so the binary's drain removes it.
 
     The command travels on a pipe of its own, so audio still in flight when the
     binary drains would survive to be anchored as the next start's first sample.
     """
-    stream = AirPlayStream(_make_player())
-    stream._cli_proc = _make_cli_proc()
-    stream._connected.set()
     calls: list[str] = []
-
-    async def _record_drain(*_args: object) -> bool:
-        calls.append("drain")
-        return True
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc(calls=calls)
+    stream._connected.set()
 
     async def _record_command(command: str) -> bool:
         calls.append(command)
         return True
-
-    stream._cli_proc.drain_stdin = AsyncMock(side_effect=_record_drain)
 
     with patch.object(stream, "_write_cli_command", side_effect=_record_command):
         flush_task = asyncio.create_task(stream.flush())
@@ -1649,16 +1655,15 @@ async def test_flush_drains_queued_audio_before_commanding_the_flush() -> None:
         assert stream._handle_status_line("[STATUS] flushed") is False
         assert await flush_task is True
 
-    assert calls == ["drain", "ACTION=FLUSH"]
+    assert calls == ["quiesce", "ACTION=FLUSH"]
 
 
 @pytest.mark.asyncio
 async def test_flush_fails_when_queued_audio_cannot_be_cleared() -> None:
     """A drain that never completes fails the flush instead of anchoring stale audio."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = _make_cli_proc()
+    stream._cli_proc = _make_cli_proc(quiesced=False)
     stream._connected.set()
-    stream._cli_proc.drain_stdin = AsyncMock(return_value=False)
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
         assert await stream.flush() is False

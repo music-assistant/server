@@ -22,8 +22,8 @@ async def piped_process_fixture() -> AsyncGenerator[tuple[AsyncProcess, int]]:
     Yield an AsyncProcess writing to a real pipe, plus its unread read end.
 
     The write side is a genuine asyncio pipe transport, so the flow control
-    drain_stdin relies on behaves exactly as it does against a real process, while
-    nothing consumes the read end until a test chooses to.
+    stdin_quiesced relies on behaves exactly as it does against a real process,
+    while nothing consumes the read end until a test chooses to.
     """
     read_fd, write_fd = os.pipe()
     loop = asyncio.get_running_loop()
@@ -63,10 +63,10 @@ async def _consume(read_fd: int, total: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_drain_stdin_waits_for_the_write_buffer_to_empty(
+async def test_stdin_quiesced_waits_for_the_write_buffer_to_empty(
     piped_process: tuple[AsyncProcess, int],
 ) -> None:
-    """The drain resolves only once every queued byte has reached the reader."""
+    """The block is entered only once every queued byte has reached the reader."""
     proc, read_fd = piped_process
     _queue_without_waiting(proc, _MORE_THAN_THE_PIPE_HOLDS)
     assert proc.proc is not None
@@ -74,42 +74,77 @@ async def test_drain_stdin_waits_for_the_write_buffer_to_empty(
     assert proc.proc.stdin.transport.get_write_buffer_size() > 0
     reader = asyncio.create_task(_consume(read_fd, len(_MORE_THAN_THE_PIPE_HOLDS)))
 
-    assert await proc.drain_stdin() is True
+    async with proc.stdin_quiesced() as quiesced:
+        assert quiesced is True
+        assert proc.proc.stdin.transport.get_write_buffer_size() == 0
 
-    assert proc.proc.stdin.transport.get_write_buffer_size() == 0
     await reader
 
 
 @pytest.mark.asyncio
-async def test_drain_stdin_reports_a_reader_that_never_catches_up(
+async def test_stdin_quiesced_reports_a_reader_that_never_catches_up(
     piped_process: tuple[AsyncProcess, int],
 ) -> None:
-    """A reader that never consumes the pipe fails the drain instead of hanging."""
+    """A reader that never consumes the pipe reports failure instead of hanging."""
     proc, _ = piped_process
     _queue_without_waiting(proc, _MORE_THAN_THE_PIPE_HOLDS)
 
-    assert await proc.drain_stdin(timeout=0.2) is False
+    async with proc.stdin_quiesced(timeout=0.2) as quiesced:
+        assert quiesced is False
 
 
 @pytest.mark.asyncio
-async def test_drain_stdin_restores_normal_writing(
+async def test_stdin_quiesced_keeps_writes_out_of_the_block(
     piped_process: tuple[AsyncProcess, int],
 ) -> None:
-    """Writing carries on unaffected after a drain, on the restored buffer limits."""
+    """
+    No write can land while the block runs, so nothing queues up behind a drain.
+
+    This is the guarantee the block exists for: a caller telling the process
+    something about the bytes it has been handed needs stdin to stay as it left it
+    until the process has answered.
+    """
     proc, read_fd = piped_process
-    reader = asyncio.create_task(_consume(read_fd, len(b"first") + len(b"second")))
-    await proc.write(b"first")
-    assert await proc.drain_stdin() is True
+    reader = asyncio.create_task(_consume(read_fd, len(b"late")))
 
-    await proc.write(b"second")
+    async with proc.stdin_quiesced() as quiesced:
+        assert quiesced is True
+        writing = asyncio.create_task(proc.write(b"late"))
+        await asyncio.sleep(0)
 
-    assert await proc.drain_stdin() is True
+        assert not writing.done()
+        assert proc.proc is not None
+        assert proc.proc.stdin is not None
+        assert proc.proc.stdin.transport.get_write_buffer_size() == 0
+
+    await writing
     await reader
 
 
 @pytest.mark.asyncio
-async def test_drain_stdin_is_a_noop_without_a_process() -> None:
-    """A drain on a process that was never started succeeds rather than raising."""
+async def test_stdin_quiesced_restores_normal_writing(
+    piped_process: tuple[AsyncProcess, int],
+) -> None:
+    """Writing carries on unaffected afterwards, on the restored buffer limits."""
+    proc, read_fd = piped_process
+    assert proc.proc is not None
+    assert proc.proc.stdin is not None
+    limits = proc.proc.stdin.transport.get_write_buffer_limits()
+    reader = asyncio.create_task(_consume(read_fd, len(b"first") + len(b"second")))
+    await proc.write(b"first")
+
+    async with proc.stdin_quiesced() as quiesced:
+        assert quiesced is True
+
+    assert proc.proc.stdin.transport.get_write_buffer_limits() == limits
+    await proc.write(b"second")
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_stdin_quiesced_is_a_noop_without_a_process() -> None:
+    """A process that was never started quiesces trivially rather than raising."""
     proc = AsyncProcess(["cat"], stdin=True)
 
-    assert await proc.drain_stdin() is True
+    async with proc.stdin_quiesced() as quiesced:
+        assert quiesced is True
