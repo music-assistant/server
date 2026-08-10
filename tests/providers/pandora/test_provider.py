@@ -11,6 +11,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import SearchResults
 
 from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
+from music_assistant.providers.pandora.fragments import FRAGMENT_STALE_SECONDS
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 STATION_ID = "4360491625318318161"
@@ -78,6 +79,27 @@ async def test_search_returns_a_matching_station_as_a_playlist() -> None:
     provider = _provider(stations=_stations(["Coldplay Radio", "Jazz Radio"]))
     results = await provider.search("Coldplay Radio", [MediaType.PLAYLIST])
     assert [playlist.name for playlist in results.playlists] == ["Coldplay Radio"]
+
+
+async def test_search_matches_part_of_a_station_name() -> None:
+    """A partial query finds the station; whole-name-only matching makes search useless."""
+    provider = _provider(stations=_stations(["Classic Rock Radio", "Jazz Radio"]))
+    results = await provider.search("rock", [MediaType.PLAYLIST])
+    assert [playlist.name for playlist in results.playlists] == ["Classic Rock Radio"]
+
+
+async def test_search_ignores_case() -> None:
+    """Queries match case-insensitively."""
+    provider = _provider(stations=_stations(["Classic Rock Radio"]))
+    results = await provider.search("CLASSIC rock", [MediaType.PLAYLIST])
+    assert len(results.playlists) == 1
+
+
+async def test_search_honours_the_limit() -> None:
+    """A query matching many stations stops at the requested limit."""
+    provider = _provider(stations=_stations([f"Rock Radio {index}" for index in range(5)]))
+    results = await provider.search("rock", [MediaType.PLAYLIST], limit=2)
+    assert len(results.playlists) == 2
 
 
 async def test_search_finds_nothing_for_a_non_matching_query() -> None:
@@ -243,6 +265,34 @@ async def test_stream_details_for_an_evicted_track_raises() -> None:
     await provider.get_playlist_tracks(STATION_ID)
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details(f"{STATION_ID}_A0", MediaType.TRACK)
+
+
+async def test_stream_details_after_a_long_pause_raises() -> None:
+    """
+    A pause long enough to outlive the signed URLs must fail by name, not by a CDN 403.
+
+    Nothing refills a paused queue, so the staleness check in get_playlist_tracks never runs -
+    this path is the only thing standing between a resumed track and an expired URL.
+    """
+    provider = _provider()
+    await provider.get_playlist_tracks(STATION_ID)
+    fragment = provider._sessions[STATION_ID].current
+    assert fragment is not None
+    # playback paused for well over the staleness window
+    fragment.last_activity_at -= FRAGMENT_STALE_SECONDS + 1
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
+
+
+async def test_stream_details_within_the_stale_window_still_serves() -> None:
+    """A short pause must not throw the track away."""
+    provider = _provider()
+    await provider.get_playlist_tracks(STATION_ID)
+    fragment = provider._sessions[STATION_ID].current
+    assert fragment is not None
+    fragment.last_activity_at -= FRAGMENT_STALE_SECONDS - 30
+    details = await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
+    assert details.path == "https://audio-sv5-t3-2.pandora.com/access/0.mp4"
 
 
 async def test_stream_details_rejects_other_media_types() -> None:

@@ -48,7 +48,6 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
-from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
@@ -172,9 +171,13 @@ class PandoraProvider(MusicProvider):
         # requires the legacy endpoints this provider does not speak
         if MediaType.PLAYLIST not in media_types:
             return SearchResults()
+        # substring rather than compare_strings: that helper answers "are these the same
+        # entity", and its fuzzy mode rejects a length difference over four characters, so a
+        # short query like "rock" could never reach a station called "Classic Rock Radio"
+        query = search_query.lower()
         results: list[Playlist] = []
         async for station in self._get_stations():
-            if compare_strings(station.name, search_query):
+            if query in station.name.lower():
                 results.append(station)
                 if len(results) >= limit:
                     break
@@ -250,7 +253,14 @@ class PandoraProvider(MusicProvider):
             # an older fragment's signed URL may already be expired and there is no way to
             # tell from here, so refuse it rather than hand ffmpeg a link that 403s mid-track
             raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
-        fragment.mark_resolved(music_id, time.time())
+        now = time.time()
+        if fragment.is_stale(now):
+            # nothing has streamed from this fragment for the whole staleness window, which is
+            # what a long pause looks like from here: its signed URLs have almost certainly
+            # expired on Pandora's clock. Refusing keeps the failure named, and the queue then
+            # drains into a refill that fetches a fresh fragment.
+            raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
+        fragment.mark_resolved(music_id, now)
         duration = int(track.get("trackLength") or 0)
         can_seek = duration > 0
         return StreamDetails(
