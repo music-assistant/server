@@ -58,7 +58,7 @@
     },
     "playback_auth": {
       "title": "Allow Music Assistant to play Spotify audio",
-      "description": "Playing audio needs a separate one-time approval from Spotify, on top of the sign-in you just completed.\n\n**Use the Spotify app (recommended)** - pick this if you have Spotify on a phone, tablet or computer on the same network as Music Assistant. It takes a few taps and there is nothing to copy or paste.\n\n**Use a web browser instead** - pick this if Music Assistant will not show up in your Spotify app, for example when it runs on another network or VLAN, or in a container without access to your home network. It takes a couple of extra steps."
+      "description": "Playing audio needs a separate one-time approval from Spotify, on top of the sign-in you just completed.\n\n**Use the Spotify app (recommended)** — pick this if you have Spotify on a phone, tablet or computer on the same network as Music Assistant. It takes a few taps and there is nothing to copy or paste.\n\n**Use a web browser instead** — pick this if Music Assistant will not show up in your Spotify app, for example when it runs on another network or VLAN, or in a container without access to your home network. It takes a couple of extra steps."
     },
     "playback_browser_open": {
       "title": "Approve playback in your browser",
