@@ -83,7 +83,10 @@ SUPPORTED_FEATURES = {
 # memory only: the authorization code it belongs to expires within minutes anyway.
 _PENDING_BROWSER_AUTH: dict[str, str] = {}
 # The pairing daemon keeps advertising until it is selected or times out, so it is tracked to
-# make a second attempt replace the first one.
+# make a second attempt replace the first one. Deliberately one slot for the whole server, not
+# one per provider instance: every daemon advertises under the same name, so two at once would
+# show up as two identical devices in the Spotify app and the credential could end up on the
+# instance for the other account.
 _PAIRING_ATTEMPT: dict[str, asyncio.Task[str]] = {}
 
 
@@ -226,6 +229,9 @@ async def _authorize_playback_via_browser(
         # the loopback target is only reachable when the browser runs on this host; everyone
         # else copies the address from their browser into the config instead
         _clear_playback_auth_values(values)
+        # only one sign-in can be pending: a verifier is worthless once its code expires, so
+        # dropping any older one keeps abandoned attempts from piling up
+        _PENDING_BROWSER_AUTH.clear()
         _PENDING_BROWSER_AUTH[session_id] = code_verifier
         return None
 
@@ -257,8 +263,8 @@ async def _complete_playback_auth_via_browser(
 
 
 def _clear_playback_auth_values(values: dict[str, ConfigValueType]) -> None:
-    """Reset the playback authorization values, including any half-finished browser sign-in."""
-    _PENDING_BROWSER_AUTH.clear()
+    """Reset the playback authorization values, including this session's browser sign-in."""
+    _PENDING_BROWSER_AUTH.pop(str(values.get("session_id")), None)
     values[CONF_LIBRESPOT_CREDENTIALS] = None
     values[CONF_PLAYBACK_CALLBACK_URL] = None
 
