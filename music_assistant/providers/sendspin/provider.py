@@ -1190,7 +1190,12 @@ class SendspinProvider(PlayerProvider):
                 session.pin_future.cancel()
 
     def _spoken_pin_languages(self) -> tuple[str, ...]:
-        """Return the operator's language preference for a spoken dynamic PIN, most preferred first."""
+        """
+        Return the language preference for a spoken dynamic PIN, most preferred first.
+
+        The metadata locale is the only server-wide language setting, so it stands in for the
+        operator's own preference.
+        """
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
         return (locale, language) if language != locale else (locale,)
