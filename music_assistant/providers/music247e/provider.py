@@ -1,4 +1,4 @@
-"""YouSee Musik musicprovider support for MusicAssistant."""
+"""Base music provider for the 24-7 (247e) music backend."""
 
 from __future__ import annotations
 
@@ -28,16 +28,16 @@ from music_assistant.constants import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
-from music_assistant.providers.yousee.api_client import YouSeeAPIClient
-from music_assistant.providers.yousee.auth_manager import YouSeeAuthManager
-from music_assistant.providers.yousee.constants import CONF_QUALITY
-from music_assistant.providers.yousee.library import YouSeeLibraryManager
-from music_assistant.providers.yousee.media import YouSeeMediaManager
-from music_assistant.providers.yousee.playlist import YouSeePlaylistManager
-from music_assistant.providers.yousee.recommendations import YouSeeRecommendationsManager
-from music_assistant.providers.yousee.streaming import YouSeeStreamingManager
+from music_assistant.providers.music247e.api_client import Music247eAPIClient
+from music_assistant.providers.music247e.auth_manager import Music247eAuthManager
+from music_assistant.providers.music247e.library import Music247eLibraryManager
+from music_assistant.providers.music247e.media import Music247eMediaManager
+from music_assistant.providers.music247e.playlist import Music247ePlaylistManager
+from music_assistant.providers.music247e.recommendations import Music247eRecommendationsManager
+from music_assistant.providers.music247e.streaming import Music247eStreamingManager
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.enums import (
         MediaType,
     )
@@ -56,20 +56,30 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 
-class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
-    """Provider implementation for YouSee Musik."""
+class Music247eProvider(RecommendationPayloadMixin, MusicProvider):
+    """Base provider implementation for 24-7 (247e) music services."""
 
     # the personalized sections barely change intraday; keep the pre-refactor 24h interval
     recommendation_payload_ttl = 3600 * 24
 
-    auth: YouSeeAuthManager
+    # concrete providers supply the config key and their auth manager / API client classes
+    CONF_QUALITY_KEY: str
+    AUTH_MANAGER_CLASS: type[Music247eAuthManager]
+    API_CLIENT_CLASS: type[Music247eAPIClient]
+
+    auth: Music247eAuthManager
+
+    @property
+    def playback_quality(self) -> ConfigValueType:
+        """Return the configured streaming quality (in kbps)."""
+        return self.config.get_value(self.CONF_QUALITY_KEY)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
             ConfigEntry(
-                key=CONF_QUALITY,
+                key=self.CONF_QUALITY_KEY,
                 type=ConfigEntryType.INTEGER,
                 default_value=320,
                 options=[
@@ -85,13 +95,13 @@ class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         # try to get a token, raise if that fails
-        self.auth = YouSeeAuthManager(self)
-        self.api = YouSeeAPIClient(self)
-        self.library = YouSeeLibraryManager(self)
-        self.media = YouSeeMediaManager(self)
-        self.playlist = YouSeePlaylistManager(self)
-        self.streaming = YouSeeStreamingManager(self)
-        self.recommendations_manager = YouSeeRecommendationsManager(self)
+        self.auth = self.AUTH_MANAGER_CLASS(self)
+        self.api = self.API_CLIENT_CLASS(self)
+        self.library = Music247eLibraryManager(self)
+        self.media = Music247eMediaManager(self)
+        self.playlist = Music247ePlaylistManager(self)
+        self.streaming = Music247eStreamingManager(self)
+        self.recommendations_manager = Music247eRecommendationsManager(self)
 
         token = await self.auth.auth_token()
         if not token:

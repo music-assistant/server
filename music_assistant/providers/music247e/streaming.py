@@ -1,4 +1,4 @@
-"""Streaming operations for YouSee Musik."""
+"""Streaming operations for the 24-7 (247e) music backend."""
 
 from __future__ import annotations
 
@@ -12,16 +12,15 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import iso_from_utc_timestamp, utc_timestamp
-from music_assistant.providers.yousee.constants import CONF_QUALITY
 
 if TYPE_CHECKING:
-    from music_assistant.providers.yousee.provider import YouSeeMusikProvider
+    from music_assistant.providers.music247e.provider import Music247eProvider
 
 
-class YouSeeStreamingManager:
-    """Manages YouSee Musik streaming operations."""
+class Music247eStreamingManager:
+    """Manages 24-7 (247e) streaming operations."""
 
-    def __init__(self, provider: YouSeeMusikProvider):
+    def __init__(self, provider: Music247eProvider):
         """Initialize streaming manager."""
         self.provider = provider
         self.api = provider.api
@@ -43,7 +42,7 @@ class YouSeeStreamingManager:
 
         variables = {
             "id": item_id,
-            "quality": f"KBPS_{self.provider.config.get_value(CONF_QUALITY)}",
+            "quality": f"KBPS_{self.provider.playback_quality}",
         }
 
         result = await self.api.post_graphql(query, variables)

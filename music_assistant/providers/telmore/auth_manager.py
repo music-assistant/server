@@ -1,60 +1,24 @@
 """Telmore Musik authentication manager."""
 
+from __future__ import annotations
+
 import re
-import time
-from typing import TYPE_CHECKING
 
 from yarl import URL
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.helpers.util import (
-    lock,
-    try_parse_int,
+from music_assistant.helpers.util import lock
+from music_assistant.providers.music247e.auth_manager import (
+    Music247eAccessToken,
+    Music247eAuthManager,
 )
-from music_assistant.providers.yousee.api_client import JsonLike
-
-if TYPE_CHECKING:
-    from music_assistant.providers.telmore.provider import TelmoreMusikProvider
 
 
-class TelmoreAccessToken:
-    """Telmore Musik access token wrapper."""
-
-    def __init__(self, access_token: str) -> None:
-        """Initialize TelmoreAccessToken."""
-        self._access_token = access_token
-        self._token_parts = self._parse_access_token(access_token)
-
-    def is_expired(self) -> bool:
-        """Return True if token is expired."""
-        expires_at = try_parse_int(self._token_parts.get("ExpiresOn", 0))
-        return not expires_at or expires_at <= time.time()
-
-    def __str__(self) -> str:
-        """Return string representation of the access token."""
-        return self._access_token
-
-    def _parse_access_token(self, token: str) -> JsonLike:
-        return dict(part.split("=", 1) for part in token.split("&") if "=" in part)
-
-
-class TelmoreAuthManager:
+class TelmoreAuthManager(Music247eAuthManager):
     """Telmore Musik authentication manager."""
 
-    def __init__(self, provider: TelmoreMusikProvider):
-        """Initialize TelmoreAuthManager."""
-        self._access_token: TelmoreAccessToken | None = None
-        self._refresh_token: str | None = None
-        self.mass = provider.mass
-        self.provider = provider
-        self.logger = provider.logger
-
-    def invalidate(self) -> None:
-        """Invalidate current access token."""
-        self._access_token = None
-
     @lock
-    async def auth_token(self) -> TelmoreAccessToken | None:
+    async def auth_token(self) -> Music247eAccessToken | None:
         """Authenticate and return access token."""
         if self._access_token and not self._access_token.is_expired():
             return self._access_token
@@ -72,7 +36,7 @@ class TelmoreAuthManager:
                     access_token = refresh_result["tokenResult"]["access_token"]
 
                     self.logger.debug("Refresh token flow success")
-                    self._access_token = TelmoreAccessToken(access_token)
+                    self._access_token = Music247eAccessToken(access_token)
                     self._refresh_token = refresh_result["tokenResult"]["refresh_token"]
                     return self._access_token
 
@@ -112,7 +76,7 @@ class TelmoreAuthManager:
             access_token = access_token_re.group(1)
             self._refresh_token = refresh_token_re.group(1)
 
-            self._access_token = TelmoreAccessToken(access_token)
+            self._access_token = Music247eAccessToken(access_token)
             self.logger.debug("Got new auth token")
 
             return self._access_token
