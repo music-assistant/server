@@ -1203,7 +1203,8 @@
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}.",
     "mount_failed": "Unable to connect to the remote location: {0}",
-    "unmount_failed": "The previous connection to the remote location could not be closed: {0}"
+    "unmount_failed": "The previous connection to the remote location could not be closed: {0}",
+    "user_not_found": "The user {0} could not be found."
   },
   "setup_flow": {
     "select_child": {
