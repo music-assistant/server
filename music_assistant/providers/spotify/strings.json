@@ -74,7 +74,7 @@
     },
     "developer_optin": {
       "title": "You're all set",
-      "description": "Spotify has been added to Music Assistant. Press Finish to start.\n\nYour Spotify library is imported in the background, which takes a while the first time. Playlists, albums and artists keep appearing as the import progresses, so it is normal for them to look empty or incomplete for the first few minutes.\n\nOptionally, you can connect your own Spotify developer key. It makes browsing and searching faster, but it takes a few extra steps to set up. Most people can skip this, and you can always add it later."
+      "description": "Spotify has been added to Music Assistant. Press Finish to start.\n\nOptionally, you can connect your own Spotify developer key. It makes browsing and searching faster, but it takes a few extra steps to set up. Most people can skip this, and you can always add it later."
     }
   },
   "media": {
