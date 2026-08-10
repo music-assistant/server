@@ -447,6 +447,9 @@ class StreamsAudio:
         # copy: the args below are appended per call, while the StreamDetails is cached on
         # the queue item and reused across calls (retry, seek, background analysis)
         extra_input_args = list(streamdetails.extra_input_args or [])
+        # the branches below zero out seek_position where the seek is delegated to the
+        # source itself, so keep the requested position for the duration writeback
+        requested_seek_position = seek_position
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -650,8 +653,9 @@ class StreamsAudio:
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration
-            if finished and not seek_position and seconds_received:
+            # store accurate duration, but only for a playthrough from the very start:
+            # a seeked stream yields the remaining audio, not the item's full length
+            if finished and not requested_seek_position and seconds_received:
                 streamdetails.duration = int(seconds_received)
 
             logger.log(
@@ -975,116 +979,6 @@ class StreamsAudio:
             base_path = url.rsplit("/", 1)[0]
             substream.path = base_path + "/" + substream.path
         return substream
-
-    async def get_http_stream(
-        self,
-        url: str,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-        verify_ssl: bool = True,
-    ) -> AsyncGenerator[bytes]:
-        """Get audio stream from HTTP."""
-        mass = self.mass
-        self.logger.debug(
-            "Start HTTP stream for %s (seek_position %s)", streamdetails.uri, seek_position
-        )
-        if seek_position:
-            assert streamdetails.duration, "Duration required for seek requests"
-        http_session = mass.http_session if verify_ssl else mass.http_session_no_ssl
-        # try to get filesize with a head request
-        seek_supported = streamdetails.can_seek
-        if seek_position or not streamdetails.size:
-            async with http_session.head(
-                encoded_request_url(url), allow_redirects=True, headers=HTTP_HEADERS
-            ) as resp:
-                resp.raise_for_status()
-                if size := resp.headers.get("Content-Length"):
-                    streamdetails.size = int(size)
-                seek_supported = resp.headers.get("Accept-Ranges") == "bytes"
-        # headers
-        headers = {**HTTP_HEADERS}
-        timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
-        skip_bytes = 0
-        if seek_position and streamdetails.size:
-            assert streamdetails.duration is not None  # for type checking
-            skip_bytes = int(streamdetails.size / streamdetails.duration * seek_position)
-            headers["Range"] = f"bytes={skip_bytes}-{streamdetails.size}"
-
-        # seeking an unknown or container format is not supported due to the (moov) headers
-        if seek_position and (
-            not seek_supported
-            or streamdetails.audio_format.content_type
-            in (ContentType.UNKNOWN, ContentType.M4A, ContentType.M4B)
-        ):
-            self.logger.warning(
-                "Seeking in %s (%s) not possible.",
-                streamdetails.uri,
-                streamdetails.audio_format.output_format_str,
-            )
-            seek_position = 0
-            streamdetails.seek_position = 0
-
-        # start the streaming from http
-        bytes_received = 0
-        async with http_session.get(
-            encoded_request_url(url), allow_redirects=True, headers=headers, timeout=timeout
-        ) as resp:
-            is_partial = resp.status == 206
-            if seek_position and not is_partial:
-                raise InvalidDataError("HTTP source does not support seeking!")
-            resp.raise_for_status()
-            async for chunk in resp.content.iter_any():
-                bytes_received += len(chunk)
-                yield chunk
-
-        # store size on streamdetails for later use
-        if not streamdetails.size:
-            streamdetails.size = bytes_received
-        self.logger.debug(
-            "Finished HTTP stream for %s (transferred %s/%s bytes)",
-            streamdetails.uri,
-            bytes_received,
-            streamdetails.size,
-        )
-
-    async def get_file_stream(
-        self,
-        filename: str,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-    ) -> AsyncGenerator[bytes]:
-        """Get audio stream from local accessible file."""
-        if seek_position:
-            assert streamdetails.duration, "Duration required for seek requests"
-        if not streamdetails.size:
-            stat = await asyncio.to_thread(os.stat, filename)
-            streamdetails.size = stat.st_size
-
-        # seeking an unknown or container format is not supported due to the (moov) headers
-        if seek_position and (
-            streamdetails.audio_format.content_type
-            in (ContentType.UNKNOWN, ContentType.M4A, ContentType.M4B, ContentType.MP4)
-        ):
-            self.logger.warning(
-                "Seeking in %s (%s) not possible.",
-                streamdetails.uri,
-                streamdetails.audio_format.output_format_str,
-            )
-            seek_position = 0
-            streamdetails.seek_position = 0
-
-        chunk_size = calculate_content_length(streamdetails.audio_format)
-        async with aiofiles.open(streamdetails.data, "rb") as _file:
-            if seek_position:
-                assert streamdetails.duration is not None  # for type checking
-                seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
-                await _file.seek(seek_pos)
-            # yield chunks of data from file
-            while True:
-                data = await _file.read(chunk_size)
-                if not data:
-                    break
-                yield data
 
     async def get_multi_file_stream(
         self,

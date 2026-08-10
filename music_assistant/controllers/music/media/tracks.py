@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -43,7 +44,6 @@ from music_assistant.helpers.compare import (
     compare_artists,
     compare_media_item,
     compare_track,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET

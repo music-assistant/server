@@ -1518,6 +1518,19 @@ async def test_control_role_change_is_applied() -> None:
         assert control.supports_power is False
 
 
+async def test_control_selection_drops_a_value_that_is_no_entity_id() -> None:
+    """A stored selection that is no entity ID must not take the other controls down."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(
+        states, **{CONF_POWER_CONTROLS: ["power_controls", "media_player.kitchen"]}
+    ) as (provider, hass):
+        await provider.loaded_in_mass()
+
+        assert set(provider._player_controls or {}) == {"media_player.kitchen"}
+        # Home Assistant refuses the whole subscription when it carries the stray value
+        assert hass.subscriptions[-1] == ["media_player.kitchen"]
+
+
 @pytest.mark.parametrize(
     "changed_keys",
     [

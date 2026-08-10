@@ -4,7 +4,7 @@
   "stage": "stable",
   "name": "Soundcloud",
   "description": "Stream tracks, remixes, and user-uploaded music from the SoundCloud community.",
-  "codeowners": ["@domanchi", "@gieljnssns"],
+  "codeowners": ["@robsonke", "@domanchi", "@gieljnssns"],
   "credits": ["[soundcloudpy](https://github.com/Enubia/soundcloud-py)"],
   "requirements": ["soundcloudpy==0.1.4"],
   "documentation": "https://music-assistant.io/music-providers/soundcloud/",

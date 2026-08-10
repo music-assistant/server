@@ -77,7 +77,11 @@ def test_register_video_capable_device() -> None:
     assert device == DashboardDevice(
         dashboard_id=f"chromecast_{uuid}",
         name="Living Room TV",
-        supported_types={DashboardType.PARTY, DashboardType.NOW_PLAYING},
+        supported_types={
+            DashboardType.PARTY,
+            DashboardType.NOW_PLAYING,
+            DashboardType.MUSIC_QUIZ,
+        },
         provider_domain_hint="chromecast",
     )
 

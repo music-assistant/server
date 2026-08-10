@@ -9,6 +9,11 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.enums import ContentType
 
+from music_assistant.providers.snapcast.constants import (
+    DEFAULT_SNAPCAST_FORMAT,
+    snapcast_sampleformat_query,
+    snapcast_stream_format,
+)
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 
 if TYPE_CHECKING:
@@ -32,11 +37,35 @@ def _make_stream(
     )
 
 
+@pytest.mark.parametrize(
+    ("sample_rate", "bit_depth", "expected"),
+    [
+        (48000, 16, "sampleformat=48000:16:2"),
+        (96000, 16, "sampleformat=96000:16:2"),
+        (96000, 24, "sampleformat=96000:24:2&packed_s24le=true"),
+        (192000, 24, "sampleformat=192000:24:2&packed_s24le=true"),
+    ],
+)
+def test_sampleformat_query_enables_packed_s24le_for_24bit(
+    sample_rate: int, bit_depth: int, expected: str
+) -> None:
+    """24-bit TCP sources must request packed_s24le; 16-bit must not."""
+    audio_format = snapcast_stream_format(sample_rate, bit_depth)
+    assert snapcast_sampleformat_query(audio_format) == expected
+
+
+def test_stream_format_maps_bit_depth_to_pcm_content_type() -> None:
+    """Bit depth selects the matching packed PCM content type."""
+    assert snapcast_stream_format(48000, 16).content_type == ContentType.PCM_S16LE
+    assert snapcast_stream_format(96000, 24).content_type == ContentType.PCM_S24LE
+
+
 def test_transport_format_uses_snapserver_codec() -> None:
     """The reported final format follows the codec configured on Snapserver."""
     provider = MagicMock()
     provider._use_builtin_server = True
     provider._snapcast_server_transport_codec = "opus"
+    provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     stream = _make_stream(provider)
 
     output_format = stream._get_transport_format()
@@ -47,10 +76,26 @@ def test_transport_format_uses_snapserver_codec() -> None:
     assert output_format.bit_depth == 16
 
 
+def test_transport_format_follows_configured_stream_format() -> None:
+    """Transport format inherits the configured Snapcast PCM sample rate/bit depth."""
+    provider = MagicMock()
+    provider._use_builtin_server = True
+    provider._snapcast_server_transport_codec = "flac"
+    provider.stream_audio_format = snapcast_stream_format(96000, 24)
+    stream = _make_stream(provider)
+
+    output_format = stream._get_transport_format()
+
+    assert output_format.content_type == ContentType.FLAC
+    assert output_format.sample_rate == 96000
+    assert output_format.bit_depth == 24
+
+
 def test_external_transport_format_reads_uri_codec() -> None:
     """External Snapserver codec is read from the stream URI query."""
     provider = MagicMock()
     provider._use_builtin_server = False
+    provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     stream = _make_stream(provider)
     stream.snap_stream = MagicMock(
         _stream={"uri": {"query": {"codec": "flac"}}},
@@ -62,9 +107,27 @@ def test_external_transport_format_reads_uri_codec() -> None:
     assert output_format.codec_type == ContentType.FLAC
 
 
+@pytest.mark.asyncio
+async def test_register_uses_configured_sampleformat(
+    fake_provider: MagicMock, fake_snapserver: FakeSnapserver
+) -> None:
+    """stream_add_stream URI must include the configured sampleformat and packed_s24le."""
+    fake_provider.stream_audio_format = snapcast_stream_format(96000, 24)
+    fake_snapserver.queue_success(stream_id="hires-1")
+    stream = _make_stream(fake_provider)
+
+    await stream._register_tcp_server_source()
+
+    assert len(fake_snapserver.add_stream_calls) == 1
+    uri = fake_snapserver.add_stream_calls[0]
+    assert "sampleformat=96000:24:2" in uri
+    assert "packed_s24le=true" in uri
+
+
 def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     """Every client consuming a shared Snapcast stream gets the same output path."""
     provider = MagicMock()
+    provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     stream = _make_stream(provider)
     stream.media.source_id = "queue-1"
     stream.media.custom_data = {"session_id": "session-1"}
@@ -99,6 +162,8 @@ async def test_happy_path_register_succeeds_first_attempt(
     assert stream.snap_stream is not None
     assert stream.snap_stream.identifier == "ok-1"
     assert len(fake_snapserver.add_stream_calls) == 1
+    assert "sampleformat=48000:16:2" in fake_snapserver.add_stream_calls[0]
+    assert "packed_s24le" not in fake_snapserver.add_stream_calls[0]
 
 
 @pytest.mark.asyncio
@@ -213,6 +278,27 @@ async def test_name_collision_with_local_stream_cached_adopts_it(
     assert stream.snap_stream.identifier == "orphan-id"
     # Adoption must NOT spend further retries
     assert len(fake_snapserver.add_stream_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_name_collision_with_incompatible_format_recreates_stream(
+    fake_provider: MagicMock, fake_snapserver: FakeSnapserver
+) -> None:
+    """Orphan streams with a different sample format must be removed and recreated."""
+    target_name = "Music Assistant - hires"
+    fake_provider.stream_audio_format = snapcast_stream_format(96000, 24)
+    fake_snapserver.cache_stream_directly("orphan-id", target_name)
+    fake_snapserver.queue_name_collision()
+    fake_snapserver.queue_success(stream_id="recreated-id")
+
+    stream = _make_stream(fake_provider, name=target_name)
+    await stream._register_tcp_server_source()
+
+    assert stream.snap_stream is not None
+    assert stream.snap_stream.identifier == "recreated-id"
+    assert fake_snapserver.stream_remove_stream.await_count == 1
+    assert "sampleformat=96000:24:2" in fake_snapserver.add_stream_calls[-1]
+    assert "packed_s24le=true" in fake_snapserver.add_stream_calls[-1]
 
 
 @pytest.mark.asyncio

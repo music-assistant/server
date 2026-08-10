@@ -51,6 +51,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
+from ytmusicapi.parsers.podcasts import Description
 
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
@@ -1104,7 +1105,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             duration_sec = parse_str_duration(duration)
             episode.duration = int(duration_sec)
         if description := episode_obj.get("description"):
-            episode.metadata.description = description
+            # the single episode endpoint returns a Description object instead of a string
+            episode.metadata.description = (
+                description.text if isinstance(description, Description) else description
+            )
         if thumbnails := episode_obj.get("thumbnails"):
             episode.metadata.images = self._parse_thumbnails(thumbnails)
         if release_date := episode_obj.get("date"):
