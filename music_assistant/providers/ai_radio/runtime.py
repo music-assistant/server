@@ -517,6 +517,7 @@ class AIRadioRuntimeMixin:
         history_state: dict[str, list[tuple[int, float]]],
         allowed_slot_when: list[str] | None,
         runtime_tokens: dict[str, str],
+        decided_next_item_ids: set[str] | None = None,
     ) -> tuple[list[PlannedSection], dict[str, list[tuple[int, float]]]]:
         """Evaluate section rules and produce planning entries."""
         sections = program.get("sections", [])
@@ -546,6 +547,15 @@ class AIRadioRuntimeMixin:
 
         for slot in slots:
             if allowed_slot_when and slot.when not in allowed_slot_when:
+                continue
+            if (
+                decided_next_item_ids
+                and slot.when == "between_songs"
+                and slot.next_index is not None
+                and str(tracks[slot.next_index].get("item_id", "")) in decided_next_item_ids
+            ):
+                # the caller settled this slot in an earlier run: re-evaluating it would
+                # consume a chance roll and register its event a second time
                 continue
             matching_rules = [
                 rule for rule in section_order if str(rule.get("when", "")).strip() == slot.when

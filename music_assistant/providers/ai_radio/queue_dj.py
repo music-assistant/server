@@ -214,12 +214,13 @@ class AIRadioQueueDJMixin:
                 return
             items = self._dj_queue_items(queue_id)
             guard_index = self._dj_guard_index(queue)
-            if self._repair_dj_clips(queue_id, items, guard_index):
+            if self._repair_dj_clips(queue_id, state, items, guard_index):
                 items = self._dj_queue_items(queue_id)
+            # tracks that left the queue keep no decision, so the set cannot grow unbounded
+            state.decided_gap_ids &= {item.queue_item_id for item in items}
 
-            window = self._dj_window(items, guard_index, state.last_planned_item_id)
+            window = self._dj_window(items, guard_index)
             if len(window) < 2:
-                state.last_planned_item_id = window[-1].queue_item_id if window else None
                 self.logger.debug(
                     "Queue %s has no plannable gap ahead of the player, skipping replan", queue_id
                 )
@@ -250,6 +251,13 @@ class AIRadioQueueDJMixin:
                 # a switch or disable replaced this queue's state while the fetch above
                 # was in flight, so the session this pass planned for is gone
                 return
+            # every gap the planner is about to evaluate, so gaps where chance or a guard
+            # picks nothing count as decided too instead of being rolled again next pass
+            evaluated_gap_ids = {
+                str(track["item_id"])
+                for track in window_tracks[1:]
+                if track["item_id"] not in state.decided_gap_ids
+            }
             planned, history = self._plan_sections(
                 session_id=state.dj_session_id,
                 tracks=window_tracks,
@@ -259,18 +267,19 @@ class AIRadioQueueDJMixin:
                 history_state=state.history,
                 allowed_slot_when=["between_songs"],
                 runtime_tokens=runtime_tokens,
+                decided_next_item_ids=state.decided_gap_ids,
             )
             # insert order is not load bearing: every clip resolves its own target index
             # by item id right before inserting. descending walks back from the queue tail
             injected = 0
             skipped: dict[str, int] = {}
-            unserved_indexes: list[int] = []
             for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
+                target = window_tracks[section.insert_at_index]
                 outcome = await self._inject_dj_clip(
                     queue_id=queue_id,
                     state=state,
                     program=program,
-                    target=window_tracks[section.insert_at_index],
+                    target=target,
                     section=section,
                 )
                 if outcome == "injected":
@@ -278,7 +287,9 @@ class AIRadioQueueDJMixin:
                 else:
                     skipped[outcome] = skipped.get(outcome, 0) + 1
                     if outcome == "gap_gone":
-                        unserved_indexes.append(section.insert_at_index)
+                        # the target moved or left the queue, so nothing was decided about
+                        # its gap and a later pass has to look at it again
+                        evaluated_gap_ids.discard(str(target["item_id"]))
                 if self._dj_queues.get(queue_id) is not state:
                     # same race caught mid-loop: one clip may already have landed for the
                     # replaced session, the rest must not follow it in
@@ -289,20 +300,17 @@ class AIRadioQueueDJMixin:
                 section_id: events[-HISTORY_EVENTS_PER_SECTION:]
                 for section_id, events in history.items()
             }
-            if not unserved_indexes:
-                state.last_planned_item_id = window_tracks[-1]["item_id"]
-            elif (resume_index := min(unserved_indexes)) > 1:
-                # anchor the next window on the track in front of the earliest unserved gap,
-                # or the DJ goes silent for good on everything this pass left behind. an
-                # index of 0 or 1 means the window already starts there, so the marker stays
-                state.last_planned_item_id = window_tracks[resume_index - 1]["item_id"]
+            state.decided_gap_ids |= evaluated_gap_ids
             self.logger.debug(
-                "Replanned queue %s: window %s tracks, planned %s, injected %s, skipped %s",
+                "Replanned queue %s: window %s tracks, %s open gaps, planned %s, injected %s, "
+                "skipped %s, decided %s",
                 queue_id,
                 len(window_tracks),
+                len(evaluated_gap_ids),
                 len(planned),
                 injected,
                 skipped,
+                len(state.decided_gap_ids),
             )
 
     async def _inject_dj_clip(
@@ -378,7 +386,9 @@ class AIRadioQueueDJMixin:
         index_in_buffer = queue.index_in_buffer if queue.index_in_buffer is not None else -1
         return max(current_index, index_in_buffer)
 
-    def _repair_dj_clips(self, queue_id: str, items: list[QueueItem], guard_index: int) -> bool:
+    def _repair_dj_clips(
+        self, queue_id: str, state: DJQueueState, items: list[QueueItem], guard_index: int
+    ) -> bool:
         """Delete DJ clips that no longer sit in front of the track they announce."""
         deleted = 0
         for index in range(guard_index + 2, len(items)):
@@ -391,26 +401,23 @@ class AIRadioQueueDJMixin:
             ):
                 continue
             self.mass.player_queues.delete_item(queue_id, item.queue_item_id)
+            # the gap this clip was serving is open again, so let a later pass decide it anew
+            if (gap_next_id := item.extra_attributes.get(ATTR_GAP_NEXT_ID)) is not None:
+                state.decided_gap_ids.discard(str(gap_next_id))
             deleted += 1
         if deleted:
             self.logger.debug("Repaired queue %s: deleted %s stale DJ clip(s)", queue_id, deleted)
         return bool(deleted)
 
-    def _dj_window(
-        self, items: list[QueueItem], guard_index: int, marker_item_id: str | None
-    ) -> list[QueueItem]:
+    def _dj_window(self, items: list[QueueItem], guard_index: int) -> list[QueueItem]:
         """Return the upcoming music items that this pass may plan against."""
-        upcoming = [
+        # every upcoming track, decided or not: the planner counts songs and minutes over a
+        # contiguous run, and per gap decisions are what keeps the work from being redone
+        return [
             item
             for item in items[guard_index + 1 :]
             if not item.extra_attributes.get(ATTR_QUEUE_DJ)
         ]
-        if marker_item_id is not None:
-            for position, item in enumerate(upcoming):
-                if item.queue_item_id == marker_item_id:
-                    # the marker itself is kept as the anchor of the gap behind it
-                    return upcoming[position:]
-        return upcoming
 
     def _dj_window_offsets(self, items: list[QueueItem], window_start_id: str) -> tuple[int, float]:
         """Return the songs and minutes of music playing before the first window track."""

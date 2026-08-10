@@ -336,7 +336,7 @@ async def test_replan_inserts_clip_between_upcoming_tracks(tmp_path: Path) -> No
             assert successor.queue_item_id == item.extra_attributes[ATTR_GAP_NEXT_ID]
     state = dummy._dj_queues["queue-1"]
     assert state.clip_counter == 2
-    assert state.last_planned_item_id == tracks[3].queue_item_id
+    assert state.decided_gap_ids == {tracks[2].queue_item_id, tracks[3].queue_item_id}
     assert state.songs_before_window == 1
 
 
@@ -520,8 +520,8 @@ async def test_planning_axis_stays_anchored_to_real_queue_positions(tmp_path: Pa
     dummy.player_queues._items.extend([_track(4), _track(5)])
     await dummy._replan_queue("queue-1")
 
-    # the window now reopens on track 3, with tracks 0-2 behind it
-    assert state.songs_before_window == 3
+    # the window still opens on track 1, so the appended tracks keep their absolute positions
+    assert state.songs_before_window == 1
     assert [song for song, _minute in state.history["Song_Transition"]] == [2, 3, 4, 5]
 
 
@@ -651,7 +651,7 @@ async def test_stale_pass_inserts_nothing_after_a_mid_pass_dj_switch(tmp_path: P
     assert dummy.player_queues.loads == []
     new_state = dummy._dj_queues["queue-1"]
     assert new_state is not old_state
-    assert new_state.last_planned_item_id is None
+    assert new_state.decided_gap_ids == set()
 
 
 async def test_replan_holds_off_until_the_switch_cleanup_ran(tmp_path: Path) -> None:
@@ -665,7 +665,7 @@ async def test_replan_holds_off_until_the_switch_cleanup_ran(tmp_path: Path) -> 
     await dummy._replan_queue("queue-1")
 
     assert dummy.player_queues.loads == []
-    assert state.last_planned_item_id is None
+    assert state.decided_gap_ids == set()
     # the request is dropped, not kept, or the drain loop would spin on the bail
     assert state.replan_pending is False
 
@@ -707,8 +707,8 @@ async def test_switch_refills_the_gaps_its_own_cleanup_frees(tmp_path: Path) -> 
         assert clip.extra_attributes[ATTR_HOST_ID] == "daisy"
 
 
-async def test_marker_holds_back_when_a_gap_vanished_during_the_pass(tmp_path: Path) -> None:
-    """A gap whose target left the queue mid-pass is re-covered instead of marked as done."""
+async def test_a_vanished_target_leaves_its_gap_open(tmp_path: Path) -> None:
+    """A gap whose target left the queue mid-pass stays open, so its return is planned."""
     tracks = [_track(index) for index in range(6)]
     dummy = _make_replan_dj(tmp_path, list(tracks))
     prepare_runtime_tokens = dummy._prepare_runtime_tokens
@@ -730,20 +730,87 @@ async def test_marker_holds_back_when_a_gap_vanished_during_the_pass(tmp_path: P
         tracks[5].queue_item_id,
     }
     state = dummy._dj_queues["queue-1"]
-    # the marker anchors the gap the vanished track left behind, not the window tail
-    assert state.last_planned_item_id == tracks[2].queue_item_id
+    assert state.decided_gap_ids == announced
 
-    clip_before_track_4 = next(
-        item
-        for item in queues.items("queue-1")
-        if item.extra_attributes.get(ATTR_GAP_NEXT_ID) == tracks[4].queue_item_id
-    )
-    queues.delete_item("queue-1", clip_before_track_4.queue_item_id)
+    # the track returns, as a reorder that rebuilds the queue does
+    dummy._prepare_runtime_tokens = prepare_runtime_tokens  # type: ignore[method-assign]
+    queues._items.append(tracks[3])
     await dummy._replan_queue("queue-1")
 
-    # the next pass covers the gap again, and converges on the tail now nothing is left open
-    assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[4].queue_item_id
-    assert state.last_planned_item_id == tracks[5].queue_item_id
+    assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+    assert tracks[3].queue_item_id in state.decided_gap_ids
+
+
+async def test_reordering_the_queue_keeps_the_moved_gaps_plannable(tmp_path: Path) -> None:
+    """Shuffling new tracks into the upcoming items must not hide the moved gaps for good."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert len(queues.loads) == 2
+    clips = {
+        item.extra_attributes[ATTR_GAP_NEXT_ID]: item
+        for item in queues.items("queue-1")
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    }
+
+    # shuffle on add: the new tracks land in front of the old ones, moving the previously
+    # last planned track to the very back. the clips travelled along with their own track
+    extra = [_track(4), _track(5)]
+    queues._items = [
+        tracks[0],
+        extra[0],
+        tracks[1],
+        extra[1],
+        clips[tracks[2].queue_item_id],
+        tracks[2],
+        clips[tracks[3].queue_item_id],
+        tracks[3],
+    ]
+    await dummy._replan_queue("queue-1")
+
+    assert queues.deleted == []
+    announced = {items[0].extra_attributes[ATTR_GAP_NEXT_ID] for items, _ in queues.loads[2:]}
+    assert announced == {tracks[1].queue_item_id, extra[1].queue_item_id}
+
+
+async def test_appending_a_batch_plans_only_the_new_gaps(tmp_path: Path) -> None:
+    """A batch appended to a progressive queue is planned without re-rolling settled gaps."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    state = dummy._dj_queues["queue-1"]
+
+    extra = [_track(4), _track(5)]
+    queues._items.extend(extra)
+    await dummy._replan_queue("queue-1")
+
+    assert len(queues.loads) == 4
+    announced = {items[0].extra_attributes[ATTR_GAP_NEXT_ID] for items, _ in queues.loads[2:]}
+    assert announced == {extra[0].queue_item_id, extra[1].queue_item_id}
+    # the settled gaps never reached the planner, so their events are registered once
+    assert [song for song, _minute in state.history["Song_Transition"]] == [2, 3, 4, 5]
+
+
+async def test_a_repaired_clip_reopens_its_gap(tmp_path: Path) -> None:
+    """A clip the repair drops leaves its gap open, so a later pass fills it again."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    stale = next(
+        item
+        for item in queues.items("queue-1")
+        if item.extra_attributes.get(ATTR_GAP_NEXT_ID) == tracks[3].queue_item_id
+    )
+
+    # a queue edit moved the clip away from the track it announces
+    queues._items = [item for item in queues._items if item is not stale] + [stale]
+    await dummy._replan_queue("queue-1")
+
+    assert queues.deleted == [stale.queue_item_id]
+    assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
 
 
 async def test_replan_yields_the_queue_to_a_running_show(tmp_path: Path) -> None:

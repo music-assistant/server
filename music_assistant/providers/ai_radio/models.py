@@ -46,7 +46,9 @@ class DJQueueState:
     clip_counter: int = 0
     songs_before_window: int = 0
     minutes_before_window: float = 0.0
-    last_planned_item_id: str | None = None
+    # queue_item_ids of the tracks whose preceding gap this session already settled, by
+    # injecting a clip, by leaving it empty on purpose or because it became unusable
+    decided_gap_ids: set[str] = field(default_factory=set)
     history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
     # a freshly armed state may only plan once the previous host's clips are cleared
     ready: bool = False
