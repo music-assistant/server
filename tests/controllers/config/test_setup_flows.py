@@ -1552,6 +1552,12 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
         credentials_via_token,
     )
+    # the browser is not on this host, so the loopback target is unreachable and the flow has
+    # to fall back to asking the user to paste the URL they landed on
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.await_loopback_authorization",
+        MagicMock(side_effect=OSError),
+    )
     with (
         _use_flow(flow_mass, run_setup),
         patch.object(flow_mass, "load_provider_config", AsyncMock()),

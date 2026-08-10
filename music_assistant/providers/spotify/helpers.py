@@ -10,6 +10,7 @@ import tempfile
 import time
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.json import json_loads
@@ -18,6 +19,14 @@ from music_assistant.helpers.process import AsyncProcess, check_output
 from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
 
 LOGGER = logging.getLogger(__name__)
+
+LOOPBACK_RESPONSE_HTML = """
+<html>
+<body onload="window.close();">
+    Playback approved, you may now close this window and return to Music Assistant.
+</body>
+</html>
+"""
 
 if TYPE_CHECKING:
     import aiohttp
@@ -108,6 +117,35 @@ async def librespot_credentials_via_token(librespot_bin: str, access_token: str)
         if not os.path.exists(credentials_file):
             raise LoginFailed("Librespot did not store a playback credential")
         return await asyncio.to_thread(_read_credentials_file, credentials_file)
+
+
+async def await_loopback_authorization(port: int, path: str) -> dict[str, str]:
+    """
+    Serve the loopback redirect target and return the OAuth params the browser arrives with.
+
+    Only reachable when the browser runs on the same host as Music Assistant; callers are
+    expected to offer a manual fallback for everyone else.
+
+    :param port: Loopback port to listen on.
+    :param path: Request path the redirect URI points at.
+    :raises OSError: When the port cannot be bound.
+    """
+    received: asyncio.Future[dict[str, str]] = asyncio.get_running_loop().create_future()
+
+    async def handle(request: web.Request) -> web.Response:
+        if not received.done():
+            received.set_result(dict(request.query))
+        return web.Response(text=LOOPBACK_RESPONSE_HTML, content_type="text/html")
+
+    app = web.Application()
+    app.router.add_get(path, handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        await web.TCPSite(runner, "127.0.0.1", port).start()
+        return await received
+    finally:
+        await runner.cleanup()
 
 
 async def get_spotify_token(

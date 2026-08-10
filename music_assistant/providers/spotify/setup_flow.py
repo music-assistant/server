@@ -28,13 +28,17 @@ from .constants import (
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
     KEYMASTER_CLIENT_ID,
+    LIBRESPOT_REDIRECT_PATH,
+    LIBRESPOT_REDIRECT_PORT,
     LIBRESPOT_REDIRECT_URI,
     LIBRESPOT_SCOPE,
+    LOOPBACK_WAIT_TIMEOUT,
     PAIRING_DEVICE_NAME,
     PAIRING_TIMEOUT,
     SCOPE,
 )
 from .helpers import (
+    await_loopback_authorization,
     get_librespot_binary,
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
@@ -227,13 +231,24 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
         "redirect_uri": LIBRESPOT_REDIRECT_URI,
     }
     authorize_url = f"{AUTHORIZE_URL}?{urlencode(params)}"
-    values = await session.form(
-        [CONF_ENTRY_PLAYBACK_CALLBACK_URL],
-        step_id="playback_browser",
-        expires_in=OAUTH_STEP_TIMEOUT,
-        translation_params=[authorize_url],
-    )
-    code = authorization_code_from_url(str(values.get(CONF_PLAYBACK_CALLBACK_URL) or ""))
+    try:
+        # the loopback target is only reachable when the browser runs on this host, in which
+        # case the step completes on its own; everyone else falls through to the paste form
+        callback_params = await session.external_until(
+            await_loopback_authorization(LIBRESPOT_REDIRECT_PORT, LIBRESPOT_REDIRECT_PATH),
+            authorize_url,
+            step_id="playback_browser_open",
+            expires_in=LOOPBACK_WAIT_TIMEOUT,
+        )
+        code = authorization_code_from_params(callback_params)
+    except StepExpiredError, OSError:
+        values = await session.form(
+            [CONF_ENTRY_PLAYBACK_CALLBACK_URL],
+            step_id="playback_browser",
+            expires_in=OAUTH_STEP_TIMEOUT,
+            translation_params=[authorize_url],
+        )
+        code = authorization_code_from_url(str(values.get(CONF_PLAYBACK_CALLBACK_URL) or ""))
     token_params = {
         "grant_type": "authorization_code",
         "code": code,

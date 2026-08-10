@@ -19,9 +19,13 @@ CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable sto
 # obtained separately from the Web API tokens.
 KEYMASTER_CLIENT_ID = "65b708073fc0480ea92a077233ca87bd"
 LIBRESPOT_SCOPE = ["streaming"]
-# keymaster accepts loopback redirect URIs only, so the browser fallback cannot use MA's hosted
-# callback: the browser lands on a dead loopback URL and the user pastes it back into the flow
-LIBRESPOT_REDIRECT_URI = "http://127.0.0.1:5588/login"
+# keymaster accepts loopback redirect URIs only, so the browser flow cannot use MA's hosted
+# callback. Music Assistant serves the loopback target itself, which works when the browser
+# runs on the same host; otherwise the browser lands on a dead URL that the user pastes back.
+LIBRESPOT_REDIRECT_PORT = 5588
+LIBRESPOT_REDIRECT_PATH = "/login"
+LIBRESPOT_REDIRECT_URI = f"http://127.0.0.1:{LIBRESPOT_REDIRECT_PORT}{LIBRESPOT_REDIRECT_PATH}"
+LOOPBACK_WAIT_TIMEOUT = 30  # seconds before offering the manual paste instead
 # name advertised to the Spotify app while pairing; also shown in the setup flow instructions
 PAIRING_DEVICE_NAME = "Music Assistant"
 PAIRING_TIMEOUT = 300  # seconds the pairing step waits for the user to pick the device
