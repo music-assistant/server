@@ -406,8 +406,8 @@ class SendspinPlaybackSession:
 
         :param reason: Why the task is being cancelled, for logging and the cancel message.
         :param keep_stream: Keep the stream active for a track change and only have clients
-            clear their buffers. Ignored while non-spec-compliant clients are allowed, since
-            legacy clients might mishandle stream/clear.
+            clear their buffers. Ignored while legacy clients are allowed, since they might
+            mishandle stream/clear.
         """
         task = self.playback_task
         if task is None:

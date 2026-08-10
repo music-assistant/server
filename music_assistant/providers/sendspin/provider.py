@@ -89,8 +89,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
-    CONF_ALLOW_NONCOMPLIANT_CLIENTS,
-    CONF_ALLOW_UNENCRYPTED,
+    CONF_ALLOW_LEGACY_CLIENTS,
     CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
@@ -404,15 +403,9 @@ class SendspinProvider(PlayerProvider):
         return (
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
             ConfigEntry(
-                key=CONF_ALLOW_UNENCRYPTED,
+                key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-            ),
-            ConfigEntry(
-                key=CONF_ALLOW_NONCOMPLIANT_CLIENTS,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_MIN_PIN_LENGTH,
@@ -465,16 +458,15 @@ class SendspinProvider(PlayerProvider):
             )
         if orphaned:
             self.logger.info("Removed %d pairing(s) of a deleted or disabled account", orphaned)
+        allow_legacy_clients = cast("bool", self.config.get_value(CONF_ALLOW_LEGACY_CLIENTS, True))
         self.server_api = SendspinServer(
             self.mass.loop,
             identity,
             "Music Assistant",
             self.mass.http_session,
             pairing_store=pairing_store,
-            allow_unencrypted=cast("bool", self.config.get_value(CONF_ALLOW_UNENCRYPTED, True)),
-            allow_noncompliant_clients=cast(
-                "bool", self.config.get_value(CONF_ALLOW_NONCOMPLIANT_CLIENTS, True)
-            ),
+            allow_unencrypted=allow_legacy_clients,
+            allow_noncompliant_clients=allow_legacy_clients,
             min_pin_length=cast(
                 "int", self.config.get_value(CONF_MIN_PIN_LENGTH, DEFAULT_MIN_PIN_LENGTH)
             ),
