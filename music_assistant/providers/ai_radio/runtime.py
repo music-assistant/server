@@ -537,13 +537,14 @@ class AIRadioRuntimeMixin:
         selected: list[tuple[str, Slot, dict[str, str]]] = []
         rng = random.Random()
 
+        def slot_event(slot: Slot) -> tuple[int, float]:
+            song_local = slot.next_index if slot.next_index is not None else len(tracks)
+            return track_index_offset + song_local, minute_offset + slot.minute_mark
+
         def register_event(section_id: str, slot: Slot) -> None:
             if is_empty_section(section_id):
                 return
-            song_local = slot.next_index if slot.next_index is not None else len(tracks)
-            song_global = track_index_offset + song_local
-            minute_global = minute_offset + slot.minute_mark
-            history.setdefault(section_id, []).append((song_global, minute_global))
+            history.setdefault(section_id, []).append(slot_event(slot))
 
         for slot in slots:
             if allowed_slot_when and slot.when not in allowed_slot_when:
@@ -653,6 +654,7 @@ class AIRadioRuntimeMixin:
                     order=order_index,
                     section_by_id=section_by_id,
                     session_id=session_id,
+                    history_events=[(item[0], slot_event(item[1])) for item in grouped_items],
                 )
                 planned.append(merged)
                 order_index += 1
@@ -682,6 +684,7 @@ class AIRadioRuntimeMixin:
                     prompt=prompt,
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
+                    history_events=[(section_id, slot_event(slot))],
                 )
             )
             order_index += 1
@@ -729,6 +732,7 @@ class AIRadioRuntimeMixin:
         order: int,
         section_by_id: dict[str, dict[str, Any]],
         session_id: str,
+        history_events: list[tuple[str, tuple[int, float]]],
     ) -> PlannedSection:
         """Build a merged ai_meta section for one slot."""
         section_ids = [item[0] for item in grouped_items]
@@ -776,6 +780,7 @@ class AIRadioRuntimeMixin:
             prompt=meta_prompt,
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
+            history_events=history_events,
         )
 
     def _compose_queue_items(

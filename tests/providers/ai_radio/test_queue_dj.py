@@ -233,6 +233,59 @@ def _optional_host(min_gap_songs: int) -> dict[str, Any]:
     return host
 
 
+def _hourly_sections() -> list[dict[str, Any]]:
+    """Return two once-per-hour sections plus the ai_meta section that merges them."""
+    return [
+        {
+            "id": "Weather",
+            "name": "Weather",
+            "type": "ai_text",
+            "web_search": "disabled",
+            "prompt": "Give the forecast",
+            "constraints": {"max_chars": 200},
+        },
+        {
+            "id": "News",
+            "name": "News",
+            "type": "ai_text",
+            "web_search": "disabled",
+            "prompt": "Give the headlines",
+            "constraints": {"max_chars": 200},
+        },
+        {
+            "id": "Smoother",
+            "name": "Between Songs Mix",
+            "type": "ai_meta",
+            "prompt": "Combine these: <section_drafts>",
+        },
+    ]
+
+
+def _hourly_host() -> dict[str, Any]:
+    """Return a host whose two hourly sections merge into a single clip per gap."""
+    host = _must_host()
+    host["section_ids"] = ["Weather", "News", "Smoother"]
+    host["section_order"] = [
+        {
+            "when": "between_songs",
+            "flow": [
+                {
+                    "OPTIONAL": {
+                        "section": "Weather",
+                        "chance": 1.0,
+                        "guards": {"max_per_60min": 1},
+                    }
+                },
+                {
+                    "OPTIONAL": {"section": "News", "chance": 1.0, "guards": {"max_per_60min": 1}},
+                },
+            ],
+        }
+    ]
+    host["merge_section_id"] = "Smoother"
+    return host
+
+
 def _track(index: int) -> FakeQueueItem:
     """Return a fake music queue item."""
     return FakeQueueItem(f"Artist {index} - Song {index}")
@@ -701,6 +754,39 @@ async def test_switch_refills_the_gaps_its_own_cleanup_frees(tmp_path: Path) -> 
     assert len(remaining) == 2
     for clip in remaining:
         assert clip.extra_attributes[ATTR_HOST_ID] == "daisy"
+
+
+async def test_a_rejected_clip_keeps_no_guard_history(tmp_path: Path) -> None:
+    """A merged clip the splice rejects must not block its own sections from airing later."""
+    tracks = [_track(index) for index in range(4)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_hourly_host())
+    for section in _hourly_sections():
+        dummy._sections[section["id"]] = section
+    prepare_runtime_tokens = dummy._prepare_runtime_tokens
+
+    async def _slow_prepare(program: dict[str, Any]) -> dict[str, str]:
+        # the player buffers ahead while the pass awaits, so the planned gap is spoken for
+        dummy.player_queues._queue.index_in_buffer = 1
+        return await prepare_runtime_tokens(program)
+
+    dummy._prepare_runtime_tokens = _slow_prepare  # type: ignore[method-assign]
+    await dummy._replan_queue("queue-1")
+
+    state = dummy._dj_queues["queue-1"]
+    assert dummy.player_queues.loads == []
+    assert state.history["Weather"] == []
+    assert state.history["News"] == []
+
+    # the queue grows, so both sections get a fresh gap to air in
+    dummy._prepare_runtime_tokens = prepare_runtime_tokens  # type: ignore[method-assign]
+    extra = [_track(4), _track(5)]
+    dummy.player_queues._items.extend(extra)
+    await dummy._replan_queue("queue-1")
+
+    assert len(dummy.player_queues.loads) == 1
+    clip = dummy.player_queues.loads[0][0][0]
+    assert clip.name == "Weather + News"
+    assert clip.extra_attributes[ATTR_GAP_NEXT_ID] == extra[0].queue_item_id
 
 
 async def test_a_pass_applies_all_its_clips_in_one_queue_update(tmp_path: Path) -> None:

@@ -35,9 +35,9 @@ QUEUE_PAGE_SIZE = 500
 # per section history cap, generous for the widest guard window (60 minutes)
 HISTORY_EVENTS_PER_SECTION = 50
 
-# result of one injection attempt. only "gap_gone" leaves its gap unserved: a gap that is
-# too close to the player or already holds a clip is deliberately served or forever gone
-DJInjectOutcome = Literal["injected", "gap_gone", "too_close", "occupied"]
+# result of one splice attempt. only "gap_gone" leaves its gap unserved: a gap that already
+# holds a clip is served, and one that slipped behind the player can never be served again
+DJSpliceOutcome = Literal["injected", "gap_gone", "too_close", "occupied"]
 
 
 class AIRadioQueueDJMixin:
@@ -279,6 +279,7 @@ class AIRadioQueueDJMixin:
             # in the working copy. descending walks back from the queue tail
             injected = 0
             skipped: dict[str, int] = {}
+            rejected: list[PlannedSection] = []
             for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
                 target = window_tracks[section.insert_at_index]
                 outcome = self._splice_dj_clip(
@@ -293,6 +294,7 @@ class AIRadioQueueDJMixin:
                 if outcome == "injected":
                     injected += 1
                 else:
+                    rejected.append(section)
                     skipped[outcome] = skipped.get(outcome, 0) + 1
                     if outcome == "gap_gone":
                         # the target moved or left the queue, so nothing was decided about
@@ -300,6 +302,13 @@ class AIRadioQueueDJMixin:
                         evaluated_gap_ids.discard(str(target["item_id"]))
             if injected:
                 self.mass.player_queues.update_items(queue_id, working)
+            # the planner registers a guard event for everything it selects, but a rejected
+            # clip never airs: leaving its event in would make it block its own successor for
+            # a whole guard window, and double-count once a reopened gap is filled again
+            for section in rejected:
+                for section_id, event in section.history_events:
+                    if (events := history.get(section_id)) and event in events:
+                        events.remove(event)
             # only the newest events matter to the guards (the last one for min_gap_songs,
             # a 60 minute window for max_per_60min), so the tail is dropped
             state.history = {
@@ -328,14 +337,10 @@ class AIRadioQueueDJMixin:
         program: dict[str, Any],
         target: dict[str, Any],
         section: PlannedSection,
-    ) -> DJInjectOutcome:
+    ) -> DJSpliceOutcome:
         """Insert one planned clip in front of its target track and report the outcome."""
         target_index = next(
-            (
-                index
-                for index, item in enumerate(items)
-                if item.queue_item_id == target["item_id"]
-            ),
+            (index for index, item in enumerate(items) if item.queue_item_id == target["item_id"]),
             None,
         )
         if target_index is None:
