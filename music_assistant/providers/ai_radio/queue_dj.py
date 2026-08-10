@@ -192,7 +192,7 @@ class AIRadioQueueDJMixin:
                     live_state.replan_pending = False
                 return
 
-    async def _replan_queue(self, queue_id: str) -> None:
+    async def _replan_queue(self, queue_id: str) -> None:  # noqa: PLR0915
         """Run one planning, injection and repair pass over a queue."""
         state = self._dj_queues.get(queue_id)
         if state is None:

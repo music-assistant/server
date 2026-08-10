@@ -491,6 +491,7 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
     assert streamdetails.duration is None
     assert renderer._sessions["sess"].skipped_sections == 0
 
+
 async def test_generate_script_uses_host_instructions() -> None:
     """The prompt sent to the LLM carries the resolved host's persona instructions."""
     renderer = DummyRenderer()

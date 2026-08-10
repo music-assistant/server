@@ -595,7 +595,7 @@ async def test_generate_text_always_states_the_pronunciation_rules(
     )
 
     await runtime._generate_text(
-        station={"general": general}, prompt="test prompt", web_mode="allow"
+        instructions=str(general.get("instructions", "")), prompt="test prompt", web_mode="allow"
     )
 
     assert TTS_PRONUNCIATION_INSTRUCTIONS in plugin.ai_query.await_args.args[0]

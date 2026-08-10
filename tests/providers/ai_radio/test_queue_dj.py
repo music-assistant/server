@@ -763,7 +763,7 @@ async def test_a_failing_switch_cleanup_leaves_no_armed_state(tmp_path: Path) ->
     daisy["id"] = "daisy"
     dummy._hosts["daisy"] = daisy
 
-    def _failing_cleanup(queue_id: str) -> None:
+    def _failing_cleanup(queue_id: str) -> None:  # noqa: ARG001
         raise MusicAssistantError("queue layer is unhappy")
 
     dummy._remove_pending_dj_clips = _failing_cleanup  # type: ignore[method-assign]
