@@ -1695,6 +1695,8 @@
   "provider.opensubsonic.config_entries.enable_legacy_auth.label": "Enable Legacy Auth",
   "provider.opensubsonic.config_entries.enable_podcasts.description": "Should the provider query for podcasts as well as music?",
   "provider.opensubsonic.config_entries.enable_podcasts.label": "Enable Podcasts",
+  "provider.opensubsonic.config_entries.enable_radio_stations.description": "Should the provider query for radio stations?",
+  "provider.opensubsonic.config_entries.enable_radio_stations.label": "Enable Radio Stations",
   "provider.opensubsonic.config_entries.pagination_size.description": "When enumerating items from the server, how many should be in each request. Smaller will require more requests but is better for low bandwidth connections. The Open Subsonic spec says the max value for this is 500 items.",
   "provider.opensubsonic.config_entries.pagination_size.label": "Number of items included per server request.",
   "provider.opensubsonic.config_entries.password.description": "The password associated with the username. Not required when using an API key.",
