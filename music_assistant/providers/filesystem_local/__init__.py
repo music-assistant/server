@@ -19,9 +19,7 @@ import aiofiles
 import shortuuid
 import xmltodict
 from aiofiles.os import wrap
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     EventType,
     ExternalID,
@@ -36,6 +34,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -76,7 +75,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers import lyrics
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
@@ -116,6 +115,7 @@ from .constants import (
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
+    content_type_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -137,7 +137,7 @@ from .helpers import (
 from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -204,9 +204,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Return Config entries to configure this provider."""
         # content type and path are collected by the setup flow; surface the (immutable)
         # content type read-only so the sync options' depends_on chains still resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -1006,6 +1008,10 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+        if file_item.is_dir:
+            # handing the path back would have the image layer run an ffmpeg
+            # embedded-artwork extraction on the directory before giving up
+            raise MediaNotFoundError(f"Image path is a directory: {path}")
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:

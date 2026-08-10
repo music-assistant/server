@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.helpers import create_safe_string
+
 from music_assistant.helpers.compare import (
     compare_strings,
     compare_version,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.json import json_dumps, json_loads

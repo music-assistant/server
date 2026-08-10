@@ -13,6 +13,7 @@ import music_assistant.controllers.music.recommendations.controller as rec_contr
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
+from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 
 if TYPE_CHECKING:
     from typing import Any
@@ -96,8 +97,12 @@ async def test_hanging_provider_rows_dropped_healthy_rows_kept(
     monkeypatch.setattr(rec_controller, "RECOMMENDATIONS_ROWS_TIMEOUT", 0.05)
     hanging = _build(_HangingRowsProvider, instance_id="hanging")
     healthy = _build(_HealthyRowsProvider, instance_id="healthy")
+    recommendations_provider = mass.get_provider("recommendations")
+    assert isinstance(recommendations_provider, LibraryRecommendationsProvider)
     monkeypatch.setattr(
-        mass, "get_providers_supporting_feature", lambda *_a, **_k: [hanging, healthy]
+        mass,
+        "get_providers_supporting_feature",
+        lambda *_a, **_k: [hanging, healthy, recommendations_provider],
     )
     folders = await mass.music.recommendations.get_recommendations()
     item_ids = {f.item_id for f in folders}
@@ -111,7 +116,13 @@ async def test_raising_provider_rows_isolated(
 ) -> None:
     """A provider whose rows call raises is isolated; other rows still return."""
     raising = _build(_RaisingRowsProvider, instance_id="raising")
-    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [raising])
+    recommendations_provider = mass.get_provider("recommendations")
+    assert isinstance(recommendations_provider, LibraryRecommendationsProvider)
+    monkeypatch.setattr(
+        mass,
+        "get_providers_supporting_feature",
+        lambda *_a, **_k: [raising, recommendations_provider],
+    )
     folders = await mass.music.recommendations.get_recommendations()
     assert "recently_played" in {f.item_id for f in folders}
     assert not any(f.provider == "raising" for f in folders)
@@ -184,11 +195,17 @@ async def test_payload_mixin_rows_timeout_does_not_cancel_shared_fetch(
     provider.mass.cache.get_with_freshness = AsyncMock(side_effect=_cache_get)  # type: ignore[method-assign]
     provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
     provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
-    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [provider])
+    recommendations_provider = mass.get_provider("recommendations")
+    assert isinstance(recommendations_provider, LibraryRecommendationsProvider)
+    monkeypatch.setattr(
+        mass,
+        "get_providers_supporting_feature",
+        lambda *_a, **_k: [provider, recommendations_provider],
+    )
 
     folders = await mass.music.recommendations.get_recommendations()
     assert not any(f.provider == "payload_prov" for f in folders)
-    assert any(f.provider == "library" for f in folders)  # other rows unaffected
+    assert any(f.provider == "recommendations" for f in folders)  # other rows unaffected
     assert provider.fetch_count == 1  # the fetch started but did not finish in time
 
     # release the gate: the shared fetch, still running in the background, completes

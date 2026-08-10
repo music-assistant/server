@@ -104,7 +104,7 @@ from music_assistant.helpers.datetime import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
+from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -1201,16 +1201,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
-
-    async def refresh_items(self, items: list[MediaItemType]) -> None:
-        """
-        Refresh MediaItems to force retrieval of full info and matches.
-
-        Creates background tasks to process the action.
-        """
-        async with TaskManager(self.mass) as tg:
-            for media_item in items:
-                tg.create_task(self.refresh_item(media_item))
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
     async def refresh_item(  # noqa: PLR0915

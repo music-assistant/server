@@ -367,3 +367,110 @@ async def test_failing_unregister_still_deregisters_the_provider(
 
     assert provider.instance_id not in mass_minimal._providers
     assert EventType.PROVIDERS_UPDATED in signalled
+
+
+async def _setup_bare_player_provider(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> PlayerProvider:
+    """Put a bare player provider on a minimal mass instance, ready to be unloaded."""
+    mass.players = PlayerController(mass)
+    mass.music = MagicMock(unschedule_provider_sync=AsyncMock())
+    # no queues exist in these tests, so get() must report a miss rather than a mock
+    mass.player_queues = MagicMock(on_player_register=AsyncMock(), get=MagicMock(return_value=None))
+    # discovery is not set up on the minimal instance and plays no part in these tests
+    monkeypatch.setattr(mass.discovery, "on_provider_unload", MagicMock())
+    # a registration reads the player's cached power state, so the cache has to work here
+    # for it to run all the way to the point where the player enters the registry
+    await mass.cache.setup(await mass.config.get_core_config("cache"))
+
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.PLAYER,
+        domain="test_player_provider",
+        instance_id="test_player_provider--instance",
+        name="Test player provider",
+    )
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
+    provider = PlayerProvider(
+        mass,
+        manifest=ProviderManifest(
+            type=ProviderType.PLAYER,
+            domain="test_player_provider",
+            name="Test player provider",
+            description="Test player provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+    )
+    provider.available = True
+    mass._providers[provider.instance_id] = provider
+    return provider
+
+
+async def test_unload_provider_rejects_late_player_registration(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player provider on its way out can no longer register players."""
+    provider = await _setup_bare_player_provider(mass_minimal, monkeypatch)
+    monkeypatch.setattr(
+        "music_assistant.controllers.players.controller.enrich_device_mac_address",
+        AsyncMock(),
+    )
+
+    late_player = Player(provider, "late_player")
+
+    class LateRegisteringPlayer(Player):
+        """Player whose unload lets a discovery callback register another player."""
+
+        async def on_unload(self) -> None:
+            """Handle unload of the player."""
+            await super().on_unload()
+            # stands in for a discovery that was already running when the unload started
+            # and only reaches the controller once the players have been unregistered
+            await self.mass.players.register_or_update(late_player)
+
+    player = LateRegisteringPlayer(provider, "existing_player")
+    player.set_initialized()
+    mass_minimal.players._players[player.player_id] = player
+
+    await mass_minimal.unload_provider(provider.instance_id)
+
+    # without the guard the late player survives the unload with no provider behind it,
+    # so it is never unregistered and its on_unload never runs
+    assert mass_minimal.players._players == {}
+
+
+async def test_unload_provider_rejects_in_flight_player_registration(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registration that is already running when the unload starts is dropped as well."""
+    provider = await _setup_bare_player_provider(mass_minimal, monkeypatch)
+
+    registration_started = asyncio.Event()
+    resume_registration = asyncio.Event()
+
+    async def _blocked_enrich(*_args: object, **_kwargs: object) -> None:
+        """Park the registration in one of its awaits until the test releases it."""
+        registration_started.set()
+        await resume_registration.wait()
+
+    monkeypatch.setattr(
+        "music_assistant.controllers.players.controller.enrich_device_mac_address",
+        _blocked_enrich,
+    )
+
+    register = asyncio.create_task(mass_minimal.players.register(Player(provider, "in_flight")))
+    await asyncio.wait_for(registration_started.wait(), timeout=5)
+
+    # start the unload with the registration parked, and release it once the provider is
+    # flagged: the player is not in the registry yet, so the unregister pass cannot see it
+    unload = asyncio.create_task(mass_minimal.unload_provider(provider.instance_id))
+    async with asyncio.timeout(5):
+        while not provider.unloading:
+            await asyncio.sleep(0)
+    resume_registration.set()
+    await asyncio.gather(register, unload)
+
+    assert mass_minimal.players._players == {}

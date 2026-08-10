@@ -7,7 +7,7 @@ import builtins
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
-from music_assistant_models.config_entries import ConfigValueType
+from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 
@@ -57,6 +57,10 @@ class Provider:
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        # set by the controller once teardown of this provider starts, so work that is
+        # already in flight (e.g. a discovery running in a worker thread) can tell a
+        # provider on its way out apart from one that is not loaded yet
+        self.unloading = False
         self.initialized = asyncio.Event()
 
     @property
@@ -311,6 +315,10 @@ class Provider:
         """
         if (entry := self.config.values.get(key)) is None:
             return self.config.get_value(key, default)
+        if entry.type in UI_ONLY:
+            # a display-only entry holds label text rather than a value, so reading
+            # through it would shadow the caller's default
+            return default
         value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
         if value is None:
             return self.config.get_value(key, default)

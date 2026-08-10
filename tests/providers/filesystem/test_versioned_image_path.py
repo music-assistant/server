@@ -1,5 +1,6 @@
 """Tests for LocalFileSystemProvider cover image cache-busting."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,7 +44,7 @@ class TestVersionedImagePath:
         provider = _create_provider()
         versioned = LocalFileSystemProvider._versioned_image_path("Moby Dick/folder.jpg", "123")
         with patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve:
-            mock_resolve.return_value = MagicMock(absolute_path="/music/folder.jpg")
+            mock_resolve.return_value = MagicMock(absolute_path="/music/folder.jpg", is_dir=False)
             await provider.resolve_image(versioned)
         mock_resolve.assert_awaited_once_with("Moby Dick/folder.jpg")
 
@@ -52,9 +53,18 @@ class TestVersionedImagePath:
         """A plain path without a suffix is resolved unchanged."""
         provider = _create_provider()
         with patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve:
-            mock_resolve.return_value = MagicMock(absolute_path="/music/track.flac")
+            mock_resolve.return_value = MagicMock(absolute_path="/music/track.flac", is_dir=False)
             await provider.resolve_image("Moby Dick/track.flac")
         mock_resolve.assert_awaited_once_with("Moby Dick/track.flac")
+
+    @pytest.mark.asyncio
+    async def test_resolve_image_directory_raises_media_not_found(self, tmp_path: Path) -> None:
+        """A folder path is rejected instead of being resolved as an image."""
+        provider = _create_provider()
+        provider.base_path = str(tmp_path)
+        (tmp_path / "Some Artist").mkdir()
+        with pytest.raises(MediaNotFoundError):
+            await provider.resolve_image("Some Artist")
 
     @pytest.mark.asyncio
     async def test_resolve_image_missing_file_raises_media_not_found(self) -> None:

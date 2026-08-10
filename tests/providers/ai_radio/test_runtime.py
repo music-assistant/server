@@ -33,6 +33,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
+    TTS_PRONUNCIATION_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
@@ -437,6 +438,28 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
 
     assert "nl_NL" in plugin.ai_query.await_args.args[0]
     assert plugin.ai_query.await_args.kwargs == {"engine_id": "ai_task.default"}
+
+
+@pytest.mark.parametrize("general", [{"instructions": "Host personality: minimal DJ."}, {}])
+async def test_generate_text_always_states_the_pronunciation_rules(
+    general: dict[str, Any],
+) -> None:
+    """Every query carries the TTS pronunciation rules, with or without station instructions."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    await runtime._generate_text(
+        station={"general": general}, prompt="test prompt", web_mode="allow"
+    )
+
+    assert TTS_PRONUNCIATION_INSTRUCTIONS in plugin.ai_query.await_args.args[0]
 
 
 def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
