@@ -56,15 +56,17 @@
       "label": "Pairing method",
       "options": {
         "pin": "PIN",
+        "dynamic_pin": "Dynamic PIN",
         "static_pin": "Static PIN",
         "token": "Pairing token",
-        "unpaired": "Allow playback without pairing"
+        "unpaired": "Connect without pairing"
       },
       "option_descriptions": {
-        "pin": "Enter a PIN from the device: a code it shows while pairing, or a fixed PIN printed on it.",
-        "static_pin": "Enter the fixed PIN printed on (or shipped with) the device.",
-        "token": "Paste a pairing token you copy from the device.",
-        "unpaired": "The connection stays encrypted but is not authenticated, so it can be intercepted (man-in-the-middle) on the local network."
+        "pin": "Enter the device's PIN.",
+        "dynamic_pin": "Enter the device's dynamically generated PIN.",
+        "static_pin": "Enter the device's fixed PIN.",
+        "token": "Enter the device's pairing token.",
+        "unpaired": "Encrypted but unauthenticated, so the connection can be intercepted on the local network."
       }
     },
     "pairing_pin": {
@@ -78,8 +80,8 @@
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
     },
     "revoke_unpaired": {
-      "label": "Revoke playback without pairing",
-      "description": "Stop allowing this device to play audio without pairing."
+      "label": "Require pairing",
+      "description": "Stop letting this device connect without pairing."
     },
     "management_enter": {
       "label": "Manage device settings",
@@ -138,20 +140,52 @@
     },
     "management_error_generic": {
       "label": "The management request failed: {0}."
+    },
+    "static_pin_location_device": {
+      "label": "The PIN is printed on the device."
+    },
+    "static_pin_location_leaflet": {
+      "label": "The PIN is on a leaflet supplied with the device."
+    },
+    "static_pin_location_operator": {
+      "label": "The PIN is a custom one set on the device by its operator."
+    },
+    "pairing_psk_location_device": {
+      "label": "The pairing token is printed on the device."
+    },
+    "pairing_psk_location_leaflet": {
+      "label": "The pairing token is on a leaflet supplied with the device."
+    },
+    "pairing_psk_location_operator": {
+      "label": "The pairing token is a custom one set on the device by its operator."
+    },
+    "dynamic_pin_channel_display": {
+      "label": "The device shows the PIN on its screen."
+    },
+    "dynamic_pin_channel_speaker": {
+      "label": "The device speaks the PIN aloud."
+    },
+    "dynamic_pin_digits": {
+      "label": "The PIN is {0} digits long."
     }
   },
   "setup_flow": {
     "select_method": {
       "title": "Pair this device"
     },
+    "awaiting_device": {
+      "title": "Waiting for the device",
+      "description": "Waiting for the device to start pairing.",
+      "progress_text": "Waiting for the device..."
+    },
     "awaiting_gesture": {
       "title": "Put the device in pairing mode",
-      "description": "Put the device in pairing mode so it can show its PIN. This briefly interrupts playback on the device.",
-      "progress_text": "Waiting for the device to enter pairing mode..."
+      "description": "Put the device in pairing mode so it can provide its PIN.",
+      "progress_text": "Waiting for the pairing gesture on the device..."
     },
     "enter_pin": {
       "title": "Enter the PIN",
-      "description": "Enter the PIN shown on (or printed on) the device to finish pairing."
+      "description": "Enter the device's PIN to finish pairing."
     },
     "confirming": {
       "title": "Finishing pairing",
@@ -160,18 +194,17 @@
     },
     "enter_token": {
       "title": "Enter the pairing token",
-      "description": "Paste the device's pairing token to pair it. This briefly interrupts playback on the device."
+      "description": "Paste the device's pairing token to pair it."
     },
     "verify_pin": {
       "title": "Verify device presence",
-      "description": "Enter the PIN shown on the device to confirm it is the physical device in front of you."
+      "description": "Enter the device's PIN to confirm it is the physical device in front of you."
     },
     "abort": {
       "nothing_to_configure": "This player has nothing to pair. Bridge and web players, and devices connected without encryption, do not require pairing.",
       "already_paired": "This device is already securely paired. To pair it afresh, unpair it first from the player settings.",
       "no_pair_methods": "The device does not offer any pairing method.",
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
-      "pairing_error_locked_out": "PIN pairing is locked out on the device. Wait a moment, then try again from the device's settings.",
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
       "timed_out": "The device did not respond in time. Run the setup again to retry."
