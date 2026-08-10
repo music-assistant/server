@@ -44,4 +44,4 @@ ARTWORK_CACHE_EXPIRATION = 12 * 60 * 60
 # bust cached api responses that were parsed before artwork tokens existed
 # (they carry now-expired signed artwork URLs); bump when the parsed image
 # representation changes again
-PARSED_ITEM_CACHE_CHECKSUM = "artwork_tokens_v1"
+PARSED_ITEM_CACHE_CHECKSUM = "artist_fallback_v1"
