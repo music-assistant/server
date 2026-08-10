@@ -54,13 +54,15 @@ def use_cache(
     base_class: Any = None,
     allow_expired_cache: bool = False,
     cache_none: bool = True,
-    single_flight: bool = True,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
 ]:
     """
     Return decorator that can be used to cache a method's result.
+
+    Concurrent callers that miss the cache on the same key share one execution and each
+    get their own copy of the result, or the one object when it cannot be copied.
 
     :param expiration: Time in seconds the cache entry should be valid.
     :param category: Category to group cache objects.
@@ -78,12 +80,6 @@ def use_cache(
         (a negative hit, e.g. "no lyrics exist for this track"). Set to False for
         methods where None signals a (transient) failure, so the call is retried on
         the next invocation instead of serving a cached None.
-    :param single_flight: Whether concurrent callers that miss the cache on the same key
-        share one execution of the wrapped function instead of each running it. Callers of
-        a shared fetch each get their own copy of the result, or share the one object when
-        it cannot be copied. Set to False for methods that must run once per call, e.g.
-        because they advance a cursor on the provider side or send a one-shot event along
-        with the fetch.
     """
     if allow_bypass is None:
         allow_bypass = not persistent
@@ -170,7 +166,7 @@ def use_cache(
 
             # a caller that bypasses this method's cache asked for the backend, so it
             # fetches alone rather than joining or publishing a flight
-            if not single_flight or (allow_bypass and BYPASS_CACHE.get()):
+            if allow_bypass and BYPASS_CACHE.get():
                 return await _fetch_and_store()
 
             async def _flight() -> _FlightOutcome[R]:

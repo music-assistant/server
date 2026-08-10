@@ -168,7 +168,9 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         # the content type is collected by the setup flow (setup_data); the parent reads it
         # from the legacy config values, so re-resolve it setup-data-aware (read-through keeps
         # pre-flow installs working)
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self.root_folder_id = root_folder_id
         self._unregister_stream_route: Callable[[], None] | None = None
         # per-folder listing cache: folder path -> {child name -> (cloud id, item)};

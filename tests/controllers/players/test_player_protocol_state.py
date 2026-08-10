@@ -45,12 +45,6 @@ def controller(mock_mass: MagicMock) -> PlayerController:
     return ctrl
 
 
-@pytest.fixture
-def provider(mock_mass: MagicMock) -> MockProvider:
-    """Create a mock provider."""
-    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
-
-
 class TestFinalPlaybackStateWithActiveProtocol:
     """When an active output protocol is set the protocol is the source of truth."""
 

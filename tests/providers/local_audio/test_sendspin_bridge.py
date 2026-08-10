@@ -48,6 +48,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_CHANNELS,
     BRIDGE_SAMPLE_RATE,
 )
+from tests.common import collect_loop_errors
 
 _MODULE = "music_assistant.providers.local_audio.sendspin_bridge"
 
@@ -541,6 +542,27 @@ async def test_a_device_that_never_finishes_opening_leaves_the_session(backend: 
 
     assert bridge._is_streaming is False
     leave.assert_called_once_with()
+
+
+async def test_a_device_failing_after_the_open_timeout_logs_no_loop_error() -> None:
+    """A device open that fails once the writer gave up on it is not reported to the loop."""
+    bridge = _make_bridge()
+    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(return_value=opening)
+    _queue_chunks(bridge, _pcm_chunk(1))
+
+    with (
+        collect_loop_errors() as reported,
+        patch(f"{_MODULE}._DEVICE_OPEN_TIMEOUT_SECONDS", 0.01),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()),
+    ):
+        await _run_writer(bridge)
+        # fail the open only once the writer has given up waiting for it, so the failure
+        # reliably lands after the caller is gone
+        opening.set_exception(OSError("device is already in use"))
+        await _settle()
+
+    assert reported == []
 
 
 async def test_abandoning_a_stream_defers_the_leave_off_the_writer() -> None:

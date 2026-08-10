@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
@@ -22,6 +20,7 @@ from music_assistant.controllers.tasks.context import update_current_task_progre
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -30,6 +29,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
+    content_type_config_entry,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
@@ -37,7 +37,7 @@ from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_connection
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -64,15 +64,19 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         self.username = cast("str | None", self.get_setup_value(CONF_USERNAME))
         self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD))
         self.verify_ssl = cast("bool", self.get_setup_value(CONF_VERIFY_SSL))
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         # connection details and content type are collected by the setup flow; surface the
         # (immutable) content type read-only so the sync options' depends_on chains resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,

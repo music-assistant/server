@@ -277,11 +277,14 @@ class BuiltinProvider(MusicProvider):
                 )
             },
             owner="Music Assistant",
+            # MediaType.SOUND_EFFECT is deliberately left out here: clients that do not
+            # know this media type yet reject the entire playlist listing when they
+            # receive it. Sound effects can still be added to these playlists, as the
+            # builtin provider accepts any uri regardless of this (advisory) set.
             supported_mediatypes={
                 MediaType.AUDIOBOOK,
                 MediaType.PODCAST_EPISODE,
                 MediaType.RADIO,
-                MediaType.SOUND_EFFECT,
                 MediaType.TRACK,
             },
             is_editable=True,

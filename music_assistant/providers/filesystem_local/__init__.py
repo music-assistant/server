@@ -19,9 +19,7 @@ import aiofiles
 import shortuuid
 import xmltodict
 from aiofiles.os import wrap
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     EventType,
     ExternalID,
@@ -36,6 +34,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -76,7 +75,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers import lyrics
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
@@ -98,6 +97,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -115,6 +115,7 @@ from .constants import (
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
+    content_type_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -136,7 +137,7 @@ from .helpers import (
 from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -175,6 +176,8 @@ class LocalFileSystemProvider(MusicProvider):
 
     # parallel workers per sync; subclasses lower this for slower transports
     _SYNC_CONCURRENCY: ClassVar[int] = 16
+    _sync_tracks: bool = True
+    _sync_playlists: bool = True
 
     def __init__(
         self,
@@ -192,18 +195,20 @@ class LocalFileSystemProvider(MusicProvider):
         )
         self.write_access: bool = False
         self.sync_running: bool = False
-        self._sync_tracks: bool = True
-        self._sync_playlists: bool = True
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self._cue = CueSheetHandler(self)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         # content type and path are collected by the setup flow; surface the (immutable)
         # content type read-only so the sync options' depends_on chains still resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -1003,6 +1008,10 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+        if file_item.is_dir:
+            # handing the path back would have the image layer run an ffmpeg
+            # embedded-artwork extraction on the directory before giving up
+            raise MediaNotFoundError(f"Image path is a directory: {path}")
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:
@@ -1139,6 +1148,11 @@ class LocalFileSystemProvider(MusicProvider):
         :param ignore_album_playlists: When True, skip playlists nested inside
             album directories.
         """
+        # a file this provider never imports gets no mapping, so it would flag as
+        # changed on every sync; it is still on disk, so record it as present
+        if not self._is_imported_file(item):
+            cur_filenames.add(item.relative_path)
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1159,6 +1173,22 @@ class LocalFileSystemProvider(MusicProvider):
                 unchanged_cue_items.append(item)
         else:
             items_to_process.append((item, prev_checksum))
+
+    def _is_imported_file(self, item: FileSystemItem) -> bool:
+        """Return True when this provider imports the given file into the library."""
+        if self.media_content_type == "music":
+            if item.ext in CUE_EXTENSIONS:
+                return True
+            if item.ext in TRACK_EXTENSIONS:
+                return self._sync_tracks
+            if item.ext in PLAYLIST_EXTENSIONS:
+                return self._sync_playlists
+            return False
+        if self.media_content_type == "audiobooks":
+            return item.ext in AUDIOBOOK_EXTENSIONS
+        if self.media_content_type == "podcasts":
+            return item.ext in PODCAST_EPISODE_EXTENSIONS
+        return False
 
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""

@@ -18,6 +18,7 @@ from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ImageType, ProviderIconVariant
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
@@ -33,6 +34,7 @@ from music_assistant.helpers.images import (
     load_provider_icon,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import collect_loop_errors
 
@@ -378,6 +380,34 @@ async def test_failing_source_fails_fast_with_single_warning(
         await get_image_thumb(mass_minimal, remote_url, 256, "builtin")
 
     assert len(fetch_calls) == 1
+    warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert len(warnings) == 1
+    assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_provider_reported_missing_image_fails_fast_with_single_warning(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A provider reporting a missing image is asked once, then fails fast without new logs."""
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(
+        side_effect=MediaNotFoundError("Image path is a directory: Some Artist")
+    )
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(MediaNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+    # follow-up requests (a thumbnail, a palette) fail fast from the negative cache,
+    # without asking the provider again and without logging again
+    with pytest.raises(FileNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+
+    assert len(fetch_calls) == 1
+    assert fake_provider.resolve_image.await_count == 1
     warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
     assert len(warnings) == 1
     assert "not retrying" in warnings[0].getMessage()

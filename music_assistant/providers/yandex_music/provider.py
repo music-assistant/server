@@ -2637,9 +2637,10 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
-        Get My Wave tracks for virtual playlist (uncached; uses cursor for page > 0).
+        Get My Wave tracks for virtual playlist (uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -2715,6 +2716,7 @@ class YandexMusicProvider(MusicProvider):
             wave.playlist_next_cursor = next_cursor
             return tracks
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get liked tracks for virtual playlist (sorted in reverse chronological order).
@@ -3021,9 +3023,7 @@ class YandexMusicProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    # single_flight=False: this advances the rotor cursor and establishes session state,
-    # so concurrent callers must each get their own batch instead of sharing one
-    @use_cache(600, allow_expired_cache=True, single_flight=False)
+    @use_cache(600, allow_expired_cache=True)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """
         Get My Wave recommendation folder with personalized tracks.
@@ -3367,10 +3367,6 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    # single_flight=False: the My Wave branch advances the rotor cursor and sends a one-shot
-    # "radioStarted" feedback, which must happen once per call. The cache sits on this
-    # method, so the flag covers the other playlist kinds along with it
-    @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.
@@ -3394,6 +3390,17 @@ class YandexMusicProvider(MusicProvider):
             self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
+        return await self._get_regular_playlist_tracks(prov_playlist_id, page)
+
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_regular_playlist_tracks(self, prov_playlist_id: str, page: int) -> list[Track]:
+        """
+        Get the tracks of a regular (non-virtual) playlist.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
         # Yandex Music API returns all playlist tracks in one call (no server-side pagination).
         # Return empty list for page > 0 so the controller pagination loop terminates.
         if page > 0:

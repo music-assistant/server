@@ -40,7 +40,7 @@ getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.3.0
 hue-entertainment==0.1.2
-huggingface-hub==1.22.0
+huggingface-hub==1.26.1
 ibroadcastaio==0.8.0
 ifaddr==0.2.0
 kaldi-native-fbank==1.22.3
@@ -50,8 +50,8 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.260
-music-assistant-models==1.1.183
+music-assistant-frontend==2.17.263
+music-assistant-models==1.1.185
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.4
@@ -99,8 +99,7 @@ torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
 transformers==5.14.1
-unidecode==1.4.0
-usearch==2.25.3
+usearch==2.26.0
 uv>=0.8.0
 websocket-client==1.9.0
 wiim==0.1.5

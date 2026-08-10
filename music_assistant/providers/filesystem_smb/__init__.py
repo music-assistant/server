@@ -23,6 +23,7 @@ from music_assistant.providers.filesystem_local import (
 )
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -30,6 +31,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    content_type_config_entry,
 )
 
 if TYPE_CHECKING:
@@ -93,9 +95,11 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         """Return Config entries to configure this provider."""
         # connection details and content type are collected by the setup flow; surface the
         # (immutable) content type read-only so the sync options' depends_on chains resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             ConfigEntry(
                 key=CONF_CACHE_MODE,
                 type=ConfigEntryType.STRING,
