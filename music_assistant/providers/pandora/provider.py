@@ -571,7 +571,7 @@ class PandoraProvider(MusicProvider):
         """Parse the album a fragment track belongs to, if the API named one."""
         if not (url := obj.get("albumDetailURL")):
             return None
-        name, version = parse_title_and_version(obj.get("albumTitle", "Unknown Album"))
+        name, version = parse_title_and_version(obj.get("albumTitle") or "Unknown Album")
         return Album(
             item_id=track_id,
             provider=self.instance_id,

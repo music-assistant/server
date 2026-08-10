@@ -173,6 +173,16 @@ async def test_track_with_null_track_length_gets_zero_duration() -> None:
     assert result[0].duration == 0
 
 
+async def test_track_with_null_album_title_gets_a_fallback_name() -> None:
+    """A JSON-null albumTitle must not crash album parsing; it falls back to a default name."""
+    tracks = _tracks()
+    tracks[0]["albumTitle"] = None
+    provider = _provider([tracks])
+    result = await provider.get_playlist_tracks(STATION_ID)
+    assert result[0].album is not None
+    assert result[0].album.name == "Unknown Album"
+
+
 async def test_track_missing_station_id_is_dropped_not_crashed() -> None:
     """A track without a stationId can't form a track id; drop it instead of raising."""
     tracks = _tracks()
