@@ -570,7 +570,9 @@ def _optional_flow_item(section_id: str, segment: _PresetSegment) -> dict[str, A
     if plays.kind == "every_n_songs":
         songs = max(1, plays.value)
         chance = min(1.0, 2 / songs)
-        min_gap_songs = songs - 1
+        # the guard allows a section once song_global - last_event >= min_gap_songs, and
+        # consecutive gaps are one song apart, so the cadence is the gap itself
+        min_gap_songs = songs
     elif plays.kind == "every_n_min":
         minutes = max(1, plays.value)
         chance = 1.0

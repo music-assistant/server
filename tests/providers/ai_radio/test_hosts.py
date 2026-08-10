@@ -441,7 +441,7 @@ def test_morning_show_preset_section_order_matches_frontend_compiler() -> None:
                         "section": "morning_show_transition",
                         "chance": 2 / 3,
                         "guards": {
-                            "min_gap_songs": 2,
+                            "min_gap_songs": 3,
                             "max_per_60min": 0,
                             "require_placeholders_present": [],
                         },
@@ -490,7 +490,7 @@ def test_music_nerd_preset_compiles_every_song_segment_as_must() -> None:
                         "section": "music_nerd_artist_fact",
                         "chance": 1.0,
                         "guards": {
-                            "min_gap_songs": 1,
+                            "min_gap_songs": 2,
                             "max_per_60min": 0,
                             "require_placeholders_present": [],
                         },
