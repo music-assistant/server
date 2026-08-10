@@ -1,4 +1,10 @@
 {
+  "config_entries": {
+    "volume_step": {
+      "label": "Volume step size",
+      "description": "How much the volume changes per step when using volume up/down, the scroll wheel, or tapping the ends of a volume slider.\n\nLeave at 0 to use the adaptive default, which takes smaller steps near the ends of the range."
+    }
+  },
   "manifest": {
     "name": "Players",
     "description": "Configuration of the core player management module"
