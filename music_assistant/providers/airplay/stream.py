@@ -78,6 +78,11 @@ _CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 # the connection is reported, so this only bridges the reader thread starting up.
 _COMMAND_PIPE_READER_TIMEOUT: Final[float] = 2.0
 
+# Seconds to wait for our own queued stdin audio to reach the binary before a
+# flush. Only the bytes already accepted for the pipe are left to move, which the
+# binary keeps reading, so this covers a stalled reader rather than a real wait.
+_STDIN_DRAIN_TIMEOUT: Final[float] = 2.0
+
 
 @dataclass
 class CliError:
@@ -93,6 +98,11 @@ class AirPlayStream:
 
     _cli_proc: AsyncProcess | None
     session: AirPlayStreamSession | None = None
+    # Audio (ms) the binary last reported pending on its stdin for the current
+    # start cycle, 0 until it reports any. A caller that has written nothing since
+    # the last flush can read this as audio left over from the previous stream,
+    # which a START would anchor as if it were the new first sample.
+    audio_pending_ms: int = 0
 
     def __init__(self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None) -> None:
         """
@@ -410,10 +420,25 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             return False
+        # The FLUSH travels on the command pipe while audio travels on stdin, so
+        # the binary can run its drain while bytes we already handed to stdin are
+        # still in flight. Those would land after the drain and become the first
+        # pending sample the next START anchors, putting the new content late by
+        # their duration for the rest of the stream. Emptying our own buffer first
+        # is what makes the drain remove every pre-flush byte.
+        if self._cli_proc and not await self._cli_proc.drain_stdin(_STDIN_DRAIN_TIMEOUT):
+            self.player.logger.warning(
+                "Queued audio for %s did not clear within %.1fs, so a flush could not "
+                "remove all of it; falling back to a cold restart",
+                self.player.display_name,
+                _STDIN_DRAIN_TIMEOUT,
+            )
+            return False
         self._arm_flush_answer()
         # The flush drain re-arms the binary's one-shot audio signal; the next
         # [STATUS] audio belongs to the new track.
         self._audio_present.clear()
+        self.audio_pending_ms = 0
         if not await self._write_cli_command("ACTION=FLUSH"):
             return False
         try:
@@ -503,6 +528,9 @@ class AirPlayStream:
         # the previous anchor (this also covers the warm-seek FLUSH->refill->START
         # path) to keep the server and binary baselines aligned.
         self.reset_reanchor_shift()
+        # Whatever was pending belongs to the anchor being replaced here; a later
+        # report describes what this start cycle was handed.
+        self.audio_pending_ms = 0
         self._start_position = position_ms / 1000
         # This base is absolute, so a cut still outstanding against the previous
         # anchor is no longer part of it and must not be reconciled into it.
@@ -1383,6 +1411,11 @@ class AirPlayStream:
             self._flush_error = None
             self._flushed.set()
         elif "[STATUS] audio " in line:
+            if "buffered_ms=" in line:
+                try:
+                    self.audio_pending_ms = int(line.split("buffered_ms=")[1].split(maxsplit=1)[0])
+                except ValueError, IndexError:
+                    self.audio_pending_ms = 0
             self._audio_present.set()
         elif "[STATUS] mrp" in line:
             # The artwork reports arrive on stderr; the now-playing push

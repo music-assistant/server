@@ -182,6 +182,43 @@ class AsyncProcess:
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
 
+    async def drain_stdin(self, timeout: float = 5.0) -> bool:
+        """
+        Wait until every byte handed to stdin has left the local write buffer.
+
+        :meth:`write` resolves as soon as the buffer falls below asyncio's
+        low-water mark, so it can leave bytes still queued for the pipe. A caller
+        that needs the process to have actually received everything it was sent
+        -- rather than merely to have accepted it -- waits here first.
+
+        :param timeout: Seconds to wait for the buffer to empty.
+        :return: True once the buffer is empty, False when the wait timed out.
+        """
+        if self._close_called or self.proc is None or self.proc.stdin is None:
+            return True
+        async with self._stdin_lock:
+            transport = self.proc.stdin.transport
+            try:
+                # Pausing the protocol at a zero high-water mark is what makes
+                # drain() resolve only once the buffer is completely empty
+                # instead of at the default low-water mark.
+                transport.set_write_buffer_limits(high=0)
+                await asyncio.wait_for(self.proc.stdin.drain(), timeout)
+            except TimeoutError:
+                return False
+            except (
+                AttributeError,
+                BrokenPipeError,
+                RuntimeError,
+                ConnectionResetError,
+            ):
+                # already exited, race condition: nothing is left to arrive
+                return True
+            finally:
+                with suppress(AttributeError, RuntimeError):
+                    transport.set_write_buffer_limits()
+        return True
+
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
         if self._close_called or self.proc is None:

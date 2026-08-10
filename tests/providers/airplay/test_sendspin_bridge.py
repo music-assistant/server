@@ -470,14 +470,16 @@ def _make_anchor_stream(
     ack: int | None = None,
     warm_lead_ms: int = 0,
     flushed_head_unix_ms: int = 0,
+    audio_pending_ms: int = 0,
 ) -> MagicMock:
     """
     Build an AirPlayStream mock the anchor math can run against.
 
     The bridge reads these off the stream and does arithmetic on them, so they
     must be real numbers: the anchor compares ``warm_lead_ms`` /
-    ``flushed_head_unix_ms`` with ``> 0`` and the shift fold subtracts
-    ``cumulative_shift_seconds``, none of which a bare MagicMock can answer.
+    ``flushed_head_unix_ms`` / ``audio_pending_ms`` with ``> 0`` and the shift
+    fold subtracts ``cumulative_shift_seconds``, none of which a bare MagicMock
+    can answer (every one of them is truthy).
 
     :param ack: Instant the binary acks the START at. None acks the commanded
         instant, as a feasible one is.
@@ -496,6 +498,7 @@ def _make_anchor_stream(
     stream.start = AsyncMock(side_effect=_ack_start)
     stream.warm_lead_ms = warm_lead_ms
     stream.flushed_head_unix_ms = flushed_head_unix_ms
+    stream.audio_pending_ms = audio_pending_ms
     return stream
 
 
@@ -735,6 +738,39 @@ async def test_anchor_floors_at_the_join_headroom() -> None:
     assert await _anchor(bridge, stream) is True
 
     assert _commanded_instant(stream) == UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
+
+
+async def test_anchor_reports_leftover_audio_pending_on_stdin() -> None:
+    """
+    Audio still pending when the anchor is commanded is named as the offset it causes.
+
+    The writer is gated until the anchor settles, so anything pending belongs to
+    the previous stream and the START anchors it as this one's first sample. The
+    cursor only counts what the bridge queued itself, so no later realignment can
+    see the resulting offset -- this warning is the only signal it happened.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream(audio_pending_ms=92)
+    _prepare_anchor(bridge, stream, first_chunk_lead_ms=WARM_LEAD_MS)
+
+    with patch.object(bridge.logger, "warning") as warning:
+        assert await _anchor(bridge, stream, warm=True) is True
+
+    pending = [call for call in warning.call_args_list if "pending" in call.args[0]]
+    assert len(pending) == 1
+    assert pending[0].args[2] == 92
+
+
+async def test_anchor_stays_quiet_when_stdin_was_left_empty() -> None:
+    """An anchor commanded against empty stdin reports nothing."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream()
+    _prepare_anchor(bridge, stream, first_chunk_lead_ms=WARM_LEAD_MS)
+
+    with patch.object(bridge.logger, "warning") as warning:
+        assert await _anchor(bridge, stream, warm=True) is True
+
+    assert not [call for call in warning.call_args_list if "pending" in str(call)]
 
 
 async def test_anchor_follows_the_clock_ready_projection() -> None:
