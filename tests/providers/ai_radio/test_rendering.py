@@ -235,6 +235,51 @@ async def test_cached_media_remints_once_it_expires() -> None:
     assert engine.provider.get_tts_message.await_count == 2
 
 
+async def test_a_late_cache_hit_expires_with_the_url_it_serves() -> None:
+    """A hit late in the window hands out the url's remaining life, not a fresh full window."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    cached = cast("Any", renderer)._media_cache["sess_001"]
+    cached.minted_at -= 45
+
+    late = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    assert engine.provider.get_tts_message.await_count == 1
+    assert 14 <= late.expiration <= 15
+
+
+async def test_a_cache_hit_with_no_useful_life_left_remints() -> None:
+    """A hit in the last seconds of the window mints again instead of serving a dying url."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    cached = cast("Any", renderer)._media_cache["sess_001"]
+    cached.minted_at -= CLIP_STREAMDETAILS_EXPIRATION - 2
+
+    fresh = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    assert engine.provider.get_tts_message.await_count == 2
+    assert fresh.expiration == CLIP_STREAMDETAILS_EXPIRATION
+
+
+async def test_expired_cache_entries_are_pruned_on_the_next_mint() -> None:
+    """Minting a clip drops the entries whose urls died, so the cache cannot grow forever."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001"), _clip_item("sess_002")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    media_cache = cast("Any", renderer)._media_cache
+    media_cache["sess_001"].minted_at -= CLIP_STREAMDETAILS_EXPIRATION + 1
+    await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert set(media_cache) == {"sess_002"}
+
+
 async def test_render_tts_media_passes_the_locale_as_language() -> None:
     """The DJ script's locale reaches the TTS engine as a hyphenated language code."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")

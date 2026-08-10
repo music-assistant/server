@@ -91,3 +91,6 @@ DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_
 
 # HA drops a tts_proxy token 60s after its last use at the lowest configurable time_memory
 CLIP_STREAMDETAILS_EXPIRATION = 60
+
+# a cached clip with less life than this left is not worth handing out, so it is re-minted
+MIN_CLIP_MEDIA_LIFETIME = 5

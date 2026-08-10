@@ -29,6 +29,7 @@ from .constants import (
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     DEFERRED_PLACEHOLDERS,
+    MIN_CLIP_MEDIA_LIFETIME,
     TTS_QUERY_TIMEOUT_SECONDS,
     TTS_SERVER_ERROR_MARKERS,
 )
@@ -102,7 +103,9 @@ class AIRadioRenderMixin:
             # would re-fetch a possibly-expired HA url mid-playback
             can_seek=False,
             allow_seek=False,
-            expiration=CLIP_STREAMDETAILS_EXPIRATION,
+            # a cache hit serves a url that was minted earlier, so it may only claim the life
+            # that url has left or the stream outlives the token behind it
+            expiration=self._remaining_media_lifetime(media),
         )
 
     def _lock_for(self, clip_id: str) -> asyncio.Lock:
@@ -121,7 +124,7 @@ class AIRadioRenderMixin:
             self._media_cache = {}
         now = asyncio.get_running_loop().time()
         cached = self._media_cache.get(clip_id)
-        if cached is not None and now - cached.minted_at < CLIP_STREAMDETAILS_EXPIRATION:
+        if cached is not None and self._remaining_media_lifetime(cached) > MIN_CLIP_MEDIA_LIFETIME:
             return cached
         # the caller holds the per-clip render lock, so of the several uncoordinated paths
         # that resolve the same clip only the first one mints; the rest hit the cache above
@@ -129,8 +132,21 @@ class AIRadioRenderMixin:
             queue_item, text, clip_id, self._tts_language()
         )
         media = _CachedClipMedia(path, stream_type, audio_format, duration, now)
+        # clips are minted per queue item, so without pruning the cache grows for as long as
+        # the server runs. an entry past its window can never be served again anyway
+        for expired_id in [
+            key
+            for key, entry in self._media_cache.items()
+            if now - entry.minted_at >= CLIP_STREAMDETAILS_EXPIRATION
+        ]:
+            del self._media_cache[expired_id]
         self._media_cache[clip_id] = media
         return media
+
+    def _remaining_media_lifetime(self, media: _CachedClipMedia) -> int:
+        """Return the seconds the given minted media is still usable for."""
+        elapsed = asyncio.get_running_loop().time() - media.minted_at
+        return max(MIN_CLIP_MEDIA_LIFETIME, round(CLIP_STREAMDETAILS_EXPIRATION - elapsed))
 
     def _tts_language(self) -> str | None:
         """Return the configured locale as a hyphenated language code, or None when unset."""
@@ -241,7 +257,7 @@ class AIRadioRenderMixin:
         engine = await self._get_tts_engine(engine_uid)
         try:
             stream_details = await self._query_tts_engine(engine, text, language)
-        except (TimeoutError, MusicAssistantError):
+        except TimeoutError, MusicAssistantError:
             # a timeout or our own structured failure is not a language rejection, so a
             # language-less retry would not help and would only double the wait
             raise

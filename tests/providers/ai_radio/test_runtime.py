@@ -368,9 +368,7 @@ def test_weather_strings_are_rounded_to_whole_numbers() -> None:
     hourly, daily = runtime._format_weather_strings(payload)
 
     assert hourly == (
-        "now 19C (feels 19C); "
-        "2026-08-10 09:00: 19C, rain 12%; "
-        "2026-08-10 10:00: 21C, rain 0%"
+        "now 19C (feels 19C); 2026-08-10 09:00: 19C, rain 12%; 2026-08-10 10:00: 21C, rain 0%"
     )
     assert daily == "2026-08-10: 11-21C, rain 31%"
 
