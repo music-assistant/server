@@ -172,17 +172,26 @@ async def get_library_artists(
 
     def _get_library_artists() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        artists = (
+
+        artists = []
+        # Avoid duplicate ids from overlapping sources
+        seen_ids = set()
+
+        for artist in (
             ytm.get_library_subscriptions(limit=9999)
             + ytm.get_library_artists(limit=9999)
             + ytm.get_library_upload_artists(limit=9999)
-        )
-        # Sync properties with uniformal artist object
-        for artist in artists:
-            artist["id"] = artist["browseId"]
+        ):
+            # Sync properties with uniformal artist object
+            artist["id"] = artist["browseId"].removeprefix("MPLA")
             artist["name"] = artist["artist"]
             del artist["browseId"]
             del artist["artist"]
+
+            if artist["id"] not in seen_ids:
+                artists.append(artist)
+                seen_ids.add(artist["id"])
+
         return artists
 
     return await _run_ytmusic(_get_library_artists)
