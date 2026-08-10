@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -31,13 +32,13 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
-    get_podcastparser_dict,
+    get_cached_podcast,
     get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
+    refresh_cached_podcast,
 )
 from music_assistant.models.music_provider import MusicProvider
 
@@ -49,8 +50,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_FEED_URL = "feed_url"
-
-CACHE_CATEGORY_PODCASTS = 0
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -116,8 +115,12 @@ class PodcastMusicprovider(MusicProvider):
         only one podcast.
         """
         # on sync we renew
-        self.parsed_podcast = await self._get_podcast()
-        await self._cache_set_podcast()
+        assert self.feed_url is not None
+        self.parsed_podcast = await refresh_cached_podcast(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            feed_url=self.feed_url,
+        )
         yield await self._parse_podcast()
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
@@ -247,28 +250,10 @@ class PodcastMusicprovider(MusicProvider):
 
         return episode_result
 
-    async def _get_podcast(self) -> dict[str, Any]:
-        assert self.feed_url is not None
-        return await get_podcastparser_dict(session=self.mass.http_session, feed_url=self.feed_url)
-
     async def _cache_get_podcast(self) -> dict[str, Any]:
-        parsed_podcast = await self.mass.cache.get(
-            key=self.podcast_id,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCASTS,
-            default=None,
-        )
-        if parsed_podcast is None:
-            parsed_podcast = await self._get_podcast()
-
-        # this is a dictionary from podcastparser
-        return parsed_podcast  # type: ignore[no-any-return]
-
-    async def _cache_set_podcast(self) -> None:
-        await self.mass.cache.set(
-            key=self.podcast_id,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCASTS,
-            data=self.parsed_podcast,
-            expiration=60 * 60 * 24,  # 1 day
+        assert self.feed_url is not None
+        return await get_cached_podcast(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            feed_url=self.feed_url,
         )

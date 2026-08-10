@@ -23,7 +23,6 @@ music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
-music_assistant/providers/filesystem_nfs/provider.py	1
 music_assistant/providers/gpodder/client.py	4
 music_assistant/providers/heos/player.py	11
 music_assistant/providers/heos/provider.py	5
@@ -48,7 +47,6 @@ music_assistant/providers/nicovideo/converters/track.py	1
 music_assistant/providers/nicovideo/helpers/hls_seek_optimizer.py	1
 music_assistant/providers/nicovideo/services/search.py	1
 music_assistant/providers/nugs/__init__.py	2
-music_assistant/providers/opensubsonic/sonic_provider.py	27
 music_assistant/providers/orf_radiothek/__init__.py	9
 music_assistant/providers/pandora/provider.py	6
 music_assistant/providers/party/__init__.py	4

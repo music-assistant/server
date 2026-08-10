@@ -35,7 +35,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import interface_name_for_ip, select_free_port
+from music_assistant.helpers.util import (
+    interface_name_for_ip,
+    is_port_in_use,
+    select_free_port,
+)
 from music_assistant.models.plugin import PluginProvider
 
 from .client import GoLibrespotClient
@@ -105,6 +109,8 @@ async def setup(
 
 class SpotifyConnectProvider(PluginProvider):
     """Implementation of a Spotify Connect Plugin (backed by go-librespot)."""
+
+    reload_on_streams_network_change = True
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -232,7 +238,7 @@ class SpotifyConnectProvider(PluginProvider):
         """Return the AudioSources this plugin currently exposes."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the Spotify Connect audio.
 
@@ -246,8 +252,8 @@ class SpotifyConnectProvider(PluginProvider):
         playback can only be acquired while a Spotify session is connected to us
         (entry must come from the Spotify app — see can_initiate below).
         """
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         # Only refuse when we can neither resume nor take playback back. If a last
         # context is known we let the stream proceed; on_source_selected then takes
         # playback back (makes us the active device) before audio is pulled.
@@ -265,7 +271,7 @@ class SpotifyConnectProvider(PluginProvider):
         # check above re-runs on every play attempt.
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._audio_format,
             decoded_audio_format=self._decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,
@@ -394,6 +400,11 @@ class SpotifyConnectProvider(PluginProvider):
             if not await self._wait_for_playing():
                 raise self._not_active_error()
 
+        # go-librespot reports 100% volume until told otherwise (with
+        # external_volume it ignores initial_volume); push the player's volume
+        # so the Spotify app's absolute volume commands start from the real level.
+        await self._sync_player_volume_to_spotify(active_player_id)
+
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
     ) -> None:
@@ -447,18 +458,9 @@ class SpotifyConnectProvider(PluginProvider):
         # last sent to / received from the daemon.
         if self._last_volume_sent == volume:
             return
-        assert self._client is not None
-        # Record BEFORE the call: go-librespot echoes a 'volume' event back, and
-        # that echo can arrive over the WS while we're still awaiting set_volume.
-        # Recording up front lets _handle_volume_event dedupe it instead of
-        # bouncing it back as a player volume change.
-        previous_volume = self._last_volume_sent
-        self._last_volume_sent = volume
         try:
-            await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
+            await self._push_volume_to_daemon(volume)
         except Exception as err:
-            # restore on failure so a retry of this value isn't wrongly deduped
-            self._last_volume_sent = previous_volume
             self.logger.warning("Failed to send volume command to go-librespot: %s", err)
             raise
 
@@ -611,7 +613,7 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
 
-    def _write_config(self) -> None:
+    def _write_config(self, source_ip: str | None) -> None:
         """
         Write the go-librespot ``config.yml`` for this instance.
 
@@ -619,14 +621,11 @@ class SpotifyConnectProvider(PluginProvider):
         sidestep an extra dependency and any string-quoting pitfalls (the device
         name is user-provided). The config dir doubles as the credential/device
         cache so the Spotify Connect device stays paired across restarts.
+
+        :param source_ip: Local address of the player-facing interface, or None to
+            advertise the Spotify Connect device on all interfaces.
         """
         os.makedirs(self.cache_dir, exist_ok=True)
-        initial_volume = 50
-        if self._default_player_id != PLAYER_ID_AUTO:
-            if (player := self.mass.players.get_player(self._default_player_id)) and (
-                player.volume_level is not None
-            ):
-                initial_volume = player.volume_level
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",
@@ -642,9 +641,10 @@ class SpotifyConnectProvider(PluginProvider):
             # external_volume: don't let go-librespot attenuate the PCM — MA / the
             # target player owns the actual volume. We still receive 'volume'
             # events and push volume back so the Spotify app slider stays in sync.
+            # No initial_volume: go-librespot ignores it with external_volume set;
+            # _sync_player_volume_to_spotify pushes the player's volume instead.
             "external_volume": True,
             "volume_steps": VOLUME_STEPS,
-            "initial_volume": initial_volume,
             "zeroconf_enabled": True,
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},
@@ -652,14 +652,13 @@ class SpotifyConnectProvider(PluginProvider):
         # Advertise the Spotify Connect device only on the interface the streams
         # server binds to, so it lands on the right network on multi-homed hosts.
         # go-librespot selects advertise interfaces by name, so map the IP to one.
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip and bind_ip != "0.0.0.0":
-            if iface_name := interface_name_for_ip(bind_ip):
+        if source_ip:
+            if iface_name := interface_name_for_ip(source_ip):
                 config["zeroconf_interfaces_to_advertise"] = [iface_name]
             else:
                 self.logger.debug(
                     "No interface found for stream bind IP %s; advertising on all interfaces",
-                    bind_ip,
+                    source_ip,
                 )
         config_file = os.path.join(self.cache_dir, "config.yml")
         with open(config_file, "w", encoding="utf-8") as fileobj:
@@ -668,10 +667,21 @@ class SpotifyConnectProvider(PluginProvider):
     async def _daemon_runner(self) -> None:
         """Run and supervise the go-librespot daemon, restarting it if it exits."""
         assert self._binary
+        assert self._client
         # Loop forever; unload() cancels this task and the explicit stop-check below
         # handles a graceful exit without a restart.
         while True:
-            self._write_config()
+            # If the API port was taken while the daemon was down, move to a
+            # fresh port instead of crash-looping on a bind error.
+            if await is_port_in_use(self._api_port, host="127.0.0.1"):
+                self._api_port = await select_free_port(
+                    API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1"
+                )
+                self._client.base_url = f"http://127.0.0.1:{self._api_port}"
+                self.logger.warning(
+                    "API port in use by another process; switching to port %s", self._api_port
+                )
+            self._write_config(await self.mass.streams.get_source_ip())
             proc: AsyncProcess | None = None
             try:
                 # stdout carries the decoded PCM (audio_output_pipe=/dev/stdout) and
@@ -748,6 +758,11 @@ class SpotifyConnectProvider(PluginProvider):
             # schedules a new one.
             self._cancel_pending_play_media()
             self.logger.info("Spotify Connect session active for %s", self.name)
+            # A new session starts at the daemon's 100% volume default; push the
+            # target player's volume so the Spotify app's slider is correct from
+            # device selection, before any playback starts.
+            if player_id := self._get_target_player_id():
+                await self._sync_player_volume_to_spotify(player_id)
         elif event_type == "inactive":
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
@@ -836,3 +851,44 @@ class SpotifyConnectProvider(PluginProvider):
             # deduped, and never let it bubble up and drop the events loop.
             self._last_volume_sent = previous_volume
             self.logger.debug("Could not set volume on %s: %s", self._in_use_by_queue, err)
+
+    async def _sync_player_volume_to_spotify(self, player_id: str) -> None:
+        """
+        Push a player's current volume to go-librespot (best-effort).
+
+        :param player_id: The MA player whose volume to push.
+        """
+        player = self.mass.players.get_player(player_id)
+        if player is None or player.state.volume_level is None:
+            return
+        # clamp: the logical volume can be out of range until volume limit
+        # enforcement runs
+        volume = max(0, min(100, player.state.volume_level))
+        # No dedupe against _last_volume_sent here: it holds the last value
+        # exchanged with the daemon, not the daemon's current volume, which
+        # resets to its 100% default on a new session or daemon restart.
+        try:
+            await self._push_volume_to_daemon(volume)
+        except Exception as err:
+            self.logger.debug("Failed to sync player volume to Spotify: %s", err)
+
+    async def _push_volume_to_daemon(self, volume: int) -> None:
+        """
+        Send an absolute 0-100 volume to go-librespot.
+
+        :param volume: Volume percentage to send.
+        :raises Exception: If the request to the daemon fails.
+        """
+        assert self._client is not None
+        previous_volume = self._last_volume_sent
+        # Record BEFORE the call: go-librespot echoes a 'volume' event back, and
+        # that echo can arrive over the WS while we're still awaiting set_volume.
+        # Recording up front lets _handle_volume_event dedupe it instead of
+        # bouncing it back as a player volume change.
+        self._last_volume_sent = volume
+        try:
+            await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
+        except Exception:
+            # restore on failure so a retry of this value isn't wrongly deduped
+            self._last_volume_sent = previous_volume
+            raise

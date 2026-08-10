@@ -246,6 +246,20 @@ async def test_search_provider_cache_hit_avoids_provider_call() -> None:
     prov.search.assert_not_awaited()
 
 
+async def test_empty_search_query_skips_all_providers() -> None:
+    """An empty or whitespace-only query returns empty results without querying providers."""
+    prov = _make_search_provider("prov_a")
+    controller = _make_controller([prov])
+
+    for search_query in ("", "   ", "\n\t"):
+        result = await controller.search(search_query, media_types=[MediaType.TRACK], limit=5)
+
+        assert result == SearchResults()
+        prov.search.assert_not_awaited()
+        cast("AsyncMock", controller.search_library).assert_not_awaited()
+        cast("AsyncMock", controller.mass.cache.get).assert_not_awaited()
+
+
 async def test_search_provider_cache_expiration_by_provider_type() -> None:
     """Streaming provider results are cached longer than local provider results."""
     prov_stream = _make_search_provider("prov_stream")

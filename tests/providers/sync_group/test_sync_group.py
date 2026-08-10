@@ -884,7 +884,7 @@ class TestPresetMembersInDynamicGroup:
         mass.players.get_player = _player_lookup(
             {"offline_member": offline_member, "candidate": candidate}
         )
-        mass.players.all_players = MagicMock(return_value=[candidate])
+        mass.players.iter_players = MagicMock(return_value=[candidate])
 
         assert "candidate" in sgp.can_group_with
 
@@ -905,7 +905,7 @@ class TestPresetMembersInDynamicGroup:
         result = sgp.can_group_with
 
         assert {"online_member", "friend"} <= result
-        mass.players.all_players.assert_not_called()
+        mass.players.iter_players.assert_not_called()
 
 
 class TestGetConfigEntriesMemberPicker:

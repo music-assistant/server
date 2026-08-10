@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -54,6 +55,11 @@ PASSWORD_ENTRY = ConfigEntry(key="password", type=ConfigEntryType.SECURE_STRING,
 REGION_ENTRY = ConfigEntry(
     key="region", type=ConfigEntryType.STRING, required=True, default_value="eu"
 )
+USE_PROXY_ENTRY = ConfigEntry(key="use_proxy", type=ConfigEntryType.BOOLEAN, default_value=False)
+# required with no default to fall back on, so only the gate keeps it satisfiable
+PROXY_HOST_ENTRY = ConfigEntry(
+    key="proxy_host", type=ConfigEntryType.STRING, required=True, depends_on=USE_PROXY_ENTRY.key
+)
 
 
 @pytest.fixture
@@ -89,6 +95,8 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     mass_minimal.music = MagicMock()
     # awaited at the tail of the real provider load path
     mass_minimal.music.on_provider_loaded = AsyncMock()
+    # awaited at the head of the real provider unload path
+    mass_minimal.music.unschedule_provider_sync = AsyncMock()
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
     try:
@@ -341,6 +349,64 @@ async def test_form_validation_errors(flow_mass: MusicAssistant) -> None:
     assert raw_conf["setup_data"]["port"] == 8095
 
 
+async def test_gated_required_entry_does_not_block_submit(flow_mass: MusicAssistant) -> None:
+    """A required entry behind an unmet dependency renders disabled, so it may stay empty."""
+    submitted: dict[str, ConfigValueType] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        submitted.update(await session.form([USE_PROXY_ENTRY, PROXY_HOST_ENTRY]))
+        await session.finish(submitted)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": False})
+    assert finish_step.type == FlowStepType.FINISH
+    assert submitted == {"use_proxy": False, "proxy_host": None}
+
+
+async def test_gated_required_entry_is_demanded_once_its_gate_opens(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Opening the gate in the same submit makes the entry required again."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.finish(await session.form([USE_PROXY_ENTRY, PROXY_HOST_ENTRY]))
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        error_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": True})
+        assert error_step.type == FlowStepType.FORM
+        assert error_step.errors == {"proxy_host": "required"}
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+
+
+async def test_gate_is_read_from_the_submitted_values(flow_mass: MusicAssistant) -> None:
+    """Closing a prefilled gate takes effect wherever the gate sits on the form."""
+    submitted: dict[str, ConfigValueType] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        # gate listed behind what it gates, and prefilled as a reconfigure run would
+        submitted.update(
+            await session.form([PROXY_HOST_ENTRY, replace(USE_PROXY_ENTRY, value=True)])
+        )
+        await session.finish(submitted)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": False})
+    assert finish_step.type == FlowStepType.FINISH
+    assert submitted == {"use_proxy": False, "proxy_host": None}
+
+
 async def test_submit_returns_next_form_step(flow_mass: MusicAssistant) -> None:
     """Submitting a multi-step flow returns the next FORM step."""
 
@@ -444,6 +510,60 @@ async def test_external_step_callback_roundtrip(flow_mass: MusicAssistant) -> No
     assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["token"]) == "abc"
     # the route is released again when the flow ends
     await _wait_for(lambda: callback_path not in registered_routes)
+
+
+async def test_external_step_replaced_by_progress_on_callback(flow_mass: MusicAssistant) -> None:
+    """The external step gives way to a progress step while the callback is processed."""
+    release = asyncio.Event()
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.external("https://example.com/authorize")
+        await release.wait()
+        await session.finish({})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        callback_path = f"/setup_flow/callback/{step.flow_id}"
+        handler = cast("Any", flow_mass.webserver).routes[callback_path]
+        await handler(make_mocked_request("GET", f"{callback_path}?code=abc"))
+        progress_step = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.type == FlowStepType.PROGRESS
+                else None
+            )
+        )
+        assert progress_step.step_id == "working"
+        release.set()
+        await _wait_for(lambda: session.finished)
+
+
+async def test_external_expiry_aborts_flow(
+    flow_mass: MusicAssistant, flow_events: list[MassEvent]
+) -> None:
+    """An external step whose callback never arrives times out and releases its route."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.external("https://example.com/authorize", expires_in=0.05)
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.expires_at is not None
+        abort_step = await _wait_for(
+            lambda: next(iter(_abort_events(flow_events)), None), timeout=2
+        )
+    assert abort_step.reason == "timed_out"
+    assert step.flow_id not in flow_mass.config._setup_flows
+    # the expired step is not followed by a progress step: nothing was completed
+    assert not [event.data for event in flow_events if event.data.type == FlowStepType.PROGRESS]
+    registered_routes = cast("Any", flow_mass.webserver).routes
+    assert f"/setup_flow/callback/{step.flow_id}" not in registered_routes
 
 
 async def test_external_callback_json_body_coerced(flow_mass: MusicAssistant) -> None:
@@ -1685,3 +1805,64 @@ async def test_netease_qr_flow_expiry_then_confirm(
     assert flow_mass.config.decrypt_string(setup_data[CONF_COOKIE]) == "cookie-xyz"
     assert flow_mass.config.decrypt_string(setup_data[CONF_UID]) == "42"
     assert flow_mass.config.decrypt_string(setup_data[CONF_API_BASE_URL]) == "http://127.0.0.1:3000"
+
+
+async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) -> None:
+    """external_until shows an external step and completes on the awaitable (no callback)."""
+    release = asyncio.Event()
+
+    async def _work() -> dict[str, str]:
+        await release.wait()
+        return {"token": "abc"}
+
+    async def run_setup(session: SetupSession) -> None:
+        result = await session.external_until(
+            _work(),
+            url="https://example.com/device",
+            step_id="device",
+            expires_in=300,
+        )
+        await session.finish({"token": result["token"]})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.EXTERNAL
+        assert step.step_id == "device"
+        assert step.url == "https://example.com/device"
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        # completion is driven by the awaitable resolving, not a browser callback
+        release.set()
+        await _wait_for(lambda: session.finished)
+    setup_data = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")["setup_data"]
+    assert flow_mass.config.decrypt_string(setup_data["token"]) == "abc"
+
+
+async def test_external_until_raises_on_deadline(flow_mass: MusicAssistant) -> None:
+    """external_until raises StepExpiredError when the awaitable outlives expires_in."""
+    expired = asyncio.Event()
+
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    async def run_setup(session: SetupSession) -> None:
+        try:
+            await session.external_until(
+                _never(),
+                url="https://example.com/device",
+                step_id="device",
+                expires_in=0.1,
+            )
+        except StepExpiredError:
+            expired.set()
+            raise
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.EXTERNAL
+        await _wait_for(lambda: expired.is_set())

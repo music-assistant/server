@@ -678,6 +678,7 @@ def _create_controller_for_filter_tests() -> Mock:
     ctrl.media_type = MediaType.ALBUM
     ctrl.db_table = "albums"
     ctrl._apply_filters = MediaControllerBase._apply_filters.__get__(ctrl)
+    ctrl._provider_filter_clause = MediaControllerBase._provider_filter_clause.__get__(ctrl)
     return ctrl
 
 
@@ -703,9 +704,14 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
     )
 
     assert len(query_parts) == 1
-    assert query_parts[0].startswith("EXISTS(")
-    assert "provider_mappings.in_library = 1" in query_parts[0]
     assert "provider_media_type" in query_params
+    # pin the exact clause: library_count() shares this builder
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND provider_mappings.in_library = 1)"
+    )
 
 
 async def test_apply_filters_in_library_only_with_provider_filter() -> None:
@@ -730,10 +736,15 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
     )
 
     assert len(query_parts) == 1
-    assert query_parts[0].startswith("EXISTS(")
-    assert "provider_mappings.in_library = 1" in query_parts[0]
-    assert "provider_filter_0" in query_params
     assert query_params["provider_filter_0"] == "spotify_1"
+    # pin the exact clause: library_count() shares this builder
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND provider_mappings.in_library = 1 "
+        "AND (provider_mappings.provider_instance = :provider_filter_0))"
+    )
 
 
 async def test_apply_filters_no_in_library_filter_by_default() -> None:
@@ -782,9 +793,14 @@ async def test_apply_filters_provider_filter_without_in_library() -> None:
     )
 
     assert len(query_parts) == 1
-    assert query_parts[0].startswith("EXISTS(")
-    assert "in_library" not in query_parts[0]
-    assert "provider_filter_0" in query_params
+    assert query_params["provider_filter_0"] == "spotify_1"
+    # pin the exact clause: library_count() shares this builder
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND (provider_mappings.provider_instance = :provider_filter_0))"
+    )
 
 
 # --- Group 5: set_provider_mappings behavior ---
@@ -795,6 +811,7 @@ def mock_controller() -> Mock:
     """Create a mock MediaControllerBase for set_provider_mappings tests."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.media_type = MediaType.ALBUM
+    ctrl.logger = Mock()
     ctrl.mass = Mock()
     ctrl.mass.music.database.delete = AsyncMock()
     ctrl.mass.music.database.upsert_many = AsyncMock()
@@ -816,6 +833,34 @@ async def test_set_provider_mappings_overwrite_deletes_and_reinserts(
 
     mock_controller.mass.music.database.delete.assert_called_once()
     mock_controller.mass.music.database.upsert_many.assert_called_once()
+
+
+async def test_set_provider_mappings_overwrite_keeps_existing_when_empty(
+    mock_controller: Mock,
+) -> None:
+    """
+    Test that overwrite=True with no mappings leaves the existing mappings untouched.
+
+    :param mock_controller: Mock MediaControllerBase instance.
+    """
+    await mock_controller.set_provider_mappings(1, [], overwrite=True)
+
+    mock_controller.mass.music.database.delete.assert_not_called()
+    mock_controller.mass.music.database.upsert_many.assert_not_called()
+    mock_controller.logger.warning.assert_called_once()
+
+
+async def test_set_provider_mappings_no_mappings_is_noop(mock_controller: Mock) -> None:
+    """
+    Test that an empty mappings set without overwrite writes nothing.
+
+    :param mock_controller: Mock MediaControllerBase instance.
+    """
+    await mock_controller.set_provider_mappings(1, [], overwrite=False)
+
+    mock_controller.mass.music.database.delete.assert_not_called()
+    mock_controller.mass.music.database.upsert_many.assert_not_called()
+    mock_controller.logger.warning.assert_not_called()
 
 
 async def test_set_provider_mappings_upsert_preserves_null_in_library(

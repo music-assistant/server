@@ -77,6 +77,8 @@ class MockProvider:
         self.manifest.name = f"Mock {domain} Provider"
         self.mass = mass or MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
+        # the controller iterates these when a group related field changes
+        self.players: list[Player] = []
 
 
 class MockPlayer(Player):
@@ -148,6 +150,15 @@ class MockPlayer(Player):
         self._cache.clear()
 
 
+class SessionBoundMockPlayer(MockPlayer):
+    """Mock player whose native grouping attaches members to its own stream (e.g. AirPlay)."""
+
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: native members ride this player's own stream session."""
+        return True
+
+
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
@@ -164,7 +175,7 @@ def mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
@@ -1924,7 +1935,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -1955,7 +1966,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -1991,7 +2002,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -2028,7 +2039,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -2108,6 +2119,174 @@ class TestJoinActiveNativeSession:
         assert native_members == []
         assert set(protocol_members) == {"airplay_c", "airplay_b"}
         assert protocol_domain == "airplay"
+
+
+class TestSessionBoundNativeGrouping:
+    """
+    Grouping a parent whose native grouping only works while it renders its own stream.
+
+    Such native members are attached to that very stream, so they cannot stay natively
+    grouped once the group is moved onto one of the parent's output protocols. Parents
+    with device-side native grouping are unaffected and keep their hybrid groups.
+    """
+
+    @staticmethod
+    def _link_bridge(player: MockPlayer, bridge_id: str) -> None:
+        """Link a bridge protocol player to a native player."""
+        player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id=bridge_id,
+                    name="Bridge",
+                    protocol_domain="sendspin",
+                    priority=40,
+                    available=True,
+                )
+            ]
+        )
+
+    def _build_topology(
+        self,
+        mock_mass: MagicMock,
+        parent_class: type[MockPlayer],
+        with_orphan: bool = False,
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader with a natively groupable member and a bridge-only member.
+
+        The leader and its member speak the same (speaker) provider, so they group natively.
+        Both also expose a bridge protocol player, which is the only way to reach the third
+        member: a native player of the bridge domain.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :param parent_class: The player class to build the leader from.
+        :param with_orphan: Add a second natively groupable member without a bridge protocol.
+        """
+        controller = PlayerController(mock_mass)
+        speaker_provider = MockProvider("speaker", instance_id="speaker_instance", mass=mock_mass)
+        bridge_provider = MockProvider("sendspin", instance_id="sendspin_instance", mass=mock_mass)
+
+        leader = parent_class(speaker_provider, "speaker_leader", "Living Room")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        leader._cache.clear()
+
+        member = MockPlayer(speaker_provider, "speaker_member", "Kitchen")
+        member._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        member._cache.clear()
+
+        bridge_leader = MockPlayer(
+            bridge_provider,
+            "bridge_leader",
+            "Living Room (Bridge)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge_leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        bridge_leader._cache.clear()
+        bridge_leader.set_protocol_parent_id("speaker_leader")
+
+        bridge_member = MockPlayer(
+            bridge_provider,
+            "bridge_member",
+            "Kitchen (Bridge)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge_member._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        bridge_member._cache.clear()
+        bridge_member.set_protocol_parent_id("speaker_member")
+
+        # native player of the bridge domain: only reachable through the bridge protocol
+        bridge_only = MockPlayer(bridge_provider, "bridge_only", "Voice Assistant")
+        bridge_only._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        bridge_only._cache.clear()
+
+        self._link_bridge(leader, "bridge_leader")
+        self._link_bridge(member, "bridge_member")
+
+        players: dict[str, MockPlayer] = {
+            "speaker_leader": leader,
+            "speaker_member": member,
+            "bridge_leader": bridge_leader,
+            "bridge_member": bridge_member,
+            "bridge_only": bridge_only,
+        }
+        if with_orphan:
+            orphan = MockPlayer(speaker_provider, "speaker_orphan", "Bedroom")
+            orphan._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+            orphan._cache.clear()
+            players["speaker_orphan"] = orphan
+
+        mock_mass.players = controller
+        controller._players = dict(players)
+        for player in players.values():
+            player.update_state(signal_event=False)
+        return controller, players
+
+    @pytest.mark.parametrize(
+        "member_order",
+        [
+            ["speaker_member", "bridge_only"],
+            ["bridge_only", "speaker_member"],
+        ],
+    )
+    def test_native_members_follow_the_group_protocol(
+        self, mock_mass: MagicMock, member_order: list[str]
+    ) -> None:
+        """A natively groupable member moves onto the protocol the group ends up on."""
+        controller, players = self._build_topology(mock_mass, SessionBoundMockPlayer)
+
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["speaker_leader"],
+                player_ids=member_order,
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        assert native_members == []
+        assert set(protocol_members) == {"bridge_only", "bridge_member"}
+        assert protocol_domain == "sendspin"
+
+    def test_member_without_the_group_protocol_is_refused(
+        self, mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A native member that lacks the group's protocol is dropped, the others still move."""
+        controller, players = self._build_topology(
+            mock_mass, SessionBoundMockPlayer, with_orphan=True
+        )
+
+        with caplog.at_level(logging.WARNING):
+            protocol_members, native_members, _, _ = controller._translate_members_for_protocols(
+                parent_player=players["speaker_leader"],
+                player_ids=["speaker_member", "speaker_orphan", "bridge_only"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+
+        assert native_members == []
+        assert set(protocol_members) == {"bridge_only", "bridge_member"}
+        assert (
+            "Cannot group Bedroom with Living Room: the group plays through the sendspin "
+            "protocol, which Bedroom does not support" in caplog.text
+        )
+
+    def test_device_side_parent_keeps_its_hybrid_group(self, mock_mass: MagicMock) -> None:
+        """A parent with device-side native grouping keeps its members natively grouped."""
+        controller, players = self._build_topology(mock_mass, MockPlayer)
+
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["speaker_leader"],
+                player_ids=["speaker_member", "bridge_only"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        assert native_members == ["speaker_member"]
+        assert protocol_members == ["bridge_only"]
+        assert protocol_domain == "sendspin"
 
 
 class TestCanGroupWith:
@@ -2594,6 +2773,70 @@ class TestNativePlayerProtocolGrouping:
 class TestProtocolSwitchingDuringPlayback:
     """Tests for dynamic protocol switching when group members change during playback."""
 
+    def _build_session_bound_group(
+        self, mock_mass: MagicMock, playback_state: PlaybackState
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader that renders its own stream, one native member and a bridge-only player.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :param playback_state: The state the leader is in when the switch happens.
+        :return: The controller and its players by ID.
+        """
+        controller = PlayerController(mock_mass)
+        speaker_provider = MockProvider("speaker", instance_id="speaker_instance", mass=mock_mass)
+        bridge_provider = MockProvider("sendspin", instance_id="sendspin_instance", mass=mock_mass)
+
+        leader = SessionBoundMockPlayer(speaker_provider, "speaker_leader", "Living Room")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        leader._attr_group_members = ["speaker_leader", "speaker_member"]
+        leader._attr_playback_state = playback_state
+        leader._cache.clear()
+
+        member = MockPlayer(speaker_provider, "speaker_member", "Kitchen")
+        member._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        member._cache.clear()
+
+        bridge_only = MockPlayer(bridge_provider, "bridge_only", "Voice Assistant")
+        bridge_only._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        bridge_only._cache.clear()
+
+        players: dict[str, MockPlayer] = {
+            "speaker_leader": leader,
+            "speaker_member": member,
+            "bridge_only": bridge_only,
+        }
+        for parent_id, bridge_id, bridge_name in (
+            ("speaker_leader", "bridge_leader", "Living Room (Bridge)"),
+            ("speaker_member", "bridge_member", "Kitchen (Bridge)"),
+        ):
+            bridge = MockPlayer(
+                bridge_provider, bridge_id, bridge_name, player_type=PlayerType.PROTOCOL
+            )
+            bridge._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+            bridge._cache.clear()
+            bridge.set_protocol_parent_id(parent_id)
+            players[bridge_id] = bridge
+            players[parent_id].set_linked_output_protocols(
+                [
+                    OutputProtocol(
+                        output_protocol_id=bridge_id,
+                        name="Bridge",
+                        protocol_domain="sendspin",
+                        priority=40,
+                        available=True,
+                    )
+                ]
+            )
+
+        mock_mass.players = controller
+        controller._players = dict(players)
+        for registered_player in players.values():
+            registered_player.update_state(signal_event=False)
+        leader.set_active_output_protocol("native")
+        return controller, players
+
     async def test_no_protocol_set_during_grouping_without_playback(
         self, mock_mass: MagicMock
     ) -> None:
@@ -2830,6 +3073,71 @@ class TestProtocolSwitchingDuringPlayback:
 
         # Playback should NOT have been restarted because we're going back to native
         assert not resume_called, "cmd_resume should not be called when switching to native"
+
+    @pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+    async def test_native_session_is_stopped_and_members_migrate(
+        self, mock_mass: MagicMock, playback_state: PlaybackState
+    ) -> None:
+        """
+        A parent that renders its own stream hands its native members over to the new protocol.
+
+        The members join the protocol group in the same call as the new member, after which
+        the native session releases them and stops. Playback resumes only for a player that
+        was playing, so adding a member to a paused group does not start it.
+        """
+        controller, players = self._build_session_bound_group(mock_mass, playback_state)
+        leader = players["speaker_leader"]
+        bridge_leader = players["bridge_leader"]
+
+        # record the sequence of provider level calls the switch performs
+        calls: list[tuple[str, Any]] = []
+        leader_set_members = leader.set_members
+        bridge_set_members = bridge_leader.set_members
+
+        async def record_leader_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            calls.append(("leader_set_members", player_ids_to_remove))
+            await leader_set_members(player_ids_to_add, player_ids_to_remove)
+
+        async def record_bridge_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            calls.append(("bridge_set_members", player_ids_to_add))
+            await bridge_set_members(player_ids_to_add, player_ids_to_remove)
+
+        async def record_leader_stop() -> None:
+            calls.append(("leader_stop", None))
+
+        leader.set_members = record_leader_set_members  # type: ignore[method-assign]
+        leader.stop = record_leader_stop  # type: ignore[method-assign]
+        bridge_leader.set_members = record_bridge_set_members  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=bridge_leader,
+            protocol_members_to_add=["bridge_only"],
+            protocol_members_to_remove=[],
+        )
+
+        assert calls == [
+            # the native member joins the protocol group together with the new member
+            ("bridge_set_members", ["bridge_only", "bridge_member"]),
+            ("leader_set_members", ["speaker_member"]),
+            ("leader_stop", None),
+        ]
+        assert leader.active_output_protocol == "bridge_leader"
+        # Only a player that was playing resumes: adding a member to a paused group
+        # hands the output over without starting playback.
+        if playback_state == PlaybackState.PLAYING:
+            controller.cmd_resume.assert_awaited_once_with("speaker_leader")
+        else:
+            controller.cmd_resume.assert_not_awaited()
+        controller._handle_set_members.assert_not_awaited()
 
 
 class TestNativeProtocolPlayerGrouping:
@@ -7703,6 +8011,73 @@ class TestCleanupProtocolLinks:
         mock_schedule.assert_called_once_with(protocol_player)
 
 
+class TestDetachProtocolChildren:
+    """Tests for detaching protocol players of a removed player that is not registered."""
+
+    @staticmethod
+    def _setup(
+        mock_mass: MagicMock, live_parent_id: str | None
+    ) -> tuple[PlayerController, MockPlayer, dict[str, object]]:
+        """Set up a registered protocol player whose (unregistered) parent is sonos_1."""
+        controller = PlayerController(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players": {"sonos_1": {}, "airplay_live": {}},
+            "players/sonos_1": {"enabled": True},
+            "players/airplay_live": {"enabled": True},
+            "players/airplay_live/values/protocol_parent_id": "sonos_1",
+        }
+
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: config_store.get(key, default)
+        )
+        mock_mass.config.set = MagicMock(
+            side_effect=lambda key, value: config_store.__setitem__(key, value)
+        )
+
+        protocol_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_live",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_protocol_parent_id(live_parent_id)
+        controller._players = {"airplay_live": protocol_player}
+        return controller, protocol_player, config_store
+
+    def test_detach_on_removal_of_an_unregistered_parent(self, mock_mass: MagicMock) -> None:
+        """Removing a player that is no longer registered detaches its protocol player."""
+        controller, protocol_player, config_store = self._setup(mock_mass, "sonos_1")
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller.delete_player_config("sonos_1")
+
+        assert protocol_player.protocol_parent_id is None
+        assert config_store["players/airplay_live/values/protocol_parent_id"] is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    def test_detach_of_a_protocol_player_waiting_for_its_parent(self, mock_mass: MagicMock) -> None:
+        """A protocol player that only has the parent link in its config is detached too."""
+        controller, protocol_player, config_store = self._setup(mock_mass, None)
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller.delete_player_config("sonos_1")
+
+        assert config_store["players/airplay_live/values/protocol_parent_id"] is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    def test_detach_skips_a_protocol_player_of_another_parent(self, mock_mass: MagicMock) -> None:
+        """A protocol player that already moved to another parent keeps its link."""
+        controller, protocol_player, config_store = self._setup(mock_mass, "cast_1")
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller.delete_player_config("sonos_1")
+
+        assert protocol_player.protocol_parent_id == "cast_1"
+        assert config_store["players/airplay_live/values/protocol_parent_id"] == "sonos_1"
+        mock_schedule.assert_not_called()
+
+
 class TestStaleConfigMigration:
     """Tests for protocol parent link repair on startup."""
 
@@ -8148,9 +8523,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, native_parent_id
         )
         mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
 
         # Each protocol's parent_id is restored to the disabled native parent
         parent_restorations = {
@@ -8245,9 +8617,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, "native_a"
         )
         mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
 
     @pytest.mark.asyncio
     async def test_restore_native_claims_carries_config_and_deletes_wrapper(
@@ -8337,9 +8706,7 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         # the wrapper's own config entries are all gone
         assert universal_id not in players_tree
         # cached queue state of the wrapper is purged as well
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
+        mock_mass.player_queues.purge_saved_queue.assert_called_once_with(universal_id)
         # the wrapper itself is not registered as a player
         assert universal_id not in controller._players
         for task in scheduled_tasks:

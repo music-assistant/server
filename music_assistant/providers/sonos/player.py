@@ -14,12 +14,12 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from aiosonos.exceptions import CannotConnect, ConnectionFailed, FailedCommand
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -34,7 +34,6 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
@@ -196,6 +195,22 @@ class SonosPlayer(Player):
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
         ]
 
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        for task_id in (
+            f"sonos_reconnect_{self.player_id}",
+            f"restore_airplay_group_{self.player_id}",
+        ):
+            # a timer that already fired lives on as a task under the same id,
+            # so both are needed to cover the pending and the running case
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
+        try:
+            await self._disconnect()
+        except Exception:
+            self.logger.exception("Error disconnecting from Sonos player %s", self.name)
+
     async def volume_set(self, volume_level: int) -> None:
         """
         Handle VOLUME_SET command on the player.
@@ -325,10 +340,7 @@ class SonosPlayer(Player):
         if media.media_type == MediaType.ANNOUNCEMENT:
             # We cannot use play_stream_url for announcements because Sonos treats those
             # as duration less radio streams and will retry/loop them.
-            if not media.duration and media.custom_data:
-                announcement_url = media.custom_data.get("announcement_url", media.uri)
-                media_info = await async_parse_tags(announcement_url, require_duration=True)
-                media.duration = int(media_info.duration) if media_info.duration else None
+            media.duration = await self.mass.streams.get_announcement_duration(media)
             media.queue_item_id = "announcement"
             self.sonos_queue.items = [media]
             self.sonos_queue.last_updated = time.time()
@@ -471,9 +483,8 @@ class SonosPlayer(Player):
         # Wait until the announcement is finished playing
         # This is helpful for people who want to play announcements in a sequence
         # yeah we can also setup a subscription on the sonos player for this, but this is easier
-        media_info = await async_parse_tags(announcement.uri, require_duration=True)
-        duration = media_info.duration or 10
-        await asyncio.sleep(duration)
+        duration = await self.mass.streams.get_announcement_duration(announcement)
+        await asyncio.sleep(duration or 10)
 
     def on_player_event(self, event: SonosEvent | None) -> None:
         """Handle incoming event from player."""
@@ -741,7 +752,7 @@ class SonosPlayer(Player):
             return
         try:
             await self.client.connect()
-        except (ConnectionFailed, ClientConnectorError) as err:
+        except (ConnectionFailed, CannotConnect, ClientError) as err:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
             if not retry_on_fail or not self.mass.players.get_player(self.player_id):
                 raise

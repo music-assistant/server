@@ -1,21 +1,29 @@
 """Helper functions for DSP filters."""
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CompressorFilter,
+    ConvolutionFilter,
+    CrossfeedFilter,
     DSPFilter,
     GainFilter,
     HighLowPassFilter,
     HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
+    SafetyLimiterFilter,
+    StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
 )
+
+from music_assistant.constants import DSP_IR_ID_RE
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items.audio_format import AudioFormat
@@ -24,36 +32,54 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
+class ComplexFilterInput:
+    """
+    An extra audio source feeding a ComplexFilter.
+
+    :param path: Audio source to read, either a file path or a URL.
+    :param filters: Optional chain applied to the input before the body consumes
+        it (e.g. "aresample=48000").
+    :param input_args: Optional FFmpeg options for reading this input, placed
+        before its ``-i`` on top of the ones every input already gets
+        (e.g. ["-stream_loop", "-1"]).
+    """
+
+    path: str
+    filters: str = ""
+    input_args: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ComplexFilter:
     """
-    A DSP filter fragment that pulls in one or more extra source inputs.
+    A DSP filter fragment that pulls in one or more extra audio inputs.
 
     Represents a chain entry that cannot be expressed as a plain single-input
     filter string, such as an FFmpeg ``afir`` convolution that needs an
     impulse-response input.
 
-    :param body: The filter consuming the main input followed by each source in
-        order (e.g. "afir=gtype=gn").
-    :param sources: Sub-chains that each produce one extra input for ``body``
-        (e.g. "amovie='/x/ir.wav',aresample=48000").
+    :param body: The filter consuming the main input followed by each extra
+        input in order (e.g. "afir=irnorm=1").
+    :param inputs: Extra audio sources for ``body``, in the order it consumes them.
     """
 
     body: str
-    sources: list[str] = field(default_factory=list)
+    inputs: list[ComplexFilterInput] = field(default_factory=list)
 
 
-def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) -> list[str]:
+def filter_to_ffmpeg_params(
+    dsp_filter: DSPFilter, input_format: AudioFormat, *, ir_dir: str
+) -> list[str | ComplexFilter]:
     """
     Convert a DSP filter model to FFmpeg filter parameters.
 
-    Args:
-        dsp_filter: DSP filter configuration
-        input_format: Audio format containing sample rate
-
-    Returns:
-        List of FFmpeg filter parameter strings
+    :param dsp_filter: DSP filter configuration.
+    :param input_format: Input audio format (sample rate/channels).
+    :param ir_dir: Directory holding convolution impulse responses, used to resolve a
+        ConvolutionFilter's ir_id to a file path.
+    :return: Ordered chain of FFmpeg filter strings and/or ComplexFilter fragments.
     """
-    filter_params = []
+    filter_params: list[str | ComplexFilter] = []
 
     if isinstance(dsp_filter, ParametricEQFilter):
         has_per_channel_preamp = any(value != 0 for value in dsp_filter.per_channel_preamp.values())
@@ -183,6 +209,24 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         filter_params.append(
             f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
         )
+    if isinstance(dsp_filter, SafetyLimiterFilter):
+        # user placed safety limiter; level=false keeps it a transparent
+        # ceiling (no auto make-up), latency=true realigns the lookahead buffer
+        filter_params.append(
+            f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true:latency=true"
+        )
+    # a unity ratio compresses nothing, leaving the make-up gain as the only effect
+    if isinstance(dsp_filter, CompressorFilter) and (
+        dsp_filter.ratio != 1.0 or dsp_filter.makeup != 0
+    ):
+        # acompressor knee is threshold/sqrt(knee)..threshold*sqrt(knee), so a knee
+        # width of N dB maps to a linear knee factor of 10**(N/20)
+        knee = 10 ** (dsp_filter.knee / 20)
+        filter_params.append(
+            f"acompressor=threshold={dsp_filter.threshold}dB:ratio={dsp_filter.ratio}"
+            f":attack={dsp_filter.attack}:release={dsp_filter.release}"
+            f":knee={knee}:makeup={dsp_filter.makeup}dB"
+        )
 
     if isinstance(dsp_filter, HighLowPassFilter):
         # A high/low-pass of a given slope is a cascade of second-order Butterworth
@@ -197,6 +241,37 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             q = 1 / (2 * math.cos(math.pi * (2 * section + 1) / (2 * order)))
             alpha = sin_w0 / (2 * q)
             filter_params.append(_pass_biquad_params(high_pass=high_pass, w_0=w_0, alpha=alpha))
+
+    if isinstance(dsp_filter, StereoWidthFilter) and dsp_filter.width != 1.0:
+        # width scales the side (L-R) signal; a non-stereo source has no side
+        # component, so only apply it to stereo streams
+        if input_format.channels == 2:
+            # c=0 disables the internal hard clipping extrastereo applies by default,
+            # which would clamp a widened signal before any later filter or the output
+            # gain can bring it down. The float internal format exists for that headroom
+            filter_params.append(f"extrastereo=m={dsp_filter.width}:c=0")
+
+    if isinstance(dsp_filter, CrossfeedFilter):
+        # crossfeed blends the left and right channels for headphone listening
+        # and is only meaningful on stereo streams
+        if input_format.channels == 2:
+            # crossfeed is turned off by disabling the filter, never by a zero strength
+            # level_in defaults to 0.9, which would attenuate every crossfed stream
+            filter_params.append(
+                f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}:level_in=1"
+            )
+
+    # the id rule also rejects the empty "no impulse response selected" value
+    if isinstance(dsp_filter, ConvolutionFilter) and DSP_IR_ID_RE.match(dsp_filter.ir_id):
+        # afir takes the impulse response as its second input; irnorm holds it at
+        # unity gain, which afir's deprecated gtype no longer does
+        ir_input = ComplexFilterInput(
+            path=os.path.join(ir_dir, f"{dsp_filter.ir_id}.wav"),
+            filters=f"aresample={input_format.sample_rate}",
+        )
+        filter_params.append(ComplexFilter(body="afir=irnorm=1", inputs=[ir_input]))
+        if dsp_filter.gain != 0:
+            filter_params.append(f"volume={dsp_filter.gain}dB")
 
     return filter_params
 

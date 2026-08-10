@@ -314,7 +314,6 @@ class AIRadioStorageMixin:
             "name": name,
             "source_playlist_id": source_playlist_id,
             "source_playlist_provider": source_playlist_provider,
-            "target_playlist_provider": str(station.get("target_playlist_provider") or "builtin"),
             "default_player_id": str(station.get("default_player_id") or ""),
             "max_duration_minutes": max(
                 0.0,
@@ -323,26 +322,6 @@ class AIRadioStorageMixin:
                 ),
             ),
             "shuffle_source_tracks": bool(station.get("shuffle_source_tracks", True)),
-            "dynamic_batch_size": max(
-                1,
-                _require_number("dynamic_batch_size", station.get("dynamic_batch_size"), 3, int),
-            ),
-            "dynamic_poll_seconds": max(
-                1,
-                _require_number(
-                    "dynamic_poll_seconds", station.get("dynamic_poll_seconds"), 5, int
-                ),
-            ),
-            "dynamic_prefetch_remaining_tracks": max(
-                1,
-                _require_number(
-                    "dynamic_prefetch_remaining_tracks",
-                    station.get("dynamic_prefetch_remaining_tracks"),
-                    2,
-                    int,
-                ),
-            ),
-            "clear_queue_on_start": bool(station.get("clear_queue_on_start", True)),
             "merge_section_id": merge_section_id,
             "general": general,
             "section_ids": section_ids,
@@ -523,14 +502,9 @@ class AIRadioStorageMixin:
             "name": "Example AI Radio Station",
             "source_playlist_id": "",
             "source_playlist_provider": "library",
-            "target_playlist_provider": "builtin",
             "default_player_id": "",
             "max_duration_minutes": 0,
             "shuffle_source_tracks": True,
-            "dynamic_batch_size": 3,
-            "dynamic_poll_seconds": 5,
-            "dynamic_prefetch_remaining_tracks": 2,
-            "clear_queue_on_start": True,
             "merge_section_id": "Between_Songs_Smoother",
             "general": {
                 "instructions": DEFAULT_LLM_INSTRUCTIONS,

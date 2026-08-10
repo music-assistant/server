@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -53,8 +54,8 @@ from music_assistant.constants import (
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
+    CONF_ICON,
     CONF_MUTE_CONTROL,
-    CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -97,6 +98,40 @@ def _first_enabled_control_value(options: list[ConfigValueOption]) -> ConfigValu
         if not option.disabled:
             return option.value
     return PLAYER_CONTROL_NONE
+
+
+def _reconcile_player_icon_value(
+    submitted_values: dict[str, ConfigValueType],
+    stored_values: dict[str, Any],
+    new_values: dict[str, ConfigValueType],
+) -> bool:
+    """Persist explicit icon selections while keeping None as automatic selection."""
+    stored_icon = stored_values.get(CONF_ICON)
+    has_explicit_icon = isinstance(stored_icon, str) and bool(stored_icon)
+    if CONF_ICON not in submitted_values:
+        if has_explicit_icon:
+            new_values[CONF_ICON] = stored_icon
+        else:
+            new_values.pop(CONF_ICON, None)
+        return False
+
+    submitted_icon = submitted_values[CONF_ICON]
+    if isinstance(submitted_icon, str) and submitted_icon:
+        new_values[CONF_ICON] = submitted_icon
+        return not has_explicit_icon or submitted_icon != stored_icon
+
+    new_values.pop(CONF_ICON, None)
+    return has_explicit_icon
+
+
+def _apply_raw_player_icon_value(
+    config: PlayerConfig,
+    raw_values: dict[str, Any],
+) -> None:
+    """Apply the stored icon value to a parsed player config."""
+    if icon_entry := config.values.get(CONF_ICON):
+        stored_icon = raw_values.get(CONF_ICON)
+        icon_entry.value = stored_icon if isinstance(stored_icon, str) and stored_icon else None
 
 
 class PlayerConfigMixin:
@@ -199,6 +234,7 @@ class PlayerConfigMixin:
                 raw_conf.setdefault("player_id", player_id)
 
             conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            _apply_raw_player_icon_value(conf, raw_conf.get("values", {}))
             # parse() stamps every entry with this player's owner; injected protocol entries
             # belong to their own protocol provider, so restore that owner for string resolution.
             for entry in conf.values.values():
@@ -263,16 +299,21 @@ class PlayerConfigMixin:
             *[x for x in default_entries if x.key not in player_entries_keys],
             *player_entries,
         ]
-        return _with_translation_owner(all_entries, f"provider.{player.provider}")
+        return _with_translation_owner(all_entries, player.translation_owner)
 
     @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
-    async def invoke_player_config_action(self, player_id: str, action: str) -> list[ConfigEntry]:
+    async def invoke_player_config_action(
+        self, player_id: str, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult:
         """
-        Run a one-shot action button from a player's config and return the (re-rendered) entries.
+        Run a one-shot action button from a player's config.
 
         A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
         the linked protocol player; the parent player's entries are then re-rendered so the
-        injected protocol entries pick up any state change.
+        injected protocol entries pick up any state change. A ``ConfigActionResult`` holds the
+        outcome to report to the user; an empty list means the action ran with nothing to
+        report; a non-empty list holds the parent player's entries the config form should
+        re-render with.
 
         :param player_id: The player whose config surface holds the action.
         :param action: The action id of the pressed button (may be protocol-prefixed).
@@ -285,9 +326,17 @@ class PlayerConfigMixin:
             if not (target := self.mass.players.get_player(protocol_player_id, False)):
                 msg = f"Player {protocol_player_id} not found"
                 raise KeyError(msg)
-            await target.handle_config_action(protocol_action)
+            result = await target.handle_config_action(protocol_action)
         else:
-            await player.handle_config_action(action)
+            target = player
+            result = await player.handle_config_action(action)
+        if result is None:
+            return []
+        if isinstance(result, ConfigActionResult):
+            # the strings belong to the provider that handled the action, which for a
+            # protocol-prefixed action is the protocol player's, not the host player's
+            result.translation_owner = result.translation_owner or target.translation_owner
+            return result
         # re-render the full (parent) player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
 
@@ -424,17 +473,13 @@ class PlayerConfigMixin:
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
         values = await self._update_output_protocol_config(values)
-        config = await self.get_player_config(player_id)
-        changed_keys = config.update(values)
-        if not changed_keys:
-            # no changes
-            return config
-        # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        # Get existing raw config to preserve values that don't have config entries.
-        # e.g. protocol links etc.
         existing_raw = self.get(conf_key) or {}
         existing_values = existing_raw.get("values", {})
+        if values.get(CONF_ICON) is None and CONF_ICON not in existing_values:
+            values = {key: value for key, value in values.items() if key != CONF_ICON}
+        config = await self.get_player_config(player_id)
+        changed_keys = config.update(values)
         new_raw = config.to_raw()
         new_values = new_raw.get("values", {})
         # Preserve values from storage that don't have config entries in current context.
@@ -448,6 +493,13 @@ class PlayerConfigMixin:
         new_values = {
             key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
         }
+        if _reconcile_player_icon_value(values, existing_values, new_values):
+            changed_keys.add(f"values/{CONF_ICON}")
+        _apply_raw_player_icon_value(config, new_values)
+        if not changed_keys:
+            # no changes
+            return config
+        # store updated config first (to prevent issues with enabling/disabling players)
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
         try:
@@ -470,7 +522,6 @@ class PlayerConfigMixin:
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
         player_config = self.get(conf_key)
         if not player_config:
             msg = f"Player configuration for {player_id} does not exist"
@@ -485,10 +536,8 @@ class PlayerConfigMixin:
             # tell the player manager to remove the player if its lingering around
             # set permanent to false otherwise we end up in an infinite loop
             await self.mass.players.unregister(player_id, permanent=False)
-        # remove the actual config if all of the above passed
-        self.remove(conf_key)
-        # Also remove the DSP config if it exists
-        self.remove(dsp_conf_key)
+        # all of the above passed, so wipe the config (incl. DSP and linked protocol players)
+        self.mass.players.delete_player_config(player_id)
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""
@@ -638,6 +687,14 @@ class PlayerConfigMixin:
             # only audio/protocol specific ones
             return []
 
+        icon_entry = deepcopy(
+            CONF_ENTRY_PLAYER_ICON_GROUP
+            if player.state.type == PlayerType.GROUP
+            else CONF_ENTRY_PLAYER_ICON
+        )
+        icon_entry.default_value = player.default_icon
+        icon_entry.value = self.get_raw_player_config_value(player.player_id, CONF_ICON)
+
         # some base entries for all player types
         # note that these may NOT be playback/audio related
         entries += [
@@ -673,12 +730,12 @@ class PlayerConfigMixin:
         # group-player config entries
         if player.state.type == PlayerType.GROUP:
             entries += [
-                CONF_ENTRY_PLAYER_ICON_GROUP,
+                icon_entry,
             ]
             return entries
         # normal player (or stereo pair) config entries
         entries += [
-            CONF_ENTRY_PLAYER_ICON,
+            icon_entry,
             # add default entries for announce feature
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
             CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -812,11 +869,13 @@ class PlayerConfigMixin:
         player: Player,
     ) -> list[ConfigEntry]:
         """
-        Create config entry for preferred output protocol.
+        Create the output protocol config entries for a player.
 
-        Returns empty list if there are no output protocol options (native only or no protocols).
-        The player.output_protocols property includes native, active, and disabled protocols,
-        with the available flag indicating their status.
+        The preferred output protocol entry is always returned, listing outputs that can not
+        be selected right now as disabled options and hidden altogether when the player has
+        at most one output. The settings of each output whose provider is loaded follow.
+
+        :param player: The player to create the output protocol config entries for.
         """
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
@@ -953,6 +1012,7 @@ class PlayerConfigMixin:
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
                 protocol_entries = await self._get_player_config_entries(protocol_player)
+                protocol_entry_keys = {entry.key for entry in protocol_entries}
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -965,7 +1025,17 @@ class PlayerConfigMixin:
                     entry.translation_key = entry.translation_key or entry.key
                     entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
-                    entry.depends_on = None if protocol.is_native else protocol_enabled_key
+                    if entry.depends_on in protocol_entry_keys:
+                        # the entry it depends on is copied into this same block, so follow it
+                        # to its prefixed key and keep the value condition that goes with it
+                        entry.depends_on = f"{protocol_prefix}{entry.depends_on}"
+                    else:
+                        # nothing of its own to depend on, so gate it on the protocol toggle.
+                        # any value condition belonged to the original key and must not carry
+                        # over, or it gets compared against the toggle's boolean instead.
+                        entry.depends_on = protocol_enabled_key
+                        entry.depends_on_value = None
+                        entry.depends_on_value_not = None
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None
                     all_entries.append(entry)
 
