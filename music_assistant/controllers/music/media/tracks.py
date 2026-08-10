@@ -295,8 +295,8 @@ class TracksController(MediaControllerBase[Track]):
 
         artist_join_added = False
 
-        if order_by:
-            parsed = self._parse_order_by(order_by)
+        if final_order_by:
+            parsed = self._parse_order_by(final_order_by)
             if parsed and parsed[0] == SortField.ARTIST_NAME:
                 extra_join_parts.append(
                     "JOIN track_artists ON track_artists.track_id = tracks.item_id "

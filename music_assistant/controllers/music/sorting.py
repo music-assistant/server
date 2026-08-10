@@ -34,6 +34,15 @@ class SortOptionInfo:
     default_direction: str | None = None
     label_key: str | None = None
 
+    def to_dict(self) -> dict[str, object]:
+        """Return dict representation for JSON serialization."""
+        return {
+            "field": self.field,
+            "supports_direction": self.supports_direction,
+            "default_direction": self.default_direction,
+            "label_key": self.label_key,
+        }
+
 
 # Complete definitions for all sort fields
 SORT_FIELD_DEFINITIONS: dict[SortField, SortFieldDefinition] = {
