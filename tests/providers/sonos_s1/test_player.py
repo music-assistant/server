@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,10 +18,12 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import (
+    AVAILABILITY_TIMEOUT,
     POLL_INTERVAL,
     SUBSCRIPTION_SERVICES,
     TRANSITION_POLL_INTERVAL,
 )
+from music_assistant.providers.sonos_s1.helpers import SonosUpdateError
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 if TYPE_CHECKING:
@@ -427,6 +430,77 @@ async def test_speaker_answering_a_poll_again_is_resubscribed(
     with patch.object(player, "subscribe", AsyncMock()) as subscribe:
         await player.poll()
 
+    subscribe.assert_called_once()
+    assert player._attr_available is True
+
+
+async def test_failed_poll_keeps_a_recently_active_speaker_available(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A failed poll does not mark a recently active speaker unavailable."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player._last_activity = time.monotonic()
+
+    with (
+        patch.object(player, "poll_media", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "ping") as ping,
+    ):
+        await player.poll()
+
+    ping.assert_not_called()
+    assert player._attr_available is True
+
+
+async def test_speaker_silent_too_long_and_unreachable_is_marked_unavailable(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that is silent too long and fails a ping is marked unavailable."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player._last_activity = time.monotonic() - AVAILABILITY_TIMEOUT
+
+    with (
+        patch.object(player, "poll_media", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "ping", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "offline", AsyncMock()) as offline,
+    ):
+        await player.poll()
+
+    offline.assert_awaited_once()
+
+
+async def test_successful_poll_counts_as_speaker_activity(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A successful poll counts as activity, so the speaker is not pinged."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    before = time.monotonic()
+
+    with patch.object(player, "ping") as ping:
+        await player.poll()
+
+    ping.assert_not_called()
+    assert player._last_activity >= before
+
+
+async def test_unavailable_speaker_is_pinged_despite_recent_activity(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker taken offline by a failed renewal is pinged so it can recover quickly."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    player._attr_available = False
+    player._last_activity = time.monotonic()
+
+    with (
+        patch.object(player, "ping") as ping,
+        patch.object(player, "subscribe", AsyncMock()) as subscribe,
+    ):
+        await player.poll()
+
+    ping.assert_called_once_with()
     subscribe.assert_called_once()
     assert player._attr_available is True
 

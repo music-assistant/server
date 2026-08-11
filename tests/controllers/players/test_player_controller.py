@@ -15,17 +15,19 @@ import contextlib
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ConfigEntry, CoreConfig
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     MediaType,
     PlaybackState,
@@ -50,11 +52,12 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
+    CONF_VOLUME_STEP,
 )
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.models.player_provider import PlayerProvider
-from tests.common import MockPlayer, MockProvider, create_mock_config
+from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
 
 def _player_config_stub(
@@ -92,6 +95,58 @@ def _announcement() -> PlayerMedia:
         title="Announcement",
         duration=3,
     )
+
+
+def _volume_step_config(step: int | None) -> CoreConfig:
+    """
+    Build a "players" CoreConfig carrying the given ``volume_step`` value.
+
+    Pass ``None`` to leave the entry unresolved and genuinely exercise the default
+    (``CoreConfig.get_value`` returns the entry's ``value`` verbatim, not its
+    ``default_value``, so a real "not configured" state is ``value=None``).
+    """
+    return CoreConfig(
+        domain="players",
+        values={
+            CONF_VOLUME_STEP: ConfigEntry(
+                key=CONF_VOLUME_STEP,
+                type=ConfigEntryType.INTEGER,
+                default_value=0,
+                value=step,
+            )
+        },
+    )
+
+
+@pytest.fixture
+def running_background_tasks(mock_mass: MagicMock) -> Iterator[None]:
+    """
+    Really run the tasks that ``mass.create_task`` is handed, and raise what they raise.
+
+    The real implementation only logs the exception of a background task, which would
+    leave a test that dispatches its work through the TaskManager passing regardless.
+    """
+    tasks: list[asyncio.Task[Any]] = []
+    use_real_create_task(mock_mass)
+    real_create_task = mock_mass.create_task
+
+    def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
+        task = real_create_task(target, *args, **kwargs)
+        if isinstance(task, asyncio.Task):
+            tasks.append(task)
+        return task
+
+    mock_mass.create_task = MagicMock(side_effect=_create_task)
+    yield
+    errors = [
+        err
+        for task in tasks
+        if task.done() and not task.cancelled() and (err := task.exception()) is not None
+    ]
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("background tasks failed", errors)
 
 
 def _mute_natively(player: MockPlayer) -> AsyncMock:
@@ -2027,6 +2082,214 @@ class TestFakeMuteControl:
         assert unmuted_state.volume_level == 25
 
 
+class TestVolumeStep:
+    """The volume_step core config setting controls the size of a single volume nudge."""
+
+    def _make_player(
+        self, mock_mass: MagicMock, step: int | None, volume_level: int
+    ) -> tuple[PlayerController, MockPlayer]:
+        """Build a controller with a single player and the given volume_step config."""
+        controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(step)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_volume_level = volume_level
+        # let the mocked native volume control behave like a real device
+        player.volume_set = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda volume: setattr(player, "_attr_volume_level", volume)
+        )
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        return controller, player
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, step: int | None
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """Build a leader synced to one member, both at volume 50, with a volume_step config."""
+        controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(step)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_volume_level = 50
+            # let the mocked native volume control behave like a real device
+            player.volume_set = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda volume, _player=player: setattr(
+                    _player, "_attr_volume_level", volume
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second, forced pass: update_state() only recalculates when a player's own
+        # attributes changed, so the leader must be forced to re-derive its group_volume
+        # from the now-initialized member.
+        for player in players.values():
+            player.update_state(force_update=True, signal_event=False)
+        return controller, players
+
+    @pytest.mark.parametrize(
+        ("start", "expected"),
+        [(5, 6), (20, 22), (50, 53), (80, 82), (95, 96)],
+    )
+    async def test_default_step_up_matches_the_adaptive_ladder(
+        self, mock_mass: MagicMock, start: int, expected: int
+    ) -> None:
+        """With volume_step at its default (0), volume_up keeps today's adaptive ladder."""
+        controller, player = self._make_player(mock_mass, None, start)
+
+        await controller.cmd_volume_up("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == expected
+
+    @pytest.mark.parametrize(
+        ("start", "expected"),
+        [(5, 4), (20, 18), (50, 47), (80, 78), (95, 94)],
+    )
+    async def test_default_step_down_matches_the_adaptive_ladder(
+        self, mock_mass: MagicMock, start: int, expected: int
+    ) -> None:
+        """With volume_step at its default (0), volume_down keeps today's adaptive ladder."""
+        controller, player = self._make_player(mock_mass, None, start)
+
+        await controller.cmd_volume_down("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == expected
+
+    async def test_configured_step_moves_up_by_a_flat_amount_mid_range(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A configured flat step of 5 moves by exactly 5 in the middle of the range."""
+        controller, player = self._make_player(mock_mass, 5, 50)
+
+        await controller.cmd_volume_up("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == 55
+
+    async def test_configured_step_moves_up_by_a_flat_amount_near_the_extreme(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A configured flat step of 5 near the extreme overrides the finer ladder step."""
+        controller, player = self._make_player(mock_mass, 5, 5)
+
+        await controller.cmd_volume_up("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == 10
+
+    async def test_configured_step_moves_down_by_a_flat_amount_mid_range(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A configured flat step of 5 moves down by exactly 5 in the middle of the range."""
+        controller, player = self._make_player(mock_mass, 5, 50)
+
+        await controller.cmd_volume_down("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == 45
+
+    async def test_configured_step_moves_down_by_a_flat_amount_near_the_extreme(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A configured flat step of 5 near the extreme overrides the finer ladder step."""
+        controller, player = self._make_player(mock_mass, 5, 95)
+
+        await controller.cmd_volume_down("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == 90
+
+    async def test_large_configured_step_clamps_up_at_the_maximum(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A large configured step clamps volume_up at 100."""
+        controller, player = self._make_player(mock_mass, 10, 95)
+
+        await controller.cmd_volume_up("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == 100
+
+    async def test_large_configured_step_clamps_down_at_zero(self, mock_mass: MagicMock) -> None:
+        """A large configured step clamps volume_down at 0."""
+        controller, player = self._make_player(mock_mass, 10, 5)
+
+        await controller.cmd_volume_down("player_1")
+
+        player.update_state()
+        assert player.state.volume_level == 0
+
+    async def test_group_volume_up_with_default_step_uses_the_ladder(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """cmd_group_volume_up honours the default (0) adaptive ladder too."""
+        controller, players = self._make_synced_pair(mock_mass, None)
+
+        await controller.cmd_group_volume_up("leader")
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 53
+
+    async def test_group_volume_down_with_default_step_uses_the_ladder(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """cmd_group_volume_down honours the default (0) adaptive ladder too."""
+        controller, players = self._make_synced_pair(mock_mass, None)
+
+        await controller.cmd_group_volume_down("leader")
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 47
+
+    async def test_group_volume_up_with_configured_step(self, mock_mass: MagicMock) -> None:
+        """cmd_group_volume_up honours a configured flat step."""
+        controller, players = self._make_synced_pair(mock_mass, 5)
+
+        await controller.cmd_group_volume_up("leader")
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 55
+
+    async def test_group_volume_down_with_configured_step(self, mock_mass: MagicMock) -> None:
+        """cmd_group_volume_down honours a configured flat step."""
+        controller, players = self._make_synced_pair(mock_mass, 5)
+
+        await controller.cmd_group_volume_down("leader")
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 45
+
+    async def test_config_entry_exposes_default_and_range(
+        self, controller: PlayerController
+    ) -> None:
+        """get_config_entries returns the volume_step entry with its default and range."""
+        entries = await controller.get_config_entries()
+
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.key == CONF_VOLUME_STEP
+        assert entry.type == ConfigEntryType.INTEGER
+        assert entry.default_value == 0
+        assert entry.range == (0, 10)
+
+
 class TestFakeMuteInGroup:
     """A fake muted player in a group follows the mute lock, just like a native mute."""
 
@@ -2854,6 +3117,7 @@ class TestPlayAnnouncementCleanup:
         render.wait_finished.assert_not_awaited()
 
 
+@pytest.mark.usefixtures("running_background_tasks")
 class TestPlayAnnouncementRestore:
     """Test the state restore of the default (fallback) announcement implementation."""
 
@@ -2869,11 +3133,7 @@ class TestPlayAnnouncementRestore:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
-        # the (temporary and restored) volume commands are dispatched through the
-        # TaskManager, so background tasks must actually run in these tests
-        mock_mass.create_task = MagicMock(
-            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
-        )
+        mock_mass.player_queues.get = MagicMock(return_value=None)
         resume_mock = AsyncMock()
         controller._handle_cmd_resume = resume_mock  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
@@ -3219,6 +3479,7 @@ class TestPlayAnnouncementRestore:
         assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
 
 
+@pytest.mark.usefixtures("running_background_tasks")
 class TestPlayNativeAnnouncement:
     """Test the mute handling around an announcement that a player plays natively."""
 
@@ -3231,11 +3492,7 @@ class TestPlayNativeAnnouncement:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
-        # the mute commands are dispatched through the TaskManager,
-        # so background tasks must actually run in these tests
-        mock_mass.create_task = MagicMock(
-            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
-        )
+        mock_mass.player_queues.get = MagicMock(return_value=None)
         controller.get_announcement_volume = MagicMock(return_value=None)  # type: ignore[method-assign]
         announce_mock = AsyncMock()
         player.play_announcement = announce_mock  # type: ignore[method-assign]
