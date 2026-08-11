@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 from aiosendspin.models.types import PairMethod
 from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
+from aiosendspin.noise.pairing import PairingError
 from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
 from music_assistant_models.errors import InvalidCommand
 
@@ -178,6 +179,18 @@ async def test_pair_web_player_waits_out_a_half_registered_player(
         await provider.pair_web_player(_TOKEN)
     assert api.attempts == []
     assert refreshed == []
+
+
+async def test_pair_web_player_reports_a_pairing_failure_without_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed attempt surfaces as a typed error, keeping the token out of the error path."""
+    api = _WebPlayerServerApi()
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    api.outcomes.append(PairingError("device refused the PSK"))
+    with pytest.raises(InvalidCommand, match="pairing_error_failed") as excinfo:
+        await provider.pair_web_player(_TOKEN)
+    assert _TOKEN not in str(excinfo.value)
 
 
 async def test_pair_web_player_is_a_no_op_when_already_paired(

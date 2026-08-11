@@ -95,6 +95,7 @@ from music_assistant.providers.sendspin.constants import (
 from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
+    error_alert,
     negotiated_pin_length,
     pair_method_descriptor,
 )
@@ -825,8 +826,17 @@ class SendspinProvider(PlayerProvider):
             return
         try:
             await self.pair_with_token(client_id, pairing_token)
-        except SecurityActionError as err:
-            raise InvalidCommand(f"Cannot pair web player {client_id}: {err.alert_key}") from err
+        except (
+            SecurityActionError,
+            PairingError,
+            HandshakeAbortedError,
+            TimeoutError,
+            OSError,
+        ) as err:
+            # Report the failure reason without the request, which carries the pairing token.
+            raise InvalidCommand(
+                f"Cannot pair web player {client_id}: {error_alert(err).key}"
+            ) from err
 
     def get_management_session(self, client_id: str) -> ManagementSession | None:
         """Return the client's management session, dropping one whose connection is gone."""
