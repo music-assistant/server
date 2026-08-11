@@ -1,6 +1,8 @@
 """Test Tidal Provider integration."""
 
+import json
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -102,6 +104,35 @@ async def test_handle_async_init_success(provider: TidalProvider) -> None:
 
         mock_init.assert_called_once()
         mock_get.assert_called_with("sessions")
+
+
+async def test_handle_async_init_migrates_iso_expiry(provider: TidalProvider) -> None:
+    """Test a legacy ISO-string expiry_time is converted to a timestamp and persisted."""
+    values = dict(_SETUP_VALUES)
+    values["expiry_time"] = "2026-01-01T12:00:00+00:00"
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch.object(provider, "_update_setup_data") as mock_update,
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
+        patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
+        patch.object(provider, "get_user", new_callable=AsyncMock) as mock_get_user,
+        patch.object(provider.auth, "update_user_info", new_callable=AsyncMock),
+    ):
+        mock_init.return_value = True
+        mock_get.return_value = {"userId": "12345", "sessionId": "session_123"}
+        mock_get_user.return_value = {"id": "12345"}
+
+        await provider.handle_async_init()
+
+    expected_ts = datetime.fromisoformat("2026-01-01T12:00:00+00:00").timestamp()
+    mock_update.assert_called_once_with("expiry_time", expected_ts)
+    auth_blob = json.loads(mock_init.call_args[0][0])
+    assert auth_blob["expires_at"] == expected_ts
 
 
 async def test_handle_async_init_missing_auth() -> None:
@@ -435,6 +466,39 @@ async def test_note_replaced_track_schedules_healing(
     apply_mock.assert_called_once_with("stale_123", "live_456")
 
 
+async def test_apply_replacement_caches_and_heals(provider: TidalProvider, mass_mock: Mock) -> None:
+    """Test _apply_replacement stores the redirect and heals an existing library mapping."""
+    lib_track = Mock()
+    lib_track.item_id = 42
+    mass_mock.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=lib_track)
+
+    with patch.object(provider, "_heal_track_mapping", new_callable=AsyncMock) as heal_mock:
+        await provider._apply_replacement("stale_123", "live_456")
+
+    mass_mock.cache.set.assert_called_once_with(
+        key="stale_123",
+        data="live_456",
+        provider=provider.instance_id,
+        category=2,  # CACHE_CATEGORY_ISRC_MAP
+        persistent=True,
+        expiration=86400 * 90,
+    )
+    heal_mock.assert_called_once_with(42, "stale_123", "live_456")
+
+
+async def test_apply_replacement_without_library_track(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """Test _apply_replacement still caches the redirect when no library track exists."""
+    mass_mock.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
+
+    with patch.object(provider, "_heal_track_mapping", new_callable=AsyncMock) as heal_mock:
+        await provider._apply_replacement("stale_123", "live_456")
+
+    mass_mock.cache.set.assert_called_once()
+    heal_mock.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "meta",
     [
@@ -461,11 +525,15 @@ async def test_resolve_live_track_id_cache_hit_different(
     mass_mock.cache.get = AsyncMock(return_value="live_456")
 
     # The liveness check must bypass the cached provider wrapper, so it is
-    # served by the media manager directly.
-    with patch.object(provider.media, "get_track", new_callable=AsyncMock):
+    # served by the media manager directly; the wrapper must not be touched.
+    with (
+        patch.object(provider.media, "get_track", new_callable=AsyncMock),
+        patch.object(provider, "get_track", new_callable=AsyncMock) as mock_cached,
+    ):
         result = await provider.resolve_live_track_id("stale_123")
 
     assert result == "live_456"
+    mock_cached.assert_not_called()
 
 
 async def test_resolve_live_track_id_cache_hit_dead_reresolves(
@@ -488,6 +556,7 @@ async def test_resolve_live_track_id_cache_hit_dead_reresolves(
             new_callable=AsyncMock,
             side_effect=MediaNotFoundError("gone"),
         ),
+        patch.object(provider, "get_track", new_callable=AsyncMock) as mock_cached,
         patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
         patch.object(provider, "_heal_track_mapping", new_callable=AsyncMock),
     ):
@@ -497,6 +566,9 @@ async def test_resolve_live_track_id_cache_hit_dead_reresolves(
 
     assert result == "new_789"
     mass_mock.cache.delete.assert_called_once()
+    # the liveness check must not consult the cached wrapper, which would keep
+    # serving a stale track for a dead id
+    mock_cached.assert_not_called()
 
 
 async def test_resolve_live_track_id_cache_hit_same(

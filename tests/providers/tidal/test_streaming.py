@@ -273,13 +273,17 @@ async def test_get_stream_details_track_not_found_no_isrc(
 
 
 async def test_get_stream_details_with_isrc_fallback(
-    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
 ) -> None:
     """Test get_stream_details uses the resolver fallback when direct lookup fails."""
-    # Direct lookup fails
+    # The live track carries a DIFFERENT id, so the assertions below can tell the
+    # resolved track from the requested (dead) one.
+    live_track = Mock(spec=Track)
+    live_track.item_id = "456"
+    live_track.duration = 180
     provider_mock.get_track.side_effect = [
         MediaNotFoundError("Track not found"),  # First call
-        mock_track,  # Second call: fetch the resolved live track
+        live_track,  # Second call: fetch the resolved live track
     ]
     provider_mock.resolve_live_track_id.return_value = "456"
 
@@ -294,7 +298,8 @@ async def test_get_stream_details_with_isrc_fallback(
 
     provider_mock.resolve_live_track_id.assert_called_with("123")
     provider_mock.get_track.assert_called_with("456")
-    assert stream_details.item_id == "123"
+    assert stream_details.item_id == "456"
+    assert provider_mock.api.get.call_args[0][0] == "tracks/456/playbackinfopostpaywall"
     assert stream_details.path == "https://example.com/stream.flac"
 
 

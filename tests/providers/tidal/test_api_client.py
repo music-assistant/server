@@ -128,6 +128,42 @@ async def test_get_401_error(api_client: TidalAPIClient, provider_mock: Mock) ->
     provider_mock.auth.refresh_token.assert_called_once()
 
 
+async def test_get_with_etag_returns_header(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test get_with_etag returns the body together with the response ETag header."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {"numberOfTracks": 3}
+    response.headers = {"ETag": "etag-abc"}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    data, etag = await api_client.get_with_etag("playlists/1")
+
+    assert data == {"numberOfTracks": 3}
+    assert etag == "etag-abc"
+
+
+async def test_get_401_after_refresh_still_401(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test a 401 on the post-refresh retry raises LoginFailed."""
+    response_401 = AsyncMock(spec=ClientResponse)
+    response_401.status = 401
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response_401
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+    provider_mock.auth.refresh_token.return_value = True
+
+    with pytest.raises(LoginFailed):
+        await api_client.get("test/endpoint")
+
+    provider_mock.auth.refresh_token.assert_called_once()
+    assert provider_mock.mass.http_session.request.call_count == 2
+
+
 async def test_get_401_refreshes_token_and_retries(
     api_client: TidalAPIClient, provider_mock: Mock
 ) -> None:

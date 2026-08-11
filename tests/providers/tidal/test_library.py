@@ -69,6 +69,8 @@ async def test_get_tracks(library_manager: TidalLibraryManager, provider_mock: M
 
     assert len(tracks) == 20
     assert tracks[0].date_added is not None
+    # every linkage item feeds the churn cache (the read passes replaceMedia)
+    assert provider_mock.note_replaced_track.call_count == 20
 
 
 async def test_get_playlists(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:

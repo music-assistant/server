@@ -77,8 +77,10 @@ def main() -> int:
         subprocess.run(
             [
                 "uvx",
+                # Pinned: a new generator release can change the output arbitrarily,
+                # which would defeat the regenerate-and-diff workflow.
                 "--from",
-                "datamodel-code-generator",
+                "datamodel-code-generator==0.72.3",
                 "datamodel-codegen",
                 "--input",
                 str(tmp_path),
@@ -97,8 +99,9 @@ def main() -> int:
             ],
             check=True,
         )
-        # Match the repo's formatting so regeneration produces a stable diff.
-        subprocess.run(["ruff", "format", str(OUTPUT_PATH)], check=True)
+        # Match the repo's formatting so regeneration produces a stable diff,
+        # using the repo-pinned ruff rather than whatever is on PATH.
+        subprocess.run(["uv", "run", "ruff", "format", str(OUTPUT_PATH)], check=True)
     finally:
         tmp_path.unlink(missing_ok=True)
 

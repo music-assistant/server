@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Generator
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from collections.abc import Generator
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.media_items import ItemMapping
@@ -33,16 +33,6 @@ def provider_mock() -> Mock:
 
     provider.api = AsyncMock()
     provider.api.get.return_value = {}
-    # paginate is an async generator, so it cannot be an AsyncMock child: it yields the
-    # items a test assigns to paginate.return_value
-    provider.api.paginate = MagicMock()
-
-    async def paginate(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any]:
-        for item in provider.api.paginate.return_value:
-            yield item
-
-    provider.api.paginate.side_effect = paginate
-    provider.api.paginate.return_value = []
 
     provider.get_track = AsyncMock()
     # Churn-healing collaborators: the cache-only redirect defaults to identity

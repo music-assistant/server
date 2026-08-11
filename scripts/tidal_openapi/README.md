@@ -37,9 +37,12 @@ client, so it is not modelled here.
 python scripts/tidal_openapi/generate_models.py
 ```
 
-This runs `datamodel-code-generator` via `uvx` (no project dependency added) and
-formats the result with `ruff`. To cover a new area in a later slice, add its
+This runs `datamodel-code-generator` via `uvx` (no project dependency added,
+version pinned in the script for reproducible output) and formats the result
+with the repo-pinned `ruff`. To cover a new area in a later slice, add its
 `*_Attributes` schema name to `SEED_SCHEMAS` in `generate_models.py` and rerun.
+When bumping the generator pin, regenerate and commit the (otherwise unchanged)
+output in the same change.
 
 ## Refreshing the vendored spec
 
