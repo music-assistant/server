@@ -13,6 +13,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata, UniqueList
 from music_assistant_models.media_items.metadata import LifeSpan
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version
@@ -557,7 +558,8 @@ class MusicbrainzProvider(MetadataProvider):
         """
         Collect release groups for a recording with their release dates.
 
-        Filters out compilations and other secondary-type releases.
+        Filters out secondary-type releases and compilations, including the ones credited
+        to Various Artists rather than tagged as such.
         For singles, only includes those where the title matches the track name.
         Returns list of (release_group, release_date) tuples for singles and studio albums.
 
@@ -575,6 +577,12 @@ class MusicbrainzProvider(MetadataProvider):
             # Skip bootleg and pseudo-releases
             release_status = release.get("status", "")
             if release_status in ("Bootleg", "Pseudo-Release"):
+                continue
+
+            # Plenty of hits compilations carry no Compilation secondary type, so they pass
+            # for studio albums. Their releases are credited to Various Artists, which an
+            # album or single of one artist never is.
+            if _is_various_artists_release(release):
                 continue
 
             rg = release.get("release-group", {})
@@ -639,6 +647,20 @@ class MusicbrainzProvider(MetadataProvider):
             if (year := _release_year(release_group.get("first-release-date") or "")) is not None
         ]
         return min(years, default=None)
+
+
+def _is_various_artists_release(release: dict[str, Any]) -> bool:
+    """
+    Return whether a MusicBrainz release is credited to Various Artists.
+
+    :param release: MusicBrainz release dict from a recording search.
+    """
+    # MusicBrainz always credits the Various Artists entity by id, while its display name is
+    # localized and other artists are named after it, so only the id identifies it.
+    return any(
+        (credit.get("artist") or {}).get("id") == VARIOUS_ARTISTS_MBID
+        for credit in release.get("artist-credit") or ()
+    )
 
 
 def _release_year(release_date: str) -> int | None:
