@@ -1,4 +1,4 @@
-"""Tests for pairing the built-in web player from its own API session."""
+"""Tests for pairing the built-in web player from its own pairing token."""
 
 from __future__ import annotations
 
@@ -51,16 +51,16 @@ def _make_web_provider(
     is_web_player: bool = True,
     registered: bool = True,
     initialized: bool = True,
-    session_client_id: str | None = _CLIENT_ID,
 ) -> tuple[SendspinProvider, list[str]]:
     provider, refreshed = _make_provider(api, monkeypatch)
+    # the provider resolves its translation namespace through the manifest
+    cast("Any", provider).manifest = SimpleNamespace(domain="sendspin")
     player = Mock(spec=SendspinBasePlayer)
     player.is_web_player = is_web_player
     player.initialized.is_set.return_value = initialized
     cast("Any", provider.mass).players = SimpleNamespace(
         get_player=lambda _client_id: player if registered else None
     )
-    monkeypatch.setattr(provider_module, "get_sendspin_player_id", lambda: session_client_id)
     monkeypatch.setattr(provider_module, "WEB_PLAYER_CONNECT_TIMEOUT", 0.3)
     return provider, refreshed
 
@@ -76,39 +76,13 @@ async def test_pair_web_player_pairs_with_the_token_psk(monkeypatch: pytest.Monk
     assert refreshed == [_CLIENT_ID]
 
 
-async def test_pair_web_player_requires_a_sendspin_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A caller whose connection carries no web player cannot reach the pairing path."""
-    api = _WebPlayerServerApi()
-    provider, refreshed = _make_web_provider(api, monkeypatch, session_client_id=None)
-    with pytest.raises(InvalidCommand, match="no Sendspin web player"):
-        await provider.pair_web_player(_TOKEN)
-    assert api.attempts == []
-    assert refreshed == []
-
-
-async def test_pair_web_player_rejects_a_token_for_another_client(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A token minted by a different client is refused even from a valid session."""
-    api = _WebPlayerServerApi()
-    provider, refreshed = _make_web_provider(api, monkeypatch)
-    other = encode_token(
-        PSKPairingToken(client_id=b64url_encode(bytes(range(50, 82))), pairing_psk=_PAIRING_PSK)
-    )
-    with pytest.raises(InvalidCommand, match="pairing_error_token_mismatch"):
-        await provider.pair_web_player(other)
-    assert api.attempts == []
-    assert refreshed == []
-
-
 async def test_pair_web_player_rejects_a_malformed_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A token that does not decode is reported as a caller error, not a pairing failure."""
+    """A token that does not decode names no client, so it is refused before any lookup."""
     api = _WebPlayerServerApi()
     provider, refreshed = _make_web_provider(api, monkeypatch)
-    with pytest.raises(InvalidCommand, match="pairing_error_token_invalid"):
+    with pytest.raises(InvalidCommand) as excinfo:
         await provider.pair_web_player("SP:0NOTATOKEN")
+    assert excinfo.value.translation_key == "pairing_error_token_invalid"
     assert api.attempts == []
     assert refreshed == []
 

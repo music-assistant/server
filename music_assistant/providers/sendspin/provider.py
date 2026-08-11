@@ -70,9 +70,6 @@ from music_assistant.constants import (
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    get_sendspin_player_id,
-)
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -810,15 +807,20 @@ class SendspinProvider(PlayerProvider):
 
     async def pair_web_player(self, pairing_token: str) -> None:
         """
-        Pair the built-in web player behind this API session using its own pairing token.
+        Pair the built-in web player that minted the given pairing token.
 
         :param pairing_token: The calling web player's version 0 pairing token.
         """
-        # The client id comes from the caller's own Sendspin session, not a command argument,
-        # though the session takes it from the client's own unverified auth message.
-        client_id = get_sendspin_player_id()
-        if client_id is None:
-            raise InvalidCommand("This connection has no Sendspin web player")
+        # The token names the client it belongs to, so this works on every transport,
+        # including Ingress where the session carries no client id at all.
+        try:
+            client_id = decode_token(pairing_token).client_id
+        except ValueError as err:
+            raise InvalidCommand(
+                "The pairing token is not valid",
+                translation_key="pairing_error_token_invalid",
+                translation_owner=self.translation_owner,
+            ) from err
         player = await self._await_connected_client(client_id)
         if not player.is_web_player:
             raise InvalidCommand(f"Client {client_id} is not a built-in web player")
