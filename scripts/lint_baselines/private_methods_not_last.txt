@@ -74,9 +74,6 @@ music_assistant/providers/tidal/tidal_page_parser.py	2
 music_assistant/providers/tunein/__init__.py	2
 music_assistant/providers/vban_receiver/stats.py	2
 music_assistant/providers/webdav/provider.py	4
-music_assistant/providers/yandex_music/api_client.py	49
-music_assistant/providers/yandex_music/provider.py	36
-music_assistant/providers/yandex_music/streaming.py	2
 music_assistant/providers/yousee/auth_manager.py	1
 music_assistant/providers/yousee/media.py	5
 music_assistant/providers/zvuk_music/api_client.py	32
