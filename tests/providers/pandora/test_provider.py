@@ -372,6 +372,97 @@ async def test_stream_details_after_an_ordinary_pause_still_serves() -> None:
     assert details.path == "https://audio-sv5-t3-2.pandora.com/access/0.mp4"
 
 
+async def test_a_fresher_session_serves_a_track_another_holds_expired() -> None:
+    """
+    Stations overlap: one station's expired copy must not fail a track another can still play.
+
+    Refusing on the first match made playback failure depend on which station was browsed
+    first, which is not something the user can see or influence.
+    """
+    provider = _provider()
+    await provider.get_playlist_tracks("station-a")
+    await provider.get_playlist_tracks("station-b")
+    stale = provider._sessions["station-a"].current
+    assert stale is not None
+    stale.fetched_at -= FRAGMENT_URL_TTL_SECONDS + 1
+    details = await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    assert details.item_id == "TR:S0"
+    assert details.path == "https://audio-sv5-t3-2.pandora.com/access/0.mp4"
+
+
+async def test_every_copy_expired_still_raises_the_named_error() -> None:
+    """With no session able to serve it, the failure is still the paused-too-long one."""
+    provider = _provider()
+    await provider.get_playlist_tracks("station-a")
+    await provider.get_playlist_tracks("station-b")
+    for station in ("station-a", "station-b"):
+        fragment = provider._sessions[station].current
+        assert fragment is not None
+        fragment.fetched_at -= FRAGMENT_URL_TTL_SECONDS + 1
+    with pytest.raises(MediaNotFoundError, match="expired while playback was stopped"):
+        await provider.get_stream_details("TR:S0", MediaType.TRACK)
+
+
+async def test_the_serving_session_is_the_one_marked_as_having_served() -> None:
+    """
+    Recording the hand-out on another station's fragment corrupts both stations' refills.
+
+    The served track stays pending where it played and is re-offered, while the fragment
+    that never served it is driven towards spent.
+    """
+    provider = _provider()
+    await provider.get_playlist_tracks("station-a")
+    await provider.get_playlist_tracks("station-b")
+    older = provider._sessions["station-a"].current
+    newer = provider._sessions["station-b"].current
+    assert older is not None
+    assert newer is not None
+    older.fetched_at -= 60
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    assert newer.served == {"TR:S0"}
+    assert older.served == set()
+
+
+async def test_get_track_uses_the_freshest_fragment() -> None:
+    """
+    A song must not resolve differently depending on session insertion order.
+
+    Two stations holding the same song used to be decided by dict order; the freshest fetch
+    is Pandora's latest answer for it and decides it now.
+    """
+    stale_tracks = _tracks()
+    stale_tracks[0] = {**stale_tracks[0], "songTitle": "Stale Song 0"}
+    provider = _provider(payloads=[stale_tracks, _tracks()])
+    await provider.get_playlist_tracks("station-a")
+    await provider.get_playlist_tracks("station-b")
+    stale = provider._sessions["station-a"].current
+    assert stale is not None
+    stale.fetched_at -= 60
+    track = await provider.get_track("TR:S0")
+    assert track.name == "Song 0"
+
+
+async def test_freshest_fragment_wins_regardless_of_session_order() -> None:
+    """
+    Freshest-fragment selection must not coincide only with insertion order.
+
+    The tests above always make the first-inserted session, station-a, the degraded one,
+    so a regression to any insertion-order rule would still pass them. Here station-a is
+    inserted first but holds the freshest fragment - a station refetching after another
+    was opened - while station-b, inserted second, is the one that has gone stale.
+    """
+    stale_tracks = _tracks()
+    stale_tracks[0] = {**stale_tracks[0], "songTitle": "Stale Song 0"}
+    provider = _provider(payloads=[_tracks(), stale_tracks])
+    await provider.get_playlist_tracks("station-a")
+    await provider.get_playlist_tracks("station-b")
+    stale = provider._sessions["station-b"].current
+    assert stale is not None
+    stale.fetched_at -= 60
+    track = await provider.get_track("TR:S0")
+    assert track.name == "Song 0"
+
+
 async def test_stream_details_rejects_other_media_types() -> None:
     """Stations expose tracks only; radio is gone."""
     provider = _provider()

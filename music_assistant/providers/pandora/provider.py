@@ -244,35 +244,44 @@ class PandoraProvider(MusicProvider):
         if media_type != MediaType.TRACK:
             raise MediaNotFoundError(f"Unsupported media type: {media_type}")
         now = time.time()
-        for session in self._sessions.values():
-            fragment = session.current
-            # only the live fragment: an older one's signed URL may already be expired and
-            # there is no way to tell from here, so refuse rather than hand ffmpeg a link
-            # that 403s mid-track
-            if fragment is None or (track := fragment.find(item_id)) is None:
-                continue
-            if fragment.urls_expired(now):
+        # only each session's live fragment: an older one's signed URL may already be expired
+        # and there is no way to tell from here, so refuse rather than hand ffmpeg a link
+        # that 403s mid-track
+        holders = [
+            (fragment, track)
+            for session in self._sessions.values()
+            if (fragment := session.current) is not None
+            and (track := fragment.find(item_id)) is not None
+        ]
+        playable = [holder for holder in holders if not holder[0].urls_expired(now)]
+        if not playable:
+            if holders:
                 # the signed URLs have outlived their TTL, which is what a long pause looks
                 # like from here. Refusing keeps the failure named rather than an opaque
                 # ffmpeg error. Note this asks a different question from is_stale: a fragment
                 # can be idle long enough to be worth replacing while its URLs are still
                 # perfectly playable, and refusing those would break resuming after a pause.
                 raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
-            fragment.mark_resolved(item_id, now)
-            duration = int(track.get("trackLength") or 0)
-            can_seek = duration > 0
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=item_id,
-                audio_format=self._audio_format(),
-                media_type=MediaType.TRACK,
-                stream_type=StreamType.HTTP,
-                path=track["audioURL"],
-                duration=duration,
-                can_seek=can_seek,
-                allow_seek=can_seek,
-            )
-        raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
+            raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
+        # stations overlap, so the same song can sit in several sessions at once. Serve the
+        # freshest copy rather than whichever session was created first: an older station's
+        # expired fragment must not fail a playable track, and the fragment that is marked
+        # as having served the track has to be the one the audio URL came from.
+        fragment, track = max(playable, key=lambda holder: holder[0].fetched_at)
+        fragment.mark_resolved(item_id, now)
+        duration = int(track.get("trackLength") or 0)
+        can_seek = duration > 0
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=self._audio_format(),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.HTTP,
+            path=track["audioURL"],
+            duration=duration,
+            can_seek=can_seek,
+            allow_seek=can_seek,
+        )
 
     async def takeover_stream(self) -> None:
         """
@@ -507,16 +516,22 @@ class PandoraProvider(MusicProvider):
 
     def _find_track(self, prov_track_id: str) -> dict[str, Any] | None:
         """
-        Return raw track data for the given Pandora id from any retained fragment.
+        Return raw track data from the freshest retained fragment holding it, or None.
 
         The id no longer names a station, so every retained session is searched. At most ten
         sessions hold at most four fragments of about four tracks, so this stays small.
+        Stations overlap, so the freshest fragment decides: it is the most recent answer
+        Pandora gave for the track, and picking by dict order instead would let the same
+        song resolve differently from one lookup to the next.
         """
-        for session in self._sessions.values():
-            for fragment in reversed(session.fragments):
-                if (track := fragment.find(prov_track_id)) is not None:
-                    return track
-        return None
+        holders = [
+            (fragment, track)
+            for session in self._sessions.values()
+            for fragment in session.fragments
+            if (track := fragment.find(prov_track_id)) is not None
+        ]
+        freshest = max(holders, key=lambda holder: holder[0].fetched_at, default=None)
+        return freshest[1] if freshest is not None else None
 
     def _parse_station(self, station: dict[str, Any]) -> Playlist:
         """Parse a station object into a dynamic playlist."""
