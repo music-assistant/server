@@ -720,7 +720,12 @@ class AuthenticationManager:
         :return: Callable that removes the subscription.
         """
         self._access_revoked_callbacks.append(callback)
-        return lambda: self._access_revoked_callbacks.remove(callback)
+
+        def _unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._access_revoked_callbacks.remove(callback)
+
+        return _unsubscribe
 
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
