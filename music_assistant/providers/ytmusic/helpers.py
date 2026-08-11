@@ -59,14 +59,6 @@ async def get_album(
             private = True
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
-
-            for album_track in album.get("tracks", []):
-                # note: side-effect of the album/playlist videoId xreference below is
-                # to default these values if not present, so I'm reproducing that here
-                # given we don't need to (and can't) do the query that wraps it
-                album_track["isAvailable"] = album_track.get("isAvailable", True)
-                album_track["likeStatus"] = album_track.get("likeStatus", "INDIFFERENT")
-
         else:
             ytm = ytmusicapi.YTMusic(language=language)
             album = ytm.get_album(browseId=prov_album_id)
@@ -86,8 +78,6 @@ async def get_album(
             for album_track in album.get("tracks", []):
                 if playlist_track := playlist_tracks_by_title.get(album_track.get("title")):
                     album_track["videoId"] = playlist_track["videoId"]
-                    album_track["isAvailable"] = playlist_track.get("isAvailable", True)
-                    album_track["likeStatus"] = playlist_track.get("likeStatus", "INDIFFERENT")
         return album
 
     return await _run_ytmusic(_get_album)
