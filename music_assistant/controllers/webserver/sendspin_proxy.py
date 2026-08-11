@@ -162,7 +162,11 @@ class SendspinProxyHandler:
         client_id = auth_data.get("client_id")
         if client_id:
             self.webserver.set_sendspin_player_for_token(token, client_id)
-            self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
+            self.logger.debug(
+                "Registered sendspin player %s for a session of user %s",
+                client_id,
+                user.username,
+            )
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
         await wsock.send_str('{"type": "auth_ok"}')
