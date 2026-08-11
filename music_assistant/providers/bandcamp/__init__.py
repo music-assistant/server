@@ -415,7 +415,7 @@ class BandcampProvider(MusicProvider):
         try:
             results = await self._client.search(performer_name)
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
