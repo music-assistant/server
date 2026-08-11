@@ -445,8 +445,8 @@ class SendspinBasePlayer(Player):
                         key=CONF_PAIRING_METHOD,
                         type=ConfigEntryType.STRING,
                         required=True,
-                        default_value=options[0],
                         options=[ConfigValueOption(value=option) for option in options],
+                        expanded_options=True,
                     )
                 ],
                 step_id="select_method",
