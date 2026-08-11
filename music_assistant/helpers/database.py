@@ -73,15 +73,16 @@ class _LoopStallTracker:
         overdue = asyncio.get_running_loop().time() - self._last_tick - _STALL_SAMPLE_INTERVAL
         return self._total + max(0.0, overdue)
 
-    def acquire(self) -> None:
-        """Start sampling (if not already running) on behalf of one more user."""
+    def acquire(self) -> bool:
+        """Start sampling on behalf of one more user; False when there is nothing to sample."""
         if not ENABLE_DEBUG:
-            return
+            return False
         self._users += 1
         if self._task is None:
             loop = asyncio.get_running_loop()
             self._last_tick = loop.time()
             self._task = loop.create_task(self._sample())
+        return True
 
     def release(self) -> None:
         """Stop sampling once the last user has released the tracker."""
@@ -250,8 +251,7 @@ class DatabaseConnection:
         await self.execute(f"PRAGMA mmap_size = {mmap_size_bytes};")
         await self.execute(f"PRAGMA cache_size = -{cache_size_kib};")
         await self.commit()
-        _loop_stalls.acquire()
-        self._tracking_loop_stalls = True
+        self._tracking_loop_stalls = _loop_stalls.acquire()
 
     async def close(self) -> None:
         """Close db connection on exit."""
