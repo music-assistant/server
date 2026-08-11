@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.util
+import inspect
 import logging
 import sys
 from pathlib import Path
+from types import MethodType
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
+
+from music_assistant.mass import MusicAssistant
 
 _PROVIDER_PKG = "music_assistant.providers.yandex_music"
 
@@ -76,6 +83,25 @@ def provider_dir() -> Path:
     pkg_file = pkg.__file__
     assert pkg_file is not None  # a real package always has a file
     return Path(pkg_file).resolve().parent
+
+
+def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
+    """
+    Give a mocked Music Assistant the real task-creation implementation.
+
+    :param mass: The mock standing in for the Music Assistant instance.
+    """
+    mass._tracked_tasks = {}
+    mass.verify_event_loop_thread = MagicMock()  # type: ignore[method-assign]
+    real_create_task = MethodType(MusicAssistant.create_task, mass)
+
+    def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
+        if not (inspect.iscoroutine(target) or inspect.iscoroutinefunction(target)):
+            return MagicMock()
+        mass.loop = asyncio.get_running_loop()
+        return real_create_task(target, *args, **kwargs)
+
+    mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
 
 
 class ProviderStub:
