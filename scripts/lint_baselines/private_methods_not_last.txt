@@ -76,5 +76,3 @@ music_assistant/providers/vban_receiver/stats.py	2
 music_assistant/providers/webdav/provider.py	4
 music_assistant/providers/yousee/auth_manager.py	1
 music_assistant/providers/yousee/media.py	5
-music_assistant/providers/zvuk_music/api_client.py	32
-music_assistant/providers/zvuk_music/provider.py	15
