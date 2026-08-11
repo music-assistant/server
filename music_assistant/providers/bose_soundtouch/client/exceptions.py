@@ -1,7 +1,9 @@
 """Exceptions for Soundtouch."""
 
+from aiohttp import ClientError
 
-class SoundtouchError(Exception):
+
+class SoundtouchError(ClientError):
     """Base exception."""
 
 

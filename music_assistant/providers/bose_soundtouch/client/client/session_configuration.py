@@ -1,13 +1,13 @@
 """SessionConfiguration."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from aiohttp.client import DEFAULT_TIMEOUT, ClientSession
+from aiohttp import ClientTimeout
 
 if TYPE_CHECKING:
-    from aiohttp import ClientTimeout
+    from aiohttp.client import ClientSession
 
 
 @dataclass(kw_only=True)
@@ -17,5 +17,5 @@ class SessionConfiguration:
     session: ClientSession
     ip: str
     http_port: int = 8090
-    timeout: ClientTimeout = DEFAULT_TIMEOUT
+    timeout: ClientTimeout = field(default_factory=lambda: ClientTimeout(total=10))
     logger: logging.Logger | None = None

@@ -55,7 +55,7 @@ def create_zone_xml(zone: Zone, sender_ip: str | None = None) -> str:
     assert zone.leader.mac is not None
 
     if sender_ip:
-        xml = f'<zone master="{zone.leader.mac}" senderIPAdress="{sender_ip}">'
+        xml = f'<zone master="{zone.leader.mac}" senderIPAddress="{sender_ip}">'
     else:
         xml = f'<zone master="{zone.leader.mac}">'
     for member in zone.members:
@@ -171,7 +171,11 @@ class SoundtouchDevice:
 
     async def get_now_playing(self, endpoint: str = "nowPlaying") -> NowPlaying:
         """Get now playing."""
-        element = await self._get(endpoint)
+        try:
+            element = await self._get(endpoint)
+        except NotFoundError:
+            # both cases seem to be supported by the API
+            element = await self._get(endpoint="now_playing")
         d: dict[str, Any] = element.attrib
         for el in element:
             if el.tag == "ContentItem":
@@ -179,7 +183,12 @@ class SoundtouchDevice:
                 for sub_el in el.iter():
                     if sub_el.tag == "itemName":
                         item_name = sub_el.text
-                d["content_item"] = {**el.attrib, "item_name": item_name}
+                d["content_item"] = {
+                    **el.attrib,
+                    "sourceAccount": el.attrib.get("sourceAccount")
+                    or element.attrib.get("sourceAccount"),
+                    "item_name": item_name,
+                }
             elif el.tag == "time":
                 d["time_information"] = {
                     "total": parse_string(el.get("total", "-1")),

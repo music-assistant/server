@@ -378,7 +378,7 @@ class BoseSoundTouchPlayer(Player):
             preset_id = mapping_preset_int.get(action, 1)
             await self._client.store_preset(
                 preset_id,
-                f"{self.mass.streams.base_url}/{self.provider.instance_id}_preset?preset_id={preset_id}",
+                f"{self.mass.webserver.base_url}/{self.provider.instance_id}_preset?preset_id={preset_id}",
             )
             return await self.get_config_entries()
 
@@ -574,8 +574,10 @@ class BoseSoundTouchPlayer(Player):
 
     def _update_state_from_now_playing(self, now_playing: NowPlaying) -> None:
         """Update player state from a now_playing snapshot."""
-        if now_playing.content_item:
-            self._attr_powered = now_playing.content_item.source != SOURCE_STANDBY
+        source = (
+            now_playing.content_item.source if now_playing.content_item is not None else None
+        ) or now_playing.source
+        self._attr_powered = source != SOURCE_STANDBY
         if not self._attr_powered:
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_active_source = None

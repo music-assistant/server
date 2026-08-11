@@ -8,11 +8,6 @@ def source_id(source: str, source_account: str | None) -> str:
     return f"{source}:{source_account}" if source_account else source
 
 
-def _local_name(tag: str) -> str:
-    """Return an XML tag name without its namespace prefix."""
-    return tag.rsplit("}", 1)[-1]
-
-
 def extract_preset_id(message: str) -> int | None:
     """
     Extract a Bose SoundTouch favorite/preset id from a websocket XML message.
@@ -37,3 +32,8 @@ def extract_preset_id(message: str) -> int | None:
         return int(preset_id) if preset_id else None
     except TypeError, ValueError:
         return None
+
+
+def _local_name(tag: str) -> str:
+    """Return an XML tag name without its namespace prefix."""
+    return tag.rsplit("}", 1)[-1]

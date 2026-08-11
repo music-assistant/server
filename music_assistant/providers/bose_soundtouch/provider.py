@@ -149,7 +149,7 @@ class BoseSoundTouchProvider(PlayerProvider):
         """Try to add a Bose SoundTouch speaker as a player."""
         client = SoundtouchDevice(
             session_configuration=SessionConfiguration(
-                session=self.mass.http_session, ip=ip_address
+                session=self.mass.http_session, ip=ip_address, logger=self.logger
             )
         )
         try:
@@ -208,7 +208,7 @@ class BoseSoundTouchProvider(PlayerProvider):
                 "audio": {
                     "hasPlaylist": False,
                     "isRealtime": True,
-                    "streamUrl": f"{self.mass.streams.base_url}/{self.instance_id}_preset?preset_id={preset_id}",
+                    "streamUrl": f"{self.mass.webserver.base_url}/{self.instance_id}_preset?preset_id={preset_id}",
                 },
                 "imageUrl": "",
                 "name": "Music Assistant Preset",
