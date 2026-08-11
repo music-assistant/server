@@ -115,6 +115,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.unregister = AsyncMock()
     mass.players.all = Mock(return_value=[])
     mass.players.all_players = Mock(return_value=[])
+    mass.players.iter_players = Mock(return_value=[])
 
     # Image URLs
     mass.metadata.get_image_url = Mock(return_value=None)

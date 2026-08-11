@@ -25,6 +25,7 @@ from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.util import join_task
 
 from .constants import (
     CONF_SHOW_STOP_NOTIFICATION,
@@ -2390,11 +2391,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         cache_key = (image_url, party.qr_version)
         if (cached := self._qr_cover_cache.get(cache_key)) is None:
             try:
-                # shield: a TV dropping its request must not cancel the shared
+                # join: a TV dropping its request must not cancel the shared
                 # render — late joiners and the cache still get the result
-                cached = await asyncio.shield(
-                    self._qr_cover_task(cache_key, image_url, party.join_url)
-                )
+                cached = await join_task(self._qr_cover_task(cache_key, image_url, party.join_url))
             except Exception as err:
                 logger.debug("QR cover composite failed for %s: %s", image_url, err)
                 raise web.HTTPFound(location=image_url) from None
