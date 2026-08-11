@@ -234,7 +234,7 @@ class OpenSonicProvider(MusicProvider):
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == OpenSubsonicExtensions.STRUCTURED_LYRICS:
+                if entry.name == OpenSubsonicExtensions.SONG_LYRICS:
                     self._id_lyrics = True
                 elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
                     self._direct_podcast_episode = True
@@ -242,7 +242,7 @@ class OpenSonicProvider(MusicProvider):
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
-        self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS, True))
+        self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
@@ -385,8 +385,7 @@ class OpenSonicProvider(MusicProvider):
             tr = []
             for entry in answer.song:
                 self._set_loudness(entry)
-                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-                tr.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+                tr.append(parse_track(self.logger, self.instance_id, entry))
         else:
             tr = []
 
@@ -720,8 +719,7 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+            tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
     @use_cache(3600 * 3)  # cache for 3 hours

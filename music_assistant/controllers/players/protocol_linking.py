@@ -1116,8 +1116,7 @@ class ProtocolLinkingMixin:
         """
         Move the per-queue settings of a replaced universal player to its replacement.
 
-        Queue ids equal player ids. The queue config is not covered by the
-        permanent unregister cleanup, so the source entry is removed here.
+        Queue ids equal player ids, so the source entry is removed once it is carried over.
 
         :param universal_id: Player id of the obsolete universal player.
         :param native_id: Player id of the native player that replaces it.
@@ -1543,21 +1542,19 @@ class ProtocolLinkingMixin:
             # since disabled/inactive protocols may only exist in the cached parent data.
             all_protocol_ids = set(self._get_known_protocol_ids(player))
             for protocol_id in all_protocol_ids:
-                # Clear cached parent ID in config so protocol won't try to
-                # restore a link to the deleted player on next restart
-                self._clear_protocol_parent_id(protocol_id)
                 if protocol_player := self.get_player(protocol_id):
                     # Protocol player is available: clear parent and schedule re-evaluation
                     # so it can be matched to a new parent or a new universal player
-                    protocol_player.set_protocol_parent_id(None)
-                    protocol_player.refresh_state()
                     self.logger.debug(
                         "Player %s removed - scheduling evaluation for protocol %s",
                         player.player_id,
                         protocol_id,
                     )
-                    self._schedule_protocol_evaluation(protocol_player)
+                    self._detach_protocol_child(protocol_player)
                 else:
+                    # Clear cached parent ID in config so protocol won't try to
+                    # restore a link to the deleted player on next restart
+                    self._clear_protocol_parent_id(protocol_id)
                     # Protocol player is not registered yet — it may still be
                     # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
                     # its config as that would cause a KeyError when it finishes
@@ -1568,6 +1565,40 @@ class ProtocolLinkingMixin:
                         player.player_id,
                         protocol_id,
                     )
+
+    def _detach_protocol_children(self, parent_id: str) -> None:
+        """
+        Detach the registered protocol players of a parent player that is going away.
+
+        Covers the removal paths that don't unregister the parent first (e.g. its
+        provider is unloaded), where the parent is not around anymore to enumerate
+        its protocol players.
+
+        :param parent_id: Player id of the parent that is being removed.
+        """
+        for protocol_player in list(self._players.values()):
+            if protocol_player.state.type != PlayerType.PROTOCOL:
+                continue
+            # a protocol player waiting for a parent that never registered only has
+            # the link in its config, so fall back to the cached parent
+            linked_parent_id = protocol_player.protocol_parent_id or (
+                self._get_cached_protocol_parent_id(protocol_player.player_id)
+            )
+            if linked_parent_id != parent_id:
+                continue
+            self.logger.debug(
+                "Player %s removed - scheduling evaluation for protocol %s",
+                parent_id,
+                protocol_player.player_id,
+            )
+            self._detach_protocol_child(protocol_player)
+
+    def _detach_protocol_child(self, protocol_player: Player) -> None:
+        """Clear a protocol player's parent link and schedule a fresh evaluation."""
+        self._clear_protocol_parent_id(protocol_player.player_id)
+        protocol_player.set_protocol_parent_id(None)
+        protocol_player.refresh_state()
+        self._schedule_protocol_evaluation(protocol_player)
 
     def _identifiers_match(
         self, player_a: Player, player_b: Player, protocol_domain: str = ""

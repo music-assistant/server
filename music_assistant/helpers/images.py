@@ -24,7 +24,7 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
@@ -405,10 +405,12 @@ async def _fetch_and_cache_source_image(
 
     try:
         img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
-    except FileNotFoundError as err:
+    except (FileNotFoundError, MediaNotFoundError) as err:
         # remember the failure briefly and log it once, concisely: every
         # thumbnail/palette/metadata request for this source would otherwise
         # retry the origin and log the same error over and over
+        # a provider signals a missing source with MediaNotFoundError, which is not an
+        # OSError and would otherwise bypass this negative cache entirely
         _store_failed_source(cache_key, str(err))
         LOGGER.warning("%s (not retrying for %s seconds)", err, _FAILED_SOURCE_TTL)
         raise

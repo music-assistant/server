@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import ExternalID, ImageType, MediaType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -304,6 +305,66 @@ async def test_import_playlist_preserves_playlist_image() -> None:
     assert args[3] == "https://img.example.com/cover.jpg"
     assert result.image is not None
     assert result.image.path == "https://img.example.com/cover.jpg"
+
+
+async def test_match_imported_tracks_enriches_matched_entries() -> None:
+    """Test that a matched entry is enriched with provider metadata, not just its URI."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._read_m3u_file = AsyncMock(
+        return_value=(
+            "#EXTM3U\n"
+            "#PLAYLIST:Imported\n"
+            "#EXTMA:media_type=track||name=Song||mbid=a1b2c3d4-e5f6-7890-abcd-ef1234567890\n"
+            "#EXTINF:294,Artist - Song\n"
+            "track-1\n"
+        )
+    )
+    matched_uri = "opensubsonic--abc123://track/xyz789"
+    enriched_entry = PlaylistItem(
+        path=matched_uri,
+        title="Artist - Song",
+        length="294",
+        metadata={"media_type": "track", "name": "Song"},
+        providers=[
+            ProviderMappingInfo(
+                domain="opensubsonic", item_id="xyz789", instance_id="opensubsonic--abc123"
+            )
+        ],
+    )
+    prov_any._match_track_by_metadata = AsyncMock(return_value=matched_uri)
+    prov_any._build_m3u_entry_from_uri = AsyncMock(return_value=enriched_entry)
+    prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Imported"))
+    prov_any._write_m3u_file = AsyncMock()
+
+    await prov.match_imported_playlist_tracks("playlist_1")
+
+    prov_any._build_m3u_entry_from_uri.assert_awaited_once_with(matched_uri)
+    assert prov_any._write_m3u_file.await_args is not None
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert written_items == [enriched_entry]
+    assert written_items[0].providers
+
+
+async def test_match_imported_tracks_falls_back_to_uri_when_enrich_fails() -> None:
+    """Test that the matched URI is still stored when enrichment fails."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._read_m3u_file = AsyncMock(
+        return_value="#EXTM3U\n#PLAYLIST:Imported\n#EXTINF:294,Artist - Song\ntrack-1\n"
+    )
+    matched_uri = "opensubsonic--abc123://track/xyz789"
+    prov_any._match_track_by_metadata = AsyncMock(return_value=matched_uri)
+    prov_any._build_m3u_entry_from_uri = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Imported"))
+    prov_any._write_m3u_file = AsyncMock()
+
+    await prov.match_imported_playlist_tracks("playlist_1")
+
+    assert prov_any._write_m3u_file.await_args is not None
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert written_items[0].path == matched_uri
+    assert not written_items[0].providers
 
 
 async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
