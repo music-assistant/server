@@ -1033,6 +1033,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     if queue_item and isinstance(err, MediaNotFoundError):
                         queue_item.available = False
                     next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                    if next_index is None and queue.is_dynamic:
+                        # A dynamic queue can always produce more, so running out of playable
+                        # items is not the end of it. This matters when playback fails from an
+                        # idle queue: _handle_end_of_queue only refills on a playing/paused ->
+                        # idle transition, which never happens here, so without this the queue
+                        # stays stuck until the user acts. Providers whose items expire (e.g.
+                        # signed stream URLs) hit that after a long pause.
+                        await self._fill_dynamic_tracks(queue_id)
+                        next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                     if next_index is None:
                         # Surface an AudioError's own (actionable) message;
                         # MediaNotFoundError gets the generic wording.
