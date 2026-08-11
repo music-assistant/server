@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import Mock
 
 import pytest
 from aiosendspin.models.types import PairMethod
 from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
 from aiosendspin.noise.pairing import PairingError
 from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
+from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.errors import InvalidCommand
 
 import music_assistant.providers.sendspin.provider as provider_module
@@ -19,6 +20,8 @@ from music_assistant.providers.sendspin.player import SendspinBasePlayer
 from .test_pin_session import _FakeServerApi, _make_provider
 
 if TYPE_CHECKING:
+    from aiosendspin.server.client import SendspinClient
+
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 _CLIENT_ID = b64url_encode(bytes(range(32)))
@@ -51,13 +54,19 @@ def _make_web_provider(
     is_web_player: bool = True,
     registered: bool = True,
     initialized: bool = True,
+    psk_category: PskCategory | None = PskCategory.SENTINEL,
 ) -> tuple[SendspinProvider, list[str]]:
     provider, refreshed = _make_provider(api, monkeypatch)
     # the provider resolves its translation namespace through the manifest
     cast("Any", provider).manifest = SimpleNamespace(domain="sendspin")
-    player = Mock(spec=SendspinBasePlayer)
+    player = SendspinBasePlayer.__new__(SendspinBasePlayer)
     player.is_web_player = is_web_player
-    player.initialized.is_set.return_value = initialized
+    security = None if psk_category is None else SimpleNamespace(psk_category=psk_category)
+    player.api = cast("SendspinClient", SimpleNamespace(connection_security=security))
+    # initialized is a read-only property over a private Event, so seed it directly
+    player._Player__initialized = asyncio.Event()  # type: ignore[attr-defined]
+    if initialized:
+        player.set_initialized()
     cast("Any", provider.mass).players = SimpleNamespace(
         get_player=lambda _client_id: player if registered else None
     )
@@ -66,7 +75,7 @@ def _make_web_provider(
 
 
 async def test_pair_web_player_pairs_with_the_token_psk(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The token's PSK is handed to the pairing attempt for the session's own client."""
+    """The token's PSK is handed to a pairing attempt for the client the token names."""
     api = _WebPlayerServerApi()
     provider, refreshed = _make_web_provider(api, monkeypatch)
     await provider.pair_web_player(_TOKEN)
@@ -155,15 +164,28 @@ async def test_pair_web_player_waits_out_a_half_registered_player(
     assert refreshed == []
 
 
+async def test_pair_web_player_skips_an_unencrypted_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unencrypted client cannot hold a pairing, so it is left alone instead of failing."""
+    api = _WebPlayerServerApi()
+    provider, refreshed = _make_web_provider(api, monkeypatch, psk_category=None)
+    await provider.pair_web_player(_TOKEN)
+    assert api.attempts == []
+    assert refreshed == []
+
+
 async def test_pair_web_player_reports_a_pairing_failure_without_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed attempt surfaces as a typed error, keeping the token out of the error path."""
+    """A failed attempt surfaces as a localized error, keeping the token out of the message."""
     api = _WebPlayerServerApi()
     provider, _refreshed = _make_web_provider(api, monkeypatch)
     api.outcomes.append(PairingError("device refused the PSK"))
-    with pytest.raises(InvalidCommand, match="pairing_error_failed") as excinfo:
+    with pytest.raises(InvalidCommand) as excinfo:
         await provider.pair_web_player(_TOKEN)
+    assert excinfo.value.translation_key == "pairing_error_failed"
+    assert excinfo.value.translation_owner == "provider.sendspin"
     assert _TOKEN not in str(excinfo.value)
 
 
@@ -172,7 +194,18 @@ async def test_pair_web_player_is_a_no_op_when_already_paired(
 ) -> None:
     """A web player calling on every mount does not re-handshake an existing pairing."""
     api = _WebPlayerServerApi(paired=True)
-    provider, refreshed = _make_web_provider(api, monkeypatch)
+    provider, refreshed = _make_web_provider(api, monkeypatch, psk_category=PskCategory.LONG_TERM)
     await provider.pair_web_player(_TOKEN)
     assert api.attempts == []
     assert refreshed == []
+
+
+async def test_pair_web_player_repairs_a_client_that_lost_its_pairing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record the client can no longer authenticate is re-paired instead of stranding it."""
+    api = _WebPlayerServerApi(paired=True)
+    provider, refreshed = _make_web_provider(api, monkeypatch, psk_category=PskCategory.SENTINEL)
+    await provider.pair_web_player(_TOKEN)
+    assert [a.pairing_psk for a in api.attempts] == [_PAIRING_PSK]
+    assert refreshed == [_CLIENT_ID]

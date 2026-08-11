@@ -35,7 +35,7 @@ from aiosendspin.noise.pairing import (
     PairingTimeoutError,
 )
 from aiosendspin.noise.pairing_token import decode_token
-from aiosendspin.noise.trust_store import FileServerPairingStore
+from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientConnectedEvent,
@@ -824,8 +824,14 @@ class SendspinProvider(PlayerProvider):
         player = await self._await_connected_client(client_id)
         if not player.is_web_player:
             raise InvalidCommand(f"Client {client_id} is not a built-in web player")
-        # We already paired this web player so no action needed
-        if await self.server_api.pairing_store.record_by_client_id(client_id) is not None:
+        security = player.api.connection_security
+        # An unencrypted client cannot hold a pairing, same as the setup flow refuses it
+        if security is None:
+            return
+        record = await self.server_api.pairing_store.record_by_client_id(client_id)
+        # We already paired this web player so no action needed. A record on its own is not
+        # enough: the client can have lost its half, leaving a record it cannot authenticate.
+        if security.psk_category is PskCategory.LONG_TERM and record is not None:
             return
         try:
             await self.pair_with_token(client_id, pairing_token)
@@ -836,9 +842,13 @@ class SendspinProvider(PlayerProvider):
             TimeoutError,
             OSError,
         ) as err:
-            # Report the failure reason without the request, which carries the pairing token.
+            # Report the reason without the request, which carries the pairing token.
+            alert = error_alert(err)
             raise InvalidCommand(
-                f"Cannot pair web player {client_id}: {error_alert(err).key}"
+                f"Cannot pair web player {client_id}",
+                translation_key=alert.key,
+                translation_args=alert.params,
+                translation_owner=self.translation_owner,
             ) from err
 
     def get_management_session(self, client_id: str) -> ManagementSession | None:
