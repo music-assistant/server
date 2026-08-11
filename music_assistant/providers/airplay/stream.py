@@ -78,6 +78,13 @@ _CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 # the connection is reported, so this only bridges the reader thread starting up.
 _COMMAND_PIPE_READER_TIMEOUT: Final[float] = 2.0
 
+# Seconds to wait for our own queued stdin audio to reach the binary before a
+# flush. At most the write buffer's high-water mark is left to move (64 KiB, a
+# third of a second of PCM) and the binary reads continuously, so reaching this
+# means its reader has stalled -- for which the cold restart it falls back to is
+# the right answer anyway.
+_STDIN_DRAIN_TIMEOUT: Final[float] = 2.0
+
 
 @dataclass
 class CliError:
@@ -93,6 +100,11 @@ class AirPlayStream:
 
     _cli_proc: AsyncProcess | None
     session: AirPlayStreamSession | None = None
+    # Audio (ms) the binary last reported pending on its stdin for the current
+    # start cycle, 0 until it reports any. A caller that has written nothing since
+    # the last flush can read this as audio left over from the previous stream,
+    # which a START would anchor as if it were the new first sample.
+    audio_pending_ms: int = 0
 
     def __init__(self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None) -> None:
         """
@@ -400,26 +412,49 @@ class AirPlayStream:
         Sends ``ACTION=FLUSH`` — the binary stops sending audio, flushes the
         receiver, discards its input ring and drains stdin, then reports
         ``[STATUS] flushed`` while keeping the connection and stdin reader alive.
-        The caller must have stopped feeding old audio before calling this so the
-        drain removes exactly the pre-flush bytes.
+        The caller must have stopped feeding old audio before calling this; what
+        it already wrote is seen through to the binary here, and stdin is held
+        quiet until the flush is acknowledged, so the drain removes exactly the
+        pre-flush bytes and nothing lands behind it.
 
         :param timeout: Seconds to wait for the flushed acknowledgement.
-        :return: True once the flush is acknowledged; False on a delivery
-            failure, a flush the binary reports it rejected, or a timeout, so
-            the caller can fall back to a cold restart.
+        :return: True once the flush is acknowledged; False when audio we already
+            wrote cannot be cleared, on a delivery failure, on a flush the binary
+            reports it rejected, or on a timeout, so the caller can fall back to a
+            cold restart.
         """
         if not self.running or not self.connected:
             return False
-        self._arm_flush_answer()
-        # The flush drain re-arms the binary's one-shot audio signal; the next
-        # [STATUS] audio belongs to the new track.
-        self._audio_present.clear()
-        if not await self._write_cli_command("ACTION=FLUSH"):
+        if (cli_proc := self._cli_proc) is None:
             return False
-        try:
-            await asyncio.wait_for(self._flushed.wait(), timeout)
-        except TimeoutError:
-            return False
+        # The FLUSH travels on the command pipe while audio travels on stdin, so
+        # the binary can run its drain while bytes we already handed to stdin are
+        # still in flight, and can read a write issued after it. Either would land
+        # behind the drain and become the first pending sample the next START
+        # anchors, putting the new content late by its duration for the rest of the
+        # stream. Emptying our buffer and then holding stdin shut for the whole
+        # exchange is what makes the drain remove every pre-flush byte and keeps
+        # the binary's idea of "pending" empty until it answers.
+        async with cli_proc.stdin_quiesced(_STDIN_DRAIN_TIMEOUT) as quiesced:
+            if not quiesced:
+                self.player.logger.warning(
+                    "Queued audio for %s did not clear within %.1fs, so a flush could not "
+                    "remove all of it; falling back to a cold restart",
+                    self.player.display_name,
+                    _STDIN_DRAIN_TIMEOUT,
+                )
+                return False
+            self._arm_flush_answer()
+            # The flush drain re-arms the binary's one-shot audio signal; the next
+            # [STATUS] audio belongs to the new track.
+            self._audio_present.clear()
+            self.audio_pending_ms = 0
+            if not await self._write_cli_command("ACTION=FLUSH"):
+                return False
+            try:
+                await asyncio.wait_for(self._flushed.wait(), timeout)
+            except TimeoutError:
+                return False
         if (error := self._flush_error) is not None:
             self.player.logger.warning(
                 "cliairplay rejected the flush for %s (%s); falling back to a cold restart",
@@ -503,6 +538,9 @@ class AirPlayStream:
         # the previous anchor (this also covers the warm-seek FLUSH->refill->START
         # path) to keep the server and binary baselines aligned.
         self.reset_reanchor_shift()
+        # Whatever was pending belongs to the anchor being replaced here; a later
+        # report describes what this start cycle was handed.
+        self.audio_pending_ms = 0
         self._start_position = position_ms / 1000
         # This base is absolute, so a cut still outstanding against the previous
         # anchor is no longer part of it and must not be reconciled into it.
@@ -1383,6 +1421,13 @@ class AirPlayStream:
             self._flush_error = None
             self._flushed.set()
         elif "[STATUS] audio " in line:
+            if "buffered_ms=" in line:
+                try:
+                    self.audio_pending_ms = int(line.split("buffered_ms=")[1].split(maxsplit=1)[0])
+                except ValueError, IndexError:
+                    self.audio_pending_ms = 0
+            else:
+                self.audio_pending_ms = 0
             self._audio_present.set()
         elif "[STATUS] mrp" in line:
             # The artwork reports arrive on stderr; the now-playing push

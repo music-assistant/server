@@ -304,6 +304,42 @@ def test_parse_track_library_song_uses_library_album_name_fallback() -> None:
     assert result.album.name == "Album From Library"
 
 
+def test_parse_track_empty_artists_relationship_uses_artist_name() -> None:
+    """An artists relationship without data should fall back to artistName."""
+    provider = _create_provider_mock()
+    track_obj = {
+        "id": "i.librarytrack1",
+        "type": "library-songs",
+        "attributes": {
+            "name": "Mr. Brightside",
+            "artistName": "The Killers",
+            "durationInMillis": 222000,
+            "playParams": {"catalogId": "1526194192"},
+        },
+        "relationships": {
+            "artists": {"data": []},
+            "catalog": {
+                "data": [
+                    {
+                        "id": "1526194192",
+                        "attributes": {
+                            "name": "Mr. Brightside",
+                            "artistName": "The Killers",
+                            "durationInMillis": 222000,
+                            "playParams": {"id": "1526194192"},
+                        },
+                    }
+                ]
+            },
+        },
+    }
+
+    result = parse_track(provider, track_obj)
+
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "The Killers"
+
+
 @pytest.mark.asyncio
 async def test_media_manager_get_playlist_applies_can_edit_hint() -> None:
     """Catalog playlist fetch should honor library editability hint when provided."""
