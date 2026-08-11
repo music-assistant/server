@@ -27,8 +27,7 @@ steady 48 kHz / 16-bit / stereo stream.
   player's clock drift relative to each other, and capture timestamps can be
   gappy. The bridge holds a configurable target latency (default 500 ms) and
   folds drift correction into a phase-continuous variable-rate resample
-  (soxr). If soxr is unavailable it falls back to the simple bridge, which
-  drops/inserts samples on persistent deviation instead.
+  (soxr).
 - **Silence-hold.** A real line-in goes silent when unplugged, it does not
   stop. This provider mirrors that: when source audio stops flowing (stream
   end, disconnect, client unavailable) the stream keeps playing silence and
@@ -54,10 +53,26 @@ estimate is the source clock's true skew; a real ADC reads tens to low
 hundreds of ppm. A saturated ratio means the skew exceeds the bridge's
 correction cap and the stream is degrading to drops or silence padding.
 
+## Autostart
+
+Clients that advertise the `line_sense` feature report whether a signal is
+present on their input. Per the spec the server decides what to do with that,
+and this provider turns it into playback: pick a target player under the
+device's own settings and the source starts there when a signal appears, and
+stops again after the signal has been gone for a minute.
+
+Only transitions act, and the first report after a connect is recorded
+without acting, so a restart with the needle already down starts nothing. A
+source that is already streaming is never re-targeted, so moving it by hand
+survives the next transition. Autostop also closes a gap that exists without
+line-sense: a client keeps streaming silence after a record ends, so the
+30-second no-audio timeout never fires and the queue would otherwise sit
+playing silence indefinitely.
+
+Devices without `line_sense` have no trigger to offer, so they get no setting
+and stay manual.
+
 ## Out of scope (for now)
 
-- Line-sense (`signal` present/absent) is logged but not acted on.
-  Auto-starting playback when the turntable needle drops is a possible
-  follow-up.
 - Per-source latency overrides; the target latency is a provider-level
   setting.

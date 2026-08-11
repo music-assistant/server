@@ -325,4 +325,5 @@ async def test_signal_loss_stops_a_running_source(fake_client: _FakeClient) -> N
     fake_client.emit(_signal(SignalState.PRESENT))
     fake_client.emit(_signal(SignalState.ABSENT))
     await _settle()
-    assert get_players(provider).stopped == ["player-1"]
+    # Stopping the queue, not the player, also clears its pending preload timers.
+    assert get_queues(provider).stopped == ["queue-1"]

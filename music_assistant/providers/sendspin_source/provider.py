@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from aiosendspin.audio import AsrcSourceBridge, SourceBridge
+from aiosendspin.audio import AsrcSourceBridge
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.models.types import SignalState
 from aiosendspin.server import (
@@ -32,7 +32,12 @@ from music_assistant_models.enums import (
     QueueOption,
     StreamType,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+)
 from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
@@ -58,6 +63,7 @@ from .constants import (
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
+    from aiosendspin.audio import SourceBridge
     from aiosendspin.server import (
         ClientEvent,
         SendspinClient,
@@ -103,8 +109,6 @@ class _SourceSession:
 
 class SendspinSourceProvider(PluginProvider):
     """Expose Sendspin source-role clients as MA AudioSources."""
-
-    _asrc_unavailable_logged: bool = False
 
     def __init__(
         self,
@@ -241,7 +245,8 @@ class SendspinSourceProvider(PluginProvider):
         The pull cadence of this loop is the master clock: the bridge converts
         the client's drifting capture stream to it and pads silence on underrun,
         so the stream keeps playing through gaps (an unplugged line-in is silent,
-        not stopped) until SOURCE_TIMEOUT_S passes without source audio.
+        not stopped) until SOURCE_TIMEOUT_S passes without source audio. Pulling at
+        the output rate here makes the controller's own realtime pacer a no-op.
         """
         session = self._sessions.get(streamdetails.item_id)
         if session is None:
@@ -386,9 +391,11 @@ class SendspinSourceProvider(PluginProvider):
             return
         self.logger.info("Line-in signal gone on %s, stopping playback", client_id)
         try:
-            await self.mass.players.cmd_stop(session.player_id)
-        except Exception as err:
-            self.logger.debug("Failed to stop player %s: %s", session.player_id, err)
+            # Stop the queue rather than the player, so its pending preload/enqueue
+            # timers are cancelled too.
+            await self.mass.player_queues.stop(session.queue_id)
+        except (PlayerCommandFailed, PlayerUnavailableError) as err:
+            self.logger.debug("Failed to stop queue %s: %s", session.queue_id, err)
 
     def _resolve_autostart_target(self, client_id: str) -> tuple[str, str] | None:
         """Return the queue id and source uri to autostart, if the source is configured."""
@@ -439,23 +446,11 @@ class SendspinSourceProvider(PluginProvider):
     def _create_bridge(
         self, input_format: SendspinAudioFormat, target_latency_ms: int
     ) -> SourceBridge:
-        try:
-            return AsrcSourceBridge(
-                input_format=input_format,
-                output_format=BRIDGE_OUTPUT_FORMAT,
-                target_latency_ms=target_latency_ms,
-            )
-        except ImportError:
-            if not self._asrc_unavailable_logged:
-                self._asrc_unavailable_logged = True
-                self.logger.warning(
-                    "soxr is not available, falling back to the simple source bridge"
-                )
-            return SourceBridge(
-                input_format=input_format,
-                output_format=BRIDGE_OUTPUT_FORMAT,
-                target_latency_ms=target_latency_ms,
-            )
+        return AsrcSourceBridge(
+            input_format=input_format,
+            output_format=BRIDGE_OUTPUT_FORMAT,
+            target_latency_ms=target_latency_ms,
+        )
 
     async def _ingest(self, session: _SourceSession, handle: SourceStream) -> None:
         """Feed decoded source chunks into the session's bridge until the stream ends."""
@@ -464,8 +459,8 @@ class SendspinSourceProvider(PluginProvider):
                 break
             try:
                 session.bridge.feed(pcm, timestamp_us)
-            except ValueError:
-                self.logger.exception("Dropping malformed chunk from %s", session.client_id)
+            except ValueError as err:
+                self.logger.warning("Dropping malformed chunk from %s: %s", session.client_id, err)
                 continue
             session.last_pcm_monotonic = time.monotonic()
 
@@ -477,17 +472,17 @@ class SendspinSourceProvider(PluginProvider):
             return
         if session.ingest_task is not None:
             session.ingest_task.cancel()
-        if (client := self._get_client(session.client_id)) is not None and (
-            role := self._get_source_role(client)
-        ) is not None:
-            try:
+        if superseded_by_player_id is None:
+            # A supersede re-requests the stream immediately, so leave the client
+            # capturing rather than bouncing it.
+            if (client := self._get_client(session.client_id)) is not None and (
+                role := self._get_source_role(client)
+            ) is not None:
                 role.request_stop()
-            except Exception as err:
-                self.logger.debug("Failed to send stop to %s: %s", session.client_id, err)
-        if superseded_by_player_id is not None and superseded_by_player_id != session.player_id:
+        elif superseded_by_player_id != session.player_id:
             # Ending the generator leaves the handed-off player draining its buffer over
             # the new one, so stop it. A same-player re-claim keeps playing.
             try:
                 await self.mass.players.cmd_stop(session.player_id)
-            except Exception as err:
+            except (PlayerCommandFailed, PlayerUnavailableError) as err:
                 self.logger.debug("Failed to stop player %s: %s", session.player_id, err)

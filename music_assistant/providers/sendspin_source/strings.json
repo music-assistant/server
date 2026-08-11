@@ -4,5 +4,8 @@
       "label": "Target latency (ms)",
       "description": "How much source audio to buffer before playback starts. Higher values absorb network jitter at the cost of a longer input-to-speaker delay."
     }
+  },
+  "manifest": {
+    "description": "Play live audio inputs (line-in, turntable, microphone) from Sendspin clients that support the source role."
   }
 }

@@ -130,9 +130,13 @@ class _FakePlayerQueues:
 
     def __init__(self) -> None:
         self.played: list[tuple[str, str, Any]] = []
+        self.stopped: list[str] = []
 
     async def play_media(self, queue_id: str, media: Any, option: Any = None, **_: Any) -> None:
         self.played.append((queue_id, media, option))
+
+    async def stop(self, queue_id: str) -> None:
+        self.stopped.append(queue_id)
 
 
 class _FakeConfigController:

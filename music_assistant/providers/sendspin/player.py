@@ -475,7 +475,9 @@ class SendspinBasePlayer(Player):
             *(
                 ConfigValueOption(player.player_id, title=player.display_name)
                 for player in sorted(
-                    self.mass.players.all_players(False, False),
+                    # Include unavailable players: a target that is merely asleep must
+                    # stay selected rather than being reset to off on the next render.
+                    self.mass.players.all_players(True, False),
                     key=lambda player: player.display_name.lower(),
                 )
             ),
