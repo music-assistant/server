@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from unittest.mock import Mock
 
@@ -11,7 +12,10 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import SearchResults
 
 from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
-from music_assistant.providers.pandora.fragments import FRAGMENT_STALE_SECONDS
+from music_assistant.providers.pandora.fragments import (
+    FRAGMENT_STALE_SECONDS,
+    FRAGMENT_URL_TTL_SECONDS,
+)
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 STATION_ID = "4360491625318318161"
@@ -267,30 +271,35 @@ async def test_stream_details_for_an_evicted_track_raises() -> None:
         await provider.get_stream_details(f"{STATION_ID}_A0", MediaType.TRACK)
 
 
-async def test_stream_details_after_a_long_pause_raises() -> None:
+async def test_stream_details_after_the_urls_expire_raises() -> None:
     """
     A pause long enough to outlive the signed URLs must fail by name, not by a CDN 403.
 
-    Nothing refills a paused queue, so the staleness check in get_playlist_tracks never runs -
-    this path is the only thing standing between a resumed track and an expired URL.
+    Nothing refills a paused queue, so the gate in get_playlist_tracks never runs - this path
+    is the only thing standing between a resumed track and an expired URL.
     """
     provider = _provider()
     await provider.get_playlist_tracks(STATION_ID)
     fragment = provider._sessions[STATION_ID].current
     assert fragment is not None
-    # playback paused for well over the staleness window
-    fragment.last_activity_at -= FRAGMENT_STALE_SECONDS + 1
+    fragment.fetched_at -= FRAGMENT_URL_TTL_SECONDS + 1
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
 
 
-async def test_stream_details_within_the_stale_window_still_serves() -> None:
-    """A short pause must not throw the track away."""
+async def test_stream_details_after_an_ordinary_pause_still_serves() -> None:
+    """
+    A pause past the staleness window must still resume: those URLs have not expired.
+
+    Staleness decides whether a fragment is worth replacing on the next refill. Using it to
+    refuse playback threw away tracks that would have played perfectly well.
+    """
     provider = _provider()
     await provider.get_playlist_tracks(STATION_ID)
     fragment = provider._sessions[STATION_ID].current
     assert fragment is not None
-    fragment.last_activity_at -= FRAGMENT_STALE_SECONDS - 30
+    fragment.last_activity_at -= FRAGMENT_STALE_SECONDS + 1
+    assert fragment.is_stale(time.time()) is True
     details = await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
     assert details.path == "https://audio-sv5-t3-2.pandora.com/access/0.mp4"
 

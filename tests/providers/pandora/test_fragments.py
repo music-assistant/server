@@ -6,6 +6,7 @@ from typing import Any
 
 from music_assistant.providers.pandora.fragments import (
     FRAGMENT_STALE_SECONDS,
+    FRAGMENT_URL_TTL_SECONDS,
     MAX_RETAINED_FRAGMENTS,
     PandoraFragment,
     PandoraStationSession,
@@ -32,11 +33,42 @@ def _tracks(count: int = 4, prefix: str = "S") -> list[dict[str, Any]]:
 
 
 def _fragment(**kwargs: Any) -> PandoraFragment:
-    """Build a fragment of four tracks last active at NOW, overridable by keyword."""
-    fragment = PandoraFragment(tracks=_tracks(), last_activity_at=NOW)
+    """Build a fragment of four tracks fetched and last active at NOW, overridable by keyword."""
+    fragment = PandoraFragment(tracks=_tracks(), fetched_at=NOW, last_activity_at=NOW)
     for key, value in kwargs.items():
         setattr(fragment, key, value)
     return fragment
+
+
+def test_urls_expire_on_the_fetch_clock_not_the_activity_clock() -> None:
+    """URL life runs from the fetch; handing tracks out does not extend it."""
+    fragment = _fragment()
+    # busy right up to the TTL, but the URLs were minted at fetch time regardless
+    fragment.mark_resolved("S1", NOW + FRAGMENT_URL_TTL_SECONDS)
+    assert fragment.urls_expired(NOW + FRAGMENT_URL_TTL_SECONDS) is False
+    assert fragment.urls_expired(NOW + FRAGMENT_URL_TTL_SECONDS + 1) is True
+
+
+def test_an_idle_fragment_keeps_working_urls() -> None:
+    """
+    Idle long enough to be worth replacing is not the same as expired.
+
+    This is the pause case: silence past the staleness window means the fragment should be
+    replaced on the next refill, but its URLs are still perfectly playable until the TTL.
+    """
+    fragment = _fragment()
+    paused = NOW + FRAGMENT_STALE_SECONDS + 1
+    assert fragment.is_stale(paused) is True
+    assert fragment.urls_expired(paused) is False
+
+
+def test_expired_urls_force_a_fetch() -> None:
+    """A fragment past its URL TTL must be replaced even if it was busy throughout."""
+    fragment = _fragment()
+    expired = NOW + FRAGMENT_URL_TTL_SECONDS + 1
+    fragment.mark_resolved("S1", expired)  # activity clock refreshed, fetch clock is not
+    assert fragment.is_stale(expired) is False
+    assert should_fetch_fragment(fragment, expired) is True
 
 
 def test_no_fragment_fetches() -> None:

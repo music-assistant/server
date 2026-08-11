@@ -13,9 +13,16 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-# a fragment nothing has streamed from for this long has audio URLs that Pandora's own
-# clock has likely expired; refetch rather than serve them
+# A fragment nobody has streamed from for this long has been abandoned - playback stopped, or
+# the station was never played. Fetch a fresh one rather than carry it forward. No track runs
+# this long, so silence for this window cannot mean "still playing".
 FRAGMENT_STALE_SECONDS = 600
+
+# How long Pandora's signed audio URLs stay usable, measured from when the fragment was fetched.
+# Their docs put radio URLs at "up to an hour"; this leaves margin under that. Kept separate
+# from the staleness window above because the two answer different questions: that one is
+# "is anyone still listening", this one is "do these links still work".
+FRAGMENT_URL_TTL_SECONDS = 2700
 
 # how many fragments of (metadata-only) track data to keep so recently played tracks
 # stay resolvable for queue history
@@ -27,6 +34,7 @@ class PandoraFragment:
     """One Pandora playlist fragment: the tracks whose audio URLs are live together."""
 
     tracks: list[dict[str, Any]]
+    fetched_at: float
     last_activity_at: float
     spent: bool = False
     served: set[str] = field(default_factory=set)
@@ -47,6 +55,10 @@ class PandoraFragment:
     def is_stale(self, now: float) -> bool:
         """Return whether nothing has been streamed from this fragment recently."""
         return (now - self.last_activity_at) > FRAGMENT_STALE_SECONDS
+
+    def urls_expired(self, now: float) -> bool:
+        """Return whether this fragment has outlived the life of its signed audio URLs."""
+        return (now - self.fetched_at) > FRAGMENT_URL_TTL_SECONDS
 
     @property
     def pending(self) -> list[dict[str, Any]]:
@@ -80,7 +92,7 @@ class PandoraStationSession:
 
     def add_fragment(self, tracks: list[dict[str, Any]], now: float) -> PandoraFragment:
         """Retain a freshly fetched fragment as the station's live one."""
-        fragment = PandoraFragment(tracks=tracks, last_activity_at=now)
+        fragment = PandoraFragment(tracks=tracks, fetched_at=now, last_activity_at=now)
         self.fragments.append(fragment)
         return fragment
 
@@ -100,6 +112,8 @@ def should_fetch_fragment(fragment: PandoraFragment | None, now: float) -> bool:
     It never means "this station has no tracks".
 
     :param fragment: The station's current (newest) fragment, or None if it has none yet.
-    :param now: Current wall-clock time, used for the staleness check.
+    :param now: Current wall-clock time, used for the staleness and expiry checks.
     """
-    return fragment is None or fragment.spent or fragment.is_stale(now)
+    return (
+        fragment is None or fragment.spent or fragment.is_stale(now) or fragment.urls_expired(now)
+    )

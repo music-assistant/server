@@ -254,11 +254,12 @@ class PandoraProvider(MusicProvider):
             # tell from here, so refuse it rather than hand ffmpeg a link that 403s mid-track
             raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
         now = time.time()
-        if fragment.is_stale(now):
-            # nothing has streamed from this fragment for the whole staleness window, which is
-            # what a long pause looks like from here: its signed URLs have almost certainly
-            # expired on Pandora's clock. Refusing keeps the failure named, and the queue then
-            # drains into a refill that fetches a fresh fragment.
+        if fragment.urls_expired(now):
+            # the signed URLs have outlived their TTL, which is what a long pause looks like
+            # from here. Refusing keeps the failure named rather than an opaque ffmpeg error.
+            # Note this asks a different question from is_stale: a fragment can be idle long
+            # enough to be worth replacing while its URLs are still perfectly playable, and
+            # refusing those would break resuming after an ordinary pause.
             raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
         fragment.mark_resolved(music_id, now)
         duration = int(track.get("trackLength") or 0)
