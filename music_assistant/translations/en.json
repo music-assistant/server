@@ -2202,7 +2202,7 @@
   "provider.spot_assist.config_entries.CONF_SPOTIFY_EMAIL.label": "Spotify Accounts Email Address",
   "provider.spot_assist.manifest.description": "Search songs with yt-music, Get your playlists and favorite songs from Spotify",
   "provider.spot_assist.media.recommendations.made_for_you.name": "Made For You",
-  "provider.spot_assist.media.recommendations.recently_played_spc.name": "Recntly Played",
+  "provider.spot_assist.media.recommendations.recently_played_spc.name": "Recently Played",
   "provider.spot_assist.media.recommendations.your_playlists.name": "Your Playlists",
   "provider.spot_assist.setup_flow.user.description": "To log-in copy your cookies from your browser on your connected session and then format them using a dedicated tool for that (disponible in the python package). And then paste it for it to work",
   "provider.spot_assist.setup_flow.user.title": "Enter the values for your Spotify login",
