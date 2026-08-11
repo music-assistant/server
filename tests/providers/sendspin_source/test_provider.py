@@ -206,6 +206,10 @@ async def test_handoff_stops_the_player_it_was_taken_from(fake_client: _FakeClie
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
     await provider.on_source_selected("client-1", "player-2", "queue-2", "session-2")
     assert get_players(provider).stopped == ["player-1"]
+    # The client must be stopped too: only a fresh client_stream/start gives the
+    # replacement session a bridge, and the client sends one after a stop/start.
+    assert fake_client.source_role is not None
+    assert fake_client.source_role.stop_requests == 1
 
 
 async def test_reclaim_by_the_same_player_keeps_it_playing(fake_client: _FakeClient) -> None:

@@ -394,7 +394,7 @@ class SendspinSourceProvider(PluginProvider):
             # Stop the queue rather than the player, so its pending preload/enqueue
             # timers are cancelled too.
             await self.mass.player_queues.stop(session.queue_id)
-        except (PlayerCommandFailed, PlayerUnavailableError) as err:
+        except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
             self.logger.debug("Failed to stop queue %s: %s", session.queue_id, err)
 
     def _resolve_autostart_target(self, client_id: str) -> tuple[str, str] | None:
@@ -472,14 +472,13 @@ class SendspinSourceProvider(PluginProvider):
             return
         if session.ingest_task is not None:
             session.ingest_task.cancel()
-        if superseded_by_player_id is None:
-            # A supersede re-requests the stream immediately, so leave the client
-            # capturing rather than bouncing it.
-            if (client := self._get_client(session.client_id)) is not None and (
-                role := self._get_source_role(client)
-            ) is not None:
-                role.request_stop()
-        elif superseded_by_player_id != session.player_id:
+        # Stop even when superseding: the replacement session only gets a bridge from a
+        # fresh client_stream/start, which the client sends after a stop/start cycle.
+        if (client := self._get_client(session.client_id)) is not None and (
+            role := self._get_source_role(client)
+        ) is not None:
+            role.request_stop()
+        if superseded_by_player_id is not None and superseded_by_player_id != session.player_id:
             # Ending the generator leaves the handed-off player draining its buffer over
             # the new one, so stop it. A same-player re-claim keeps playing.
             try:

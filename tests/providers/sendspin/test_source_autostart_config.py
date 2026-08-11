@@ -24,6 +24,7 @@ def _player(
     negotiated_role_ids: list[str],
     line_sense: bool,
     known_players: list[str],
+    unavailable_players: list[str] | None = None,
     stored_target: str | None = None,
 ) -> SendspinBasePlayer:
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
@@ -47,8 +48,13 @@ def _player(
         "MusicAssistant",
         SimpleNamespace(
             players=SimpleNamespace(
-                all_players=lambda *_args: [
-                    SimpleNamespace(player_id=pid, display_name=pid) for pid in known_players
+                all_players=lambda return_unavailable=True, *_args: [
+                    SimpleNamespace(player_id=pid, display_name=pid)
+                    for pid in (
+                        [*known_players, *(unavailable_players or [])]
+                        if return_unavailable
+                        else known_players
+                    )
                 ]
             ),
             config=SimpleNamespace(
@@ -91,12 +97,13 @@ def test_stored_target_survives_an_unavailable_player() -> None:
     player = _player(
         negotiated_role_ids=["source@v1"],
         line_sense=True,
-        known_players=["speaker"],
-        stored_target="speaker",
+        known_players=["other-speaker"],
+        unavailable_players=["sleeping-speaker"],
+        stored_target="sleeping-speaker",
     )
     entry = _target_entry(player)
     assert entry is not None
-    assert entry.value == "speaker"
+    assert entry.value == "sleeping-speaker"
 
 
 def test_target_pointing_at_a_deleted_player_falls_back() -> None:
