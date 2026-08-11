@@ -234,6 +234,18 @@ class ManagementSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+async def _poll_until[T](check: Callable[[], T | None], timeout: float) -> T | None:
+    """Poll ``check`` every 0.1s until it returns a value, or ``None`` once ``timeout`` lapses."""
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                if (result := check()) is not None:
+                    return result
+                await asyncio.sleep(0.1)
+    except TimeoutError:
+        return None
+
+
 def _evict_session_pairing_task_id(client_id: str) -> str:
     """Task id for a client's delayed session-scoped pairing eviction."""
     return f"sendspin_evict_session_pairing_{client_id}"
@@ -1453,19 +1465,22 @@ class SendspinProvider(PlayerProvider):
 
     async def _await_connected_client(self, client_id: str) -> SendspinBasePlayer:
         """Return a client's fully registered player, waiting for its connection to land first."""
+
         # A web player asks to be paired a beat before its Sendspin handshake lands, and
         # the pairing refresh needs a fully registered player to re-apply config onto.
-        try:
-            async with asyncio.timeout(WEB_PLAYER_CONNECT_TIMEOUT):
-                while True:
-                    client = self.server_api.get_client(client_id)
-                    if client is not None and client.is_connected:
-                        player = self.mass.players.get_player(client_id)
-                        if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
-                            return player
-                    await asyncio.sleep(0.1)
-        except TimeoutError:
-            raise InvalidCommand(f"Client {client_id} did not register") from None
+        def _registered_player() -> SendspinBasePlayer | None:
+            client = self.server_api.get_client(client_id)
+            if client is None or not client.is_connected:
+                return None
+            player = self.mass.players.get_player(client_id)
+            if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+                return player
+            return None
+
+        player = await _poll_until(_registered_player, WEB_PLAYER_CONNECT_TIMEOUT)
+        if player is None:
+            raise InvalidCommand(f"Client {client_id} did not register")
+        return player
 
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
@@ -1660,15 +1675,17 @@ class SendspinProvider(PlayerProvider):
 
     async def _wait_for_virtual_player(self, player_id: str) -> None:
         """Wait until the virtual player is registered in MA with its queue."""
-        deadline = self.mass.loop.time() + VIRTUAL_PLAYER_REGISTER_TIMEOUT
-        while self.mass.loop.time() < deadline:
+
+        def _registered() -> bool | None:
             if (
                 self.mass.players.get_player(player_id) is not None
                 and self.mass.player_queues.get(player_id) is not None
             ):
-                return
-            await asyncio.sleep(0.1)
-        raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
+                return True
+            return None
+
+        if await _poll_until(_registered, VIRTUAL_PLAYER_REGISTER_TIMEOUT) is None:
+            raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
 
     async def _cleanup_failed_virtual_player_creation(self, player_id: str) -> None:
         """
