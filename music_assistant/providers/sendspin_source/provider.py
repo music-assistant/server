@@ -49,7 +49,11 @@ if TYPE_CHECKING:
         SourceStream,
     )
     from aiosendspin.server.roles import SourceV1Role
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
+    from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 OUTPUT_FORMAT = AudioFormat(
@@ -84,12 +88,24 @@ class _SourceSession:
 class SendspinSourceProvider(PluginProvider):
     """Expose Sendspin source-role clients as MA AudioSources."""
 
-    _session: _SourceSession | None = None
     _asrc_unavailable_logged: bool = False
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        # Exclusivity is per source, so each source streams independently.
+        self._sessions: dict[str, _SourceSession] = {}
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        await self._teardown_session()
+        for source_id in list(self._sessions):
+            await self._teardown_session(source_id)
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return one AudioSource per connected client with an active source role."""
@@ -154,8 +170,9 @@ class SendspinSourceProvider(PluginProvider):
         role = self._get_source_role(client) if client else None
         if sendspin is None or client is None or role is None:
             raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
-        # Exclusive: supersede any prior session (its generator notices and exits).
-        await self._teardown_session(superseded_by_player_id=player_id)
+        # Exclusive per source: supersede only this source's prior session
+        # (its generator notices and exits). Other sources keep streaming.
+        await self._teardown_session(source_id, superseded_by_player_id=player_id)
         session = _SourceSession(
             client_id=source_id,
             player_id=player_id,
@@ -166,18 +183,18 @@ class SendspinSourceProvider(PluginProvider):
                 sendspin.server_api.add_event_listener(self._on_server_event),
             ],
         )
-        self._session = session
+        self._sessions[source_id] = session
         role.request_start()
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
     ) -> None:
         """Release the source when MA tears down its stream."""
-        session = self._session
+        session = self._sessions.get(source_id)
         # Reject stale callbacks from superseded same-queue requests.
         if session is None or session.stream_session_id != stream_session_id:
             return
-        await self._teardown_session()
+        await self._teardown_session(source_id)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -190,8 +207,8 @@ class SendspinSourceProvider(PluginProvider):
         so the stream keeps playing through gaps (an unplugged line-in is silent,
         not stopped) until SOURCE_TIMEOUT_S passes without source audio.
         """
-        session = self._session
-        if session is None or session.client_id != streamdetails.item_id:
+        session = self._sessions.get(streamdetails.item_id)
+        if session is None:
             raise AudioError(f"Sendspin source is not selected: {streamdetails.item_id}")
         frames_per_chunk = OUTPUT_SAMPLE_RATE * CHUNK_DURATION_MS // 1000
         silence = bytes(frames_per_chunk * (OUTPUT_BIT_DEPTH // 8) * OUTPUT_CHANNELS)
@@ -200,7 +217,7 @@ class SendspinSourceProvider(PluginProvider):
         next_deadline = loop.time()
         while True:
             # Superseded by a newer selection (cross-queue handoff or reconnect).
-            if self._session is not session:
+            if self._sessions.get(session.client_id) is not session:
                 break
             if time.monotonic() - session.last_pcm_monotonic > SOURCE_TIMEOUT_S:
                 self.logger.info(
@@ -235,17 +252,16 @@ class SendspinSourceProvider(PluginProvider):
         return cast("SourceV1Role", roles[0]) if roles else None
 
     def _on_server_event(self, server: SendspinServer, event: SendspinEvent) -> None:
-        session = self._session
         match event:
             case ClientConnectedEvent(client_id) if (
-                session is not None and client_id == session.client_id
-            ):
+                session := self._sessions.get(client_id)
+            ) is not None:
                 # A reconnect clears the client's start request, so ask again. Roles
                 # are re-attached after this fires, hence the hop through a task.
                 self.mass.create_task(self._request_start_on_reconnect(session))
 
     async def _request_start_on_reconnect(self, session: _SourceSession) -> None:
-        if self._session is not session:
+        if self._sessions.get(session.client_id) is not session:
             return
         client = self._get_client(session.client_id)
         role = self._get_source_role(client) if client else None
@@ -255,8 +271,8 @@ class SendspinSourceProvider(PluginProvider):
         role.request_start()
 
     def _on_client_event(self, client: SendspinClient, event: ClientEvent) -> None:
-        session = self._session
-        if session is None or client.client_id != session.client_id:
+        session = self._sessions.get(client.client_id)
+        if session is None:
             return
         if isinstance(event, SourceStreamStartedEvent):
             self.mass.create_task(self._attach_stream(session, event))
@@ -271,7 +287,7 @@ class SendspinSourceProvider(PluginProvider):
         self, session: _SourceSession, event: SourceStreamStartedEvent
     ) -> None:
         """Route a (re)started source stream into a fresh bridge."""
-        if self._session is not session:
+        if self._sessions.get(session.client_id) is not session:
             return
         if session.ingest_task is not None:
             session.ingest_task.cancel()
@@ -304,7 +320,7 @@ class SendspinSourceProvider(PluginProvider):
     async def _ingest(self, session: _SourceSession, handle: SourceStream) -> None:
         """Feed decoded source chunks into the session's bridge until the stream ends."""
         async for pcm, timestamp_us in handle:
-            if self._session is not session or session.bridge is None:
+            if self._sessions.get(session.client_id) is not session or session.bridge is None:
                 break
             try:
                 session.bridge.feed(pcm, timestamp_us)
@@ -313,11 +329,12 @@ class SendspinSourceProvider(PluginProvider):
                 continue
             session.last_pcm_monotonic = time.monotonic()
 
-    async def _teardown_session(self, superseded_by_player_id: str | None = None) -> None:
-        session = self._session
+    async def _teardown_session(
+        self, source_id: str, superseded_by_player_id: str | None = None
+    ) -> None:
+        session = self._sessions.pop(source_id, None)
         if session is None:
             return
-        self._session = None
         if session.ingest_task is not None:
             session.ingest_task.cancel()
         for unsubscribe in session.unsubscribes:

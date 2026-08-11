@@ -137,6 +137,7 @@ def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
     provider.config = cast("Any", _FakeConfig())
     provider.manifest = cast("Any", type("Manifest", (), {"domain": "sendspin_source"})())
     provider.logger = logging.getLogger("test.sendspin_source")
+    provider._sessions = {}
     return provider
 
 

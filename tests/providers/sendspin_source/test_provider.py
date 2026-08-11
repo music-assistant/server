@@ -199,13 +199,27 @@ async def test_reclaim_by_the_same_player_keeps_it_playing(fake_client: _FakeCli
     assert get_players(provider).stopped == []
 
 
-async def test_new_selection_supersedes_running_stream(fake_client: _FakeClient) -> None:
-    """A newer selection makes the previous generator terminate."""
+async def test_two_sources_stream_concurrently(fake_client: _FakeClient) -> None:
+    """Selecting a second source must not stop the first: exclusivity is per source."""
     other = _FakeClient("client-2", name="Aux")
     provider = make_provider([fake_client, other])
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    await provider.on_source_selected("client-2", "player-2", "queue-2", "session-2")
+    assert fake_client.source_role is not None
+    assert other.source_role is not None
+    assert fake_client.source_role.stop_requests == 0
+    assert other.source_role.start_requests == 1
+    assert get_players(provider).stopped == []
+    chunks = await _take(provider.get_audio_stream(_stream_details("client-1")), 1)
+    assert len(chunks) == 1
+
+
+async def test_new_selection_supersedes_running_stream(fake_client: _FakeClient) -> None:
+    """Re-selecting the same source elsewhere makes the previous generator terminate."""
+    provider = make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
     stream = provider.get_audio_stream(_stream_details())
     assert await anext(stream) is not None
-    await provider.on_source_selected("client-2", "player-2", "queue-2", "session-2")
+    await provider.on_source_selected("client-1", "player-2", "queue-2", "session-2")
     chunks = [chunk async for chunk in stream]
     assert len(chunks) <= 1
