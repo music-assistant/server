@@ -65,7 +65,12 @@ from .constants import (
     STATIONS_ENDPOINT,
 )
 from .fragments import PandoraFragment, PandoraStationSession, should_fetch_fragment
-from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
+from .helpers import (
+    create_auth_headers,
+    get_csrf_token,
+    handle_pandora_error,
+    read_account_flags,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
@@ -335,12 +340,10 @@ class PandoraProvider(MusicProvider):
 
                 self._user_id = response_data.get("listenerId")
 
-                # Check whether the account is eligible for high-quality streaming.
-                try:
-                    flags: list[str] = response_data.get("config", {}).get("flags", [])
-                    self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
-                except AttributeError, TypeError:
-                    self._high_quality_available = False
+                # What this account is entitled to. Pandora sends config and flags as null
+                # on some accounts, so read through them rather than guarding after the fact.
+                flags = read_account_flags(response_data)
+                self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
 
                 self.logger.info(
                     "Successfully authenticated with Pandora "

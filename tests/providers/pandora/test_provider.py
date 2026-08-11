@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import time
-from typing import Any
-from unittest.mock import Mock
+from typing import Any, Self
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import SearchResults
 
+from music_assistant.providers.pandora import provider as provider_module
 from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
 from music_assistant.providers.pandora.fragments import (
     FRAGMENT_STALE_SECONDS,
@@ -493,3 +494,51 @@ async def test_get_track_unknown_raises() -> None:
     provider = _provider()
     with pytest.raises(MediaNotFoundError):
         await provider.get_track("TR:nope")
+
+
+class _LoginResponse:
+    """Stand-in for the aiohttp POST `_authenticate` reads the login payload from."""
+
+    status = 200
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def post(self, *args: Any, **kwargs: Any) -> Self:
+        return self
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+async def _login(monkeypatch: pytest.MonkeyPatch, flags: list[str]) -> PandoraProvider:
+    """Run a real _authenticate against a canned login payload carrying the given flags."""
+    provider = _provider()
+    provider.http_session = _LoginResponse(  # type: ignore[assignment]
+        {"authToken": "token", "listenerId": "listener", "config": {"flags": flags}}
+    )
+    monkeypatch.setattr(provider_module, "get_csrf_token", AsyncMock(return_value="csrf"))
+    await provider._authenticate("user", "secret")
+    return provider
+
+
+async def test_authentication_records_the_high_quality_entitlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The requested audio format hangs on this one assignment out of the login payload."""
+    provider = await _login(monkeypatch, ["highQualityStreamingAvailable"])
+    assert provider._high_quality_available is True
+
+
+async def test_authentication_leaves_a_free_account_unentitled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A login without the flag must not leave it set from a previous account."""
+    provider = await _login(monkeypatch, ["adSupportedSkip"])
+    assert provider._high_quality_available is False

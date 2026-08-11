@@ -110,3 +110,12 @@ def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[
         headers["X-AuthToken"] = auth_token
 
     return headers
+
+
+def read_account_flags(response_data: dict[str, Any]) -> set[str]:
+    """
+    Return the capability flags Pandora reported for the logged-in account.
+
+    :param response_data: A parsed `/v1/auth/login` response.
+    """
+    return set((response_data.get("config") or {}).get("flags") or [])
