@@ -438,7 +438,8 @@ class WebserverController(CoreController):
         This is called by the sendspin proxy when a client connects, allowing
         the player controller to auto-whitelist the player for that session.
         Party guests all share one guest account, so the token (one per guest
-        device) decides which session a web player belongs to, not the user.
+        device) decides which sessions (all tabs of that browser) a web player
+        belongs to, not the user.
 
         :param token: The access token the sendspin proxy authenticated with.
         :param player_id: The sendspin player ID to set.
