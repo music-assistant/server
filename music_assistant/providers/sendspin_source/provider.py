@@ -16,11 +16,11 @@ from typing import TYPE_CHECKING, cast
 
 from aiosendspin.audio import AsrcSourceBridge
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
-from aiosendspin.models.types import SignalState
 from aiosendspin.server import (
     ClientConnectedEvent,
     ClientDisconnectedEvent,
     ClientRemovedEvent,
+    SignalState,
     SourceSignalChangedEvent,
     SourceStreamEndedEvent,
     SourceStreamStartedEvent,

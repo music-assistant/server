@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
-from aiosendspin.models.types import SignalState
 from aiosendspin.server import (
     ClientConnectedEvent,
+    SignalState,
     SourceSignalChangedEvent,
     SourceStreamStartedEvent,
 )

@@ -7,7 +7,7 @@
   "documentation": "https://music-assistant.io/plugins/sendspin-source/",
   "codeowners": ["@music-assistant"],
   "depends_on": "sendspin",
-  "requirements": ["aiosendspin[server]==9.0.0", "soxr==1.1.0"],
+  "requirements": ["aiosendspin[server]==9.1.0", "soxr==1.1.0"],
   "builtin": true,
   "icon": "audio-input-rca"
 }
