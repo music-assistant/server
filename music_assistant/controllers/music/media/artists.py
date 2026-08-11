@@ -156,15 +156,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
-        *,
-        sort_field: SortField | None = None,
-        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Artist]:
@@ -175,13 +175,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
         :param artist_type: The artist's type
-        :param sort_field: Sort field to use (new typed parameter).
-        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """

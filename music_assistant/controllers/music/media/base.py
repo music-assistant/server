@@ -52,6 +52,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.music.constants import BASE_SORT_FIELD_SQL, LEGACY_SORT_KEYS
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.music.sorting import (
     SortOptionInfo,
@@ -98,48 +99,6 @@ JSON_KEYS = (
 SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
-
-# Base SQL mappings for sort fields (can be overridden per MediaType)
-BASE_SORT_FIELD_SQL = {
-    SortField.NAME: "search_name",
-    SortField.SORT_NAME: "search_sort_name",
-    SortField.TIMESTAMP_ADDED: "timestamp_added",
-    SortField.TIMESTAMP_MODIFIED: "timestamp_modified",
-    SortField.LAST_PLAYED: "last_played",
-    SortField.PLAY_COUNT: "play_count",
-    SortField.DURATION: "duration",
-    SortField.YEAR: "year",
-    SortField.POSITION: "position",
-    # ARTIST_NAME is media-type specific, implemented in subclasses
-    SortField.RANDOM: "RANDOM()",
-    SortField.RANDOM_PLAY_COUNT: "RANDOM(), play_count",
-}
-
-# Legacy sort keys for backward compatibility (will be removed in future release)
-LEGACY_SORT_KEYS = {
-    "name": (SortField.NAME, SortDirection.ASC),
-    "name_desc": (SortField.NAME, SortDirection.DESC),
-    "duration": (SortField.DURATION, SortDirection.ASC),
-    "duration_desc": (SortField.DURATION, SortDirection.DESC),
-    "sort_name": (SortField.SORT_NAME, SortDirection.ASC),
-    "sort_name_desc": (SortField.SORT_NAME, SortDirection.DESC),
-    "timestamp_added": (SortField.TIMESTAMP_ADDED, SortDirection.ASC),
-    "timestamp_added_desc": (SortField.TIMESTAMP_ADDED, SortDirection.DESC),
-    "timestamp_modified": (SortField.TIMESTAMP_MODIFIED, SortDirection.ASC),
-    "timestamp_modified_desc": (SortField.TIMESTAMP_MODIFIED, SortDirection.DESC),
-    "last_played": (SortField.LAST_PLAYED, SortDirection.ASC),
-    "last_played_desc": (SortField.LAST_PLAYED, SortDirection.DESC),
-    "play_count": (SortField.PLAY_COUNT, SortDirection.ASC),
-    "play_count_desc": (SortField.PLAY_COUNT, SortDirection.DESC),
-    "year": (SortField.YEAR, SortDirection.ASC),
-    "year_desc": (SortField.YEAR, SortDirection.DESC),
-    "position": (SortField.POSITION, SortDirection.ASC),
-    "position_desc": (SortField.POSITION, SortDirection.DESC),
-    "artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
-    "artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
-    "random": (SortField.RANDOM, None),
-    "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
-}
 
 
 @dataclass(slots=True)
@@ -434,13 +393,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             **kwargs: Any,
@@ -453,13 +412,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[True],
             **kwargs: Any,
@@ -472,13 +431,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: bool,
             **kwargs: Any,
@@ -490,13 +449,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
-        *,
-        sort_field: SortField | None = None,
-        sort_direction: SortDirection | None = None,
         summary: bool = True,
         collapse_collections: bool = False,
         **kwargs: Any,
@@ -508,13 +467,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
             Legacy string-based sorting (e.g. 'sort_name', 'timestamp_added_desc').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Only include items that have been played (last_played > 0).
-        :param sort_field: Sort field to use (new typed parameter).
-        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't

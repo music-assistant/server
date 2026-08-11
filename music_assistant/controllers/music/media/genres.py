@@ -309,6 +309,9 @@ class GenreController(MediaControllerBase[Genre]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
@@ -316,9 +319,6 @@ class GenreController(MediaControllerBase[Genre]):
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         content_type: str | None = None,
-        *,
-        sort_field: SortField | None = None,
-        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
@@ -336,9 +336,9 @@ class GenreController(MediaControllerBase[Genre]):
             general/music taxonomy, stored as NULL), "podcast" or "audiobook". Composes with
             hide_empty, so e.g. content_type="podcast" + hide_empty=None returns only the
             default podcast genres.
-        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
-        :param sort_field: Sort field to use (new typed parameter).
+        :param sort_field: Sort field to use.
         :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
