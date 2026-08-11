@@ -17,7 +17,7 @@ from music_assistant.helpers.guest_access import credential_owners_for_user_id
 from music_assistant.providers.sendspin.provider import (
     SendspinProvider,
     _evict_session_pairing_task_id,
-    _sweep_session_pairings,
+    _evict_stale_pairings,
 )
 
 from .test_pin_session import _FakeMass, _timers
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from aiosendspin.server import SendspinServer
     from aiosendspin.server.client import SendspinClient
 
+    from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.mass import MusicAssistant
 
 
@@ -51,6 +52,19 @@ class _EvictionServerApi:
             raise ValueError(f"client {client_id} is not connected")
         await self.pairing_store.remove_record(client_id)
         self.unpaired.append(client_id)
+
+
+class _FakeAuth:
+    """Auth stand-in resolving only the account lookup the reconciliation needs."""
+
+    def __init__(self, *user_ids: str) -> None:
+        self._user_ids = set(user_ids)
+
+    async def get_user(self, user_id: str) -> User | None:
+        # mirrors the real lookup, which answers None for a disabled account too
+        if user_id not in self._user_ids:
+            return None
+        return User(user_id=user_id, username=user_id, role=UserRole.USER)
 
 
 def _record(client_id: str, owner: str | None = None) -> ServerPairingRecord:
@@ -174,8 +188,8 @@ async def test_revoking_an_owner_evicts_only_their_pairings(
     assert sorted(refreshed) == ["account", "connected", "offline"]
 
 
-async def test_the_startup_sweep_removes_only_session_pairings() -> None:
-    """The sweep clears leftover session-scoped records, leaving durable ones alone."""
+async def test_the_startup_eviction_clears_session_pairings() -> None:
+    """Leftover session-scoped records go, while records of live accounts stay."""
     store = InMemoryServerPairingStore()
     standalone = _record("standalone")
     account_bound = _record("account", owner="user-u1")
@@ -183,5 +197,22 @@ async def test_the_startup_sweep_removes_only_session_pairings() -> None:
     await store.store_record(account_bound)
     await store.store_record(_record("guest-a", owner="guest-g1"))
     await store.store_record(_record("guest-b", owner="guest-g2"))
-    assert await _sweep_session_pairings(store) == 2
+
+    auth = cast("AuthenticationManager", _FakeAuth("u1"))
+    assert await _evict_stale_pairings(store, auth) == (2, 0)
     assert list(await store.list_records()) == [standalone, account_bound]
+
+
+async def test_the_startup_eviction_clears_pairings_of_gone_accounts() -> None:
+    """A record survives a restart only while its account does, so a revocation cannot be missed."""
+    store = InMemoryServerPairingStore()
+    standalone = _record("standalone")
+    live = _record("live", owner="user-u1")
+    await store.store_record(standalone)
+    await store.store_record(live)
+    # deleted or disabled since this record was written (get_user answers None for both)
+    await store.store_record(_record("gone", owner="user-u2"))
+
+    auth = cast("AuthenticationManager", _FakeAuth("u1"))
+    assert await _evict_stale_pairings(store, auth) == (0, 1)
+    assert list(await store.list_records()) == [standalone, live]

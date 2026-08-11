@@ -73,6 +73,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.guest_access import (
     credential_owner,
+    credential_owner_user_id,
     credential_owners_for_user_id,
     is_session_scoped_owner,
 )
@@ -129,6 +130,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
@@ -280,19 +282,33 @@ def _check_management_result(result: ManagementResult) -> None:
     raise SecurityActionError(alert_key)
 
 
-async def _sweep_session_pairings(pairing_store: ServerPairingStore) -> int:
+async def _evict_stale_pairings(
+    pairing_store: ServerPairingStore, auth: AuthenticationManager
+) -> tuple[int, int]:
     """
-    Remove every session-scoped pairing record, returning how many were removed.
+    Remove the pairing records whose owning authorization is gone.
 
     Session-scoped pairings live only as long as their client's connection, and no
-    connection survives a server restart.
+    connection survives a restart. Account-bound ones do survive a restart, but not an
+    account that was deleted or disabled while this provider was not there to hear it.
+
+    :return: How many session-scoped and how many account-bound records were removed.
     """
-    swept = 0
+    session_scoped = 0
+    orphaned = 0
     for record in await pairing_store.list_records():
-        if record.owner is not None and is_session_scoped_owner(record.owner):
-            await pairing_store.remove_record(record.client_id)
-            swept += 1
-    return swept
+        if record.owner is None:
+            continue
+        if is_session_scoped_owner(record.owner):
+            session_scoped += 1
+        else:
+            user_id = credential_owner_user_id(record.owner)
+            # get_user answers None for a deleted as well as a disabled account
+            if user_id is None or await auth.get_user(user_id) is not None:
+                continue
+            orphaned += 1
+        await pairing_store.remove_record(record.client_id)
+    return session_scoped, orphaned
 
 
 def _manual_client_url(address: str) -> str:
@@ -424,8 +440,15 @@ class SendspinProvider(PlayerProvider):
                 "file-access problem and reload; do not delete the file or all pairings will be "
                 "lost."
             ) from err
-        if swept := await _sweep_session_pairings(pairing_store):
-            self.logger.info("Removed %d session-scoped pairing(s) from a previous run", swept)
+        session_scoped, orphaned = await _evict_stale_pairings(
+            pairing_store, self.mass.webserver.auth
+        )
+        if session_scoped:
+            self.logger.info(
+                "Removed %d session-scoped pairing(s) from a previous run", session_scoped
+            )
+        if orphaned:
+            self.logger.info("Removed %d pairing(s) of a deleted or disabled account", orphaned)
         self.server_api = SendspinServer(
             self.mass.loop,
             identity,
@@ -1441,12 +1464,13 @@ class SendspinProvider(PlayerProvider):
 
     async def _evict_pairings_for_owner(self, owner: str) -> None:
         """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
-        for record in await self.server_api.pairing_store.records_by_owner(owner):
+        pairing_store = self.server_api.pairing_store
+        for record in await pairing_store.records_by_owner(owner):
             try:
                 await self.server_api.unpair(record.client_id)
             except ValueError:
                 # Not connected: there is no client half to notify, drop only our record.
-                await self.server_api.pairing_store.remove_record(record.client_id)
+                await pairing_store.remove_record(record.client_id)
             self.logger.info(
                 "Removed the pairing of client %s: its owner's access was revoked",
                 record.client_id,

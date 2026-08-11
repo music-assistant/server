@@ -148,3 +148,10 @@ def test_credential_owner_encodes_the_lifetime_policy() -> None:
     assert guest_access.is_session_scoped_owner("guest-g1")
     assert not guest_access.is_session_scoped_owner("user-u1")
     assert guest_access.credential_owners_for_user_id("x") == ("guest-x", "user-x")
+
+
+def test_credential_owner_user_id_resolves_both_prefixes() -> None:
+    """An owner id resolves back to its account, and other owner kinds resolve to nothing."""
+    assert guest_access.credential_owner_user_id("guest-g1") == "g1"
+    assert guest_access.credential_owner_user_id("user-u1") == "u1"
+    assert guest_access.credential_owner_user_id("token-t1") is None

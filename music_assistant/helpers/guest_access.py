@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
 DEFAULT_JOIN_CODE_EXPIRY_HOURS = 8
 
+# Owner id prefixes, naming the kind of authorization a credential is bound to
+GUEST_OWNER_PREFIX = "guest-"
+USER_OWNER_PREFIX = "user-"
+
 
 async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_name: str) -> User:
     """
@@ -112,7 +116,19 @@ def credential_owners_for_user_id(user_id: str) -> tuple[str, str]:
 
     :param user_id: The user id whose credentials are looked up.
     """
-    return (f"guest-{user_id}", f"user-{user_id}")
+    return (f"{GUEST_OWNER_PREFIX}{user_id}", f"{USER_OWNER_PREFIX}{user_id}")
+
+
+def credential_owner_user_id(owner: str) -> str | None:
+    """
+    Return the user account an owner id is bound to, or ``None`` for another owner kind.
+
+    :param owner: An owner id produced by credential_owner.
+    """
+    for prefix in (GUEST_OWNER_PREFIX, USER_OWNER_PREFIX):
+        if owner.startswith(prefix):
+            return owner.removeprefix(prefix)
+    return None
 
 
 def is_session_scoped_owner(owner: str) -> bool:
@@ -121,7 +137,7 @@ def is_session_scoped_owner(owner: str) -> bool:
 
     :param owner: An owner id produced by credential_owner.
     """
-    return owner.startswith("guest-")
+    return owner.startswith(GUEST_OWNER_PREFIX)
 
 
 async def revoke_guest_access(mass: MusicAssistant, username: str) -> tuple[int, int]:
