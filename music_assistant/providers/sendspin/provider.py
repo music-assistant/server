@@ -822,6 +822,7 @@ class SendspinProvider(PlayerProvider):
         player = await self._await_connected_client(client_id)
         if not player.is_web_player:
             raise InvalidCommand(f"Client {client_id} is not a built-in web player")
+        # We already paired this web player so no action needed
         if await self.server_api.pairing_store.record_by_client_id(client_id) is not None:
             return
         try:
@@ -935,6 +936,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.register_api_command(
                 "sendspin/pair_web_player",
                 self.pair_web_player,
+                # Guests pair their own web player too, since party mode plays through Sendspin.
                 required_scope=Scope.PLAYERS_CONTROL,
             )
         )
