@@ -70,6 +70,7 @@ class _SourceSession:
     """State for the single active (exclusive) source stream."""
 
     client_id: str
+    player_id: str
     queue_id: str
     stream_session_id: str
     unsubscribes: list[Callable[[], None]] = field(default_factory=list)
@@ -154,9 +155,10 @@ class SendspinSourceProvider(PluginProvider):
         if sendspin is None or client is None or role is None:
             raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
         # Exclusive: supersede any prior session (its generator notices and exits).
-        await self._teardown_session()
+        await self._teardown_session(superseded_by_player_id=player_id)
         session = _SourceSession(
             client_id=source_id,
+            player_id=player_id,
             queue_id=queue_id,
             stream_session_id=stream_session_id,
             unsubscribes=[
@@ -311,7 +313,7 @@ class SendspinSourceProvider(PluginProvider):
                 continue
             session.last_pcm_monotonic = time.monotonic()
 
-    async def _teardown_session(self) -> None:
+    async def _teardown_session(self, superseded_by_player_id: str | None = None) -> None:
         session = self._session
         if session is None:
             return
@@ -327,3 +329,10 @@ class SendspinSourceProvider(PluginProvider):
                 role.request_stop()
             except Exception as err:
                 self.logger.debug("Failed to send stop to %s: %s", session.client_id, err)
+        if superseded_by_player_id is not None and superseded_by_player_id != session.player_id:
+            # Ending the generator leaves the handed-off player draining its buffer over
+            # the new one, so stop it. A same-player re-claim keeps playing.
+            try:
+                await self.mass.players.cmd_stop(session.player_id)
+            except Exception as err:
+                self.logger.debug("Failed to stop player %s: %s", session.player_id, err)

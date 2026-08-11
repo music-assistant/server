@@ -15,7 +15,7 @@ from music_assistant_models.streamdetails import StreamDetails
 import music_assistant.providers.sendspin_source.provider as provider_module
 from music_assistant.providers.sendspin_source.provider import OUTPUT_FORMAT
 
-from .conftest import _FakeClient, get_server_api, make_provider
+from .conftest import _FakeClient, get_players, get_server_api, make_provider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -109,6 +109,7 @@ async def test_unselect_stops_and_releases(fake_client: _FakeClient) -> None:
     assert fake_client.source_role.stop_requests == 1
     assert fake_client.listeners == []
     assert get_server_api(provider).listeners == []
+    assert get_players(provider).stopped == []
 
 
 async def test_unselect_ignores_stale_session_id(fake_client: _FakeClient) -> None:
@@ -180,6 +181,22 @@ async def test_reconnect_leaves_an_open_stream_alone(fake_client: _FakeClient) -
     await asyncio.sleep(0)
     assert fake_client.source_role.start_requests == 1
     await provider.on_source_unselected("client-1", "queue-1", "session-1")
+
+
+async def test_handoff_stops_the_player_it_was_taken_from(fake_client: _FakeClient) -> None:
+    """Moving a source to another player stops the first, which would drain its buffer."""
+    provider = make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    await provider.on_source_selected("client-1", "player-2", "queue-2", "session-2")
+    assert get_players(provider).stopped == ["player-1"]
+
+
+async def test_reclaim_by_the_same_player_keeps_it_playing(fake_client: _FakeClient) -> None:
+    """A reconnect re-claims the same queue with a fresh session and must not stop it."""
+    provider = make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    assert get_players(provider).stopped == []
 
 
 async def test_new_selection_supersedes_running_stream(fake_client: _FakeClient) -> None:

@@ -91,11 +91,22 @@ class _FakeServerApi:
             callback(self, event)
 
 
+class _FakePlayers:
+    """Players controller stand-in recording stop commands."""
+
+    def __init__(self) -> None:
+        self.stopped: list[str] = []
+
+    async def cmd_stop(self, player_id: str) -> None:
+        self.stopped.append(player_id)
+
+
 class _FakeMass:
     """MusicAssistant stand-in providing loop, task creation and provider lookup."""
 
     def __init__(self, sendspin_provider: Any) -> None:
         self.loop = asyncio.get_running_loop()
+        self.players = _FakePlayers()
         self._sendspin_provider = sendspin_provider
 
     def get_provider(self, domain: str) -> Any:
@@ -133,6 +144,11 @@ def get_server_api(provider: SendspinSourceProvider) -> _FakeServerApi:
     """Return the fake server api the given provider is wired to."""
     sendspin = cast("Any", provider.mass.get_provider("sendspin"))
     return cast("_FakeServerApi", sendspin.server_api)
+
+
+def get_players(provider: SendspinSourceProvider) -> _FakePlayers:
+    """Return the fake players controller the given provider is wired to."""
+    return cast("_FakePlayers", provider.mass.players)
 
 
 @pytest.fixture
