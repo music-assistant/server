@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import Mock
 
 import pytest
 from aiosendspin.models.types import PairMethod
@@ -48,11 +49,13 @@ def _make_web_provider(
     *,
     is_web_player: bool = True,
     registered: bool = True,
+    initialized: bool = True,
     session_client_id: str | None = _CLIENT_ID,
 ) -> tuple[SendspinProvider, list[str]]:
     provider, refreshed = _make_provider(api, monkeypatch)
-    player = SendspinBasePlayer.__new__(SendspinBasePlayer)
+    player = Mock(spec=SendspinBasePlayer)
     player.is_web_player = is_web_player
+    player.initialized.is_set.return_value = initialized
     cast("Any", provider.mass).players = SimpleNamespace(
         get_player=lambda _client_id: player if registered else None
     )
@@ -115,7 +118,7 @@ async def test_pair_web_player_gives_up_on_a_client_that_never_connects(
     """A client that only left its hello behind is refused rather than pairing blind."""
     api = _WebPlayerServerApi(connected=False)
     provider, refreshed = _make_web_provider(api, monkeypatch)
-    with pytest.raises(InvalidCommand, match="did not connect"):
+    with pytest.raises(InvalidCommand, match="did not register"):
         await provider.pair_web_player(_TOKEN)
     assert api.attempts == []
     assert refreshed == []
@@ -159,7 +162,19 @@ async def test_pair_web_player_refuses_an_unregistered_client(
     """A connected client with no Sendspin player behind it is never paired."""
     api = _WebPlayerServerApi()
     provider, refreshed = _make_web_provider(api, monkeypatch, registered=False)
-    with pytest.raises(InvalidCommand, match="did not connect"):
+    with pytest.raises(InvalidCommand, match="did not register"):
+        await provider.pair_web_player(_TOKEN)
+    assert api.attempts == []
+    assert refreshed == []
+
+
+async def test_pair_web_player_waits_out_a_half_registered_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player still registering is not paired, so the pairing refresh cannot be dropped."""
+    api = _WebPlayerServerApi()
+    provider, refreshed = _make_web_provider(api, monkeypatch, initialized=False)
+    with pytest.raises(InvalidCommand, match="did not register"):
         await provider.pair_web_player(_TOKEN)
     assert api.attempts == []
     assert refreshed == []

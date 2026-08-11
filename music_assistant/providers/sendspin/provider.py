@@ -1331,20 +1331,21 @@ class SendspinProvider(PlayerProvider):
         player.update_state()
 
     async def _await_connected_client(self, client_id: str) -> SendspinBasePlayer:
-        """Return a client's registered player, waiting for its connection to land first."""
+        """Return a client's fully registered player, waiting for its connection to land first."""
         # A web player asks to be paired as soon as its API session is authenticated, which
-        # is a beat before its own Sendspin handshake reaches the server.
+        # is a beat before its own Sendspin handshake reaches the server. Registration must
+        # have finished too, or the pairing refresh drops the config it re-applies.
         try:
             async with asyncio.timeout(WEB_PLAYER_CONNECT_TIMEOUT):
                 while True:
                     client = self.server_api.get_client(client_id)
                     if client is not None and client.is_connected:
                         player = self.mass.players.get_player(client_id)
-                        if isinstance(player, SendspinBasePlayer):
+                        if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
                             return player
                     await asyncio.sleep(0.1)
         except TimeoutError:
-            raise InvalidCommand(f"Client {client_id} did not connect") from None
+            raise InvalidCommand(f"Client {client_id} did not register") from None
 
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
