@@ -34,7 +34,6 @@ from music_assistant.constants import (
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.bose_soundtouch.avt_helpers import avt_play, avt_set_url, avt_stop
 
-from .client.exceptions import ApiError
 from .client.schema.enums import Key, PlayStatus, SourceStatus
 from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
@@ -96,9 +95,16 @@ class BoseSoundTouchPlayer(Player):
         # initial refresh no lock needed
         await self._refresh_volume()
         await self._refresh_now_playing()
-        await self._refresh_options()
         await self._refresh_zone()
         await self._refresh_sources()
+
+        # initialize options
+        if not self._supported_player_options:
+            self._supported_player_options.add(PlayerOptionKeys.NETWORK_NAME)
+            bass_capability = await self._client.get_bass_capabilities()
+            if bass_capability.available is not None and bass_capability.available:
+                self._supported_player_options.add(PlayerOptionKeys.BASS)
+        await self._refresh_options()
 
         self.update_state()
 
@@ -110,9 +116,6 @@ class BoseSoundTouchPlayer(Player):
         self._attr_poll_interval = IDLE_POLL_INTERVAL
         self._attr_available = True
         self._attr_type = PlayerType.PLAYER
-        # Playback (PLAY_MEDIA) is deliberately omitted: SoundTouch has no usable API to
-        # play an arbitrary stream, so audio is routed through a linked playback protocol
-        # (such as the DLNA renderer on the same device) via protocol linking.
         self._attr_supported_features = {
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
@@ -149,7 +152,6 @@ class BoseSoundTouchPlayer(Player):
                 await self._refresh_now_playing()
                 await self._refresh_volume()
                 await self._refresh_zone()
-                await self._refresh_options()
             except (aiohttp.ClientError, TimeoutError, OSError) as err:
                 self.logger.debug("Poll failed for %s: %s", self.name, err)
                 self._attr_available = False
@@ -191,6 +193,7 @@ class BoseSoundTouchPlayer(Player):
         """Handle VOLUME_SET command on the player."""
         await self._client.set_volume(volume_level, mute=False)
         self._attr_volume_level = volume_level
+        self._attr_volume_muted = False
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
@@ -341,10 +344,11 @@ class BoseSoundTouchPlayer(Player):
             ConfigEntry(
                 key=preset_action,
                 type=ConfigEntryType.ACTION,
-                translation_key=preset_action
+                translation_key="action_overwrite_preset"
                 if preset_id not in preset_ids
-                else preset_action + "_preset_available",
+                else "action_overwrite_preset_preset_available",
                 action=preset_action,
+                translation_params=[str(preset_id)],
             )
             for preset_id, preset_action in enumerate(
                 (
@@ -378,7 +382,7 @@ class BoseSoundTouchPlayer(Player):
             preset_id = mapping_preset_int.get(action, 1)
             await self._client.store_preset(
                 preset_id,
-                f"{self.mass.webserver.base_url}/{self.provider.instance_id}_preset?preset_id={preset_id}",
+                f"{self.mass.webserver.base_url}/{self.provider.instance_id}",
             )
             return await self.get_config_entries()
 
@@ -445,6 +449,10 @@ class BoseSoundTouchPlayer(Player):
                     await self._refresh_now_playing()
                 if "zoneUpdated" in message:
                     await self._refresh_zone()
+                if "bassUpdated" in message:
+                    await self._refresh_options({PlayerOptionKeys.BASS})
+                if "infoUpdated" in message:
+                    await self._refresh_options({PlayerOptionKeys.NETWORK_NAME})
                 self.update_state()
             except (aiohttp.ClientError, TimeoutError, OSError) as err:
                 self.logger.debug("Failed to refresh state for %s: %s", self.name, err)
@@ -479,63 +487,72 @@ class BoseSoundTouchPlayer(Player):
 
     async def _refresh_now_playing(self) -> None:
         """Refresh playback state from the speaker."""
-        with contextlib.suppress(ApiError):
-            self._update_state_from_now_playing(await self._client.get_now_playing())
+        self._update_state_from_now_playing(await self._client.get_now_playing())
 
-    async def _refresh_options(self) -> None:
+    async def _refresh_options(self, update_options: set[PlayerOptionKeys] | None = None) -> None:
         """Refresh available player options."""
-        if not self._supported_player_options:
-            self._supported_player_options.add(PlayerOptionKeys.NETWORK_NAME)
-            bass_capability = await self._client.get_bass_capabilities()
-            if bass_capability.available is not None and bass_capability.available:
-                self._supported_player_options.add(PlayerOptionKeys.BASS)
-        _updated_options: list[PlayerOption] = []
-        if PlayerOptionKeys.NETWORK_NAME in self._supported_player_options:
-            info = await self._client.get_info()
-            _updated_options.append(
-                PlayerOption(
-                    key=PlayerOptionKeys.NETWORK_NAME,
-                    translation_key=PlayerOptionKeys.NETWORK_NAME,
-                    name=PlayerOptionKeys.NETWORK_NAME,
-                    type=PlayerOptionType.STRING,
-                    value=info.name,
-                    read_only=True,  # TODO: make that non-read-only
-                )
-            )
-        if PlayerOptionKeys.BASS in self._supported_player_options:
-            old_option: PlayerOption | None = None
-            for option in self._attr_options:
-                if option.key == PlayerOptionKeys.BASS:
-                    old_option = option
-                    break
-            if not old_option:
-                bass_capability = await self._client.get_bass_capabilities()
-                assert bass_capability.available is not None
-                assert bass_capability.minimum is not None
-                assert bass_capability.maximum is not None
-                bass_min = bass_capability.minimum
-                bass_max = bass_capability.maximum
-            else:
-                assert old_option.min_value is not None
-                assert old_option.max_value is not None
-                bass_min = int(old_option.min_value)
-                bass_max = int(old_option.max_value)
-            bass = await self._client.get_bass()
-            assert bass.actual_bass is not None
-            _updated_options.append(
-                PlayerOption(
-                    key=PlayerOptionKeys.BASS,
-                    translation_key=PlayerOptionKeys.BASS,
-                    name=PlayerOptionKeys.BASS,
-                    type=PlayerOptionType.INTEGER,
-                    value=bass.actual_bass,
-                    min_value=bass_min,
-                    max_value=bass_max,
-                    step=1,
-                )
-            )
+        if update_options is None:
+            # update all
+            update_options = self._supported_player_options
 
-        self._attr_options = _updated_options
+        def _update_option_attr(update_option: PlayerOption) -> None:
+            index: int | None = None
+            for idx, option in enumerate(self._attr_options):
+                if option.key == update_option.key:
+                    index = idx
+                    break
+            if index is None:
+                self._attr_options.append(update_option)
+            else:
+                self._attr_options[index] = update_option
+
+        for option in update_options:
+            # _updated_options: list[PlayerOption] = []
+            match option:
+                case PlayerOptionKeys.NETWORK_NAME:
+                    info = await self._client.get_info()
+                    _update_option_attr(
+                        PlayerOption(
+                            key=PlayerOptionKeys.NETWORK_NAME,
+                            translation_key=PlayerOptionKeys.NETWORK_NAME,
+                            name=PlayerOptionKeys.NETWORK_NAME,
+                            type=PlayerOptionType.STRING,
+                            value=info.name,
+                            read_only=True,  # TODO: make that non-read-only
+                        )
+                    )
+                case PlayerOptionKeys.BASS:
+                    old_option: PlayerOption | None = None
+                    for _option in self._attr_options:
+                        if _option.key == PlayerOptionKeys.BASS:
+                            old_option = _option
+                            break
+                    if not old_option:
+                        bass_capability = await self._client.get_bass_capabilities()
+                        assert bass_capability.available is not None
+                        assert bass_capability.minimum is not None
+                        assert bass_capability.maximum is not None
+                        bass_min = bass_capability.minimum
+                        bass_max = bass_capability.maximum
+                    else:
+                        assert old_option.min_value is not None
+                        assert old_option.max_value is not None
+                        bass_min = int(old_option.min_value)
+                        bass_max = int(old_option.max_value)
+                    bass = await self._client.get_bass()
+                    assert bass.actual_bass is not None
+                    _update_option_attr(
+                        PlayerOption(
+                            key=PlayerOptionKeys.BASS,
+                            translation_key=PlayerOptionKeys.BASS,
+                            name=PlayerOptionKeys.BASS,
+                            type=PlayerOptionType.INTEGER,
+                            value=bass.actual_bass,
+                            min_value=bass_min,
+                            max_value=bass_max,
+                            step=1,
+                        )
+                    )
 
     async def _refresh_sources(self) -> None:
         """Refresh the list of selectable native sources from the speaker."""

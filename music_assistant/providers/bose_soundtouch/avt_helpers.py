@@ -23,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def get_headers(soap_action: str) -> dict[str, str]:
-    """Get headers for MusicCast."""
+    """Get headers for Bose Soundtouch."""
     return {
         "Content-Type": 'text/xml; charset="utf-8"',
         "SOAPACTION": f'"{soap_action}"',

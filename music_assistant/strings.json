@@ -1134,6 +1134,9 @@
     "link_control": {
       "name": "Link control"
     },
+    "network_name": {
+      "name": "Network name"
+    },
     "party_mode": {
       "name": "Party mode"
     },
