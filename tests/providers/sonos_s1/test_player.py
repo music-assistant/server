@@ -494,9 +494,13 @@ async def test_unavailable_speaker_is_pinged_despite_recent_activity(
     player._attr_available = False
     player._last_activity = time.monotonic()
 
-    with patch.object(player, "subscribe", AsyncMock()) as subscribe:
+    with (
+        patch.object(player, "ping") as ping,
+        patch.object(player, "subscribe", AsyncMock()) as subscribe,
+    ):
         await player.poll()
 
+    ping.assert_called_once_with()
     subscribe.assert_called_once()
     assert player._attr_available is True
 
