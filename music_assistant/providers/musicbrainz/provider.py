@@ -558,8 +558,8 @@ class MusicbrainzProvider(MetadataProvider):
         """
         Collect release groups for a recording with their release dates.
 
-        Filters out compilations, whether tagged as such or credited to Various Artists,
-        and other secondary-type releases.
+        Filters out secondary-type releases and compilations, including the ones credited
+        to Various Artists rather than tagged as such.
         For singles, only includes those where the title matches the track name.
         Returns list of (release_group, release_date) tuples for singles and studio albums.
 
