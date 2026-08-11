@@ -938,6 +938,98 @@ class TestGetStoredDeviceKey:
 
         assert universal_provider._get_stored_device_key([player]) is None
 
+    def test_canonical_parent_wins_over_stale_membership(self, mock_mass: MagicMock) -> None:
+        """
+        A stale config listing the same member must not win from the canonical parent.
+
+        Lifecycle scenario: an obsolete universal player config from before a re-key
+        still lists the protocol player as a member, while the protocol player's own
+        persisted parent link points at the current universal player. The current
+        one must be picked, so the id (and with it the stored settings) stays put.
+        """
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                # obsolete config, deliberately sorting before the current one
+                "up1111stale": {
+                    "player_id": "up1111stale",
+                    "provider": "universal_player",
+                    "values": {"linked_protocol_ids": ["ap_123456"]},
+                },
+                "up5478c9e60da0": {
+                    "player_id": "up5478c9e60da0",
+                    "provider": "universal_player",
+                    "values": {"linked_protocol_ids": ["ap_123456"]},
+                },
+                "ap_123456": {
+                    "player_id": "ap_123456",
+                    "provider": "airplay",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "up5478c9e60da0"},
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        player = MockPlayer(
+            provider,
+            "ap_123456",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) == "5478c9e60da0"
+
+    def test_up_prefixed_config_of_other_provider_ignored(self, mock_mass: MagicMock) -> None:
+        """A config whose id merely starts with "up" must not be treated as universal."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                # a native player of another provider whose id happens to start with "up"
+                "upnp_media_renderer": {
+                    "player_id": "upnp_media_renderer",
+                    "provider": "some_native_provider",
+                    "values": {"linked_protocol_ids": ["ap_123456"]},
+                },
+            }
+        )
+        provider = MockProvider("airplay")
+        player = MockPlayer(
+            provider,
+            "ap_123456",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) is None
+
+    def test_stored_key_reused_via_sonos_uuid_variant(self, mock_mass: MagicMock) -> None:
+        """The Sonos RINCON/_MR uuid equivalence applies to stored identifiers as well."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "uprincon123": {
+                    "player_id": "uprincon123",
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["dlna_123456"],
+                        "device_identifiers": {"uuid": "RINCON_ABC123"},
+                    },
+                },
+            }
+        )
+        provider = MockProvider("dlna")
+        player = MockPlayer(
+            provider,
+            "dlna_999999",
+            "Test Player",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.UUID: "RINCON_ABC123_MR"},
+        )
+
+        assert universal_provider._get_stored_device_key([player]) == "rincon123"
+
     def test_stored_key_never_matches_on_invalid_mac(self, mock_mass: MagicMock) -> None:
         """An all-zero MAC is not identity: it must not match across devices."""
         universal_provider = create_mock_universal_provider(mock_mass)

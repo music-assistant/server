@@ -21,7 +21,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROTOCOL_PARENT_ID,
 )
-from music_assistant.helpers.util import is_valid_mac_address, normalize_mac_for_matching
+from music_assistant.helpers.util import normalize_mac_for_matching, strong_identifiers_match
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -32,16 +32,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
     from music_assistant.models.player import Player
-
-# Identifier types considered proof of device identity, kept in sync with the
-# type order used by the player controller's _identifiers_match.
-MATCHABLE_IDENTIFIER_TYPES = (
-    IdentifierType.MAC_ADDRESS,
-    IdentifierType.SERIAL_NUMBER,
-    IdentifierType.UUID,
-    IdentifierType.CAST_UUID,
-    IdentifierType.AIRPLAY_ID,
-)
 
 
 class UniversalPlayerProvider(PlayerProvider):
@@ -597,62 +587,73 @@ class UniversalPlayerProvider(PlayerProvider):
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         if not isinstance(all_player_configs, dict):
             return None
-        protocol_ids = {player.player_id for player in protocol_players}
-        identifiers: set[tuple[str, str]] = set()
+
+        def get_stored_parent_id(child_id: str) -> str | None:
+            child_conf = all_player_configs.get(child_id)
+            child_values = child_conf.get("values") if isinstance(child_conf, dict) else None
+            parent_id = (
+                child_values.get(CONF_PROTOCOL_PARENT_ID)
+                if isinstance(child_values, dict)
+                else None
+            )
+            return parent_id if isinstance(parent_id, str) and parent_id else None
+
+        def get_own_universal_config(player_id: str) -> dict[str, Any] | None:
+            # the "up" prefix alone is not enough, a native player id could
+            # coincidentally carry it, so require our own provider as well
+            if not player_id.startswith(UNIVERSAL_PLAYER_PREFIX):
+                return None
+            raw_conf = all_player_configs.get(player_id)
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                return None
+            return raw_conf
+
+        # The parent link persisted on the protocol player itself is the canonical
+        # side of the relation and wins over any reverse membership below.
         for player in protocol_players:
-            for id_type, value in player.device_info.identifiers.items():
-                if normalized := self._normalize_identifier(id_type, value):
-                    identifiers.add((id_type.value, normalized))
+            parent_id = get_stored_parent_id(player.player_id)
+            if parent_id and get_own_universal_config(parent_id):
+                return parent_id.removeprefix(UNIVERSAL_PLAYER_PREFIX)
+
+        protocol_ids = {player.player_id for player in protocol_players}
         identifier_match: str | None = None
         for player_id in sorted(all_player_configs):
-            if not isinstance(player_id, str) or not player_id.startswith(UNIVERSAL_PLAYER_PREFIX):
+            if not isinstance(player_id, str):
                 continue
-            raw_conf = all_player_configs[player_id]
-            if not isinstance(raw_conf, dict):
+            if (raw_conf := get_own_universal_config(player_id)) is None:
                 continue
             values = raw_conf.get("values")
             values = values if isinstance(values, dict) else {}
-            # a protocol player that was already a member is the strongest match
+            # a protocol player that was already a member is a strong match, unless
+            # its own (canonical) parent link contradicts the stored membership
             stored_protocol_ids = values.get(CONF_LINKED_PROTOCOL_IDS)
-            if isinstance(stored_protocol_ids, list) and protocol_ids.intersection(
-                stored_protocol_ids
-            ):
-                return player_id.removeprefix(UNIVERSAL_PLAYER_PREFIX)
+            stored_protocol_ids = (
+                stored_protocol_ids if isinstance(stored_protocol_ids, list) else []
+            )
+            for child_id in protocol_ids.intersection(stored_protocol_ids):
+                if get_stored_parent_id(child_id) in (None, player_id):
+                    return player_id.removeprefix(UNIVERSAL_PLAYER_PREFIX)
             if identifier_match is not None:
                 continue
             # otherwise match on the persisted device identifiers, which also covers
-            # players that were never a member (e.g. a re-keyed bridge player)
+            # players that were never a member (e.g. a re-keyed bridge player).
+            # An unrecognized stored key maps to IdentifierType.UNKNOWN, which is
+            # not a strong identifier and therefore never matches.
             stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS)
             stored_identifiers = stored_identifiers if isinstance(stored_identifiers, dict) else {}
-            for id_type_str, value in stored_identifiers.items():
-                if not isinstance(value, str):
-                    continue
-                # an unrecognized stored key maps to IdentifierType.UNKNOWN,
-                # which _normalize_identifier rejects
-                id_type = IdentifierType(id_type_str)
-                if (normalized := self._normalize_identifier(id_type, value)) and (
-                    id_type.value,
-                    normalized,
-                ) in identifiers:
-                    identifier_match = player_id
-                    break
+            parsed_identifiers = {
+                IdentifierType(id_type_str): value
+                for id_type_str, value in stored_identifiers.items()
+                if isinstance(id_type_str, str) and isinstance(value, str)
+            }
+            if any(
+                strong_identifiers_match(player.device_info.identifiers, parsed_identifiers)
+                for player in protocol_players
+            ):
+                identifier_match = player_id
         if identifier_match is None:
             return None
         return identifier_match.removeprefix(UNIVERSAL_PLAYER_PREFIX)
-
-    @staticmethod
-    def _normalize_identifier(id_type: IdentifierType, value: str) -> str | None:
-        """Normalize a device identifier value for matching, or None if unusable."""
-        # restricted to the same identifier types _identifiers_match uses, so both
-        # apply the same notion of device identity. This notably excludes IP
-        # addresses (change with DHCP, shared by multi-instance hosts) and UNKNOWN.
-        if not value or id_type not in MATCHABLE_IDENTIFIER_TYPES:
-            return None
-        if id_type == IdentifierType.MAC_ADDRESS:
-            if not is_valid_mac_address(value):
-                return None
-            return normalize_mac_for_matching(value)
-        return value.replace("-", "").replace(":", "").replace("_", "").lower()
 
     def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
         """

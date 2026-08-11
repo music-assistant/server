@@ -20,7 +20,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 import weakref
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
@@ -1801,6 +1801,58 @@ def is_valid_mac_address(mac_address: str | None) -> bool:
         return True
     except ValueError:
         return False
+
+
+# Identifier types considered proof of device identity, in order of reliability.
+STRONG_IDENTIFIER_TYPES = (
+    IdentifierType.MAC_ADDRESS,
+    IdentifierType.SERIAL_NUMBER,
+    IdentifierType.UUID,
+    IdentifierType.CAST_UUID,
+    IdentifierType.AIRPLAY_ID,
+)
+
+
+def strong_identifiers_match(
+    identifiers_a: Mapping[IdentifierType, str],
+    identifiers_b: Mapping[IdentifierType, str],
+) -> bool:
+    """
+    Check if two identifier mappings share a strong device identifier.
+
+    Only the strong identifier types are compared; weak identifiers such as IP
+    addresses are ignored. Invalid MAC addresses (e.g. 00:00:00:00:00:00) never match.
+
+    :param identifiers_a: Device identifiers of the first device.
+    :param identifiers_b: Device identifiers of the second device.
+    """
+    for conn_type in STRONG_IDENTIFIER_TYPES:
+        val_a = identifiers_a.get(conn_type)
+        val_b = identifiers_b.get(conn_type)
+        if not val_a or not val_b:
+            continue
+        if conn_type == IdentifierType.MAC_ADDRESS:
+            # Filter out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff)
+            if not is_valid_mac_address(val_a) or not is_valid_mac_address(val_b):
+                continue
+            # Use MAC normalization that handles locally-administered bit differences
+            # Some protocols (like AirPlay) report a locally-administered MAC variant
+            # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
+            if normalize_mac_for_matching(val_a) == normalize_mac_for_matching(val_b):
+                return True
+            continue
+        val_a_norm = val_a.lower().replace(":", "").replace("-", "")
+        val_b_norm = val_b.lower().replace(":", "").replace("-", "")
+        if val_a_norm == val_b_norm:
+            return True
+        # Special case: Sonos UUID matching with DLNA _MR suffix
+        # Sonos uses RINCON_xxx, DLNA uses RINCON_xxx_MR for Media Renderer
+        if conn_type == IdentifierType.UUID:
+            if val_b_norm.endswith("_mr") and val_b_norm[:-3] == val_a_norm:
+                return True
+            if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
+                return True
+    return False
 
 
 def normalize_ip_address(ip_address: str | None) -> str | None:

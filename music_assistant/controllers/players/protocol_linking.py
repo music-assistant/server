@@ -45,6 +45,7 @@ from music_assistant.helpers.util import (
     is_locally_administered_mac,
     is_valid_mac_address,
     normalize_mac_for_matching,
+    strong_identifiers_match,
 )
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.providers.sync_group.constants import CONF_ALLOWED_MEMBERS
@@ -1636,51 +1637,31 @@ class ProtocolLinkingMixin:
         identifiers_a = player_a.device_info.identifiers
         identifiers_b = player_b.device_info.identifiers
 
-        # Check identifiers in order of reliability
-        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
-        for conn_type in (
-            IdentifierType.MAC_ADDRESS,
-            IdentifierType.SERIAL_NUMBER,
-            IdentifierType.UUID,
-            IdentifierType.CAST_UUID,
-            IdentifierType.AIRPLAY_ID,
-        ):
-            val_a = identifiers_a.get(conn_type)
-            val_b = identifiers_b.get(conn_type)
+        # Strong identifiers (checked in order of reliability:
+        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID).
+        # The comparison rules are shared with the stored device key lookup
+        # of the universal player provider.
+        if strong_identifiers_match(identifiers_a, identifiers_b):
+            return True
 
-            if not val_a or not val_b:
-                continue
-
-            # Filter out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff)
-            if conn_type == IdentifierType.MAC_ADDRESS:
-                if not is_valid_mac_address(val_a) or not is_valid_mac_address(val_b):
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Skipping invalid MAC address for matching: %s=%s, %s=%s",
-                        player_a.display_name,
-                        val_a,
-                        player_b.display_name,
-                        val_b,
-                    )
-                    continue
-
-            # Normalize values for comparison
-            if conn_type == IdentifierType.MAC_ADDRESS:
-                # Use MAC normalization that handles locally-administered bit differences
-                # Some protocols (like AirPlay) report a locally-administered MAC variant
-                # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
-                val_a_norm = normalize_mac_for_matching(val_a)
-                val_b_norm = normalize_mac_for_matching(val_b)
-
-                # Direct match on current MAC
-                if val_a_norm == val_b_norm:
-                    return True
-
+        val_a = identifiers_a.get(IdentifierType.MAC_ADDRESS)
+        val_b = identifiers_b.get(IdentifierType.MAC_ADDRESS)
+        if val_a and val_b:
+            if not is_valid_mac_address(val_a) or not is_valid_mac_address(val_b):
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Skipping invalid MAC address for matching: %s=%s, %s=%s",
+                    player_a.display_name,
+                    val_a,
+                    player_b.display_name,
+                    val_b,
+                )
+            else:
                 # Multi-MAC matching: also check original reported MACs.
                 # Devices with multiple interfaces (WiFi + Ethernet) may have ARP
                 # resolve one MAC while the protocol reports a different one.
-                macs_a = {val_a_norm}
-                macs_b = {val_b_norm}
+                macs_a = {normalize_mac_for_matching(val_a)}
+                macs_b = {normalize_mac_for_matching(val_b)}
                 reported_a = player_a.extra_data.get("reported_mac")
                 reported_b = player_b.extra_data.get("reported_mac")
                 if reported_a and is_valid_mac_address(reported_a):
@@ -1688,24 +1669,6 @@ class ProtocolLinkingMixin:
                 if reported_b and is_valid_mac_address(reported_b):
                     macs_b.add(normalize_mac_for_matching(reported_b))
                 if macs_a & macs_b:
-                    return True
-
-                # No MAC match - continue to next identifier type
-                continue
-
-            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
-            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
-
-            # Direct match
-            if val_a_norm == val_b_norm:
-                return True
-
-            # Special case: Sonos UUID matching with DLNA _MR suffix
-            # Sonos uses RINCON_xxx, DLNA uses RINCON_xxx_MR for Media Renderer
-            if conn_type == IdentifierType.UUID:
-                if val_b_norm.endswith("_mr") and val_b_norm[:-3] == val_a_norm:
-                    return True
-                if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
                     return True
 
         # Last resort: IP-based matching.
