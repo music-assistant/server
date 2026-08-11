@@ -317,6 +317,27 @@ async def test_release_year_by_track_name_ignores_a_soundtrack_compilation() -> 
     assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
 
 
+async def test_release_year_by_track_name_ignores_a_various_artists_soundtrack() -> None:
+    """Never date a song by a film compilation credited to Various Artists."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                # most film soundtracks are compilations of several artists, and the credit
+                # filter is what keeps them out now that soundtracks are allowed through
+                _release(
+                    "1968-10-26",
+                    title="Music From the Motion Picture",
+                    secondary_types=["Soundtrack"],
+                    credit=_credit("Various Artists", VARIOUS_ARTISTS_MBID),
+                ),
+                _release("1975-11-21", credit=_credit("Queen", "artist-1")),
+            )
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
 async def test_release_year_by_track_name_ignores_a_various_artists_release() -> None:
     """Never date a song by a hits compilation that carries no Compilation type."""
     provider, _ = _provider(

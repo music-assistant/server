@@ -440,8 +440,9 @@ class MusicbrainzProvider(MetadataProvider):
         Get the year a song was first released, by artist and track name.
 
         Weaker evidence than :meth:`get_release_year_by_isrc`, which identifies the exact
-        recording: this matches on name and only counts studio albums and singles named
-        after the song, so an ambiguous or unknown name yields no year rather than a guess.
+        recording: this matches on name and only counts studio albums, soundtracks and
+        singles named after the song, so an ambiguous or unknown name yields no year
+        rather than a guess.
         Costs up to two MusicBrainz requests.
 
         :param artist_name: Name of the track's primary artist.
@@ -489,7 +490,7 @@ class MusicbrainzProvider(MetadataProvider):
         :param track_name: Track name to search for.
         :return: Tuple of (raw artist, release groups with their earliest release date sorted
             oldest first), or None when no recording matched. The release groups are empty
-            when the matched recordings carry no studio album or same-named single.
+            when the matched recordings carry no studio album, soundtrack or same-named single.
         """
         search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
         search_track = re.sub(LUCENE_SPECIAL, r"\\\1", track_name)
@@ -599,7 +600,8 @@ class MusicbrainzProvider(MetadataProvider):
                 continue
             # A song written for a film or musical is first released on its soundtrack, which
             # MusicBrainz types as an album with a Soundtrack secondary type. Any other
-            # secondary type, alongside Soundtrack or not, is a rerelease of the song.
+            # secondary type, alongside Soundtrack or not, means the release group is not
+            # where the song came out.
             if secondary_types and secondary_types != ["Soundtrack"]:
                 continue
 
