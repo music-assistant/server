@@ -349,9 +349,6 @@ class SendspinSourceProvider(PluginProvider):
         Only transitions act. The first report for a client is recorded silently so a
         server restart or a reconnect with the needle already down starts nothing.
         """
-        # TODO: aiosendspin fires SourceSignalChangedEvent on every client/state that
-        # carries a signal, not only on change, so the previous value is tracked here.
-        # Drop this once the event is deduplicated upstream.
         previous = self._signals.get(client_id)
         if previous == signal:
             return
