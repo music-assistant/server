@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from pathlib import Path
-from pkgutil import extend_path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -12,37 +10,12 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-import music_assistant
-import music_assistant.providers
-
-# The upstream workflow runs these tests with ma-server as pytest's rootdir, so
-# the repository-level conftest is not loaded. Keep the namespace bridge here,
-# before importing the provider, to expose sibling MA providers used by stream
-# controller imports.
-music_assistant.__path__ = extend_path(music_assistant.__path__, music_assistant.__name__)
-_repo_root = Path(__file__).resolve().parents[1]
-for _ma_candidate in (
-    Path.cwd() / "music_assistant",
-    _repo_root / "ma-server" / "music_assistant",
-):
-    _ma_candidate_str = str(_ma_candidate)
-    if _ma_candidate.is_dir() and _ma_candidate_str not in music_assistant.__path__:
-        music_assistant.__path__.append(_ma_candidate_str)
-
-music_assistant.providers.__path__ = extend_path(
-    music_assistant.providers.__path__, music_assistant.providers.__name__
-)
-for _ma_package_root in music_assistant.__path__:
-    _providers_root = str(Path(_ma_package_root) / "providers")
-    if Path(_providers_root).is_dir() and _providers_root not in music_assistant.providers.__path__:
-        music_assistant.providers.__path__.append(_providers_root)
-
-from music_assistant.providers.msx_bridge.http_server import (  # noqa: E402
+from music_assistant.providers.msx_bridge.http_server import (
     MSXHTTPServer,
     _render_qr,
 )
-from music_assistant.providers.msx_bridge.player import MSXPlayer  # noqa: E402
-from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider  # noqa: E402
+from music_assistant.providers.msx_bridge.player import MSXPlayer
+from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
 async def _empty_async_gen() -> AsyncGenerator[Any]:
