@@ -167,6 +167,17 @@
     },
     "dynamic_pin_digits": {
       "label": "The PIN is {0} digits long."
+    },
+    "source_autostart_target": {
+      "label": "Start line-in playback on",
+      "description": "Where this device's line-in plays automatically when a signal is detected. Requires the device to report signal presence.",
+      "options": {
+        "off": "Off"
+      }
+    },
+    "source_autostart_interrupt": {
+      "label": "Interrupt playback already in progress",
+      "description": "Let a detected line-in signal take over the target player even when it is already playing something else."
     }
   },
   "setup_flow": {

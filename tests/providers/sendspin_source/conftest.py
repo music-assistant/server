@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.sendspin_source.constants import (
     CONF_TARGET_LATENCY,
@@ -91,14 +92,57 @@ class _FakeServerApi:
             callback(self, event)
 
 
+class _FakeQueue:
+    """PlayerQueue stand-in."""
+
+    def __init__(self, queue_id: str, state: PlaybackState = PlaybackState.IDLE) -> None:
+        self.queue_id = queue_id
+        self.state = state
+
+
+class _FakePlayer:
+    """Player stand-in owning a queue."""
+
+    def __init__(self, player_id: str, state: PlaybackState = PlaybackState.IDLE) -> None:
+        self.player_id = player_id
+        self.queue = _FakeQueue(player_id, state)
+
+
 class _FakePlayers:
     """Players controller stand-in recording stop commands."""
 
     def __init__(self) -> None:
         self.stopped: list[str] = []
+        self.players: dict[str, _FakePlayer] = {}
+
+    def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
+        return self.players.get(player_id)
+
+    def get_active_queue(self, player: _FakePlayer) -> _FakeQueue:
+        return player.queue
 
     async def cmd_stop(self, player_id: str) -> None:
         self.stopped.append(player_id)
+
+
+class _FakePlayerQueues:
+    """Queue controller stand-in recording play_media calls."""
+
+    def __init__(self) -> None:
+        self.played: list[tuple[str, str, Any]] = []
+
+    async def play_media(self, queue_id: str, media: Any, option: Any = None, **_: Any) -> None:
+        self.played.append((queue_id, media, option))
+
+
+class _FakeConfigController:
+    """Config controller stand-in serving raw player config values."""
+
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], Any] = {}
+
+    def get_raw_player_config_value(self, player_id: str, key: str, default: Any = None) -> Any:
+        return self.values.get((player_id, key), default)
 
 
 class _FakeMass:
@@ -107,6 +151,8 @@ class _FakeMass:
     def __init__(self, sendspin_provider: Any) -> None:
         self.loop = asyncio.get_running_loop()
         self.players = _FakePlayers()
+        self.player_queues = _FakePlayerQueues()
+        self.config = _FakeConfigController()
         self._sendspin_provider = sendspin_provider
 
     def get_provider(self, domain: str) -> Any:
@@ -128,7 +174,7 @@ class _FakeConfig:
         return DEFAULT_TARGET_LATENCY_MS
 
 
-def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
+async def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
     """Build a provider wired to fake mass/server_api around the given clients."""
     provider = SendspinSourceProvider.__new__(SendspinSourceProvider)
     server_api = _FakeServerApi(clients)
@@ -138,7 +184,24 @@ def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
     provider.manifest = cast("Any", type("Manifest", (), {"domain": "sendspin_source"})())
     provider.logger = logging.getLogger("test.sendspin_source")
     provider._sessions = {}
+    provider._watchers = {}
+    provider._signals = {}
+    provider._pending_autostart = {}
+    provider._server_unsubscribe = None
+    for client in clients:
+        get_players(provider).players[client.client_id] = _FakePlayer(client.client_id)
+    await provider.loaded_in_mass()
     return provider
+
+
+def get_config(provider: SendspinSourceProvider) -> _FakeConfigController:
+    """Return the fake config controller the given provider is wired to."""
+    return cast("_FakeConfigController", provider.mass.config)
+
+
+def get_queues(provider: SendspinSourceProvider) -> _FakePlayerQueues:
+    """Return the fake queue controller the given provider is wired to."""
+    return cast("_FakePlayerQueues", provider.mass.player_queues)
 
 
 def get_server_api(provider: SendspinSourceProvider) -> _FakeServerApi:

@@ -16,7 +16,7 @@ from aiosendspin.models.management import (
     SetStaticPinConfig,
     SetUnpairedAccessConfig,
 )
-from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand
+from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand, role_family
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.models.visualizer import BeatAvailability, BeatTiming
 from aiosendspin.noise.driver import HandshakeAbortedError
@@ -97,12 +97,15 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
+    CONF_SOURCE_AUTOSTART_INTERRUPT,
+    CONF_SOURCE_AUTOSTART_TARGET,
     DEFAULT_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
     PAIR_METHOD_TOKEN,
     PAIR_METHOD_UNPAIRED,
+    SOURCE_AUTOSTART_OFF,
 )
 from .helpers import (
     AlertText,
@@ -396,6 +399,7 @@ class SendspinBasePlayer(Player):
         """Return all (provider/player specific) Config Entries for the player."""
         entries = await super().get_config_entries()
         entries.extend(await self._get_security_config_entries())
+        entries.extend(self._get_source_autostart_config_entries())
         return entries
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
@@ -461,6 +465,61 @@ class SendspinBasePlayer(Player):
                 session, provider, static=method == PAIR_METHOD_STATIC_PIN
             )
         await session.finish({})
+
+    def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
+        """Return the line-in autostart entries, for source clients that can sense a signal."""
+        if not self._supports_line_sense():
+            return []
+        options = [
+            ConfigValueOption(SOURCE_AUTOSTART_OFF, title=SOURCE_AUTOSTART_OFF),
+            *(
+                ConfigValueOption(player.player_id, title=player.display_name)
+                for player in sorted(
+                    self.mass.players.all_players(False, False),
+                    key=lambda player: player.display_name.lower(),
+                )
+            ),
+        ]
+        valid = {option.value for option in options}
+        # A source that is also a player defaults to playing on itself, which for a
+        # protocol player means the visible player it belongs to.
+        own_target = self.protocol_parent_id or self.player_id
+        default = (
+            own_target if "player" in self._negotiated_families() and own_target in valid else None
+        )
+        target = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_SOURCE_AUTOSTART_TARGET
+        )
+        return [
+            ConfigEntry(
+                key=CONF_SOURCE_AUTOSTART_TARGET,
+                type=ConfigEntryType.STRING,
+                options=options,
+                default_value=default or SOURCE_AUTOSTART_OFF,
+                # A previously picked player can disappear; fall back rather than
+                # rendering a selector with no valid selection.
+                value=target if target in valid else None,
+            ),
+            ConfigEntry(
+                key=CONF_SOURCE_AUTOSTART_INTERRUPT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            ),
+        ]
+
+    def _negotiated_families(self) -> set[str]:
+        """Role families the client negotiated, which survive an inactive/unpaired state."""
+        return {role_family(role_id) for role_id in self.api.negotiated_role_ids}
+
+    def _supports_line_sense(self) -> bool:
+        """Whether this client has a source role that reports line-in signal presence."""
+        if "source" not in self._negotiated_families():
+            return False
+        info = self.api.info_or_none
+        support = info.source_support if info else None
+        features = support.features if support else None
+        return bool(features and features.line_sense)
 
     @property
     def _is_bridge_or_web_player(self) -> bool:
@@ -2128,3 +2187,17 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             member = self.mass.players.get_player(player_id, True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
+
+
+class SendspinSourcePlayer(SendspinBasePlayer):
+    """
+    A capture-only Sendspin player for clients that just feed audio in.
+
+    Renders nothing and is never a playback or grouping target. It exists so a
+    source-only device still has a settings page for pairing, enabling and the
+    line-in autostart target. The sendspin_source plugin exposes the audio itself.
+    """
+
+    _attr_type = PlayerType.UNKNOWN
+    _attr_hidden_by_default = True
+    _attr_expose_to_ha_by_default = False

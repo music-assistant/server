@@ -17,3 +17,11 @@ CHUNK_DURATION_MS = 25
 # Give up and end the stream after this long without source audio (client never
 # started, disconnected, or reports unavailable).
 SOURCE_TIMEOUT_S = 30.0
+
+# Hold a new line-in signal this long before starting. A preamp hovering around its
+# detection threshold reports present/absent repeatedly.
+AUTOSTART_SIGNAL_DEBOUNCE_S = 2.0
+
+# Keep playing this long after the signal disappears, so the gap between tracks or a
+# quiet passage does not end the stream.
+AUTOSTART_SIGNAL_ABSENT_HOLD_S = 60.0
