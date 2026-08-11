@@ -216,3 +216,24 @@ async def test_the_startup_eviction_clears_pairings_of_gone_accounts() -> None:
     auth = cast("AuthenticationManager", _FakeAuth("u1"))
     assert await _evict_stale_pairings(store, auth) == (0, 1)
     assert list(await store.list_records()) == [standalone, live]
+
+
+async def test_revoking_skips_a_pairing_that_changed_hands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record re-paired since the listing belongs to its new owner, so it is left alone."""
+    api = _EvictionServerApi()
+    restamped = _record("c1", owner="user-u2")
+    await api.pairing_store.store_record(restamped)
+    api.add_client("c1", connected=True)
+    provider, refreshed = _make_provider(api, monkeypatch)
+
+    async def _stale_listing(_owner: str) -> list[ServerPairingRecord]:
+        return [_record("c1", owner="guest-g1")]
+
+    monkeypatch.setattr(api.pairing_store, "records_by_owner", _stale_listing)
+    await provider._evict_pairings_for_owner("guest-g1")
+
+    assert await api.pairing_store.record_by_client_id("c1") == restamped
+    assert api.unpaired == []
+    assert refreshed == []

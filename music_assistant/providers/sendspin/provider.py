@@ -1466,6 +1466,10 @@ class SendspinProvider(PlayerProvider):
         """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
         pairing_store = self.server_api.pairing_store
         for record in await pairing_store.records_by_owner(owner):
+            # records_by_owner was read once: only withdraw what this owner still holds.
+            current = await pairing_store.record_by_client_id(record.client_id)
+            if current is None or current.owner != owner:
+                continue
             try:
                 await self.server_api.unpair(record.client_id)
             except ValueError:
