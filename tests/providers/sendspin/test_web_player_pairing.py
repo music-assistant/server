@@ -34,8 +34,8 @@ _TOKEN = encode_token(PSKPairingToken(client_id=_CLIENT_ID, pairing_psk=_PAIRING
 class _FakePairingStore:
     """Pairing store stand-in answering only the pairing-record lookup."""
 
-    def __init__(self, *, paired: bool) -> None:
-        self._record = SimpleNamespace() if paired else None
+    def __init__(self, *, paired: bool, record_owner: str | None = None) -> None:
+        self._record = SimpleNamespace(owner=record_owner) if paired else None
 
     async def record_by_client_id(self, client_id: str) -> Any:
         return self._record
@@ -44,9 +44,11 @@ class _FakePairingStore:
 class _WebPlayerServerApi(_FakeServerApi):
     """_FakeServerApi with the pairing surface the web-player entry point uses."""
 
-    def __init__(self, *, connected: bool = True, paired: bool = False) -> None:
+    def __init__(
+        self, *, connected: bool = True, paired: bool = False, record_owner: str | None = None
+    ) -> None:
         super().__init__([], await_pin=False, connected=connected)
-        self.pairing_store = _FakePairingStore(paired=paired)
+        self.pairing_store = _FakePairingStore(paired=paired, record_owner=record_owner)
 
 
 def _make_web_provider(
@@ -226,6 +228,36 @@ async def test_pair_web_player_is_a_no_op_when_already_paired(
     api = _WebPlayerServerApi(paired=True)
     provider, refreshed = _make_web_provider(api, monkeypatch, psk_category=PskCategory.LONG_TERM)
     await provider.pair_web_player(_TOKEN)
+    assert api.attempts == []
+    assert refreshed == []
+
+
+async def test_pair_web_player_restamps_a_pairing_owned_by_another_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A browser keeps its identity across logins, so the pairing follows the current caller."""
+    api = _WebPlayerServerApi(paired=True, record_owner="user-someone-else")
+    provider, refreshed = _make_web_provider(api, monkeypatch, psk_category=PskCategory.LONG_TERM)
+    set_current_user(User(user_id="g1", username="party_guest", role=UserRole.GUEST))
+    try:
+        await provider.pair_web_player(_TOKEN)
+    finally:
+        set_current_user(None)
+    assert [a.owner for a in api.attempts] == ["guest-g1"]
+    assert refreshed == [_CLIENT_ID]
+
+
+async def test_pair_web_player_is_a_no_op_for_the_pairing_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller that owns the existing pairing never re-handshakes it."""
+    api = _WebPlayerServerApi(paired=True, record_owner="guest-g1")
+    provider, refreshed = _make_web_provider(api, monkeypatch, psk_category=PskCategory.LONG_TERM)
+    set_current_user(User(user_id="g1", username="party_guest", role=UserRole.GUEST))
+    try:
+        await provider.pair_web_player(_TOKEN)
+    finally:
+        set_current_user(None)
     assert api.attempts == []
     assert refreshed == []
 

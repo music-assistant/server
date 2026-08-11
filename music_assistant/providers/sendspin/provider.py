@@ -889,15 +889,21 @@ class SendspinProvider(PlayerProvider):
         if security is None:
             return
         record = await self.server_api.pairing_store.record_by_client_id(client_id)
-        # We already paired this web player so no action needed. A record on its own is not
-        # enough: the client can have lost its half, leaving a record it cannot authenticate.
-        if security.psk_category is PskCategory.LONG_TERM and record is not None:
-            return
         # The pairing is bound to the caller's account: a guest's ends with their
         # session or access, a full user's with their account. Only pairings made
         # through the settings/setup flow are standalone.
         user = get_current_user()
         owner = credential_owner(user) if user is not None else None
+        # We already paired this web player so no action needed. A record on its own is not
+        # enough: the client can have lost its half, leaving a record it cannot authenticate.
+        # A record bound to another account is re-paired instead (a browser keeps its
+        # identity across logins), so the lifetime always follows the current caller.
+        if (
+            security.psk_category is PskCategory.LONG_TERM
+            and record is not None
+            and (record.owner is None or record.owner == owner)
+        ):
+            return
         try:
             await self.pair_with_token(client_id, pairing_token, owner=owner)
         except (
