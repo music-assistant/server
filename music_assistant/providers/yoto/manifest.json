@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "yoto",
+  "name": "Yoto",
+  "description": "Yoto Music Provider for Music Assistant.",
+  "codeowners": [
+    "@pantsman0"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/yoto/",
+  "icon": "icon.png"
+}
