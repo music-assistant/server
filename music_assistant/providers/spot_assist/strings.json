@@ -1,0 +1,32 @@
+{
+  "config_entries": {
+    "CONF_SPOTIFY_COOKIES": {
+      "label": "Browser Spotify Cookies"
+    },
+    "CONF_SPOTIFY_EMAIL": {
+      "label": "Spotify Accounts Email Address"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Enter the values for your Spotify login",
+      "description": "To log-in copy your cookies from your browser on your connected session and then format them using a dedicated tool for that (disponible in the python package). And then paste it for it to work"
+    }
+  },
+  "media": {
+    "recommendations": {
+      "your_playlists": {
+        "name": "Your Playlists"
+      },
+      "made_for_you": {
+        "name": "Made For You"
+      },
+      "recently_played_spc": {
+        "name": "Recently Played"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Search songs with yt-music, Get your playlists and favorite songs from Spotify"
+  }
+}

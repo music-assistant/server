@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">
+  <!-- Black circular badge (no gray background) -->
+  <circle cx="50" cy="50" r="50" fill="#000000"/>
+
+  <!-- Spotify-style waves (white, split visually by the arrow) -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round">
+    <path d="M22 40 Q50 26 78 40" stroke-width="9"/>
+    <path d="M26 53 Q50 42 74 53" stroke-width="9"/>
+    <path d="M30 65 Q50 56 70 65" stroke-width="8"/>
+  </g>
+
+  <!-- Download arrow: black outline first (creates the gap against the waves) -->
+  <path d="M44 26 H56 V60 H66 L50 80 L34 60 H44 Z"
+        fill="#000000" stroke="#000000" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- Download arrow: white fill on top -->
+  <path d="M44 26 H56 V60 H66 L50 80 L34 60 H44 Z" fill="#ffffff"/>
+</svg>

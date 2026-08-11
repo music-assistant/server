@@ -1,0 +1,21 @@
+{
+  "type": "music",
+  "domain": "spot_assist",
+  "stage": "stable",
+  "name": "Spot Assist",
+  "description": "Spotify metadata + YouTube streaming, no premium needed",
+  "codeowners": [
+    "@ivnogood"
+  ],
+  "credits": [
+    "[yt-dlp](https://github.com/yt-dlp/yt-dlp)"
+  ],
+  "requirements": [
+    "spotdl>=4.0.0",
+    "yt-dlp>=2024.0.0",
+    "https://github.com/BobRoss2000/freeSpotifyNew/releases/download/newrelease/spotifyfreenew-1.0-py3-none-any.whl",
+    "aiofiles"
+  ],
+  "documentation": "https://music-assistant.io/music-providers/",
+  "multi_instance": true
+}
