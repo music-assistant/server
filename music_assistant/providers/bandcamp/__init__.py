@@ -175,17 +175,12 @@ class BandcampProvider(MusicProvider):
         self, search_query: str, media_types: list[MediaType], limit: int = 50
     ) -> SearchResults:
         """
-        Perform search on music provider.
+        Search Bandcamp for matching media.
 
-        Bandcamp's autocomplete returns three result kinds: bands/labels (b),
-        albums (a), and tracks (t). For album/track results, ``band_id`` is
-        the page owner (could be a label) and ``band_name`` is the *performer*
-        credit — which for label-released albums differs from the page
-        owner's own name. We map performer-without-a-band-page entries onto
-        synthetic artists keyed by ``{band_id}:{slug}`` and emit them in
-        artist results too, so searching for e.g. "Mortaja" surfaces
-        Mortaja-on-audiophob even though the performer has no band page of
-        their own. See :mod:`._ids` for ID semantics.
+        :param search_query: Text to search for.
+        :param media_types: Media types to include in the results.
+        :param limit: Maximum number of results to return.
+        :returns: Matching Bandcamp media.
         """
         results = SearchResults()
         if not media_types:
@@ -316,7 +311,13 @@ class BandcampProvider(MusicProvider):
         capped: Sequence[SearchResultItem],
         bands_by_id: dict[int, SearchResultArtist],
     ) -> dict[int, str]:
-        """Resolve artist item_ids for every album/track row, keyed by ``id(row)``."""
+        """
+        Resolve artist item IDs for album and track search results.
+
+        :param capped: Search results to resolve.
+        :param bands_by_id: Band results keyed by Bandcamp ID.
+        :returns: Artist item IDs keyed by search-result object identity.
+        """
         rows: list[SearchResultAlbum | SearchResultTrack] = [
             row for row in capped if isinstance(row, (SearchResultAlbum, SearchResultTrack))
         ]
@@ -349,7 +350,12 @@ class BandcampProvider(MusicProvider):
     async def _lookup_performer_band_ids_parallel(
         self, names_by_slug: dict[str, str]
     ) -> dict[str, int | None]:
-        """Look up performer→band_id mappings concurrently, slug → band_id|None."""
+        """
+        Resolve performer names to Bandcamp artist IDs.
+
+        :param names_by_slug: Performer names keyed by normalized slug.
+        :returns: Resolved artist IDs, or ``None`` for unresolved performers.
+        """
         if not names_by_slug:
             return {}
         slugs = list(names_by_slug)
@@ -558,11 +564,12 @@ class BandcampProvider(MusicProvider):
     @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """
-        Get full artist details by id.
+        Get full artist details by ID.
 
-        Accepts both forms: ``"{band_id}"`` (a real band/label page) and
-        ``"{band_id}:{slug}"`` (a synthetic per-page performer that has
-        no Bandcamp page of its own — see :mod:`._ids`).
+        :param prov_artist_id: Bandcamp artist or synthetic artist ID.
+        :returns: The resolved Music Assistant artist.
+        :raises InvalidDataError: If the artist ID is malformed.
+        :raises MediaNotFoundError: If the artist cannot be resolved.
         """
         try:
             band_id, performer_slug = parse_artist_id(prov_artist_id)
@@ -593,23 +600,7 @@ class BandcampProvider(MusicProvider):
     async def _get_synthetic_artist(
         self, prov_artist_id: str, band_id: int, performer_slug: str
     ) -> Artist:
-        """
-        Resolve a synthetic ID to either the real band or a per-page performer.
-
-        Order matters. Bandcamp's autocomplete sometimes returns ``a``/``t``
-        rows for a band without the matching ``b`` row in the same response
-        (typical for queries that are album/track titles rather than the
-        band's name). The search-time path mints a synthetic
-        ``{band_id}:slug-of-band-own-name`` in that case because it can't
-        tell band-by-itself from label-release without the ``b`` row. We
-        collapse that drift here, on the navigation/persistence path, by
-        resolving the synthetic to the real band whenever the slug equals
-        the band's own slug — BEFORE consulting the discography. Otherwise
-        an album whose performer-name happens to match the band's own name
-        (band-by-itself items with ``artist_name=null``) would build a
-        shadow synthetic that lives parallel to the real band in MA's
-        library and produces duplicate artist entries.
-        """
+        """Resolve a synthetic artist ID to a Music Assistant artist."""
         try:
             api_artist = await self._client.get_artist(band_id)
         except BandcampNotFoundError as error:
@@ -621,16 +612,13 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
 
-        # Collapse synthetics whose slug matches the band's own name back to
-        # the real band BEFORE consulting the discography. Otherwise a
-        # band-by-itself item with `artist_name=null` would mint a shadow
-        # synthetic parallel to the real band, producing duplicates.
+        # Resolve the hosting artist first so legacy owner-slug synthetic IDs
+        # collapse to the real artist before discography filtering.
         if slugify_performer(api_artist.name) == performer_slug:
             return self._converters.artist_from_api(api_artist)
 
-        # Genuine label-style synthetic: the slug names a per-page performer
-        # distinct from the band itself. Find the credit in the discography
-        # and synthesize an artist scoped to that performer.
+        # A synthetic performer is valid only when its explicit credit appears
+        # in the hosting page's discography.
         try:
             api_discography = await self._fetch_discography(band_id)
         except BandcampNotFoundError as error:
@@ -666,15 +654,10 @@ class BandcampProvider(MusicProvider):
     @throttle_with_retries
     async def _fetch_discography(self, band_id: int) -> list[dict[str, Any]]:
         """
-        Fetch a band's discography keyed by band_id (cached).
+        Fetch a band's discography.
 
-        Real artist (``"{band_id}"``) and synthetic performer
-        (``"{band_id}:{slug}"``) lookups both go through this so the
-        underlying ``mobile/24/band_details`` call hits once per band per
-        cache window, not once per ``prov_artist_id``.
-
-        :param band_id: The Bandcamp ``band_id`` (page owner) whose
-            discography to fetch.
+        :param band_id: Bandcamp ID of the page owner.
+        :returns: Raw discography entries.
         """
         # Return type is `list[dict[str, Any]]` rather than
         # `list[DiscographyItem]`: the cache controller's deserializer
@@ -1104,7 +1087,7 @@ class BandcampProvider(MusicProvider):
             (CollectionType.FOLLOWING_FANS, BROWSE_FANS),
             (CollectionType.FOLLOWERS, BROWSE_FOLLOWERS),
         ):
-            with suppress(Exception):
+            with suppress(LoginFailed, RateLimited, MediaNotFoundError, RetriesExhausted):
                 await self._browse_person_people(collection_type, f"{base}{folder_id}")
 
     @staticmethod

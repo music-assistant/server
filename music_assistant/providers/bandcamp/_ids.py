@@ -1,25 +1,4 @@
-"""
-Composite artist ID utilities for the Bandcamp provider.
-
-Bandcamp's data model treats labels as bands: an album published on a
-label's page (e.g. ``audiophob``) reports ``band_id`` = the label, while the
-actual performer (e.g. ``Mortaja``) lives in a separate ``tralbum_artist``
-(or ``artist_name`` / autocomplete-``band_name``) field. Performers without
-their own Bandcamp page exist only as a per-album credit on someone else's
-page — there is no real ``band_id`` to link to.
-
-We model these performers as *synthetic artists scoped to a band page*. The
-artist ``item_id`` stored on Music Assistant media items is one of:
-
-* ``"{band_id}"`` — a real Bandcamp band/label page (existing behavior).
-* ``"{band_id}:{slug}"`` — a performer credit on the band page identified
-  by ``{band_id}``. The ``slug`` is derived from the performer name.
-
-Two performers with the same name on different band pages produce different
-synthetic IDs (e.g. Mortaja-on-audiophob vs. Mortaja-on-AdiósMundoCruel),
-so the cross-label collision problem ALERTua flagged in
-music-assistant/support#5389 doesn't apply.
-"""
+"""Build and parse Bandcamp artist IDs."""
 
 from __future__ import annotations
 

@@ -82,10 +82,9 @@ class BandcampConverters:
         self, item: SearchResultTrack, *, artist_item_id: str | None = None
     ) -> MATrack:
         """
-        Create a Track from new API SearchResultTrack.
+        Convert a Bandcamp search track.
 
-        :param artist_item_id: Pre-resolved artist item_id; falls back to
-            slug-based resolution if omitted.
+        :param artist_item_id: Optional resolved artist item ID.
         """
         track_id = f"{item.artist_id}-{item.album_id or 0}-{item.id}"
         artist_item_id = artist_item_id or make_artist_id(item.artist_id, item.artist_name)
@@ -127,10 +126,9 @@ class BandcampConverters:
         self, item: SearchResultAlbum, *, artist_item_id: str | None = None
     ) -> MAAlbum:
         """
-        Create an Album from new API SearchResultAlbum.
+        Convert a Bandcamp search album.
 
-        :param artist_item_id: Pre-resolved artist item_id; falls back to
-            slug-based resolution if omitted.
+        :param artist_item_id: Optional resolved artist item ID.
         """
         album_id = f"{item.artist_id}-{item.id}"
         artist_item_id = artist_item_id or make_artist_id(item.artist_id, item.artist_name)
@@ -209,13 +207,10 @@ class BandcampConverters:
         artist_item_id: str | None = None,
     ) -> MATrack:
         """
-        Convert a Track object from the API to MA Track format.
+        Convert a Bandcamp API track.
 
-        :param tralbum_artist: Per-album performer credit. When set and
-            different from the band's own name, the displayed artist
-            name is the performer rather than the band.
-        :param artist_item_id: Pre-resolved artist item_id; falls back to
-            slug-based resolution if omitted.
+        :param tralbum_artist: Optional per-album performer credit.
+        :param artist_item_id: Optional resolved artist item ID.
         """
         album_id = album_id or 0
         _, bitrate, content_type = self.streaming_url_from_api(track.streaming_url or {})
@@ -434,10 +429,9 @@ class BandcampConverters:
 
     def album_from_api(self, album: APIAlbum, *, artist_item_id: str | None = None) -> MAAlbum:
         """
-        Convert an API Album object to MA Album format.
+        Convert a Bandcamp API album.
 
-        :param artist_item_id: Pre-resolved artist item_id; falls back to
-            slug-based resolution if omitted.
+        :param artist_item_id: Optional resolved artist item ID.
         """
         album_id = f"{album.artist.id}-{album.id}"
         band_name = album.artist.name
@@ -497,18 +491,12 @@ class BandcampConverters:
         image_url: str | None = None,
     ) -> MAArtist:
         """
-        Build an Artist for a per-album performer that has no band page.
+        Build an artist for a performer without a Bandcamp page.
 
-        These performers exist on Bandcamp only as a credit on a band's
-        page (typically a label), so we synthesize an Artist scoped to the
-        ``(band_id, performer)`` pair. See :mod:`._ids` for the ID format.
-
-        :param band_id: The hosting Bandcamp band's id.
-        :param performer_name: The performer credit (display name).
-        :param url: Optional URL to attach. Usually the band page; the
-            performer doesn't have their own.
-        :param image_url: Optional artwork to use as the artist's thumb,
-            typically borrowed from one of their albums.
+        :param band_id: Hosting Bandcamp artist ID.
+        :param performer_name: Performer display name.
+        :param url: Optional hosting-page URL.
+        :param image_url: Optional artist artwork URL.
         """
         item_id = make_artist_id(band_id, performer_name)
         output = MAArtist(
@@ -545,11 +533,12 @@ def _resolve_artist_id(
     band_name: str | None,
 ) -> str:
     """
-    Choose between a real or synthetic artist item_id.
+    Resolve the artist item ID for a performer credit.
 
-    Returns the synthetic ``{band_id}:{slug(performer)}`` form only when
-    the performer is set AND its slug differs from the band's own slug;
-    otherwise returns the plain ``{band_id}``.
+    :param band_id: Hosting Bandcamp artist ID.
+    :param performer: Performer credit, if present.
+    :param band_name: Hosting artist name.
+    :returns: A real or synthetic Music Assistant artist ID.
     """
     if (
         not performer
