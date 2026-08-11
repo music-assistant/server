@@ -148,6 +148,9 @@ class SetupSession:
         self.current_step: SetupFlowStep | None = None
         self.finished = False
         self.last_activity = time.monotonic()
+        # i18n slug of the terminal FINISH step; the engine swaps in a variant when the
+        # target warrants extra closing copy (e.g. a music provider's initial library import)
+        self.finish_step_id = "finish"
         self._finish_handler = finish_handler
         self._translation_owner = f"provider.{context.domain}"
         self._callback_path = f"/setup_flow/callback/{flow_id}"
@@ -332,7 +335,7 @@ class SetupSession:
             raise RuntimeError(msg)
         result = await self._finish_handler(self, values)
         self.finished = True
-        step = self._build_step(FlowStepType.FINISH, "finish", result=result)
+        step = self._build_step(FlowStepType.FINISH, self.finish_step_id, result=result)
         self._publish_step(step)
         return result
 

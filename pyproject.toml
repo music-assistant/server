@@ -27,7 +27,7 @@ dependencies = [
   "getmac==0.9.5",
   "mashumaro==3.20",
   "music-assistant-models==1.1.185",
-  "music-assistant-frontend==2.17.265",
+  "music-assistant-frontend==2.17.267",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -89,6 +89,7 @@ mass = "music_assistant.__main__:main"
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,"
 skip = """*.js,*.svg,\
 .github/pr-review/standards.md,\
+.github/instructions/music-assistant-standards.instructions.md,\
 music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
