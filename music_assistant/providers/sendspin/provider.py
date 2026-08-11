@@ -45,6 +45,7 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -54,7 +55,11 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
 )
-from music_assistant_models.errors import AlreadyRegisteredError, SetupFailedError
+from music_assistant_models.errors import (
+    AlreadyRegisteredError,
+    InvalidCommand,
+    SetupFailedError,
+)
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -64,6 +69,9 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_sendspin_player_id,
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
@@ -123,6 +131,7 @@ DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
 VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
 VIRTUAL_PLAYER_CLEANUP_TIMEOUT = 2.0
+WEB_PLAYER_CONNECT_TIMEOUT = 10.0
 
 PIN_REQUEST_FEEDBACK_TIMEOUT = 2
 PIN_RETRY_IDLE_TIMEOUT = 300
@@ -798,6 +807,27 @@ class SendspinProvider(PlayerProvider):
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
 
+    async def pair_web_player(self, pairing_token: str) -> None:
+        """
+        Pair the built-in web player behind this API session using its own pairing token.
+
+        :param pairing_token: The calling web player's version 0 pairing token.
+        """
+        # The client id comes from the caller's own authenticated Sendspin session, so this
+        # cannot pair a client the caller merely names.
+        client_id = get_sendspin_player_id()
+        if client_id is None:
+            raise InvalidCommand("This connection has no Sendspin web player")
+        player = await self._await_connected_client(client_id)
+        if not player.is_web_player:
+            raise InvalidCommand(f"Client {client_id} is not a built-in web player")
+        if await self.server_api.pairing_store.record_by_client_id(client_id) is not None:
+            return
+        try:
+            await self.pair_with_token(client_id, pairing_token)
+        except SecurityActionError as err:
+            raise InvalidCommand(f"Cannot pair web player {client_id}: {err.alert_key}") from err
+
     def get_management_session(self, client_id: str) -> ManagementSession | None:
         """Return the client's management session, dropping one whose connection is gone."""
         session = self._management_sessions.get(client_id)
@@ -891,6 +921,13 @@ class SendspinProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
+        self.unregister_cbs.append(
+            self.mass.register_api_command(
+                "sendspin/pair_web_player",
+                self.pair_web_player,
+                required_scope=Scope.PLAYERS_CONTROL,
+            )
+        )
         self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
@@ -1292,6 +1329,22 @@ class SendspinProvider(PlayerProvider):
         # so pushed config (preferred format, static delay) must be re-applied.
         await player.on_config_updated()
         player.update_state()
+
+    async def _await_connected_client(self, client_id: str) -> SendspinBasePlayer:
+        """Return a client's registered player, waiting for its connection to land first."""
+        # A web player asks to be paired as soon as its API session is authenticated, which
+        # is a beat before its own Sendspin handshake reaches the server.
+        try:
+            async with asyncio.timeout(WEB_PLAYER_CONNECT_TIMEOUT):
+                while True:
+                    client = self.server_api.get_client(client_id)
+                    if client is not None and client.is_connected:
+                        player = self.mass.players.get_player(client_id)
+                        if isinstance(player, SendspinBasePlayer):
+                            return player
+                    await asyncio.sleep(0.1)
+        except TimeoutError:
+            raise InvalidCommand(f"Client {client_id} did not connect") from None
 
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
