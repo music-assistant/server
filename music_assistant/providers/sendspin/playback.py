@@ -21,6 +21,7 @@ from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
+from music_assistant.helpers.util import import_module_in_thread
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
@@ -727,6 +728,11 @@ class SendspinPlaybackSession:
         Sendspin push stream, and commits audio continuously. Supports dynamic group
         membership changes and late-join historical backfill while running.
         """
+        # aiosendspin resamples and encodes with PyAV, which it imports lazily on first use -
+        # from inside commit_audio(), on the event loop. Pull that import forward to a thread,
+        # before the play timeline exists, so its cost can neither stall audio production nor
+        # push the timeline into a forward rebase.
+        await import_module_in_thread("av")
         # refresh the session PCM format from the leader's preferred output before
         # building any pipelines; member ffmpeg pipelines and pre-computed filter
         # params depend on this rate so the cache must also be cleared

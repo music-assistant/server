@@ -11,7 +11,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -32,11 +32,14 @@ from aiosendspin.noise.pairing import (
     PairingAbortError,
     PairingAttempt,
     PairingError,
+    PairingTimeoutError,
 )
 from aiosendspin.noise.pairing_token import decode_token
 from aiosendspin.noise.trust_store import FileServerPairingStore
 from aiosendspin.server import (
     ClientAddedEvent,
+    ClientConnectedEvent,
+    ClientDisconnectedEvent,
     ClientRemovedEvent,
     ClientUpdatedEvent,
     SendspinEvent,
@@ -84,6 +87,8 @@ from music_assistant.providers.sendspin.constants import (
 from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
+    negotiated_pin_length,
+    pair_method_descriptor,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
@@ -134,10 +139,13 @@ class PinPairingSession:
     pin_future: asyncio.Future[str]
     verify: bool = False
     static: bool = False
+    pin_length: int | None = None
     task: asyncio.Task[None] | None = None
     pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
+    gesture_event: asyncio.Event = field(default_factory=asyncio.Event)
     error: Exception | None = None
     retryable: bool = False
+    opened_management: bool = False
 
     @property
     def attempt_running(self) -> bool:
@@ -145,14 +153,35 @@ class PinPairingSession:
         return self.task is not None and not self.task.done()
 
     @property
+    def awaiting_first_message(self) -> bool:
+        """Whether the attempt is still waiting for the client's first pairing message."""
+        return (
+            self.attempt_running
+            and not self.gesture_event.is_set()
+            and not self.pin_request_event.is_set()
+        )
+
+    @property
     def awaiting_gesture(self) -> bool:
-        """Whether the attempt is still waiting for the client to enter pairing."""
-        return self.attempt_running and not self.pin_request_event.is_set()
+        """Whether the client reported the attempt gesture-gated and still awaits a window."""
+        return (
+            self.attempt_running
+            and self.gesture_event.is_set()
+            and not self.pin_request_event.is_set()
+        )
 
     @property
     def awaiting_pin(self) -> bool:
         """Whether the attempt is waiting for the operator to submit a PIN."""
         return self.attempt_running and not self.pin_future.done()
+
+    async def wait_first_message(self) -> None:
+        """Resolve once the client asks for a gesture or the PIN, or the attempt ends."""
+        await self._wait_events(self.gesture_event, self.pin_request_event)
+
+    async def wait_pin_request(self) -> None:
+        """Resolve once the client asks for the PIN, or the attempt ends."""
+        await self._wait_events(self.pin_request_event)
 
     @property
     def can_retry(self) -> bool:
@@ -163,6 +192,20 @@ class PinPairingSession:
     def finished(self) -> bool:
         """Whether the session reached a terminal outcome (no retry possible)."""
         return self.task is not None and self.task.done() and not self.retryable
+
+    async def _wait_events(self, *events: asyncio.Event) -> None:
+        """Resolve on the first of ``events`` or on the attempt ending, whichever comes first."""
+        waiters: list[asyncio.Future[Any]] = [
+            asyncio.ensure_future(event.wait()) for event in events
+        ]
+        if self.task is not None:
+            # Shielded: dropping this wait must never cancel the pairing attempt.
+            waiters.append(asyncio.shield(self.task))
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
 
 
 @dataclass
@@ -264,6 +307,7 @@ class SendspinProvider(PlayerProvider):
         self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._headless_client_ids: set[str] = set()
         self._bridge_underlying_players = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
@@ -373,6 +417,11 @@ class SendspinProvider(PlayerProvider):
             case ClientUpdatedEvent(client_id):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
+            # Transport lifecycle events, implemented in another PR.
+            case ClientConnectedEvent():
+                pass
+            case ClientDisconnectedEvent():
+                pass
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
@@ -439,6 +488,16 @@ class SendspinProvider(PlayerProvider):
                 self.mass.create_task(existing._apply_static_delay())
             return
         self._bridge_static_delay_defaults[client_id] = default_ms
+
+    def register_headless_client(self, client_id: str) -> None:
+        """
+        Mark a client id as headless: no MA player is registered for it.
+
+        Called by in-process consumers (e.g. the MilkDrop visualizer tap) whose
+        Sendspin clients exist purely to receive group audio and must never
+        surface as players anywhere in the UI or API.
+        """
+        self._headless_client_ids.add(client_id)
 
     def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
         """
@@ -613,6 +672,8 @@ class SendspinProvider(PlayerProvider):
         if session is not None and session.finished:
             self._cancel_pin_idle_timeout(client_id)
             self._pin_sessions.pop(client_id, None)
+            if session.opened_management:
+                self.exit_management(client_id)
 
     async def start_pin_pairing(
         self, client_id: str, *, verify: bool = False, static: bool = False
@@ -644,13 +705,21 @@ class SendspinProvider(PlayerProvider):
         if session is not None and session.attempt_running:
             return session
         client = self.server_api.get_client(client_id)
-        info = client.info_or_none if client is not None else None
+        # A disconnected client keeps its last hello, so info alone does not prove it is connected.
+        info = client.info_or_none if client is not None and client.is_connected else None
         if info is None:
             raise SecurityActionError("pairing_error_not_connected")
-        method = self._pick_pin_method(
-            effective_pair_methods(info, self.pairing_config_snapshot(client_id)),
-            verify=verify,
-            static=static,
+        offered = effective_pair_methods(info, self.pairing_config_snapshot(client_id))
+        method = self._pick_pin_method(offered, verify=verify, static=static)
+        pin_length = (
+            # From the hello advertisement, not the live config: that is what the server's own
+            # negotiation reads, so the predicted length matches the PIN the device derives.
+            negotiated_pin_length(
+                pair_method_descriptor(info.supported_pair_methods or (), PairMethod.DYNAMIC_PIN),
+                self.server_api.min_pin_length,
+            )
+            if method is PairMethod.DYNAMIC_PIN
+            else None
         )
         session = PinPairingSession(
             client_id=client_id,
@@ -658,6 +727,8 @@ class SendspinProvider(PlayerProvider):
             pin_future=self.mass.loop.create_future(),
             verify=verify,
             static=static,
+            pin_length=pin_length,
+            opened_management=await self._open_pairing_window(client_id),
         )
         self._pin_sessions[client_id] = session
         self._begin_pin_attempt(session)
@@ -682,6 +753,8 @@ class SendspinProvider(PlayerProvider):
         if session.task is not None:
             with suppress(Exception):
                 await session.task
+        if session.opened_management:
+            self.exit_management(client_id)
         await self._refresh_player(client_id)
 
     async def pair_with_token(self, client_id: str, token_value: str) -> None:
@@ -766,6 +839,16 @@ class SendspinProvider(PlayerProvider):
         _check_management_result(result)
         self._pairing_config_snapshots[client_id] = (session.connection, data)
         return data
+
+    async def management_open_pairing_window(self, client_id: str) -> None:
+        """Open a pairing window on the device over its management session, sparing the gesture."""
+        session = self._management_session_or_raise(client_id)
+        async with session.lock:
+            self._arm_management_idle_timeout(session)
+            result = await self._management_call(
+                session.connection, session.connection.open_pairing_window()
+            )
+        _check_management_result(result)
 
     def pairing_config_snapshot(self, client_id: str) -> ManagementResultData | None:
         """
@@ -1023,14 +1106,33 @@ class SendspinProvider(PlayerProvider):
             wanted = (PairMethod.STATIC_PIN,)
         else:
             wanted = (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
-        pin_methods = [descriptor for descriptor in offered if descriptor.method in wanted]
+        offered_methods = {descriptor.method for descriptor in offered}
         for method in wanted:
-            for descriptor in pin_methods:
-                if descriptor.method is method and not descriptor.locked_out:
-                    return descriptor.method
-        if pin_methods:
-            raise SecurityActionError("pairing_error_locked_out")
+            if method in offered_methods:
+                return method
         raise SecurityActionError("pairing_error_no_pin_method")
+
+    async def _open_pairing_window(self, client_id: str) -> bool:
+        """
+        Open a pairing window over management, sparing the operator the device-side gesture.
+
+        Only works before the attempt starts: the pairing activate takes management off the
+        connection's activities. Returns whether a management session was opened here,
+        for the caller to close once the pairing session ends.
+        """
+        opened = self.get_management_session(client_id) is None
+        keep = False
+        try:
+            self.enter_management(client_id)
+            await self.management_open_pairing_window(client_id)
+            keep = opened
+        except SecurityActionError as err:
+            self.logger.debug("No pairing window opened on %s: %s", client_id, err)
+        finally:
+            # Hand back a session opened here unless the caller inherits it, cancellation included.
+            if opened and not keep:
+                self.exit_management(client_id)
+        return keep
 
     def _begin_pin_attempt(self, session: PinPairingSession) -> None:
         """Start or restart a pairing attempt for the session, resetting per-attempt state."""
@@ -1038,6 +1140,7 @@ class SendspinProvider(PlayerProvider):
         session.error = None
         session.retryable = False
         session.pin_request_event.clear()
+        session.gesture_event.clear()
         if session.pin_future.done():
             session.pin_future = self.mass.loop.create_future()
         session.task = self.mass.create_task(self._run_pin_pairing(session))
@@ -1046,17 +1149,9 @@ class SendspinProvider(PlayerProvider):
         """Wait briefly for the attempt to reach the PIN wait (or end), for an accurate render."""
         if session.task is None:
             return
-
-        async def pin_requested() -> None:
-            await session.pin_request_event.wait()
-
-        waiter = self.mass.create_task(pin_requested())
+        waiter = self.mass.create_task(session.wait_first_message())
         try:
-            await asyncio.wait(
-                {waiter, session.task},
-                timeout=PIN_REQUEST_FEEDBACK_TIMEOUT,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            await asyncio.wait((waiter,), timeout=PIN_REQUEST_FEEDBACK_TIMEOUT)
         finally:
             waiter.cancel()
 
@@ -1068,11 +1163,29 @@ class SendspinProvider(PlayerProvider):
             session.pin_request_event.set()
             return session.pin_future
 
+        def on_pair_pending() -> None:
+            session.gesture_event.set()
+
         try:
             await self.server_api.initiate_pairing(
                 session.client_id,
-                PairingAttempt(session.method, pin_provider=pin_provider, verify=session.verify),
+                PairingAttempt(
+                    session.method,
+                    pin_provider=pin_provider,
+                    verify=session.verify,
+                    on_pair_pending=on_pair_pending,
+                    languages=self._spoken_pin_languages()
+                    if session.method is PairMethod.DYNAMIC_PIN
+                    else (),
+                ),
             )
+        except PairingTimeoutError as err:
+            # The device never answered; aiosendspin cancelled the attempt in band and left
+            # pairing, so the connection is still usable and a retry can start afresh.
+            session.error = err
+            self.logger.debug("PIN pairing with %s timed out: %s", session.client_id, err)
+            session.retryable = True
+            self._arm_pin_idle_timeout(session)
         except PairingAbortError as err:
             if (
                 isinstance(err, LocalPairingAbortError)
@@ -1082,12 +1195,8 @@ class SendspinProvider(PlayerProvider):
                 return
             session.error = err
             self.logger.debug("PIN pairing with %s aborted: %s", session.client_id, err)
-            if err.reason is PairAbortReason.LOCKED_OUT:
-                # Retrying is pointless once locked out; unpark the connection.
-                await self._end_pairing_quietly(session.client_id)
-            else:
-                session.retryable = True
-                self._arm_pin_idle_timeout(session)
+            session.retryable = True
+            self._arm_pin_idle_timeout(session)
         except Exception as err:
             # A non-abort failure: the server has already disconnected the client.
             session.error = err
@@ -1097,6 +1206,17 @@ class SendspinProvider(PlayerProvider):
         finally:
             if not session.pin_future.done():
                 session.pin_future.cancel()
+
+    def _spoken_pin_languages(self) -> tuple[str, ...]:
+        """
+        Return the language preference for a spoken dynamic PIN, most preferred first.
+
+        The metadata locale is the only server-wide language setting, so it stands in for the
+        operator's own preference.
+        """
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        return (locale, language) if language != locale else (locale,)
 
     def _arm_pin_idle_timeout(self, session: PinPairingSession) -> None:
         """Schedule restoration of the connection if a failed attempt is left unretried."""
@@ -1176,7 +1296,7 @@ class SendspinProvider(PlayerProvider):
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
-            if self._unloading:
+            if self._unloading or client_id in self._headless_client_ids:
                 return
             sendspin_client = self.server_api.get_client(client_id)
             if sendspin_client is None:
@@ -1257,6 +1377,9 @@ class SendspinProvider(PlayerProvider):
         """Handle a client disconnection asynchronously."""
         try:
             if self._unloading:
+                return
+            if client_id in self._headless_client_ids:
+                self._headless_client_ids.discard(client_id)
                 return
             self.logger.debug("Client %s disconnected", client_id)
             if not self._is_current_client_event(client_id, event_version):

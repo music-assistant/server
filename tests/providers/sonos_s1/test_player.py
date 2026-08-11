@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,10 +18,12 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import (
+    AVAILABILITY_TIMEOUT,
     POLL_INTERVAL,
     SUBSCRIPTION_SERVICES,
     TRANSITION_POLL_INTERVAL,
 )
+from music_assistant.providers.sonos_s1.helpers import SonosUpdateError
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 if TYPE_CHECKING:
@@ -247,17 +250,58 @@ async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssi
     assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
 
 
-async def test_grouping_failure_is_reported_as_a_player_command_failure(
+async def test_join_failure_names_the_speaker_that_refused(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A speaker that refuses to join surfaces as a typed player command failure."""
+    """A speaker that refuses to join is named in the failure, not the group leader."""
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
     cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
     study.soco.join.side_effect = SoCoException("the speaker refused to join")
 
-    with pytest.raises(PlayerCommandFailed, match="Kitchen"):
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
         await kitchen.set_members(player_ids_to_add=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
+
+
+async def test_grouping_leaves_the_speakers_after_a_failure_untouched(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Speakers joined before a failure keep their poll, the ones after it are never reached."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
+    attic = _make_player(timer_mass, "RINCON_000E58DDDDDD01400", "Attic")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {
+        study.player_id: study,
+        hallway.player_id: hallway,
+        attic.player_id: attic,
+    }.get
+    hallway.soco.join.side_effect = SoCoException("the speaker refused to join")
+
+    with pytest.raises(PlayerCommandFailed, match="Hallway"):
+        await kitchen.set_members(
+            player_ids_to_add=[study.player_id, hallway.player_id, attic.player_id]
+        )
+
+    assert _pending_polls(timer_mass) == [_poll_id(study)]
+    attic.soco.join.assert_not_called()
+
+
+async def test_unjoin_failure_names_the_speaker_that_refused(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that refuses to leave a group is named in the failure, not the group leader."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    study.soco.unjoin.side_effect = SoCoException("the speaker refused to leave")
+
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
+        await kitchen.set_members(player_ids_to_remove=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
 
 
 async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
@@ -386,6 +430,77 @@ async def test_speaker_answering_a_poll_again_is_resubscribed(
     with patch.object(player, "subscribe", AsyncMock()) as subscribe:
         await player.poll()
 
+    subscribe.assert_called_once()
+    assert player._attr_available is True
+
+
+async def test_failed_poll_keeps_a_recently_active_speaker_available(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A failed poll does not mark a recently active speaker unavailable."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player._last_activity = time.monotonic()
+
+    with (
+        patch.object(player, "poll_media", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "ping") as ping,
+    ):
+        await player.poll()
+
+    ping.assert_not_called()
+    assert player._attr_available is True
+
+
+async def test_speaker_silent_too_long_and_unreachable_is_marked_unavailable(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that is silent too long and fails a ping is marked unavailable."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player._last_activity = time.monotonic() - AVAILABILITY_TIMEOUT
+
+    with (
+        patch.object(player, "poll_media", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "ping", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "offline", AsyncMock()) as offline,
+    ):
+        await player.poll()
+
+    offline.assert_awaited_once()
+
+
+async def test_successful_poll_counts_as_speaker_activity(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A successful poll counts as activity, so the speaker is not pinged."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    before = time.monotonic()
+
+    with patch.object(player, "ping") as ping:
+        await player.poll()
+
+    ping.assert_not_called()
+    assert player._last_activity >= before
+
+
+async def test_unavailable_speaker_is_pinged_despite_recent_activity(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker taken offline by a failed renewal is pinged so it can recover quickly."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    player._attr_available = False
+    player._last_activity = time.monotonic()
+
+    with (
+        patch.object(player, "ping") as ping,
+        patch.object(player, "subscribe", AsyncMock()) as subscribe,
+    ):
+        await player.poll()
+
+    ping.assert_called_once_with()
     subscribe.assert_called_once()
     assert player._attr_available is True
 

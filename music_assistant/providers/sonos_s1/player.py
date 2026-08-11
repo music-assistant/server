@@ -25,6 +25,7 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AVAILABILITY_TIMEOUT,
     COMMAND_POLL_DELAY,
     DURATION_SECONDS,
     LINEIN_SOURCE_IDS,
@@ -283,7 +284,6 @@ class SonosPlayer(Player):
         else:
             await self.stop()
 
-    @soco_error()
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -301,14 +301,12 @@ class SonosPlayer(Player):
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
                 if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
-                    await asyncio.to_thread(player_to_remove.soco.unjoin)
-                    player_to_remove.schedule_poll()
+                    await player_to_remove._unjoin()
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
                 if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
-                    await asyncio.to_thread(player_to_add.soco.join, self.soco)
-                    player_to_add.schedule_poll()
+                    await player_to_add._join(self.soco)
 
     def schedule_poll(self) -> None:
         """Read the speaker state back shortly after a command was sent to it."""
@@ -324,9 +322,18 @@ class SonosPlayer(Player):
             self._attr_volume_level = self.soco.volume
             self._attr_volume_muted = self.soco.mute
 
-        await self._check_availability()
-        if self._attr_available:
+        if not self._attr_available:
+            await self._check_availability()
+            if not self._attr_available:
+                return
+        try:
             await asyncio.to_thread(_poll)
+        except OSError, SoCoException, SonosUpdateError:
+            # a single failed poll does not mean the speaker is gone; the availability
+            # check decides based on how long it has been silent
+            await self._check_availability()
+        else:
+            self._speaker_activity("poll")
 
     @soco_error()
     def poll_media(self) -> None:
@@ -562,6 +569,22 @@ class SonosPlayer(Player):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 
+    @soco_error()
+    async def _join(self, coordinator: SoCo) -> None:
+        """
+        Join this speaker to the group of the given coordinator.
+
+        :param coordinator: The SoCo instance of the speaker leading the group.
+        """
+        await asyncio.to_thread(self.soco.join, coordinator)
+        self.schedule_poll()
+
+    @soco_error()
+    async def _unjoin(self) -> None:
+        """Remove this speaker from the group it is currently in."""
+        await asyncio.to_thread(self.soco.unjoin)
+        self.schedule_poll()
+
     def _extract_mac_from_player_id(self) -> str | None:
         """
         Extract MAC address from Sonos player_id.
@@ -592,6 +615,11 @@ class SonosPlayer(Player):
 
     async def _check_availability(self) -> None:
         """Check if the player is still available."""
+        # skip the ping while events or polls recently succeeded, so one slow or dropped
+        # request does not mark a healthy speaker unavailable. An unavailable speaker is
+        # always pinged so it recovers quickly, no matter why it went offline.
+        if self._attr_available and time.monotonic() - self._last_activity < AVAILABILITY_TIMEOUT:
+            return
         try:
             await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
