@@ -112,6 +112,10 @@ class AnnouncementsMixin:
 
         async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None: ...
 
+        async def _handle_cmd_volume_mute(
+            self, player: Player, mute_control: str, muted: bool
+        ) -> None: ...
+
         async def _handle_cmd_power(
             self, player_id: str, powered: bool, skip_auto_play: bool = False
         ) -> None: ...
@@ -254,8 +258,9 @@ class AnnouncementsMixin:
                         player.state.name,
                         url,
                     )
-                announcement_volume = self.get_announcement_volume(player_id, volume_level)
-                await announce_player.play_announcement(announcement, announcement_volume)
+                await self._play_native_announcement(
+                    player, announce_player, announcement, volume_level
+                )
                 return
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
@@ -317,6 +322,42 @@ class AnnouncementsMixin:
             volume_level = min(int(announce_volume_max), volume_level)
         return None if volume_level is None else int(volume_level)
 
+    async def _play_native_announcement(
+        self,
+        player: Player,
+        announce_player: Player,
+        announcement: PlayerMedia,
+        volume_level: int | None,
+    ) -> None:
+        """
+        Hand an announcement to a player that plays it natively.
+
+        :param player: The player the announcement is played on.
+        :param announce_player: The player (or linked protocol) that plays the announcement.
+        :param announcement: The announcement to play.
+        :param volume_level: Optional volume level override for the announcement.
+        """
+        # an announcement is always meant to be heard, so a deliberate mute is lifted for
+        # its duration. this happens before the announcement volume is resolved below,
+        # since a fake mute control parks the player at volume 0 to mute it.
+        # in case of a (sync) group, this covers all child players.
+        muted_players = [
+            muted_player
+            for member_id in player.state.group_members or (player.player_id,)
+            if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
+        ]
+        try:
+            async with TaskManager(self.mass) as tg:
+                for muted_player in muted_players:
+                    tg.create_task(self._set_announcement_mute(muted_player, False))
+            announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
+            await announce_player.play_announcement(announcement, announcement_volume)
+        finally:
+            # the provider only returns once the announcement finished playing
+            async with TaskManager(self.mass) as tg:
+                for muted_player in muted_players:
+                    tg.create_task(self._set_announcement_mute(muted_player, True))
+
     async def _play_announcement(
         self,
         player: Player,
@@ -362,8 +403,9 @@ class AnnouncementsMixin:
             player.current_media is not None
             and player.current_media.media_type == MediaType.ANNOUNCEMENT
         )
-        # filled while the temporary announcement volume is applied below
+        # filled while the players are unmuted and the temporary volume is applied below
         prev_volumes: dict[str, int] = {}
+        prev_muted: set[str] = set()
         # everything from here on alters the player state, so the restore in the finally
         # block must run even when the announcement itself fails halfway through
         try:
@@ -375,6 +417,7 @@ class AnnouncementsMixin:
                 prev_group=prev_group,
                 prev_media_name=prev_media_name,
                 prev_volumes=prev_volumes,
+                prev_muted=prev_muted,
             )
             # play the announcement
             self.logger.debug(
@@ -427,6 +470,7 @@ class AnnouncementsMixin:
                 player,
                 prev_power=prev_power,
                 prev_volumes=prev_volumes,
+                prev_muted=prev_muted,
                 prev_synced_to=prev_synced_to,
                 prev_group=prev_group,
                 prev_source=prev_source,
@@ -444,6 +488,7 @@ class AnnouncementsMixin:
         prev_group: Player | None,
         prev_media_name: str | None,
         prev_volumes: dict[str, int],
+        prev_muted: set[str],
     ) -> None:
         """
         Free up the player for an announcement and apply the temporary announcement volume.
@@ -456,6 +501,8 @@ class AnnouncementsMixin:
         :param prev_media_name: Name of the media the player was playing (for logging).
         :param prev_volumes: Mapping that is filled in-place with the previous volume level
             per player id, so the caller can restore the volumes even if this call fails.
+        :param prev_muted: Set that is filled in-place with the ids of the players that were
+            muted, so the caller can restore the mute state even if this call fails.
         """
         if prev_synced_to:
             # ungroup player if its currently synced
@@ -493,7 +540,7 @@ class AnnouncementsMixin:
             await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
-        # adjust volume if needed
+        # unmute and adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         async with TaskManager(self.mass) as tg:
             for volume_player_id in player.state.group_members or (player.player_id,):
@@ -516,26 +563,11 @@ class AnnouncementsMixin:
                         volume_player.state.name,
                     )
                     tg.create_task(self._handle_cmd_stop(volume_player.player_id))
-                if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
-                    continue
-                if (prev_volume := volume_player.state.volume_level) is None:
-                    continue
-                announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
-                # get_announcement_volume already returns None when the volume must be left
-                # alone, so any number it does return is the volume to announce at - including
-                # 0, which must not be mistaken for 'no volume configured'
-                if announcement_volume is None:
-                    continue
-                if announcement_volume != prev_volume:
-                    prev_volumes[volume_player_id] = prev_volume
-                    self.logger.debug(
-                        "Announcement to player %s - setting temporary volume (%s)...",
-                        volume_player.state.name,
-                        announcement_volume,
+                tg.create_task(
+                    self._unmute_and_set_announcement_volume(
+                        volume_player, volume_level, prev_volumes, prev_muted
                     )
-                    tg.create_task(
-                        self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
-                    )
+                )
 
     async def _restore_after_announcement(
         self,
@@ -543,6 +575,7 @@ class AnnouncementsMixin:
         *,
         prev_power: bool,
         prev_volumes: dict[str, int],
+        prev_muted: set[str],
         prev_synced_to: str | None,
         prev_group: Player | None,
         prev_source: str | None,
@@ -558,6 +591,7 @@ class AnnouncementsMixin:
         :param player: The player the announcement was played on.
         :param prev_power: Whether the player was powered before the announcement.
         :param prev_volumes: The previous volume level per player id.
+        :param prev_muted: The ids of the players that were muted before the announcement.
         :param prev_synced_to: Player ID of the sync leader the player was synced to (if any).
         :param prev_group: The group player the player was a member of (if any).
         :param prev_source: The source that was active before the announcement.
@@ -571,6 +605,12 @@ class AnnouncementsMixin:
         async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
+        # restore mute after the volume, because setting a volume unmutes the player again
+        async with TaskManager(self.mass) as tg:
+            for muted_player_id in prev_muted:
+                if not (muted_player := self.get_player(muted_player_id)):
+                    continue
+                tg.create_task(self._set_announcement_mute(muted_player, True))
         await asyncio.sleep(0.2)
         try:
             # either power off the player or resume playing
@@ -618,3 +658,59 @@ class AnnouncementsMixin:
                 player.state.name,
                 err,
             )
+
+    async def _unmute_and_set_announcement_volume(
+        self,
+        volume_player: Player,
+        volume_level: int | None,
+        prev_volumes: dict[str, int],
+        prev_muted: set[str],
+    ) -> None:
+        """
+        Make a single player ready to be heard: unmute it and set the announcement volume.
+
+        :param volume_player: The player to prepare.
+        :param volume_level: Optional volume level override for the announcement.
+        :param prev_volumes: Mapping that is filled in-place with the previous volume level
+            per player id.
+        :param prev_muted: Set that is filled in-place with the ids of the players that
+            were muted.
+        """
+        if volume_player.state.volume_muted:
+            # an announcement is always meant to be heard, so a deliberate mute is lifted
+            # for its duration. this happens before the volume is read below, since a
+            # fake mute control parks the player at volume 0 to mute it.
+            prev_muted.add(volume_player.player_id)
+            await self._set_announcement_mute(volume_player, False)
+        if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
+            return
+        if (prev_volume := volume_player.state.volume_level) is None:
+            return
+        announcement_volume = self.get_announcement_volume(volume_player.player_id, volume_level)
+        # get_announcement_volume already returns None when the volume must be left
+        # alone, so any number it does return is the volume to announce at - including
+        # 0, which must not be mistaken for 'no volume configured'
+        if announcement_volume is None or announcement_volume == prev_volume:
+            return
+        prev_volumes[volume_player.player_id] = prev_volume
+        self.logger.debug(
+            "Announcement to player %s - setting temporary volume (%s)...",
+            volume_player.state.name,
+            announcement_volume,
+        )
+        await self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
+
+    async def _set_announcement_mute(self, player: Player, muted: bool) -> None:
+        """
+        Mute or unmute a player for the duration of an announcement.
+
+        :param player: The player to mute or unmute.
+        :param muted: bool if the player should be muted.
+        """
+        # the internal handler is used instead of cmd_volume_mute so the player keeps the
+        # mute lock it earned as a group member: the public command clears that lock on
+        # unmute and the player may well be ungrouped by the time it is muted back.
+        mute_control = player.mute_control
+        if mute_control == PLAYER_CONTROL_NONE:
+            return
+        await self._handle_cmd_volume_mute(player, mute_control, muted)

@@ -11,6 +11,7 @@ from music_assistant_models.media_items import Artist
 from yarl import URL
 
 from music_assistant.providers.apple_music.recommendations import AppleMusicRecommendationManager
+from tests.common import use_real_create_task
 
 
 def _make_artist_obj(artist_id: str, name: str) -> dict[str, object]:
@@ -75,6 +76,7 @@ def manager(mock_api: MagicMock) -> AppleMusicRecommendationManager:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
     provider.api_client = mock_api
 
     return AppleMusicRecommendationManager(provider)

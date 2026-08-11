@@ -762,13 +762,13 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     mock_update.assert_called_once()
 
 
-def test_sync_volume_level_uses_parent_volume_without_native_parent(
+def test_sync_volume_level_uses_parent_volume_when_control_is_self(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """Keep existing behavior for protocol parents without native volume control."""
+    """Pull the parent volume when the parent's volume control is this player."""
     parent = MagicMock()
     parent.state.volume_level = 42
-    parent.volume_control = None
+    parent.volume_control = "test_player"
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48
@@ -785,6 +785,58 @@ def test_sync_volume_level_uses_parent_volume_without_native_parent(
     mock_update.assert_called_once()
 
 
+def test_sync_volume_level_uses_parent_volume_via_bridge_control(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Pull the parent volume when the volume control is a bridge riding on this player."""
+    parent = MagicMock()
+    parent.state.volume_level = 42
+    parent.volume_control = "sendspin_bridge"
+    bridge = MagicMock()
+    bridge.underlying_player_id = "test_player"
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "sendspin_bridge": bridge,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 42
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id,
+        CONF_STORED_VOLUME,
+        42,
+    )
+    mock_update.assert_called_once()
+
+
+def test_sync_volume_level_unity_gain_when_other_control_owns_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Play at unity gain when the parent volume is owned by another (hardware) control."""
+    parent = MagicMock()
+    parent.state.volume_level = 30
+    parent.volume_control = "dlna_player"
+    dlna_player = MagicMock()
+    dlna_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "dlna_player": dlna_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 100
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_called_once()
+
+
 def test_sync_volume_level_ignores_parent_volume_zero(
     airplay_player: AirPlayPlayer,
 ) -> None:
@@ -797,7 +849,7 @@ def test_sync_volume_level_ignores_parent_volume_zero(
     """
     parent = MagicMock()
     parent.state.volume_level = 0
-    parent.volume_control = None
+    parent.volume_control = "test_player"
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48
@@ -884,7 +936,7 @@ async def test_grouped_play_resumes_active_native_queue(airplay_player: AirPlayP
 async def test_single_player_pause_sends_action_pause(airplay_player: AirPlayPlayer) -> None:
     """An unsynced player pauses the stream in place with ACTION=PAUSE."""
     airplay_player._attr_group_members = []
-    airplay_player.mass.players.all_players.return_value = []  # type: ignore[attr-defined]
+    airplay_player.mass.players.iter_players.return_value = []  # type: ignore[attr-defined]
     send_cmd = _setup_running_stream(airplay_player)
 
     with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
@@ -963,7 +1015,7 @@ def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
         airplay_discovery_info=None,
     )
     # the synced_to property scans all players of the provider
-    _players_mock(player).all_players.return_value = []
+    _players_mock(player).iter_players.return_value = []
     player._attr_group_members = []
     player._attr_playback_state = PlaybackState.IDLE
     player.stream = None
@@ -1123,7 +1175,7 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     foreign_leader.player_id = "other"
     foreign_leader.group_members = ["other", player.player_id]
     # the player reports it is now synced to a leader outside the original group
-    _players_mock(player).all_players.return_value = [foreign_leader]
+    _players_mock(player).iter_players.return_value = [foreign_leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     players_mock.cmd_group = AsyncMock()
@@ -1153,7 +1205,7 @@ def test_resolve_rejoin_target_skips_candidate_in_foreign_group() -> None:
     foreign_leader._attr_group_members = ["foreign", "old_leader"]
     old_leader = _make_playing_leader("old_leader")
     # the old leader reports it is now synced to the foreign leader
-    _players_mock(old_leader).all_players.return_value = [foreign_leader]
+    _players_mock(old_leader).iter_players.return_value = [foreign_leader]
     _players_mock(player).get_player.side_effect = lambda player_id: {
         "old_leader": old_leader,
         "foreign": foreign_leader,
@@ -1198,7 +1250,7 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
     # the sync membership survived the stream loss: the player is still listed
     # as a member of (and synced to) the leader
     leader._attr_group_members = ["leader", player.player_id]
-    _players_mock(player).all_players.return_value = [leader]
+    _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     players_mock.cmd_group = AsyncMock()
@@ -1225,7 +1277,7 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     leader._attr_group_members = ["leader", player.player_id]
-    _players_mock(player).all_players.return_value = [leader]
+    _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     players_mock.cmd_group = AsyncMock()

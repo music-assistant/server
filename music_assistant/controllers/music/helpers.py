@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType, SearchResults
 from music_assistant_models.unique_list import UniqueList
-
-from music_assistant.helpers.compare import create_safe_string
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

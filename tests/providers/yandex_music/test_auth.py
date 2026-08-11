@@ -1,4 +1,4 @@
-"""Unit tests for auth.py (ya-passport-auth token maintenance)."""
+"""Unit tests for Yandex Music token maintenance."""
 
 from __future__ import annotations
 
@@ -8,9 +8,7 @@ import pytest
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import Credentials, SecretStr
 from ya_passport_auth.exceptions import InvalidCredentialsError, RateLimitedError
-from ya_passport_auth.exceptions import (
-    NetworkError as PassportNetworkError,
-)
+from ya_passport_auth.exceptions import NetworkError as PassportNetworkError
 
 from music_assistant.providers.yandex_music.auth import (
     refresh_credentials_via_passport,
@@ -18,23 +16,18 @@ from music_assistant.providers.yandex_music.auth import (
     validate_x_token,
 )
 
-# -- helpers -------------------------------------------------------------------
-
 
 def _make_credentials(
     x_token: str = "test_x_token",  # noqa: S107
     music_token: str | None = "test_music_token",  # noqa: S107
     refresh_token: str | None = "test_refresh_token",  # noqa: S107
 ) -> Credentials:
-    """Build a Credentials dataclass for testing."""
+    """Build credentials for token-maintenance tests."""
     return Credentials(
         x_token=SecretStr(x_token),
         music_token=SecretStr(music_token) if music_token else None,
         refresh_token=SecretStr(refresh_token) if refresh_token else None,
     )
-
-
-# -- refresh_music_token -------------------------------------------------------
 
 
 async def test_refresh_music_token_success() -> None:
@@ -91,9 +84,6 @@ async def test_refresh_music_token_transient_error_raises_temporarily_unavailabl
             await refresh_music_token(SecretStr("my_x_token"))
 
 
-# -- validate_x_token ----------------------------------------------------------
-
-
 async def test_validate_x_token_valid() -> None:
     """Valid x_token returns True."""
     mock_client = mock.AsyncMock()
@@ -111,7 +101,7 @@ async def test_validate_x_token_valid() -> None:
 
 
 async def test_validate_x_token_invalid_returns_false() -> None:
-    """A terminal credential error returns False (token rejected by Passport)."""
+    """A terminal credential error returns False."""
     mock_client = mock.AsyncMock()
     mock_client.validate_x_token.side_effect = InvalidCredentialsError("token rejected")
 
@@ -132,12 +122,7 @@ async def test_validate_x_token_invalid_returns_false() -> None:
     ids=["network", "rate_limited"],
 )
 async def test_validate_x_token_transient_error_propagates(exc: Exception) -> None:
-    """
-    Transient Passport failures must not masquerade as "token invalid".
-
-    A network blip or 429 should not cause callers to clear the stored
-    credential — re-raise so the caller can distinguish the two.
-    """
+    """Transient failures are distinguishable from invalid credentials."""
     mock_client = mock.AsyncMock()
     mock_client.validate_x_token.side_effect = exc
 
@@ -151,11 +136,8 @@ async def test_validate_x_token_transient_error_propagates(exc: Exception) -> No
             await validate_x_token(SecretStr("some_token"))
 
 
-# -- refresh_credentials_via_passport ------------------------------------------
-
-
 async def test_refresh_credentials_via_passport_success() -> None:
-    """Successful refresh returns full Credentials triple."""
+    """Successful refresh returns the full credential triple."""
     new_creds = _make_credentials(
         x_token="new_x",
         music_token="new_music",
@@ -202,10 +184,10 @@ async def test_refresh_credentials_via_passport_error_raises_login_failed() -> N
     [PassportNetworkError("offline"), RateLimitedError("429")],
     ids=["network", "rate_limited"],
 )
-async def test_refresh_credentials_via_passport_transient_error_raises_temporarily_unavailable(
+async def test_refresh_credentials_via_passport_transient_error_is_temporary(
     exc: Exception,
 ) -> None:
-    """Transient Passport failures don't masquerade as LoginFailed."""
+    """Transient credential refresh failures remain retryable."""
     mock_client = mock.AsyncMock()
     mock_client.refresh_credentials.side_effect = exc
 
@@ -218,14 +200,6 @@ async def test_refresh_credentials_via_passport_transient_error_raises_temporari
         with pytest.raises(ResourceTemporarilyUnavailable, match="temporarily unavailable"):
             await refresh_credentials_via_passport(SecretStr("x"), SecretStr("refresh"))
 
-
-# -- exception-message redaction ----------------------------------------------
-#
-# These tests guard against leaking the upstream ``ya-passport-auth`` exception
-# payload into our own ``LoginFailed`` / ``ResourceTemporarilyUnavailable``
-# messages. The library may include token fragments, device codes, or raw
-# response bodies in its exception text — none of which should reach MA logs
-# or the frontend.
 
 _SECRET_PAYLOAD = "token=ABC_TOKEN_LEAK&csrf=xyz"
 
@@ -242,7 +216,7 @@ _SECRET_PAYLOAD = "token=ABC_TOKEN_LEAK&csrf=xyz"
 async def test_refresh_music_token_error_does_not_leak_library_payload(
     exc: Exception, expected_exc_type: type[Exception]
 ) -> None:
-    """``refresh_music_token`` exceptions must not include library str()."""
+    """Music-token refresh errors redact upstream payloads."""
     mock_client = mock.AsyncMock()
     mock_client.refresh_music_token.side_effect = exc
 
@@ -268,10 +242,10 @@ async def test_refresh_music_token_error_does_not_leak_library_payload(
     ],
     ids=["network", "rate_limited", "invalid_credentials"],
 )
-async def test_refresh_credentials_via_passport_error_does_not_leak_library_payload(
+async def test_refresh_credentials_error_does_not_leak_library_payload(
     exc: Exception, expected_exc_type: type[Exception]
 ) -> None:
-    """``refresh_credentials_via_passport`` exceptions must not include library str()."""
+    """Credential refresh errors redact upstream payloads."""
     mock_client = mock.AsyncMock()
     mock_client.refresh_credentials.side_effect = exc
 

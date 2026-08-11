@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import re
 from _collections_abc import dict_keys, dict_values
 from types import MethodType
 from typing import Any, TypeVar
@@ -15,18 +16,22 @@ JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
 
 DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
 
+_MIN_CODE_FENCE_LENGTH = 3
+# Applied to the opening line only, so a fence that carries anything other than a bare
+# language tag is left alone instead of having that line silently discarded.
+_CODE_FENCE_TAG_PATTERN = re.compile(r"[A-Za-z0-9+#._-]*")
+
 # Type alias for plain, JSON-serializable data.
 # Note: tuples are accepted but will be returned as lists after a JSON round-trip.
 SerializableType = str | int | float | bool | None | list[Any] | tuple[Any, ...] | dict[str, Any]
 
 
-def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
+def get_serializable_value(obj: Any) -> Any:
     """Parse the value to its serializable equivalent."""
     if getattr(obj, "do_not_serialize", None):
         return None
-    if (
-        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
-        or obj.__class__ == "dict_valueiterator"
+    if isinstance(obj, list | set | filter | tuple | dict_values | dict_keys) or (
+        obj.__class__.__name__ == "dict_valueiterator"
     ):
         return [get_serializable_value(x) for x in obj]
     if hasattr(obj, "to_dict"):
@@ -35,8 +40,8 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
         return base64.b64encode(obj).decode("ascii")
     if isinstance(obj, DO_NOT_SERIALIZE_TYPES):
         return None
-    if raise_unhandled:
-        raise TypeError
+    # unhandled values are returned as-is on purpose: serialize_to_json and the
+    # recursion above rely on natively serializable values passing through
     return obj
 
 
@@ -57,7 +62,7 @@ def json_dumps(data: Any, indent: bool = False) -> str:
         option |= orjson.OPT_INDENT_2
     return orjson.dumps(
         data,
-        default=get_serializable_value,
+        default=_json_default,
         option=option,
     ).decode("utf-8")
 
@@ -73,6 +78,39 @@ json_loads = orjson.loads
 async def async_json_loads(data: str) -> Any:
     """Load json string async."""
     return await asyncio.to_thread(json_loads, data)
+
+
+def strip_code_fence(text: str) -> str:
+    """
+    Remove a markdown code fence that wraps an entire text, plus surrounding whitespace.
+
+    Anything else is returned with only its whitespace trimmed: a fence around part of
+    the text, more than one fenced block, an unterminated fence, a fence whose opening
+    line carries more than a language tag, or a body containing the fence itself. Text
+    that is not exactly one fenced block therefore stays as invalid to a strict parser
+    as it was before.
+
+    :param text: Text that may be wrapped in a markdown code fence.
+    :return: The fenced content, or the trimmed text when it is not a single fenced block.
+    """
+    stripped = text.strip()
+    fence_length = len(stripped) - len(stripped.lstrip("`"))
+    if fence_length < _MIN_CODE_FENCE_LENGTH:
+        return stripped
+    fence = "`" * fence_length
+    inner = stripped[fence_length:]
+    if not inner.endswith(fence):
+        return stripped
+    inner = inner[:-fence_length]
+    # A closing fence must be the final run of backticks, matching the opening length.
+    if inner.endswith("`"):
+        return stripped
+    tag, separator, body = inner.partition("\n")
+    if not separator or not _CODE_FENCE_TAG_PATTERN.fullmatch(tag.strip()):
+        return stripped
+    if fence in body:
+        return stripped
+    return body.strip()
 
 
 TargetT = TypeVar("TargetT", bound=DataClassORJSONMixin)
@@ -102,3 +140,16 @@ async def load_json_dict(path: str) -> dict[str, Any]:
         msg = f"Expected a JSON object in {path}, got {type(data).__name__}"
         raise TypeError(msg)
     return data
+
+
+def _json_default(obj: Any) -> Any:
+    """Convert a value for orjson, raising a descriptive error for unhandled types."""
+    value = get_serializable_value(obj)
+    if value is obj:
+        cls = type(obj)
+        msg = (
+            f"unhandled type for json serialization: {cls.__module__}.{cls.__qualname__}"
+            " - pass a dict (e.g. via .to_dict()) instead of the raw object"
+        )
+        raise TypeError(msg)
+    return value

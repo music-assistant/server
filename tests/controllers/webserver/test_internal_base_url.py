@@ -5,22 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from music_assistant.controllers.webserver.controller import (
-    CONF_BASE_URL,
-    CONF_ENABLE_SSL,
-    WebserverController,
-)
+from music_assistant.controllers.webserver.controller import CONF_BASE_URL, WebserverController
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
-
-
-@pytest.fixture
-def mock_mass() -> MagicMock:
-    """Create a mock Music Assistant instance."""
-    mass = MagicMock()
-    mass.config.get_raw_core_config_value.return_value = "GLOBAL"
-    return mass
 
 
 @pytest.fixture
@@ -67,7 +55,6 @@ def test_url_ignores_a_configured_base_url(webserver: WebserverController) -> No
     """Verify an external base URL is not dialed back in through DNS and a reverse proxy."""
     cast("MagicMock", webserver.config).get_value.side_effect = lambda key, default=None: {
         CONF_BASE_URL: "https://ma.example.com",
-        CONF_ENABLE_SSL: False,
     }.get(key, default)
     webserver.bind_ip = "0.0.0.0"
     webserver.publish_ip = "192.168.1.5"
@@ -76,11 +63,9 @@ def test_url_ignores_a_configured_base_url(webserver: WebserverController) -> No
     assert webserver.internal_base_url == "http://127.0.0.1:8095"
 
 
-def test_url_uses_tls_when_ssl_is_enabled(webserver: WebserverController) -> None:
+def test_url_uses_tls_when_ssl_is_active(webserver: WebserverController) -> None:
     """Verify the scheme matches what the webserver serves."""
-    cast("MagicMock", webserver.config).get_value.side_effect = lambda key, default=None: {
-        CONF_ENABLE_SSL: True
-    }.get(key, default)
+    webserver._ssl_active = True
     webserver.bind_ip = "0.0.0.0"
     webserver.publish_ip = "192.168.1.5"
 

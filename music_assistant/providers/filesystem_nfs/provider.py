@@ -8,8 +8,6 @@ from contextlib import suppress
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -20,13 +18,13 @@ from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
-    exists,
     isdir,
     ismount,
     makedirs,
 )
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -34,12 +32,13 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    content_type_config_entry,
 )
 
 from .constants import CONF_EXPORT_PATH, CONF_HOST, CONF_NFS_VERSION, CONF_SUBFOLDER
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -88,9 +87,11 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         """Return Config entries to setup this provider."""
         # connection details and content type are collected by the setup flow; surface the
         # (immutable) content type read-only so the sync options' depends_on chains resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -126,8 +127,9 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):
             msg = "Invalid export path: must be an absolute path starting with /"
             raise SetupFailedError(msg)
-        if not await exists(self.mount_path):
-            await makedirs(self.mount_path)
+        # the mount point may already exist; checking first is not reliable because
+        # reading the path fails while the server is unreachable
+        await makedirs(self.mount_path, exist_ok=True)
         try:
             # unmount first to cleanup any unexpected state
             await unmount(self.mount_path, self.logger)

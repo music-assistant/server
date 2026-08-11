@@ -1,24 +1,28 @@
-"""Tests for StreamsAudio.get_media_stream's ffmpeg input_format handling."""
+"""Tests for the ffmpeg input arguments StreamsAudio.get_media_stream builds."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 
+# input args a provider may attach to its StreamDetails (podcastfeed does exactly this).
+# Kept as a tuple so the tests below can never assert against a mutated expectation.
+_PROVIDER_INPUT_ARGS = ("-user_agent", "Test/1.0")
+
 
 class _FakeFFMpeg:
-    """FFMpeg test double that records the input_format it was constructed with."""
+    """FFMpeg test double that records the arguments it was constructed with."""
 
     last_instance: _FakeFFMpeg | None = None
 
@@ -27,9 +31,11 @@ class _FakeFFMpeg:
         *,
         audio_input: object,
         input_format: AudioFormat,
+        extra_input_args: list[str] | None = None,
         **_kwargs: Any,
     ) -> None:
         self.audio_input = audio_input
+        self.extra_input_args = extra_input_args
         # Mirror the real FFMpeg, which mutates this object's codec_type after probe.
         # Tests inspect the original `input_format` AudioFormat passed in to confirm
         # which one the controller picked.
@@ -64,6 +70,14 @@ def patch_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> type[_FakeFFMpeg]:
     return _FakeFFMpeg
 
 
+@pytest.fixture
+def patch_two_minute_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> type[_TwoMinuteFFMpeg]:
+    """Swap the real FFMpeg for the fake that emits a fixed amount of audio."""
+    _TwoMinuteFFMpeg.last_instance = None
+    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
+    return _TwoMinuteFFMpeg
+
+
 def _make_audio_controller() -> StreamsAudio:
     """Build a StreamsAudio with just enough mass scaffolding to run get_media_stream."""
     audio = StreamsAudio(MagicMock())
@@ -82,6 +96,9 @@ def _make_pcm_format() -> AudioFormat:
     )
 
 
+_PCM_SAMPLE_SIZE = _make_pcm_format().pcm_sample_size
+
+
 def _make_streamdetails(
     *,
     audio_format: AudioFormat,
@@ -98,9 +115,48 @@ def _make_streamdetails(
     )
 
 
+def _seekable_streamdetails() -> StreamDetails:
+    """Build seekable StreamDetails carrying provider-supplied ffmpeg input args."""
+    return StreamDetails(
+        provider="test_provider",
+        item_id="episode-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.PODCAST_EPISODE,
+        stream_type=StreamType.HTTP,
+        path="http://test.invalid/episode-1.mp3",
+        duration=3600,
+        can_seek=True,
+        allow_seek=True,
+        extra_input_args=[*_PROVIDER_INPUT_ARGS],
+    )
+
+
 async def _drain(gen: AsyncGenerator[bytes]) -> None:
     async for _ in gen:
         pass
+
+
+def _recording_multi_file_stream() -> tuple[Any, list[int]]:
+    """
+    Build a stand-in for the concat stream plus the list of seek positions it received.
+
+    Avoids a real ffmpeg process and temp file while still proving the seek was
+    handed off to the source rather than applied through the -ss argument.
+    """
+    received_seeks: list[int] = []
+
+    async def _empty_stream() -> AsyncGenerator[bytes]:
+        yield b""
+
+    # record on call rather than on first iteration: the FFMpeg double never
+    # consumes the generator it is handed, so its body would never run
+    def _fake_stream(
+        _streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        received_seeks.append(seek_position)
+        return _empty_stream()
+
+    return _fake_stream, received_seeks
 
 
 class _StallingFFMpeg(_FakeFFMpeg):
@@ -117,6 +173,34 @@ class _SlowConsumerFFMpeg(_FakeFFMpeg):
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
         for _ in range(3):
             yield b"\x00\x01" * 256
+
+
+class _TwoMinuteFFMpeg(_FakeFFMpeg):
+    """FFMpeg double that emits exactly two minutes of PCM at the format below."""
+
+    seconds_emitted = 120
+
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        for _ in range(self.seconds_emitted):
+            yield b"\x00" * _PCM_SAMPLE_SIZE
+
+
+def _multi_part_streamdetails() -> StreamDetails:
+    """Build StreamDetails for a multi-file audiobook of two 30 minute parts."""
+    return StreamDetails(
+        provider="test_provider",
+        item_id="audiobook-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.AUDIOBOOK,
+        stream_type=StreamType.HTTP,
+        path=[
+            MultiPartPath(path="http://test.invalid/part-1.mp3", duration=1800),
+            MultiPartPath(path="http://test.invalid/part-2.mp3", duration=1800),
+        ],
+        duration=3600,
+        can_seek=True,
+        allow_seek=True,
+    )
 
 
 def _flac_streamdetails() -> StreamDetails:
@@ -264,3 +348,91 @@ async def test_get_media_stream_writes_back_codec_when_no_decoded_format() -> No
     # decoded format that AudioFormat is the same object as streamdetails.audio_format,
     # so the controller's writeback path is exercised end-to-end.
     assert streamdetails.audio_format.codec_type is ContentType.FLAC
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A multi-file item streamed from the start gets its measured duration stored."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == patch_two_minute_ffmpeg.seconds_emitted
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_multi_file_seek_is_delegated(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """Resuming a multi-file audiobook must not shrink its duration to the remainder."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, received_seeks = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=1800))
+
+    # the concat stream consumes the seek itself, which clears the local seek
+    # position before the duration writeback runs at the end of the stream
+    assert received_seeks == [1800]
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" not in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_provider_seek_is_delegated(
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A seekable provider stream must not shrink its duration to the remainder either."""
+    streamdetails = StreamDetails(
+        provider="test_provider",
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.OGG),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.CUSTOM,
+        duration=240,
+        can_seek=True,
+        allow_seek=True,
+    )
+    audio = _make_audio_controller()
+    provider = cast("MagicMock", audio.mass).get_provider.return_value
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=90))
+
+    # a provider that can seek receives the position and the local one is cleared,
+    # so only the remaining audio reaches ffmpeg
+    provider.get_audio_stream.assert_called_once_with(streamdetails, seek_position=90)
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" not in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    assert streamdetails.duration == 240
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_caller_extra_input_args_intact(
+    patch_ffmpeg: type[_FakeFFMpeg],
+) -> None:
+    """Per-call input args must not leak back onto the caller's StreamDetails."""
+    streamdetails = _seekable_streamdetails()
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=30))
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "30"]
+    assert streamdetails.extra_input_args == [*_PROVIDER_INPUT_ARGS]
+
+    # StreamDetails are cached on the queue item and reach this method again on a
+    # retry, another seek or from the background analyzer: every call must build its
+    # args from the provider's list alone instead of stacking onto the previous call's.
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=600))
+
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "600"]
+    assert streamdetails.extra_input_args == [*_PROVIDER_INPUT_ARGS]

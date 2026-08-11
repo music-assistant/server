@@ -44,18 +44,11 @@ async def setup(
 class OpenAICompatibleProvider(PluginProvider):
     """Exposes the models of an OpenAI-compatible API as selectable AI engines."""
 
-    _base_url: str
-    _api_key: str
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        base_url = str(self.get_setup_value(CONF_BASE_URL) or "").strip().rstrip("/")
-        if not base_url:
+        if not self._base_url:
             msg = "No API base URL is configured"
             raise SetupFailedError(msg)
-        self._base_url = base_url
-        api_key = self.get_setup_value(CONF_API_KEY)
-        self._api_key = api_key.strip() if isinstance(api_key, str) else ""
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries to configure this provider instance."""
@@ -98,6 +91,19 @@ class OpenAICompatibleProvider(PluginProvider):
             prompt=query,
             timeout=CHAT_REQUEST_TIMEOUT,
         )
+
+    @property
+    def _base_url(self) -> str:
+        """Return the configured API endpoint, without trailing slash."""
+        # read on demand: the config entries are resolved before async init runs,
+        # so this has to be readable without it
+        return str(self.get_setup_value(CONF_BASE_URL) or "").strip().rstrip("/")
+
+    @property
+    def _api_key(self) -> str:
+        """Return the configured API key, empty for an endpoint without auth."""
+        api_key = self.get_setup_value(CONF_API_KEY)
+        return api_key.strip() if isinstance(api_key, str) else ""
 
     def _configured_models(self) -> list[str]:
         """Return the models the user selected, in a stable order."""

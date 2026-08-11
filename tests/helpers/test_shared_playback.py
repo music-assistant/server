@@ -12,6 +12,7 @@ from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
 
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -434,6 +435,50 @@ async def test_cancelled_remote_creation_failure_is_observed() -> None:
     logger.debug.assert_called_once()
     sendspin.remove_virtual_player.assert_not_awaited()
     assert all(task.done() for task in tasks)
+
+
+async def test_cancelled_remote_creation_failure_logs_no_loop_error() -> None:
+    """A creation failure observed after the caller was cancelled is not reported to the loop."""
+    sendspin = MagicMock()
+    mass, tasks = _create_mock_remote_mass(sendspin)
+    creation_started = asyncio.Event()
+    allow_creation = asyncio.Event()
+
+    async def _create_virtual_player(**_kwargs: object) -> str:
+        creation_started.set()
+        await allow_creation.wait()
+        raise RuntimeError("creation failed")
+
+    sendspin.create_virtual_player = AsyncMock(side_effect=_create_virtual_player)
+    sendspin.remove_virtual_player = AsyncMock()
+
+    with (
+        collect_loop_errors() as reported,
+        patch("music_assistant.helpers.shared_playback.LOGGER") as logger,
+    ):
+        session_task = asyncio.create_task(
+            SharedPlaybackSession.create_remote(
+                mass,
+                owner_instance_id="plugin--test",
+                display_name="Test Party",
+            )
+        )
+        await creation_started.wait()
+        session_task.cancel()
+        # the cancellation must be fully processed before the gate is released, so the
+        # creation failure reliably lands after the caller has already given up -- releasing
+        # the gate first would let the failure race the cancellation and pass even on the
+        # buggy shield-based code
+        with pytest.raises(asyncio.CancelledError):
+            await session_task
+
+        allow_creation.set()
+        await tasks[1]
+
+    logger.debug.assert_called_once()  # the cleanup task still observes and logs the failure
+    sendspin.remove_virtual_player.assert_not_awaited()
+    assert all(task.done() for task in tasks)
+    assert reported == []
 
 
 async def test_cancelled_remote_creation_timeout_cancels_task() -> None:

@@ -40,6 +40,8 @@ class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
 
     _ignored_disabled_players: set[str]
+    _pending_setup_tasks: set[str]
+    _unloaded: bool
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -48,6 +50,8 @@ class SonosPlayerProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._ignored_disabled_players = set()
+        self._pending_setup_tasks = set()
+        self._unloaded = False
         self._set_aiosonos_log_level()
         self.mass.streams.register_dynamic_route(
             "/sonos_queue/*", self._handle_sonos_cloud_queue_request
@@ -76,7 +80,14 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        self._unloaded = True
         self.mass.streams.unregister_dynamic_route("/sonos_queue/*")
+        for task_id in self._pending_setup_tasks:
+            # a timer that already fired lives on as a task under the same id,
+            # so both are needed to cover the pending and the running case
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
+        self._pending_setup_tasks.clear()
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -109,6 +120,10 @@ class SonosPlayerProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        if self._unloaded:
+            # discovery resolves an announcement before it dispatches it, so a callback
+            # picked up before the unload can still arrive after it
+            return
         if state_change == ServiceStateChange.Removed:
             # we don't listen for removed players here.
             # instead we just wait for the player connection to fail
@@ -146,6 +161,7 @@ class SonosPlayerProvider(PlayerProvider):
         # handle new player setup in a delayed task because mdns announcements
         # can arrive in (duplicated) bursts
         task_id = f"setup_sonos_{player_id}"
+        self._pending_setup_tasks.add(task_id)
         self.mass.call_later(5, self._setup_player, player_id, name, info, task_id=task_id)
 
     def _set_aiosonos_log_level(self) -> None:

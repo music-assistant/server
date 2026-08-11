@@ -9,7 +9,8 @@ Music Assistant is an async Python music library manager that connects to stream
 ## Development Commands
 
 - `scripts/setup.sh` - Initial setup (venv, dependencies, pre-commit hooks). Re-run after pulling latest code.
-- `pytest` - Run all tests
+- `pytest` - Run all tests (add `-n auto --dist loadfile` to run in parallel)
+- `pytest --cov music_assistant` - Run all tests with coverage
 - `pytest tests/specific_test.py` - Run a specific test file
 - `pre-commit run --all-files` - Run all pre-commit hooks
 - `python -m music_assistant --log-level debug` - Run server locally (localhost:8095)
@@ -56,6 +57,7 @@ Private methods should be at the bottom of the file, public at the top.
 
 - All PRs target `dev` (primary development branch). `stable` is for production releases.
 - PRs labeled `bugfix` + `backport-to-stable` are automatically backported to `stable` — use only for bugs also present in `stable`.
+- Backporting a **schema change** permanently diverges `DB_SCHEMA_VERSION` between the branches and needs an extra dev-side guard migration; see `music_assistant/controllers/music/README.md`.
 
 ## Debugging
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -20,12 +20,14 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
     ArtistSummary,
     Audiobook,
     ItemMapping,
+    MediaCollection,
     ProviderMapping,
     Track,
 )
@@ -43,7 +45,6 @@ from music_assistant.helpers.compare import (
     compare_artist,
     compare_strings,
     compare_track,
-    create_safe_string,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
@@ -319,17 +320,47 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id, provider_instance_id_or_domain, limit=limit
         )
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def audiobooks(
+            self,
+            item_id: str,
+            provider_instance_id_or_domain: str,
+            artist_type: ArtistType = ArtistType.AUTHOR,
+            in_library_only: bool = False,
+            *,
+            collapse_collections: Literal[False] = False,
+        ) -> list[Audiobook]: ...
+
+        @overload
+        async def audiobooks(
+            self,
+            item_id: str,
+            provider_instance_id_or_domain: str,
+            artist_type: ArtistType = ArtistType.AUTHOR,
+            in_library_only: bool = False,
+            *,
+            collapse_collections: Literal[True],
+        ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
+
     async def audiobooks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         artist_type: ArtistType = ArtistType.AUTHOR,
         in_library_only: bool = False,
-    ) -> list[Audiobook]:
+        *,
+        collapse_collections: bool = False,
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Return audiobooks for an artist.
 
         Artist_type can be omitted for in-library artists.
+
+        :param collapse_collections: Collapse available collections. Only applies to
+            in-library items; when in_library_only is False, provider items are
+            appended as plain audiobooks alongside the collapsed collections.
         """
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
@@ -355,15 +386,23 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
 
         db_items = await self.get_library_author_narrator_audiobooks(
-            library_artist.item_id, artist_type=library_artist.artist_type
+            library_artist.item_id,
+            artist_type=library_artist.artist_type,
+            collapse_collections=collapse_collections,
         )
-        result: list[Audiobook] = db_items
+        result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
             # return in-library items only
             return result
         # return all (unique) items from all providers
         # initialize unique_ids with db_items to prevent duplicates
-        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_ids: set[str] = set()
+        for item in db_items:
+            if isinstance(item, MediaCollection):
+                for collection_item in item.items:
+                    unique_ids.add(f"{collection_item.name}.{collection_item.version}")
+            else:
+                unique_ids.add(f"{item.name}.{item.version}")
         unique_providers = self.mass.music.get_unique_providers()
         audiobook_method = (
             self.get_provider_author_audiobooks
@@ -394,7 +433,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: str | int,
         artist_type: ArtistType,
-    ) -> list[Audiobook]:
+        *,
+        collapse_collections: bool = False,
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """Return all in-library audiobooks for an author/ narrator."""
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
@@ -408,6 +449,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.mass.music.audiobooks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
+            collapse_collections=collapse_collections,
         )
 
     async def get_provider_author_audiobooks(
