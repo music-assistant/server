@@ -17,10 +17,11 @@ NOW = 1_000_000.0
 
 
 def _tracks(count: int = 4, prefix: str = "S") -> list[dict[str, Any]]:
-    """Build `count` raw Pandora track dicts with distinct music ids."""
+    """Build `count` raw Pandora track dicts with distinct Pandora ids."""
     return [
         {
             "musicId": f"{prefix}{index}",
+            "pandoraId": f"TR:{prefix}{index}",
             "stationId": "4360491625318318161",
             "songTitle": f"Song {index}",
             "artistName": "Some Artist",
@@ -44,7 +45,7 @@ def test_urls_expire_on_the_fetch_clock_not_the_activity_clock() -> None:
     """URL life runs from the fetch; handing tracks out does not extend it."""
     fragment = _fragment()
     # busy right up to the TTL, but the URLs were minted at fetch time regardless
-    fragment.mark_resolved("S1", NOW + FRAGMENT_URL_TTL_SECONDS)
+    fragment.mark_resolved("TR:S1", NOW + FRAGMENT_URL_TTL_SECONDS)
     assert fragment.urls_expired(NOW + FRAGMENT_URL_TTL_SECONDS) is False
     assert fragment.urls_expired(NOW + FRAGMENT_URL_TTL_SECONDS + 1) is True
 
@@ -66,7 +67,7 @@ def test_expired_urls_force_a_fetch() -> None:
     """A fragment past its URL TTL must be replaced even if it was busy throughout."""
     fragment = _fragment()
     expired = NOW + FRAGMENT_URL_TTL_SECONDS + 1
-    fragment.mark_resolved("S1", expired)  # activity clock refreshed, fetch clock is not
+    fragment.mark_resolved("TR:S1", expired)  # activity clock refreshed, fetch clock is not
     assert fragment.is_stale(expired) is False
     assert should_fetch_fragment(fragment, expired) is True
 
@@ -90,7 +91,7 @@ def test_stale_fragment_is_refetched() -> None:
 def test_abandoned_playback_is_refetched_once_stale() -> None:
     """Stopping mid-fragment leaves URLs that eventually expire; refetch then."""
     fragment = _fragment()
-    fragment.mark_resolved("S0", NOW)
+    fragment.mark_resolved("TR:S0", NOW)
     later = NOW + FRAGMENT_STALE_SECONDS + 1
     assert should_fetch_fragment(fragment, later) is True
 
@@ -100,7 +101,7 @@ def test_active_playback_never_refetches_mid_fragment() -> None:
     fragment = _fragment()
     # tracks handed out a few minutes apart, as the stream feeder would during playback
     for index, offset in enumerate((0, 300, 600)):
-        fragment.mark_resolved(f"S{index}", NOW + offset)
+        fragment.mark_resolved(f"TR:S{index}", NOW + offset)
         assert should_fetch_fragment(fragment, NOW + offset) is False
     # 900s since the fragment was fetched, but only 300s since the last hand-out:
     # a fetched-at clock would wrongly call this abandoned, a last-activity clock does not
@@ -115,14 +116,14 @@ def test_spent_fragment_advances() -> None:
 def test_mark_resolved_last_track_spends_fragment() -> None:
     """Handing out the final track opens the gate."""
     fragment = _fragment()
-    fragment.mark_resolved("S3", NOW)
+    fragment.mark_resolved("TR:S3", NOW)
     assert fragment.spent is True
 
 
 def test_mark_resolved_earlier_track_does_not_spend() -> None:
     """Handing out a non-final track keeps the gate shut."""
     fragment = _fragment()
-    fragment.mark_resolved("S1", NOW)
+    fragment.mark_resolved("TR:S1", NOW)
     assert fragment.spent is False
 
 
@@ -130,7 +131,7 @@ def test_mark_resolved_refreshes_activity() -> None:
     """Handing out a track restarts the staleness clock."""
     fragment = _fragment()
     later = NOW + FRAGMENT_STALE_SECONDS - 1
-    fragment.mark_resolved("S1", later)
+    fragment.mark_resolved("TR:S1", later)
     assert fragment.last_activity_at == later
     assert fragment.is_stale(later + FRAGMENT_STALE_SECONDS - 1) is False
     assert fragment.is_stale(later + FRAGMENT_STALE_SECONDS + 1) is True
@@ -146,10 +147,10 @@ def test_mark_resolved_unknown_track_is_a_noop() -> None:
 
 
 def test_mark_resolved_records_the_served_id() -> None:
-    """Handing out a track records its musicId so pending can withhold it later."""
+    """Handing out a track records its pandora id so pending can withhold it later."""
     fragment = _fragment()
-    fragment.mark_resolved("S1", NOW)
-    assert fragment.served == {"S1"}
+    fragment.mark_resolved("TR:S1", NOW)
+    assert fragment.served == {"TR:S1"}
 
 
 def test_pending_returns_all_tracks_when_nothing_served() -> None:
@@ -161,23 +162,23 @@ def test_pending_returns_all_tracks_when_nothing_served() -> None:
 def test_pending_excludes_served_tracks_and_preserves_order() -> None:
     """Pending drops served tracks but keeps the remaining ones in fragment order."""
     fragment = _fragment()
-    fragment.mark_resolved("S2", NOW)
+    fragment.mark_resolved("TR:S2", NOW)
     assert [track["musicId"] for track in fragment.pending] == ["S0", "S1", "S3"]
 
 
 def test_fragment_with_every_track_served_is_spent() -> None:
     """Serving every track spends the fragment, so pending never starves a live station."""
     fragment = _fragment()
-    for music_id in ("S0", "S1", "S2", "S3"):
-        fragment.mark_resolved(music_id, NOW)
+    for pandora_id in ("TR:S0", "TR:S1", "TR:S2", "TR:S3"):
+        fragment.mark_resolved(pandora_id, NOW)
     assert fragment.spent is True
     assert fragment.pending == []
 
 
-def test_find_returns_track_by_music_id() -> None:
-    """find() looks a raw track dict up by its Pandora musicId."""
+def test_find_returns_track_by_pandora_id() -> None:
+    """find() looks a raw track dict up by its Pandora id."""
     fragment = _fragment()
-    found = fragment.find("S2")
+    found = fragment.find("TR:S2")
     assert found is not None
     assert found["songTitle"] == "Song 2"
     assert fragment.find("missing") is None
@@ -215,20 +216,20 @@ def test_session_retains_a_bounded_number_of_fragments() -> None:
     assert len(session.fragments) == MAX_RETAINED_FRAGMENTS
 
 
-def test_session_find_track_searches_retained_fragments() -> None:
+def test_session_keeps_played_fragments_resolvable() -> None:
     """Recently played tracks stay resolvable for queue history."""
     session = PandoraStationSession("4360491625318318161")
     session.add_fragment(_tracks(prefix="old"), NOW)
     session.add_fragment(_tracks(prefix="new"), NOW)
-    assert session.find_track("old1") is not None
-    assert session.find_track("new1") is not None
-    assert session.find_track("gone") is None
+    assert any(fragment.find("TR:old1") for fragment in session.fragments)
+    assert any(fragment.find("TR:new1") for fragment in session.fragments)
+    assert not any(fragment.find("gone") for fragment in session.fragments)
 
 
-def test_session_find_track_drops_evicted_fragments() -> None:
+def test_session_drops_evicted_fragments() -> None:
     """A fragment pushed out of the deque is no longer resolvable."""
     session = PandoraStationSession("4360491625318318161")
     session.add_fragment(_tracks(prefix="first"), NOW)
     for index in range(MAX_RETAINED_FRAGMENTS):
         session.add_fragment(_tracks(prefix=f"later{index}_"), NOW)
-    assert session.find_track("first1") is None
+    assert not any(fragment.find("TR:first1") for fragment in session.fragments)

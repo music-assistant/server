@@ -15,6 +15,7 @@ from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
 from music_assistant.providers.pandora.fragments import (
     FRAGMENT_STALE_SECONDS,
     FRAGMENT_URL_TTL_SECONDS,
+    MAX_RETAINED_FRAGMENTS,
 )
 from music_assistant.providers.pandora.provider import PandoraProvider
 
@@ -22,10 +23,11 @@ STATION_ID = "4360491625318318161"
 
 
 def _tracks(count: int = 4, prefix: str = "S") -> list[dict[str, Any]]:
-    """Build `count` raw Pandora track dicts with distinct music ids."""
+    """Build `count` raw Pandora track dicts with distinct Pandora ids."""
     return [
         {
             "musicId": f"{prefix}{index}",
+            "pandoraId": f"TR:{prefix}{index}",
             "stationId": STATION_ID,
             "songTitle": f"Song {index}",
             "artistName": "Some Artist",
@@ -58,6 +60,7 @@ def _provider(
     provider.manifest = Mock(domain="pandora")
     provider.config = Mock(instance_id="pandora--test")
     provider.logger = Mock()
+    provider.http_session = Mock(closed=False)
     provider._sessions = {}
     provider._high_quality_available = False
     pending = list(payloads or [_tracks()])
@@ -76,6 +79,45 @@ def _provider(
 
     provider._api_request = _fake_api_request  # type: ignore[method-assign, assignment]
     return provider
+
+
+async def test_album_is_addressed_by_its_tracks_id() -> None:
+    """A fragment names no album, so the track's id stands in - and it must round-trip."""
+    provider = _provider()
+    await provider.get_playlist_tracks(STATION_ID)
+    album = await provider.get_album("TR:S0")
+    assert album.item_id == "TR:S0"
+    assert album.name == "Some Album"
+
+
+async def test_album_is_gone_once_its_track_ages_out() -> None:
+    """A track-keyed album only exists while the fragment naming it is still retained."""
+    prefixes = [chr(ord("A") + index) for index in range(MAX_RETAINED_FRAGMENTS + 1)]
+    provider = _provider([_tracks(prefix=prefix) for prefix in prefixes])
+    for prefix in prefixes:
+        await provider.get_playlist_tracks(STATION_ID)
+        await provider.get_stream_details(f"TR:{prefix}3", MediaType.TRACK)
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_album("TR:A0")
+
+
+async def test_artist_is_identified_by_name() -> None:
+    """Pandora names a fragment's artist but never identifies it, so the name is the id."""
+    provider = _provider()
+    artist = await provider.get_artist("Some Artist")
+    assert artist.item_id == "Some Artist"
+    assert artist.name == "Some Artist"
+
+
+async def test_get_track_matches_playlist_tracks_identity() -> None:
+    """A track resolves to the same album and artist by either entry point."""
+    provider = _provider()
+    listed = (await provider.get_playlist_tracks(STATION_ID))[0]
+    looked_up = await provider.get_track("TR:S0")
+    assert looked_up.album is not None
+    assert listed.album is not None
+    assert looked_up.album.item_id == listed.album.item_id
+    assert looked_up.artists[0].item_id == listed.artists[0].item_id
 
 
 async def test_search_returns_a_matching_station_as_a_playlist() -> None:
@@ -130,7 +172,52 @@ async def test_first_request_returns_a_fragment() -> None:
     """A station with no session yet fetches and returns its first fragment."""
     provider = _provider()
     tracks = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in tracks] == [f"{STATION_ID}_S{i}" for i in range(4)]
+    assert [track.item_id for track in tracks] == [f"TR:S{i}" for i in range(4)]
+
+
+async def test_track_id_is_the_bare_pandora_id() -> None:
+    """A track is identified by Pandora's own catalogue id, not by station and musicId."""
+    provider = _provider()
+    tracks = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in tracks] == [f"TR:S{index}" for index in range(4)]
+
+
+async def test_the_same_song_from_two_stations_is_one_item() -> None:
+    """Station context must not fork a song's identity - that is two library rows."""
+    provider = _provider()
+    first = await provider.get_playlist_tracks("station-a")
+    second = await provider.get_playlist_tracks("station-b")
+    assert first[0].item_id == second[0].item_id
+
+
+async def test_a_track_without_a_pandora_id_is_not_served() -> None:
+    """A track lacking a pandoraId cannot be handed to the queue: the id is identity now."""
+    usable = _tracks(count=2)
+    unusable = _tracks(count=2, prefix="X")
+    for track in unusable:
+        del track["pandoraId"]
+    provider = _provider(payloads=[usable + unusable])
+    tracks = await provider.get_playlist_tracks(STATION_ID)
+    assert [track.item_id for track in tracks] == ["TR:S0", "TR:S1"]
+
+
+async def test_a_fragment_with_no_identifiable_track_is_refused() -> None:
+    """Retaining a fragment nothing can be served from would stall the station."""
+    tracks = _tracks()
+    for track in tracks:
+        del track["pandoraId"]
+    provider = _provider(payloads=[tracks])
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_playlist_tracks(STATION_ID)
+
+
+async def test_stream_details_resolve_without_station_context() -> None:
+    """A bare pandoraId resolves against whichever session holds it."""
+    provider = _provider()
+    await provider.get_playlist_tracks(STATION_ID)
+    details = await provider.get_stream_details("TR:S1", MediaType.TRACK)
+    assert details.item_id == "TR:S1"
+    assert details.stream_type == StreamType.HTTP
 
 
 async def test_browse_then_play_returns_the_same_batch() -> None:
@@ -151,20 +238,20 @@ async def test_refill_serves_the_live_fragment_without_refetching() -> None:
     """
     provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
     await provider.get_playlist_tracks(STATION_ID)
-    await provider.get_stream_details(f"{STATION_ID}_A0", MediaType.TRACK)
+    await provider.get_stream_details("TR:A0", MediaType.TRACK)
     tracks = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in tracks] == [f"{STATION_ID}_A{i}" for i in range(1, 4)]
-    assert f"{STATION_ID}_A0" not in [track.item_id for track in tracks]
+    assert [track.item_id for track in tracks] == [f"TR:A{i}" for i in range(1, 4)]
+    assert "TR:A0" not in [track.item_id for track in tracks]
 
 
 async def test_replay_after_stopping_mid_fragment_still_builds_a_queue() -> None:
     """Stopping after one track and playing again must not yield an empty queue."""
     provider = _provider()
     await provider.get_playlist_tracks(STATION_ID)
-    await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
     # user stops, then presses play again on the same station
     replayed = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in replayed] == [f"{STATION_ID}_S{i}" for i in range(1, 4)]
+    assert [track.item_id for track in replayed] == [f"TR:S{i}" for i in range(1, 4)]
 
 
 async def test_empty_fragment_is_not_retained() -> None:
@@ -189,7 +276,7 @@ async def test_track_with_null_song_title_gets_a_fallback_name() -> None:
     tracks[0]["songTitle"] = None
     provider = _provider([tracks])
     result = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in result] == [f"{STATION_ID}_S{i}" for i in range(4)]
+    assert [track.item_id for track in result] == [f"TR:S{i}" for i in range(4)]
     assert result[0].name == "Unknown Song"
 
 
@@ -212,48 +299,29 @@ async def test_track_with_null_album_title_gets_a_fallback_name() -> None:
     assert result[0].album.name == "Unknown Album"
 
 
-async def test_track_missing_station_id_is_dropped_not_crashed() -> None:
-    """A track without a stationId can't form a track id; drop it instead of raising."""
-    tracks = _tracks()
-    del tracks[0]["stationId"]
-    provider = _provider([tracks])
-    result = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in result] == [f"{STATION_ID}_S{i}" for i in range(1, 4)]
-
-
-async def test_fragment_of_only_malformed_tracks_raises_media_not_found() -> None:
-    """If every track in a fragment is dropped, that's the empty-fragment error, not a crash."""
-    tracks = _tracks()
-    for track in tracks:
-        del track["stationId"]
-    provider = _provider([tracks])
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_playlist_tracks(STATION_ID)
-
-
 async def test_track_with_a_sized_art_entry_missing_url_does_not_crash() -> None:
     """A size-500 art entry without a url key must not raise KeyError while parsing album art."""
     tracks = _tracks()
     tracks[0]["albumArt"] = [{"size": 500}]
     provider = _provider([tracks])
     result = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in result] == [f"{STATION_ID}_S{i}" for i in range(4)]
+    assert [track.item_id for track in result] == [f"TR:S{i}" for i in range(4)]
 
 
 async def test_refill_advances_once_the_last_track_is_resolved() -> None:
     """Resolving the final track opens the gate for the next fragment."""
     provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
     await provider.get_playlist_tracks(STATION_ID)
-    await provider.get_stream_details(f"{STATION_ID}_A3", MediaType.TRACK)
+    await provider.get_stream_details("TR:A3", MediaType.TRACK)
     tracks = await provider.get_playlist_tracks(STATION_ID)
-    assert [track.item_id for track in tracks] == [f"{STATION_ID}_B{i}" for i in range(4)]
+    assert [track.item_id for track in tracks] == [f"TR:B{i}" for i in range(4)]
 
 
 async def test_stream_details_point_at_the_pandora_url() -> None:
     """The provider streams by URL and never buffers audio itself."""
     provider = _provider()
     await provider.get_playlist_tracks(STATION_ID)
-    details = await provider.get_stream_details(f"{STATION_ID}_S1", MediaType.TRACK)
+    details = await provider.get_stream_details("TR:S1", MediaType.TRACK)
     assert details.stream_type is StreamType.HTTP
     assert details.path == "https://audio-sv5-t3-2.pandora.com/access/1.mp4"
     assert details.duration == 180
@@ -265,10 +333,10 @@ async def test_stream_details_for_an_evicted_track_raises() -> None:
     """A track outside the live fragment has a dead URL; fail loudly instead of serving it."""
     provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
     await provider.get_playlist_tracks(STATION_ID)
-    await provider.get_stream_details(f"{STATION_ID}_A3", MediaType.TRACK)
+    await provider.get_stream_details("TR:A3", MediaType.TRACK)
     await provider.get_playlist_tracks(STATION_ID)
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details(f"{STATION_ID}_A0", MediaType.TRACK)
+        await provider.get_stream_details("TR:A0", MediaType.TRACK)
 
 
 async def test_stream_details_after_the_urls_expire_raises() -> None:
@@ -284,7 +352,7 @@ async def test_stream_details_after_the_urls_expire_raises() -> None:
     assert fragment is not None
     fragment.fetched_at -= FRAGMENT_URL_TTL_SECONDS + 1
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
+        await provider.get_stream_details("TR:S0", MediaType.TRACK)
 
 
 async def test_stream_details_after_an_ordinary_pause_still_serves() -> None:
@@ -300,7 +368,7 @@ async def test_stream_details_after_an_ordinary_pause_still_serves() -> None:
     assert fragment is not None
     fragment.last_activity_at -= FRAGMENT_STALE_SECONDS + 1
     assert fragment.is_stale(time.time()) is True
-    details = await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.TRACK)
+    details = await provider.get_stream_details("TR:S0", MediaType.TRACK)
     assert details.path == "https://audio-sv5-t3-2.pandora.com/access/0.mp4"
 
 
@@ -308,23 +376,24 @@ async def test_stream_details_rejects_other_media_types() -> None:
     """Stations expose tracks only; radio is gone."""
     provider = _provider()
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details(f"{STATION_ID}_S0", MediaType.RADIO)
+        await provider.get_stream_details("TR:S0", MediaType.RADIO)
 
 
-async def test_stream_details_rejects_a_malformed_id() -> None:
-    """An id without the station prefix (e.g. a legacy radio id) must not raise ValueError."""
+async def test_unknown_track_id_is_refused() -> None:
+    """An id no retained fragment holds cannot be streamed."""
     provider = _provider()
+    await provider.get_playlist_tracks(STATION_ID)
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details("12345", MediaType.TRACK)
+        await provider.get_stream_details("TR:not-a-real-track", MediaType.TRACK)
 
 
 async def test_get_track_resolves_from_retained_fragments() -> None:
     """Queue history keeps working for tracks whose fragment is no longer live."""
     provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
     await provider.get_playlist_tracks(STATION_ID)
-    await provider.get_stream_details(f"{STATION_ID}_A3", MediaType.TRACK)
+    await provider.get_stream_details("TR:A3", MediaType.TRACK)
     await provider.get_playlist_tracks(STATION_ID)
-    track = await provider.get_track(f"{STATION_ID}_A0")
+    track = await provider.get_track("TR:A0")
     assert track.name == "Song 0"
 
 
@@ -332,4 +401,4 @@ async def test_get_track_unknown_raises() -> None:
     """An id from no retained fragment is genuinely gone."""
     provider = _provider()
     with pytest.raises(MediaNotFoundError):
-        await provider.get_track(f"{STATION_ID}_nope")
+        await provider.get_track("TR:nope")

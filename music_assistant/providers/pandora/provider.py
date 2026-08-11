@@ -243,38 +243,36 @@ class PandoraProvider(MusicProvider):
         """Get streamdetails for a station track."""
         if media_type != MediaType.TRACK:
             raise MediaNotFoundError(f"Unsupported media type: {media_type}")
-        if "_" not in item_id:
-            raise MediaNotFoundError(f"Not a Pandora station track: {item_id}")
-        station_id, music_id = item_id.split("_", 1)
-        # .get, not _get_or_create_session: an unknown station must not evict a live one
-        session = self._sessions.get(station_id)
-        fragment = session.current if session else None
-        if fragment is None or (track := fragment.find(music_id)) is None:
-            # an older fragment's signed URL may already be expired and there is no way to
-            # tell from here, so refuse it rather than hand ffmpeg a link that 403s mid-track
-            raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
         now = time.time()
-        if fragment.urls_expired(now):
-            # the signed URLs have outlived their TTL, which is what a long pause looks like
-            # from here. Refusing keeps the failure named rather than an opaque ffmpeg error.
-            # Note this asks a different question from is_stale: a fragment can be idle long
-            # enough to be worth replacing while its URLs are still perfectly playable, and
-            # refusing those would break resuming after an ordinary pause.
-            raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
-        fragment.mark_resolved(music_id, now)
-        duration = int(track.get("trackLength") or 0)
-        can_seek = duration > 0
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=self._audio_format(),
-            media_type=MediaType.TRACK,
-            stream_type=StreamType.HTTP,
-            path=track["audioURL"],
-            duration=duration,
-            can_seek=can_seek,
-            allow_seek=can_seek,
-        )
+        for session in self._sessions.values():
+            fragment = session.current
+            # only the live fragment: an older one's signed URL may already be expired and
+            # there is no way to tell from here, so refuse rather than hand ffmpeg a link
+            # that 403s mid-track
+            if fragment is None or (track := fragment.find(item_id)) is None:
+                continue
+            if fragment.urls_expired(now):
+                # the signed URLs have outlived their TTL, which is what a long pause looks
+                # like from here. Refusing keeps the failure named rather than an opaque
+                # ffmpeg error. Note this asks a different question from is_stale: a fragment
+                # can be idle long enough to be worth replacing while its URLs are still
+                # perfectly playable, and refusing those would break resuming after a pause.
+                raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
+            fragment.mark_resolved(item_id, now)
+            duration = int(track.get("trackLength") or 0)
+            can_seek = duration > 0
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=self._audio_format(),
+                media_type=MediaType.TRACK,
+                stream_type=StreamType.HTTP,
+                path=track["audioURL"],
+                duration=duration,
+                can_seek=can_seek,
+                allow_seek=can_seek,
+            )
+        raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
 
     async def takeover_stream(self) -> None:
         """
@@ -477,8 +475,7 @@ class PandoraProvider(MusicProvider):
             track
             for track in result.get("tracks", [])
             if track.get("audioURL")
-            and track.get("musicId")
-            and track.get("stationId")
+            and track.get("pandoraId")
             and "curator message" not in (track.get("songTitle") or "").lower()
         ]
         if not tracks:
@@ -509,13 +506,17 @@ class PandoraProvider(MusicProvider):
         return session
 
     def _find_track(self, prov_track_id: str) -> dict[str, Any] | None:
-        """Return raw track data from a station's retained fragments."""
-        if "_" not in prov_track_id:
-            return None
-        station_id, music_id = prov_track_id.split("_", 1)
-        if (session := self._sessions.get(station_id)) is None:
-            return None
-        return session.find_track(music_id)
+        """
+        Return raw track data for the given Pandora id from any retained fragment.
+
+        The id no longer names a station, so every retained session is searched. At most ten
+        sessions hold at most four fragments of about four tracks, so this stays small.
+        """
+        for session in self._sessions.values():
+            for fragment in reversed(session.fragments):
+                if (track := fragment.find(prov_track_id)) is not None:
+                    return track
+        return None
 
     def _parse_station(self, station: dict[str, Any]) -> Playlist:
         """Parse a station object into a dynamic playlist."""
@@ -550,7 +551,7 @@ class PandoraProvider(MusicProvider):
     def _parse_track(self, obj: dict[str, Any]) -> Track:
         """Parse a raw fragment track into a Track."""
         name, version = parse_title_and_version(obj.get("songTitle") or "Unknown Song")
-        track_id = f"{obj['stationId']}_{obj['musicId']}"
+        track_id = obj["pandoraId"]
         track = Track(
             item_id=track_id,
             provider=self.instance_id,
