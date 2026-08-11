@@ -1836,6 +1836,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if field in (SortField.RANDOM, SortField.RANDOM_PLAY_COUNT):
             return sql_field
 
+        # Qualify bare column names with table name to avoid ambiguity when JOINs are present
+        if "." not in sql_field and "(" not in sql_field:
+            sql_field = f"{self.db_table}.{sql_field}"
+
         # Apply direction
         if direction:
             return f"{sql_field} {direction.value.upper()}"
