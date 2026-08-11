@@ -814,8 +814,8 @@ class SendspinProvider(PlayerProvider):
 
         :param pairing_token: The calling web player's version 0 pairing token.
         """
-        # The client id comes from the caller's own authenticated Sendspin session, so this
-        # cannot pair a client the caller merely names.
+        # The client id comes from the caller's own Sendspin session, not a command argument,
+        # though the session takes it from the client's own unverified auth message.
         client_id = get_sendspin_player_id()
         if client_id is None:
             raise InvalidCommand("This connection has no Sendspin web player")
