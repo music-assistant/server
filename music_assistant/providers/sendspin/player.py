@@ -20,7 +20,11 @@ from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerComman
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.models.visualizer import BeatAvailability, BeatTiming
 from aiosendspin.noise.driver import HandshakeAbortedError
-from aiosendspin.noise.pairing import PairingError
+from aiosendspin.noise.pairing import (
+    SERVER_FIRST_MESSAGE_TIMEOUT_S,
+    SERVER_GESTURE_TIMEOUT_S,
+    PairingError,
+)
 from aiosendspin.noise.trust_store import PskCategory
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -94,6 +98,7 @@ from .constants import (
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
     PAIR_METHOD_TOKEN,
@@ -108,6 +113,7 @@ from .helpers import (
     effective_unpaired_access,
     error_alert,
     mac_from_bridge_client_id,
+    pair_method_descriptor,
 )
 from .playback import SendspinPlaybackSession
 
@@ -196,8 +202,9 @@ _MANAGEMENT_ACTIONS = {
     ),
 }
 
-# Seconds the setup flow waits for the device to enter pairing mode (show its PIN).
-PAIR_GESTURE_TIMEOUT = 120.0
+# Seconds the setup flow gives the operator to enter the PIN. Advisory: the authoritative end
+# is the device's own attempt timeout (spec-recommended 2 minutes), which aborts the attempt.
+PAIR_PIN_ENTRY_TIMEOUT = 120.0
 # Seconds the setup flow waits for pairing to complete after the PIN is submitted.
 PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
@@ -207,9 +214,28 @@ CAST_APP_READY_TIMEOUT = 30.0
 # anything else falls back to the generic "pairing_failed" abort.
 _PAIRING_ABORT_REASONS = {
     "pairing_error_concurrent": "pairing_error_concurrent",
-    "pairing_error_locked_out": "pairing_error_locked_out",
     "pairing_error_no_pin_method": "no_pair_methods",
     "pairing_error_not_connected": "pairing_error_not_connected",
+}
+
+# How the operator gets a method's secret, per the device's own descriptor hints: where a
+# configured secret is found, or which channel conveys a per-session PIN. Values outside these
+# maps render nothing.
+_SECRET_HINT_LABELS = {
+    PairMethod.STATIC_PIN: {
+        "device": "static_pin_location_device",
+        "leaflet": "static_pin_location_leaflet",
+        "operator": "static_pin_location_operator",
+    },
+    PairMethod.PAIRING_PSK: {
+        "device": "pairing_psk_location_device",
+        "leaflet": "pairing_psk_location_leaflet",
+        "operator": "pairing_psk_location_operator",
+    },
+    PairMethod.DYNAMIC_PIN: {
+        "display": "dynamic_pin_channel_display",
+        "speaker": "dynamic_pin_channel_speaker",
+    },
 }
 
 
@@ -687,7 +713,7 @@ class SendspinBasePlayer(Player):
             if management_config is not None:
                 entries.extend(self._management_section_entries(management_config))
                 return entries
-        entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER, advanced=True))
+        entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER))
         entries.append(action_entry(CONF_ACTION_UNPAIR, advanced=True))
         return entries
 
@@ -731,7 +757,7 @@ class SendspinBasePlayer(Player):
         if method is None:
             return []
         action = disable_action if method.enabled else enable_action
-        return [action_entry(action)]
+        return [action_entry(action, advanced=True)]
 
     async def _handle_security_action(
         self, provider: SendspinProvider, action: str
@@ -781,13 +807,14 @@ class SendspinBasePlayer(Player):
             descriptor.method
             for descriptor in pair_methods
             if descriptor.method in (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
-            and not descriptor.locked_out
         }
         options: list[str] = []
         if usable_pin_methods:
-            options.append(PAIR_METHOD_PIN)
-            # Static PIN is only a distinct, meaningful choice when both PIN methods are usable.
-            if usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}:
+            # Static PIN is only a distinct, meaningful choice when both PIN methods are usable;
+            # opposite it the other option names the dynamic PIN rather than PINs in general.
+            both_pin_methods = usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}
+            options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
+            if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
         if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
             options.append(PAIR_METHOD_TOKEN)
@@ -815,7 +842,7 @@ class SendspinBasePlayer(Player):
         info = self.api.info_or_none
         pairing_config = provider.pairing_config_snapshot(self.player_id)
         offers_dynamic_pin = any(
-            descriptor.method is PairMethod.DYNAMIC_PIN and not descriptor.locked_out
+            descriptor.method is PairMethod.DYNAMIC_PIN
             for descriptor in effective_pair_methods(info, pairing_config)
         )
         # presence proven by a dynamic-PIN pairing itself needs no re-verification
@@ -832,10 +859,10 @@ class SendspinBasePlayer(Player):
         verify: bool = False,
     ) -> None:
         """
-        Pair via PIN: gesture wait, PIN entry and the retry-in-place loop.
+        Pair via PIN: the device wait, PIN entry and the retry-in-place loop.
 
         A retryable failure re-renders the PIN form (start_pin_pairing resumes the session in
-        place); a terminal failure aborts the flow and an expired gesture wait propagates as a
+        place); a terminal failure aborts the flow and an expired device wait propagates as a
         timed_out abort. On any non-success exit the finally tears down a device-side session
         still in flight - including when the flow is cancelled.
 
@@ -852,13 +879,7 @@ class SendspinBasePlayer(Player):
                     )
                 except SecurityActionError as err:
                     raise AbortFlow(_pairing_abort_reason(err)) from err
-                if pin_session.awaiting_gesture:
-                    await session.progress_until(
-                        pin_session.pin_request_event.wait(),
-                        step_id="awaiting_gesture",
-                        text="awaiting_gesture",
-                        expires_in=PAIR_GESTURE_TIMEOUT,
-                    )
+                await self._await_pin_request(session, pin_session)
                 if not pin_session.awaiting_pin:
                     # The attempt ended before a PIN could be entered.
                     if await self._pairing_succeeded(provider, pin_session):
@@ -868,11 +889,18 @@ class SendspinBasePlayer(Player):
                         errors = {"base": _pin_error_slug(pin_session.error)}
                         continue
                     raise AbortFlow(_pairing_abort_reason(pin_session.error))
-                pin_values = await session.form(
-                    [ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)],
-                    step_id="verify_pin" if verify else "enter_pin",
-                    errors=errors,
-                )
+                try:
+                    pin_values = await session.form(
+                        self._pin_form_entries(provider, pin_session),
+                        step_id="verify_pin" if verify else "enter_pin",
+                        errors=errors,
+                        expires_in=PAIR_PIN_ENTRY_TIMEOUT,
+                    )
+                except StepExpiredError:
+                    # The countdown mirrors the device's attempt timeout, which aborts the
+                    # attempt around now; retry in place rather than dropping the flow.
+                    errors = {"base": "pairing_error_timeout"}
+                    continue
                 errors = None
                 try:
                     provider.submit_pin(self.player_id, str(pin_values[CONF_PAIRING_PIN]).strip())
@@ -903,6 +931,67 @@ class SendspinBasePlayer(Player):
             elif provider.get_pin_session(self.player_id) is not None:
                 await provider.cancel_pin_pairing(self.player_id)
 
+    async def _await_pin_request(
+        self,
+        session: SetupSession,
+        pin_session: PinPairingSession,
+    ) -> None:
+        """Wait until the device asks for its PIN, showing what it is waiting on."""
+        if pin_session.awaiting_first_message:
+            await session.progress_until(
+                pin_session.wait_first_message(),
+                step_id="awaiting_device",
+                text="awaiting_device",
+                expires_in=SERVER_FIRST_MESSAGE_TIMEOUT_S,
+            )
+        if pin_session.awaiting_gesture:
+            await session.progress_until(
+                pin_session.wait_pin_request(),
+                step_id="awaiting_gesture",
+                text="awaiting_gesture",
+                expires_in=SERVER_GESTURE_TIMEOUT_S,
+            )
+
+    def _pin_form_entries(
+        self, provider: SendspinProvider, pin_session: PinPairingSession
+    ) -> list[ConfigEntry]:
+        """Return the PIN form fields, hinting how the operator gets the PIN and how long it is."""
+        entries = self._secret_hint_entries(provider, pin_session.method)
+        if pin_session.pin_length is not None:
+            entries.append(
+                ConfigEntry(
+                    key="dynamic_pin_digits",
+                    type=ConfigEntryType.LABEL,
+                    translation_params=[str(pin_session.pin_length)],
+                )
+            )
+        entries.append(
+            ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)
+        )
+        return entries
+
+    def _secret_hint_entries(
+        self, provider: SendspinProvider, method: PairMethod
+    ) -> list[ConfigEntry]:
+        """Return LABEL entries for the device's hints on obtaining a method's pairing secret."""
+        descriptor = pair_method_descriptor(
+            effective_pair_methods(
+                self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
+            ),
+            method,
+        )
+        if descriptor is None:
+            return []
+        hints = (
+            descriptor.out_channels if method is PairMethod.DYNAMIC_PIN else descriptor.locations
+        )
+        labels = _SECRET_HINT_LABELS[method]
+        return [
+            ConfigEntry(key=key, type=ConfigEntryType.LABEL)
+            for hint in hints or []
+            if (key := labels.get(hint)) is not None
+        ]
+
     async def _run_token_pairing_flow(
         self, session: SetupSession, provider: SendspinProvider
     ) -> None:
@@ -910,7 +999,10 @@ class SendspinBasePlayer(Player):
         errors: dict[str, str] | None = None
         while True:
             token_values = await session.form(
-                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                [
+                    *self._secret_hint_entries(provider, PairMethod.PAIRING_PSK),
+                    ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True),
+                ],
                 step_id="enter_token",
                 errors=errors,
             )

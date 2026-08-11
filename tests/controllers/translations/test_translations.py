@@ -16,10 +16,16 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    FlowStepType,
+    MediaType,
+    ProviderType,
+)
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
@@ -505,6 +511,29 @@ def test_core_owned_strings_moved_out_of_common() -> None:
     # genuinely shared network config (built by several modules) stays in common
     assert "common.config_entries.bind_ip.label" in source
     assert "common.config_entries.bind_port.label" in source
+
+
+def test_setup_flow_finish_library_sync_is_shared() -> None:
+    """
+    The FINISH step explaining the initial library import resolves for any music provider.
+
+    The copy is authored once in common, so a provider that ships no strings of its own still
+    gets it via the owner -> common fallback.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    step = SetupFlowStep(
+        flow_id="test",
+        step_id="finish_library_sync",
+        type=FlowStepType.FINISH,
+        translation_owner="provider.qobuz",
+    )
+    with _active_resolver(ctrl, None):
+        serialized = step.to_dict()
+    assert (
+        serialized["description"]
+        == ctrl._source["common.setup_flow.finish_library_sync.description"]
+    )
 
 
 def test_config_action_result_localized_serialization() -> None:

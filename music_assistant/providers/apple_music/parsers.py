@@ -261,9 +261,9 @@ def parse_track(
     if track_number := attributes.get("trackNumber"):
         track.track_number = track_number
     # Prefer catalog information over library information for artists.
-    if "artists" in relationships:
-        artists = relationships["artists"]
-        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
+    # The artists relationship is empty when the artists are not in the user's library.
+    if artists_data := relationships.get("artists", {}).get("data"):
+        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists_data])
     elif artist_name := normalize_unicode(
         attributes.get("artistName") or raw_attributes.get("artistName")
     ):

@@ -26,12 +26,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     IdentifierType,
     MediaType,
@@ -90,6 +92,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
     CONF_VOLUME_CONTROL,
+    CONF_VOLUME_STEP,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -118,7 +121,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from music_assistant_models.config_entries import (
-        ConfigEntry,
         CoreConfig,
         PlayerConfig,
     )
@@ -240,7 +242,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
-        return ()
+        return (
+            ConfigEntry(
+                key=CONF_VOLUME_STEP,
+                type=ConfigEntryType.INTEGER,
+                default_value=0,
+                range=(0, 10),
+                required=False,
+                category="generic",
+            ),
+        )
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -813,13 +824,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             await self.cmd_group_volume_up(player_id)
             return
         current_volume = player.state.volume_level or 0
-        if current_volume < 10 or current_volume > 90:
-            step_size = 1
-        elif current_volume < 30 or current_volume > 70:
-            step_size = 2
-        else:
-            step_size = 3
-        new_volume = min(100, current_volume + step_size)
+        new_volume = min(100, current_volume + self._get_volume_step(current_volume))
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down", required_scope=Scope.PLAYERS_CONTROL)
@@ -836,13 +841,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             await self.cmd_group_volume_down(player_id)
             return
         current_volume = player.state.volume_level or 0
-        if current_volume < 10 or current_volume > 90:
-            step_size = 1
-        elif current_volume < 30 or current_volume > 70:
-            step_size = 2
-        else:
-            step_size = 3
-        new_volume = max(0, current_volume - step_size)
+        new_volume = max(0, current_volume - self._get_volume_step(current_volume))
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume", required_scope=Scope.PLAYERS_CONTROL)
@@ -886,13 +885,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         cur_volume = group_player_state.group_volume
         if cur_volume is None:
             return
-        if cur_volume < 10 or cur_volume > 90:
-            step_size = 1
-        elif cur_volume < 30 or cur_volume > 70:
-            step_size = 2
-        else:
-            step_size = 3
-        new_volume = min(100, cur_volume + step_size)
+        new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
         await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_down", required_scope=Scope.PLAYERS_CONTROL)
@@ -908,13 +901,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         cur_volume = group_player_state.group_volume
         if cur_volume is None:
             return
-        if cur_volume < 10 or cur_volume > 90:
-            step_size = 1
-        elif cur_volume < 30 or cur_volume > 70:
-            step_size = 2
-        else:
-            step_size = 3
-        new_volume = max(0, cur_volume - step_size)
+        new_volume = max(0, cur_volume - self._get_volume_step(cur_volume))
         await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_mute", required_scope=Scope.PLAYERS_CONTROL)
@@ -2478,6 +2465,21 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             for conf_key in (CONF_POWER_CONTROL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
             if (value := self.mass.config.get_raw_player_config_value(player_id, conf_key))
         }
+
+    def _get_volume_step(self, current_volume: int) -> int:
+        """
+        Return the step size for a single volume increment at the given level.
+
+        A configured (non-zero) `volume_step` is a flat step. The default of 0 keeps the
+        adaptive ladder, which takes finer steps near the ends of the range.
+        """
+        if configured := self.get_config_value(CONF_VOLUME_STEP, 0, return_type=int):
+            return configured
+        if current_volume < 10 or current_volume > 90:
+            return 1
+        if current_volume < 30 or current_volume > 70:
+            return 2
+        return 3
 
     def _get_volume_limits(self, player_id: str) -> tuple[int, int]:
         """Get the configured min/max volume limits for a player."""

@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from aiosendspin.models.core import PairMethodDescriptor
-from aiosendspin.models.types import PairAbortReason, PairMethod
+from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
+from aiosendspin.models.types import ManagementResult, PairAbortReason, PairMethod
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.pairing import (
     LocalPairingAbortError,
     PairingError,
+    PairingTimeoutError,
     RemotePairingAbortError,
 )
 
@@ -31,12 +33,13 @@ if TYPE_CHECKING:
     from aiosendspin.noise.pairing import PairingAttempt
     from aiosendspin.server import SendspinServer
     from aiosendspin.server.client import SendspinClient
+    from aiosendspin.server.connection import SendspinConnection
 
     from music_assistant.mass import MusicAssistant
 
 
-def _desc(method: PairMethod, *, locked_out: bool = False) -> PairMethodDescriptor:
-    return PairMethodDescriptor(method=method, locked_out=locked_out)
+def _desc(method: PairMethod, *, min_pin_length: int | None = None) -> PairMethodDescriptor:
+    return PairMethodDescriptor(method=method, min_pin_length=min_pin_length)
 
 
 async def _blocked() -> None:
@@ -59,6 +62,7 @@ class _FakeMass:
         self.loop = loop
         self.timers: dict[str, asyncio.TimerHandle] = {}
         self.tasks: dict[str, asyncio.Task[Any]] = {}
+        self.metadata = SimpleNamespace(locale="nl_NL")
 
     def create_task(
         self, coro: Any, *, task_id: str | None = None, abort_existing: bool = False
@@ -112,6 +116,27 @@ def _timers(provider: SendspinProvider) -> dict[str, asyncio.TimerHandle]:
     return cast("_FakeMass", provider.mass).timers
 
 
+class _FakeConnection:
+    """Connection stand-in serving management requests, recording what the provider asked for."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+        self.management_active = False
+        self.window_result = ManagementResult.OK
+        self.window_error: BaseException | None = None
+        self.window_calls = 0
+
+    async def open_pairing_window(self) -> ManagementResult:
+        self._calls.append("window")
+        self.window_calls += 1
+        if self.window_error is not None:
+            raise self.window_error
+        return self.window_result
+
+    def disable_management(self) -> None:
+        self.management_active = False
+
+
 class _FakeServerApi:
     """Scripts pairing outcomes and records end_pairing calls, mirroring the real wiring."""
 
@@ -121,13 +146,24 @@ class _FakeServerApi:
         *,
         await_pin: bool = True,
         gesture: asyncio.Event | None = None,
+        management_capable: bool = False,
+        connected: bool = True,
     ) -> None:
+        self.calls: list[str] = []
+        self.connection = _FakeConnection(self.calls)
         self._client = cast(
             "SendspinClient",
-            SimpleNamespace(info_or_none=SimpleNamespace(supported_pair_methods=methods)),
+            SimpleNamespace(
+                info_or_none=SimpleNamespace(supported_pair_methods=methods),
+                connection=self.connection,
+                is_connected=connected,
+            ),
         )
         self._await_pin = await_pin
         self._gesture = gesture
+        self._connected = connected
+        self.min_pin_length = 6
+        self.management_capable = management_capable
         self._active_cancel: asyncio.Event | None = None
         self._cancel_requested = False
         self.outcomes: deque[BaseException | None] = deque()
@@ -138,10 +174,23 @@ class _FakeServerApi:
     def get_client(self, client_id: str) -> SendspinClient | None:
         return self._client
 
+    def enable_management(self, client_id: str) -> _FakeConnection:
+        if not self._connected:
+            # Mirrors aiosendspin, which resolves the connection before enabling management.
+            raise ValueError(f"client {client_id} is not connected")
+        if not self.management_capable:
+            msg = "management requires a paired (long-term Sendspin PSK) connection"
+            raise RuntimeError(msg)
+        self.connection.management_active = True
+        return self.connection
+
     async def initiate_pairing(self, client_id: str, attempt: PairingAttempt) -> None:
+        self.calls.append("pair")
         self.initiate_calls += 1
         self.attempts.append(attempt)
         if self._gesture is not None:
+            if attempt.on_pair_pending is not None:
+                attempt.on_pair_pending()
             await self._gesture.wait()
         if self._await_pin and attempt.pin_provider is not None:
             if not self._cancel_requested:
@@ -178,6 +227,7 @@ def _make_provider(
     provider.mass = cast("MusicAssistant", _FakeMass(asyncio.get_running_loop()))
     provider.server_api = cast("SendspinServer", server_api)
     provider._pin_sessions = {}
+    provider._management_sessions = {}
     provider._pairing_config_snapshots = {}
     provider.logger = logging.getLogger("test.sendspin.pin")
     refreshed: list[str] = []
@@ -200,9 +250,17 @@ async def test_session_running_states() -> None:
     )
     assert awaiting.attempt_running
     assert awaiting.awaiting_pin
-    assert awaiting.awaiting_gesture
+    assert awaiting.awaiting_first_message
+    assert not awaiting.awaiting_gesture
     assert not awaiting.can_retry
     assert not awaiting.finished
+
+    gated = PinPairingSession(
+        client_id="c", method=PairMethod.STATIC_PIN, pin_future=awaiting_future, task=running
+    )
+    gated.gesture_event.set()
+    assert gated.awaiting_gesture
+    assert not gated.awaiting_first_message
 
     submitted_future: asyncio.Future[str] = loop.create_future()
     submitted_future.set_result("123456")
@@ -211,7 +269,7 @@ async def test_session_running_states() -> None:
     )
     assert submitted_early.attempt_running
     assert not submitted_early.awaiting_pin
-    assert submitted_early.awaiting_gesture
+    assert submitted_early.awaiting_first_message
 
     in_progress = PinPairingSession(
         client_id="c", method=PairMethod.DYNAMIC_PIN, pin_future=submitted_future, task=running
@@ -220,6 +278,7 @@ async def test_session_running_states() -> None:
     assert in_progress.attempt_running
     assert not in_progress.awaiting_pin
     assert not in_progress.awaiting_gesture
+    assert not in_progress.awaiting_first_message
     running.cancel()
 
 
@@ -242,6 +301,7 @@ async def test_session_terminal_states() -> None:
     assert not retryable.finished
     assert not retryable.awaiting_pin
     assert not retryable.awaiting_gesture
+    assert not retryable.awaiting_first_message
 
     terminal = PinPairingSession(
         client_id="c", method=PairMethod.DYNAMIC_PIN, pin_future=pin_future, task=done
@@ -308,14 +368,12 @@ async def test_static_override_picks_static_pin(monkeypatch: pytest.MonkeyPatch)
 
 
 async def test_static_override_requires_static_offer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The static override fails when the device does not offer a usable static PIN."""
-    api = _FakeServerApi(
-        [_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN, locked_out=True)]
-    )
+    """The static override fails when the device does not offer a static PIN."""
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN)])
     provider, _refreshed = _make_provider(api, monkeypatch)
     with pytest.raises(SecurityActionError) as excinfo:
         await provider.start_pin_pairing("c", static=True)
-    assert excinfo.value.alert_key == "pairing_error_locked_out"
+    assert excinfo.value.alert_key == "pairing_error_no_pin_method"
 
 
 async def test_pin_mismatch_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,19 +489,177 @@ async def test_retry_awaits_gesture_again(monkeypatch: pytest.MonkeyPatch) -> No
     assert session.error is None
 
 
-async def test_locked_out_is_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A locked-out abort is terminal and unparks the connection immediately."""
+async def test_pairing_timeout_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A device that never answers leaves the session retryable, with the connection intact."""
     api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN)], await_pin=False)
-    api.outcomes.append(RemotePairingAbortError(PairAbortReason.LOCKED_OUT))
+    api.outcomes.append(PairingTimeoutError("client/pair-init did not arrive in time"))
     provider, _refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c")
     assert session.task is not None
     await session.task
+    assert session.can_retry
+    assert isinstance(session.error, PairingTimeoutError)
+    assert _pin_idle_task_id("c") in _timers(provider)
+    # aiosendspin already left pairing in band, so the provider must not force it.
+    assert api.end_pairing_calls == 0
+
+
+async def test_dynamic_pin_attempt_carries_length_and_languages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dynamic-PIN session knows its negotiated length and hints the operator's languages."""
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN, min_pin_length=8)])
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c")
+    assert session.pin_length == 8  # the device's floor wins over the server's default
+    assert api.attempts[0].languages == ("nl-NL", "nl")
+    assert api.attempts[0].on_pair_pending is not None
+    await _submit_and_settle(provider, "12345678")
+
+
+async def test_pin_length_follows_the_hello_advertisement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The predicted length mirrors the server's negotiation, which reads the hello floor.
+
+    A live config that lowered the floor still leaves the device deriving a hello-length PIN,
+    so the operator prompt must not follow the config here.
+    """
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN, min_pin_length=8)])
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    provider._pairing_config_snapshots["c"] = (
+        cast("SendspinConnection", api.connection),
+        ManagementResultData(dynamic_pin=PairingMethodConfig(enabled=True, min_pin_length=4)),
+    )
+
+    session = await provider.start_pin_pairing("c")
+    assert session.pin_length == 8
+    await _submit_and_settle(provider, "12345678")
+
+
+async def test_static_pin_attempt_carries_no_length_or_languages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spoken-PIN hint and PIN length are dynamic-PIN only."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)])
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert session.pin_length is None
+    assert api.attempts[0].languages == ()
+    await _submit_and_settle(provider, "12345678")
+
+
+async def test_gesture_signal_tracks_the_window_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pair-pending moves the session from the first-message wait to the gesture wait."""
+    gesture = asyncio.Event()
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], gesture=gesture)
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    monkeypatch.setattr(provider_module, "PIN_REQUEST_FEEDBACK_TIMEOUT", 0)
+    session = await provider.start_pin_pairing("c", static=True)
+    await asyncio.sleep(0)
+    assert session.awaiting_gesture
+    assert not session.awaiting_first_message
+
+    gesture.set()
+    await _submit_and_settle(provider, "12345678")
     assert session.finished
-    assert not session.can_retry
-    assert isinstance(session.error, RemotePairingAbortError)
-    assert _pin_idle_task_id("c") not in _timers(provider)
-    assert api.end_pairing_calls == 1
+
+
+async def test_unpaired_device_gets_no_pairing_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Management needs a paired connection, so a first-time pairing still needs the gesture."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], await_pin=False)
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert api.connection.window_calls == 0
+    assert not session.opened_management
+    assert provider.get_management_session("c") is None
+
+
+async def test_disconnected_device_is_refused_before_management(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that only left its hello behind is refused instead of reaching management."""
+    api = _FakeServerApi(
+        [_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True, connected=False
+    )
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    with pytest.raises(SecurityActionError) as excinfo:
+        await provider.start_pin_pairing("c", static=True)
+    assert excinfo.value.alert_key == "pairing_error_not_connected"
+    assert api.calls == []
+
+
+async def test_paired_device_opens_the_window_before_the_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A paired device's window is requested over management before pairing starts."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True)
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    # The pairing activate takes management off the connection, so the order matters.
+    assert api.calls == ["window", "pair"]
+    assert session.opened_management
+    assert session.task is not None
+    await session.task
+    provider.clear_pin_session("c")
+    # The session opened here is ours to close, so the device does not stay in management.
+    assert provider.get_management_session("c") is None
+    assert not api.connection.management_active
+
+
+async def test_cancel_closes_a_management_session_we_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the pairing session also gives back the management session it opened."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], management_capable=True)
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert session.opened_management
+    await provider.cancel_pin_pairing("c")
+    assert provider.get_management_session("c") is None
+
+
+async def test_cancelled_window_request_closes_the_management_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Abandoning the flow mid-request still gives back the management session it opened."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True)
+    api.connection.window_error = asyncio.CancelledError()
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.start_pin_pairing("c", static=True)
+    assert provider.get_management_session("c") is None
+    assert not api.connection.management_active
+
+
+async def test_existing_management_session_is_reused_and_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session the operator already opened is used for the window and left running."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True)
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    provider.enter_management("c")
+    session = await provider.start_pin_pairing("c", static=True)
+    assert api.connection.window_calls == 1
+    assert not session.opened_management
+    assert session.task is not None
+    await session.task
+    provider.clear_pin_session("c")
+    assert provider.get_management_session("c") is not None
+
+
+async def test_rejected_window_falls_back_to_the_gesture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused window request drops the management session and leaves the gesture wait."""
+    api = _FakeServerApi([_desc(PairMethod.STATIC_PIN)], await_pin=False, management_capable=True)
+    api.connection.window_result = ManagementResult.INVALID
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert api.connection.window_calls == 1
+    assert not session.opened_management
+    assert provider.get_management_session("c") is None
 
 
 async def test_local_user_cancel_records_no_error(monkeypatch: pytest.MonkeyPatch) -> None:
