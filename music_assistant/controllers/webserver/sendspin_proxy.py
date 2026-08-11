@@ -156,12 +156,12 @@ class SendspinProxyHandler:
             await wsock.close(code=4001, message=b"Invalid or expired token")
             return None
 
-        # Set the sendspin player_id on the user's websocket client(s)
+        # Set the sendspin player_id on this session's websocket client(s)
         # This allows the player controller to auto-whitelist this (web)player
         # without modifying the user's player_filter list
         client_id = auth_data.get("client_id")
         if client_id:
-            self.webserver.set_sendspin_player_for_user(user.user_id, client_id)
+            self.webserver.set_sendspin_player_for_token(token, client_id)
             self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
