@@ -879,6 +879,11 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot disable your own account")
 
+        # Look up the user before disabling (get_user hides disabled accounts)
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+
         await self.database.update(
             "users",
             {"user_id": user_id},
@@ -887,6 +892,12 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # A disabled account's tokens stop authenticating, so credentials bound to its
+        # access must be withdrawn with them (they return on the next login after enable).
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
 
         self.logger.info("User account disabled (user_id=%s)", user_id)
 

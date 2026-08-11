@@ -1195,6 +1195,28 @@ async def test_access_revoked_subscription_hears_a_user_deletion(
     assert seen == [user.user_id]
 
 
+async def test_access_revoked_subscription_hears_a_user_disable(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that disabling a user announces the access withdrawal to subscribers.
+
+    A disabled account's tokens stop authenticating without any revocation running,
+    so it is a separate access-ending path that must reach subscribers itself.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="disableadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="userdisabled", role=UserRole.USER)
+    seen: list[str] = []
+    auth_manager.subscribe_user_access_revoked(lambda u: seen.append(u.user_id))
+
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+    await asyncio.sleep(0)
+    assert seen == [user.user_id]
+
+
 async def test_short_lived_jwt_exp_carries_absolute_max(
     auth_manager: AuthenticationManager,
 ) -> None:
