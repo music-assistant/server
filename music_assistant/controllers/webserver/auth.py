@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
@@ -116,6 +116,7 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -708,6 +709,19 @@ class AuthenticationManager:
             token_id,
         )
 
+    def subscribe_user_access_revoked(self, callback: Callable[[User], None]) -> Callable[[], None]:
+        """
+        Subscribe to a user's access being withdrawn.
+
+        Fires when all of a user's tokens are revoked and when their account is deleted,
+        so credentials bound to that access can be withdrawn with it.
+
+        :param callback: Called with the affected user.
+        :return: Callable that removes the subscription.
+        """
+        self._access_revoked_callbacks.append(callback)
+        return lambda: self._access_revoked_callbacks.remove(callback)
+
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
         Revoke all auth tokens for a user.
@@ -719,21 +733,24 @@ class AuthenticationManager:
         :return: Number of tokens revoked.
         """
         token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
-        if not token_rows:
-            return 0
 
         # Disconnect any WebSocket connections using these tokens
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
-        # Delete all tokens in one go
-        await self.database.execute(
-            "DELETE FROM auth_tokens WHERE user_id = :user_id",
-            {"user_id": user.user_id},
-        )
-        await self.database.commit()
+        if token_rows:
+            # Delete all tokens in one go
+            await self.database.execute(
+                "DELETE FROM auth_tokens WHERE user_id = :user_id",
+                {"user_id": user.user_id},
+            )
+            await self.database.commit()
+            self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
 
-        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        # Notify even with no tokens left: subscribers may hold credentials tied to
+        # this user's access that must be withdrawn regardless.
+        self._notify_user_access_revoked(user)
+
         return len(token_rows)
 
     @api_command("auth/tokens")
@@ -1159,6 +1176,12 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # Deletion cascades the user's tokens away, so it must announce the access
+        # withdrawal itself for credentials bound to this user.
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
 
         self.logger.info(
             "User '%s' deleted by admin '%s'",
@@ -2082,6 +2105,11 @@ class AuthenticationManager:
             days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
         )
         return now < rotate_after
+
+    def _notify_user_access_revoked(self, user: User) -> None:
+        """Dispatch an access withdrawal to subscribers, isolating them from each other."""
+        for callback in list(self._access_revoked_callbacks):
+            self.mass.loop.call_soon(callback, user)
 
 
 def _join_code_rate_limit_key() -> tuple[str, bool]:

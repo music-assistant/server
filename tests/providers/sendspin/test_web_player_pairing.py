@@ -12,9 +12,11 @@ from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
 from aiosendspin.noise.pairing import PairingError
 from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
 from aiosendspin.noise.trust_store import PskCategory
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import InvalidCommand
 
 import music_assistant.providers.sendspin.provider as provider_module
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
 from .test_pin_session import _FakeServerApi, _make_provider
@@ -83,6 +85,34 @@ async def test_pair_web_player_pairs_with_the_token_psk(monkeypatch: pytest.Monk
         (PairMethod.PAIRING_PSK, _PAIRING_PSK)
     ]
     assert refreshed == [_CLIENT_ID]
+
+
+async def test_pair_web_player_binds_a_guest_pairing_to_the_guest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A guest's pairing is bound as session-scoped, so it ends with their session."""
+    api = _WebPlayerServerApi()
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    set_current_user(User(user_id="g1", username="party_guest", role=UserRole.GUEST))
+    try:
+        await provider.pair_web_player(_TOKEN)
+    finally:
+        set_current_user(None)
+    assert [a.owner for a in api.attempts] == ["guest-g1"]
+
+
+async def test_pair_web_player_binds_a_full_user_pairing_to_their_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A logged-in user's pairing is account-bound, so deleting the account removes it."""
+    api = _WebPlayerServerApi()
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    set_current_user(User(user_id="u1", username="maxim", role=UserRole.USER))
+    try:
+        await provider.pair_web_player(_TOKEN)
+    finally:
+        set_current_user(None)
+    assert [a.owner for a in api.attempts] == ["user-u1"]
 
 
 async def test_pair_web_player_rejects_a_malformed_token(monkeypatch: pytest.MonkeyPatch) -> None:

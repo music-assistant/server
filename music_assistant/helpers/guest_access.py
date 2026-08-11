@@ -93,6 +93,37 @@ def build_join_url(mass: MusicAssistant, code: str) -> str:
     return f"{base_url}/?join={code}"
 
 
+def credential_owner(user: User) -> str:
+    """
+    Return the owner id that credentials minted by this user are bound to.
+
+    The prefix encodes the credential's lifetime: a guest's credentials end with
+    their session or access, a full user's with their account.
+
+    :param user: The authenticated user minting the credential.
+    """
+    guest_owner, user_owner = credential_owners_for_user_id(user.user_id)
+    return guest_owner if user.role == UserRole.GUEST else user_owner
+
+
+def credential_owners_for_user_id(user_id: str) -> tuple[str, str]:
+    """
+    Return every owner id credentials of the given user account may be bound to.
+
+    :param user_id: The user id whose credentials are looked up.
+    """
+    return (f"guest-{user_id}", f"user-{user_id}")
+
+
+def is_session_scoped_owner(owner: str) -> bool:
+    """
+    Return whether credentials bound to this owner end with the owner's session.
+
+    :param owner: An owner id produced by credential_owner.
+    """
+    return owner.startswith("guest-")
+
+
 async def revoke_guest_access(mass: MusicAssistant, username: str) -> tuple[int, int]:
     """
     Revoke all join codes and auth tokens for the guest user with the given username.
