@@ -28,6 +28,7 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
 
+from . import announce
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
@@ -258,7 +259,15 @@ class AirPlayPlayer(Player):
         # could fall through to a linked native player's pause (e.g. a Sonos acting as
         # an AirPlay receiver), which only pauses the sync leader while the other
         # members keep playing.
-        return {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
+        features = {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
+        # A Sendspin-bridged player's audio stream is owned by the bridge: there
+        # is no stream session to mix an announcement into, and the fallback
+        # would steal the device from a live bridge stream. Without the feature,
+        # announcements for these devices keep their existing routing.
+        prov = cast("AirPlayProvider", self.provider)
+        if prov.bridge_manager.get_bridge(self.player_id) is not None:
+            features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+        return features
 
     @property
     def can_group_with(self) -> set[str]:
@@ -518,6 +527,20 @@ class AirPlayPlayer(Player):
             )
             await stream_session.start(audio_source)
             self._transitioning = False
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """
+        Play an announcement natively: mixed over live playback, or as its own session.
+
+        :param announcement: Details of the announcement that needs to be played.
+        :param volume_level: Optional volume level for the announcement.
+        """
+        # The lock windows live inside the orchestration: the dispatch decision
+        # and session mutations hold self._lock like play_media does, while the
+        # multi-second clip waits run outside it (see announce.py).
+        await announce.play_announcement(self, announcement, volume_level)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

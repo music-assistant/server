@@ -206,6 +206,38 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # Staged retries can be reintroduced by adding entries to the tuple.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 
+# Shared audible instant for a native announcement over a live stream: now +
+# the largest member span + this margin. A member can only mix the clip into
+# audio it has not delivered yet, and its span (warm_lead_ms on the Apple
+# splice timeline, the reported lead_ms otherwise) is how far its delivery
+# head runs ahead of the audible position - so the earliest instant EVERY
+# member can honor lies one max-span out. The margin covers fanning the
+# command out over the pipes and the per-member arm processing, so one shared
+# instant stays feasible for all members.
+AIRPLAY_ANNOUNCE_AT_MARGIN_MS: Final[int] = 300
+# Span assumed for a member whose binary reported neither a warm lead nor a
+# device lead (both read 0 = unreported): the binary's own default playback
+# lead, which bounds how far its delivery head can run ahead.
+AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS: Final[int] = 2000
+# Music gain (dB) under the clip while it plays; the binary ramps the duck in
+# and out itself. <= -60 mutes the music entirely.
+AIRPLAY_ANNOUNCE_DUCK_DB: Final[int] = -12
+# On top of the lead to the commanded instant: how long to wait for a member's
+# announce_started before treating that member as not announcing. An outdated
+# binary silently ignores the unknown command, so this bounded wait is also
+# what detects that and routes the announcement to the fallback path.
+AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS: Final[int] = 3000
+# On top of the clip's audible end: how long to wait for announce_done. The
+# wait stays bounded because a queue that ends mid-clip emits its eof, which
+# ends the status stream while the clip still plays out over the drain.
+AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS: Final[int] = 5000
+# Pad after the clip's audible end before the pre-announcement volume is
+# restored: covers the jitter between the acked instant and true audibility.
+AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS: Final[int] = 500
+# Drain margin for a dedicated announcement session: covers the receiver
+# playing out its buffered audio after the clip's last byte was fed.
+AIRPLAY_ANNOUNCE_SESSION_DRAIN_S: Final[float] = 2.0
+
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
@@ -258,6 +290,7 @@ AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.VOLUME_SET,

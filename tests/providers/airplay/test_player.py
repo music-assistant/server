@@ -35,6 +35,7 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
+from music_assistant.providers.airplay.provider import AirPlayProvider
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -879,6 +880,23 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     # sync leader: still advertises PAUSE
     airplay_player._attr_group_members = ["test_player", "child"]
     assert PlayerFeature.PAUSE in airplay_player.supported_features
+
+
+def test_bridged_player_does_not_advertise_announcements(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A Sendspin-bridged player must not advertise PLAY_ANNOUNCEMENT.
+
+    The bridge owns the audio stream, so there is no stream session to mix a
+    clip into - and the fallback path would steal the device from a live bridge
+    stream. Without the feature, announcement routing stays as it was.
+    """
+    bridge_manager = cast("AirPlayProvider", airplay_player.provider).bridge_manager
+    with patch.object(bridge_manager, "get_bridge", return_value=None):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    with patch.object(bridge_manager, "get_bridge", return_value=object()):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
 
 
 @pytest.mark.asyncio
