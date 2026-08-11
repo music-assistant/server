@@ -25,6 +25,7 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AVAILABILITY_TIMEOUT,
     COMMAND_POLL_DELAY,
     DURATION_SECONDS,
     LINEIN_SOURCE_IDS,
@@ -321,9 +322,18 @@ class SonosPlayer(Player):
             self._attr_volume_level = self.soco.volume
             self._attr_volume_muted = self.soco.mute
 
-        await self._check_availability()
-        if self._attr_available:
+        if not self._attr_available:
+            await self._check_availability()
+            if not self._attr_available:
+                return
+        try:
             await asyncio.to_thread(_poll)
+        except OSError, SoCoException, SonosUpdateError:
+            # a single failed poll does not mean the speaker is gone; the availability
+            # check decides based on how long it has been silent
+            await self._check_availability()
+        else:
+            self._speaker_activity("poll")
 
     @soco_error()
     def poll_media(self) -> None:
@@ -605,6 +615,11 @@ class SonosPlayer(Player):
 
     async def _check_availability(self) -> None:
         """Check if the player is still available."""
+        # skip the ping while events or polls recently succeeded, so one slow or dropped
+        # request does not mark a healthy speaker unavailable. An unavailable speaker is
+        # always pinged so it recovers quickly, no matter why it went offline.
+        if self._attr_available and time.monotonic() - self._last_activity < AVAILABILITY_TIMEOUT:
+            return
         try:
             await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
