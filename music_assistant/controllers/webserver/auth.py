@@ -713,8 +713,10 @@ class AuthenticationManager:
         """
         Subscribe to a user's access being withdrawn.
 
-        Fires when all of a user's tokens are revoked and when their account is deleted,
-        so credentials bound to that access can be withdrawn with it.
+        Fires on deliberate access withdrawal: bulk token revocation
+        (revoke_tokens_for_user), account disable, and account deletion. Revoking a
+        single token (e.g. a logout) does not fire it, so credentials bound to the
+        account survive a plain logout.
 
         :param callback: Called with the affected user.
         :return: Callable that removes the subscription.
