@@ -558,8 +558,9 @@ class MusicbrainzProvider(MetadataProvider):
         """
         Collect release groups for a recording with their release dates.
 
-        Filters out secondary-type releases and compilations, including the ones credited
-        to Various Artists rather than tagged as such.
+        Filters out compilations, live and other rereleases, including the compilations
+        credited to Various Artists rather than tagged as such. Soundtracks are kept,
+        since a song written for a film is first released on one.
         For singles, only includes those where the title matches the track name.
         Returns list of (release_group, release_date) tuples for singles and studio albums.
 
@@ -596,7 +597,10 @@ class MusicbrainzProvider(MetadataProvider):
             # Only include singles and studio albums (no compilations, live, etc.)
             if primary_type not in ("Album", "Single"):
                 continue
-            if secondary_types:
+            # A song written for a film or musical is first released on its soundtrack, which
+            # MusicBrainz types as an album with a Soundtrack secondary type. Any other
+            # secondary type, alongside Soundtrack or not, is a rerelease of the song.
+            if secondary_types and secondary_types != ["Soundtrack"]:
                 continue
 
             # For singles, only include if the title matches the track name
