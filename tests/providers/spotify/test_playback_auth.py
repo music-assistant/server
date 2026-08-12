@@ -10,6 +10,8 @@ and must be sent back through the setup flow.
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -23,7 +25,9 @@ from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.spotify.constants import (
     CONF_LIBRESPOT_CREDENTIALS,
     CREDENTIALS_FILE,
+    PAIRING_DEVICE_NAME,
 )
+from music_assistant.providers.spotify.helpers import _log_pairing_output
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 STORED_CREDENTIALS = '{"username": "tester", "auth_type": 1, "auth_data": "blob"}'
@@ -94,11 +98,10 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
         setup_flow, "get_librespot_binary", AsyncMock(return_value="/bin/librespot")
     )
     # first attempt fails the way a rejected token does, second one succeeds
-    monkeypatch.setattr(
-        setup_flow,
-        "librespot_credentials_via_pairing",
-        MagicMock(side_effect=[_raising(LoginFailed("nope")), _returning(STORED_CREDENTIALS)]),
+    pairing_mock = MagicMock(
+        side_effect=[_raising(LoginFailed("nope")), _returning(STORED_CREDENTIALS)]
     )
+    monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
     session = MagicMock()
     session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
@@ -107,6 +110,54 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     # the form was re-shown, carrying the failure reason rather than aborting the flow
     assert session.form.await_count == 2
     assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_auth_failed"}
+    pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME)
+
+
+def test_pairing_device_name_matches_setup_text() -> None:
+    """Pairing instructions consistently identify the temporary Spotify Connect device."""
+    strings_path = Path(__file__).parents[3] / "music_assistant/providers/spotify/strings.json"
+    strings = json.loads(strings_path.read_text(encoding="utf-8"))
+
+    assert PAIRING_DEVICE_NAME == "Music Assistant Pairing"
+    assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_auth"]["description"]
+    assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_pairing"]["title"]
+    assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_pairing"]["progress_text"]
+    assert PAIRING_DEVICE_NAME in strings["errors"]["pairing_not_completed"]
+
+
+async def test_pairing_output_demotes_duplicate_warnings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Repeated librespot warnings are debug logged while distinct warnings stay visible."""
+
+    async def stderr_lines() -> AsyncIterator[str]:
+        for line in (
+            "WARN libmdns: No route to host",
+            "WARN libmdns: No route to host",
+            "ERROR discovery interrupted",
+            "ERROR discovery interrupted",
+        ):
+            yield line
+
+    process = MagicMock()
+    process.iter_stderr.return_value = stderr_lines()
+
+    with caplog.at_level(logging.DEBUG, logger="music_assistant.providers.spotify.helpers"):
+        await _log_pairing_output(process)
+
+    records = [record for record in caplog.records if "[librespot-pairing]" in record.message]
+    assert [record.levelno for record in records] == [
+        logging.WARNING,
+        logging.DEBUG,
+        logging.WARNING,
+        logging.DEBUG,
+    ]
+    assert [record.getMessage() for record in records] == [
+        "[librespot-pairing] WARN libmdns: No route to host",
+        "[librespot-pairing] WARN libmdns: No route to host",
+        "[librespot-pairing] ERROR discovery interrupted",
+        "[librespot-pairing] ERROR discovery interrupted",
+    ]
 
 
 async def _run_awaitable(awaitable: Any, **_kwargs: Any) -> Any:

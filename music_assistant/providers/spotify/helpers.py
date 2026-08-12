@@ -201,8 +201,10 @@ async def get_spotify_token(
 
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:
     """Log the pairing daemon's output so a failure to advertise is diagnosable."""
+    reported_warnings: set[str] = set()
     async for line in librespot_proc.iter_stderr():
-        if "ERROR" in line or "WARN" in line:
+        if ("ERROR" in line or "WARN" in line) and line not in reported_warnings:
+            reported_warnings.add(line)
             LOGGER.warning("[librespot-pairing] %s", line)
         else:
             LOGGER.debug("[librespot-pairing] %s", line)
