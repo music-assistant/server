@@ -319,7 +319,15 @@ class SmartPlaylistProvider(PluginProvider):
         if item_id != "smart_playlists":
             return items
         for pid, rules in self._rules_store.items():
-            items.append(await self._build_playlist(pid, rules))
+            playlist = await self._build_playlist(pid, rules)
+            # For recommendations, return ItemMapping with library DB item_id so removal works
+            library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                pid, self.instance_id
+            )
+            if library_item:
+                items.append(ItemMapping.from_item(library_item))
+            else:
+                items.append(playlist)
         return items
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
