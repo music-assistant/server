@@ -76,6 +76,7 @@ from music_assistant.constants import (
     ATTR_PREVIOUS_VOLUME,
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
+    CONF_ANNOUNCE_TTS_ENGINE,
     CONF_AUTO_PLAY,
     CONF_CACHED_ARP_MAC,
     CONF_ENTRY_MAX_VOLUME,
@@ -102,6 +103,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
+from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
     TaskManager,
     enrich_device_mac_address,
@@ -250,6 +252,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 range=(0, 10),
                 required=False,
                 category="generic",
+            ),
+            *await create_tts_engine_config_entries(
+                self.mass, CONF_ANNOUNCE_TTS_ENGINE, category="announcements"
             ),
         )
 

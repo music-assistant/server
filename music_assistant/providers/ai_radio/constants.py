@@ -59,11 +59,10 @@ MAX_FINISHED_SESSIONS = 20
 # a show whose playback never starts within this window is declared failed
 SHOW_START_TIMEOUT_SECONDS = 300
 
-# last-resort guards so a wedged engine fails the clip instead of hanging the session.
+# last-resort guard so a wedged engine fails the clip instead of hanging the session.
 # Kept above the deadlines the engines apply themselves (120s in the OpenAI-compatible
 # providers), so their own, more specific error is the one that surfaces.
 AI_QUERY_TIMEOUT_SECONDS = 180
-TTS_QUERY_TIMEOUT_SECONDS = 180
 
 # ffprobe reports no status code, so its message is all we have to spot a failed render
 TTS_SERVER_ERROR_MARKERS = ("Server returned 5XX", "HTTP error 5")

@@ -613,9 +613,7 @@ async def test_render_tts_media_gives_up_on_a_stalled_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stalled TTS engine fails the clip instead of pinning the render path."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.rendering.TTS_QUERY_TIMEOUT_SECONDS", 0.01
-    )
+    monkeypatch.setattr("music_assistant.helpers.tts.TTS_QUERY_TIMEOUT_SECONDS", 0.01)
 
     async def _answers_too_late(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         await asyncio.sleep(5)

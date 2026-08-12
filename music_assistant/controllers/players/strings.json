@@ -3,6 +3,13 @@
     "volume_step": {
       "label": "Volume step size",
       "description": "How much the volume changes per step when using volume up/down commands, For example within the web interface by using the scroll wheel, tapping the ends of a volume slider or when using Home Assistant to issue a volume up or down command.\n\nLeave at 0 to use the adaptive default, which takes smaller steps near the ends of the range."
+    },
+    "announce_tts_engine": {
+      "label": "Announcement text-to-speech engine",
+      "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link."
+    },
+    "announce_tts_engine_unavailable": {
+      "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     }
   },
   "manifest": {

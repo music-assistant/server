@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ContentType, StreamType
@@ -19,6 +18,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.tts import query_tts_engine, resolve_tts_stream_path
 
 from .constants import (
     ATTR_HOST_ID,
@@ -30,7 +30,6 @@ from .constants import (
     CLIP_STREAMDETAILS_EXPIRATION,
     DEFERRED_PLACEHOLDERS,
     MIN_CLIP_MEDIA_LIFETIME,
-    TTS_QUERY_TIMEOUT_SECONDS,
     TTS_SERVER_ERROR_MARKERS,
 )
 from .helpers import soft_limit_text
@@ -256,7 +255,7 @@ class AIRadioRenderMixin:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
         engine = await self._get_tts_engine(engine_uid)
         try:
-            stream_details = await self._query_tts_engine(engine, text, language)
+            stream_details = await query_tts_engine(engine, text, language)
         except TimeoutError, MusicAssistantError:
             # a timeout or our own structured failure is not a language rejection, so a
             # language-less retry would not help and would only double the wait
@@ -273,42 +272,12 @@ class AIRadioRenderMixin:
                 language,
                 err,
             )
-            stream_details = await self._query_tts_engine(engine, text, None)
-        path = str(getattr(stream_details, "path", "") or "").strip()
-        if path.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-            stream_type = StreamType.HTTP
-        elif path and Path(path).is_absolute() and await asyncio.to_thread(Path(path).is_file):
-            stream_type = StreamType.LOCAL_FILE
-        else:
-            raise InvalidDataError(
-                f"TTS engine '{engine.uid}' returned an unusable stream path: "
-                f"{path or '<empty>'}. StreamDetails.path must be a fetchable "
-                "http(s)/rtsp/rtmp URL or the absolute path of an existing local file."
-            )
+            stream_details = await query_tts_engine(engine, text, None)
+        path, stream_type = await resolve_tts_stream_path(engine, stream_details)
         audio_format = stream_details.audio_format
         if audio_format.content_type == ContentType.UNKNOWN:
             audio_format = AudioFormat(content_type=ContentType.MP3)
         return path, stream_type, audio_format
-
-    async def _query_tts_engine(
-        self, engine: Any, text: str, language: str | None
-    ) -> StreamDetails:
-        """Query a TTS engine for audio, converting our own timeout cap into a clear error."""
-        try:
-            async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
-                return cast(
-                    "StreamDetails",
-                    await engine.provider.get_tts_message(
-                        text, language=language, engine_id=engine.id
-                    ),
-                )
-        except TimeoutError as err:
-            # expired() tells our own cap apart from a timeout raised inside the engine
-            if not query_timeout.expired():
-                raise
-            raise MusicAssistantError(
-                f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
-            ) from err
 
     async def _probe_duration(self, path: str) -> int | None:
         """Return the clip duration in seconds, or None when it cannot be determined."""
