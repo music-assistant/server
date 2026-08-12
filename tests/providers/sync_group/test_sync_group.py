@@ -12,7 +12,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
 
@@ -59,10 +59,21 @@ def _make_mock_player(
     provider_domain: str = "sonos",
     available: bool = True,
     protocol_domains: list[str] | None = None,
+    offline_protocol_domains: list[str] | None = None,
     active_output_protocol: str | None = None,
     playback_state: PlaybackState = PlaybackState.IDLE,
+    player_type: PlayerType = PlayerType.PLAYER,
 ) -> MagicMock:
-    """Create a mock player with configurable protocol support."""
+    """
+    Create a mock player with configurable protocol support.
+
+    :param provider_domain: Domain of the provider owning the player.
+    :param protocol_domains: Domains of the linked output protocols to attach.
+    :param offline_protocol_domains: Domains from ``protocol_domains`` whose protocol
+        player is currently unreachable.
+    :param player_type: Use ``PlayerType.PROTOCOL`` for a protocol endpoint
+        without independent device control (e.g. a generic AirPlay speaker).
+    """
     player = MagicMock()
     player.player_id = player_id
     player.display_name = player_id
@@ -70,13 +81,24 @@ def _make_mock_player(
     player.active_output_protocol = active_output_protocol
     player.playback_state = playback_state
     player.protocol_parent_id = None
-    # stated explicitly: it decides whether the player's own domain counts as a
-    # playback path, which drives the protocol downshift
-    player.is_native_player = True
     player.provider = MagicMock()
     player.provider.domain = provider_domain
+    supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
+    player.supported_features = supported_features
 
-    # Build linked_output_protocols
+    # mirrors Player.is_native_player: protocol endpoints and wrappers have no
+    # native playback of their own
+    is_native = (
+        player_type != PlayerType.PROTOCOL
+        and provider_domain != "universal_player"
+        and PlayerFeature.PLAY_MEDIA in supported_features
+    )
+    player.is_native_player = is_native
+
+    # Build linked_output_protocols. Their `available` flag is the one production
+    # sets at link time and never refreshes, so it stays True even for a protocol
+    # player that has since gone offline.
+    offline = set(offline_protocol_domains or [])
     protocols = []
     for domain in protocol_domains or []:
         proto = MagicMock(spec=OutputProtocol)
@@ -86,6 +108,26 @@ def _make_mock_player(
         proto.output_protocol_id = f"{player_id}_{domain}_proto"
         protocols.append(proto)
     player.linked_output_protocols = protocols
+
+    # mirrors Player.output_protocols: own output first (native playback, or the
+    # protocol this player is itself an endpoint of), then the linked protocols
+    # with their availability resolved from the live protocol player
+    outputs = []
+    if is_native or (
+        provider_domain in PROTOCOL_PRIORITY and PlayerFeature.SET_MEMBERS in supported_features
+    ):
+        own = MagicMock(spec=OutputProtocol)
+        own.protocol_domain = provider_domain
+        own.available = available
+        own.output_protocol_id = "native" if is_native else player_id
+        outputs.append(own)
+    for proto in protocols:
+        live = MagicMock(spec=OutputProtocol)
+        live.protocol_domain = proto.protocol_domain
+        live.available = proto.protocol_domain not in offline
+        live.output_protocol_id = proto.output_protocol_id
+        outputs.append(live)
+    player.output_protocols = outputs
 
     # State mock
     # real lists, so a test that needs members has to say so instead of silently
@@ -98,7 +140,7 @@ def _make_mock_player(
     player.state.playback_state = playback_state
     player.state.can_group_with = set()
     player.state.group_members = []
-    player.state.supported_features = {PlayerFeature.SET_MEMBERS}
+    player.state.supported_features = supported_features
     # default to "not synced" so the syncgroup form path doesn't enter the
     # stale-state wait loop. Tests that want to assert on the stale-state
     # behavior can override this explicitly.
@@ -224,6 +266,24 @@ class TestMemberSupportsProtocol:
         player = _make_mock_player("p1", provider_domain="sonos", protocol_domains=["airplay"])
         assert sgp._member_supports_protocol_domain(player, "airplay") is True
 
+    def test_protocol_endpoint_matches_own_domain(self) -> None:
+        """A protocol endpoint without device control still plays on its own domain."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        player = _make_mock_player("p1", provider_domain="airplay", player_type=PlayerType.PROTOCOL)
+        assert sgp._member_supports_protocol_domain(player, "airplay") is True
+
+    def test_wrapper_domain_is_not_a_protocol(self) -> None:
+        """A wrapper player never offers its own domain as a playback path."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        player = _make_mock_player(
+            "p1", provider_domain="universal_player", protocol_domains=["airplay"]
+        )
+        assert sgp._member_supports_protocol_domain(player, "universal_player") is False
+
     def test_no_match(self) -> None:
         """Player doesn't support the requested protocol."""
         mass = _make_mock_mass()
@@ -265,7 +325,6 @@ class TestActiveProtocolDomain:
         ap_only = _make_mock_player(
             "ap_only", provider_domain="universal_player", protocol_domains=["airplay"]
         )
-        ap_only.is_native_player = False
         mass.players.get_player = _player_lookup(
             {"leader": leader, "ap_leader": ap_protocol, "ap_only": ap_only}
         )
@@ -307,6 +366,34 @@ class TestActiveProtocolDomain:
         sgp._attr_group_members = ["leader", "apple_tv"]
         assert sgp.active_protocol_domain == "airplay"
 
+    def test_offline_protocol_does_not_count_as_a_playback_path(self) -> None:
+        """A member's unreachable protocol no longer offers the group a way to it."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        # an Apple TV leads natively on airplay, with the session on its Sendspin bridge
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="airplay",
+            protocol_domains=["sendspin"],
+            active_output_protocol="sp_leader",
+        )
+        sp_protocol = _make_mock_player("sp_leader", provider_domain="sendspin")
+        # the speaker still answers over its Sendspin bridge, but its AirPlay endpoint
+        # dropped off - so airplay is no longer a way to reach it and the group has to
+        # stay on sendspin rather than downshift to the leader's native airplay
+        member = _make_mock_player(
+            "member",
+            provider_domain="universal_player",
+            protocol_domains=["airplay", "sendspin"],
+            offline_protocol_domains=["airplay"],
+        )
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "sp_leader": sp_protocol, "member": member}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+        assert sgp.active_protocol_domain == "sendspin"
+
     def test_member_from_another_provider_keeps_the_protocol(self) -> None:
         """A member of a different provider keeps the shared protocol active."""
         mass = _make_mock_mass()
@@ -340,7 +427,6 @@ class TestActiveProtocolDomain:
             protocol_domains=["airplay", "sendspin"],
             active_output_protocol="ap_leader",
         )
-        leader.is_native_player = False
         ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
         mass.players.get_player = _player_lookup({"leader": leader, "ap_leader": ap_protocol})
         sgp.sync_leader = leader
@@ -356,8 +442,8 @@ class TestActiveProtocolDomain:
         )
         ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
         offline = _make_mock_player("offline", provider_domain="airplay", available=False)
-        no_paths = _make_mock_player("no_paths", provider_domain="airplay")
-        no_paths.is_native_player = False
+        # a wrapper that lost every linked protocol has nothing left to play on
+        no_paths = _make_mock_player("no_paths", provider_domain="universal_player")
         mass.players.get_player = _player_lookup(
             {
                 "leader": leader,
@@ -510,7 +596,6 @@ class TestDynamicLeaderSwitch:
         ap_only = _make_mock_player(
             "ap_only", provider_domain="universal_player", protocol_domains=["airplay"]
         )
-        ap_only.is_native_player = False
 
         # new_leader's AirPlay protocol player (must be in the session for handoff)
         ap_new = _make_mock_player("ap_new", provider_domain="airplay")
