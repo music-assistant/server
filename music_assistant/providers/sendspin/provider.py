@@ -302,13 +302,21 @@ async def _evict_stale_pairings(
         if is_session_scoped_owner(record.owner):
             session_scoped += 1
         else:
-            user_id = credential_owner_user_id(record.owner)
-            # get_user answers None for a deleted as well as a disabled account
-            if user_id is None or await auth.get_user(user_id) is not None:
+            if await _owner_has_access(record.owner, auth):
                 continue
             orphaned += 1
         await pairing_store.remove_record(record.client_id)
     return session_scoped, orphaned
+
+
+async def _owner_has_access(owner: str, auth: AuthenticationManager) -> bool:
+    """Return whether the account an owner id is bound to still has access."""
+    user_id = credential_owner_user_id(owner)
+    if user_id is None:
+        # another kind of owner, whose lifetime is not ours to judge
+        return True
+    # get_user answers None for a deleted as well as a disabled account
+    return await auth.get_user(user_id) is not None
 
 
 def _manual_client_url(address: str) -> str:
