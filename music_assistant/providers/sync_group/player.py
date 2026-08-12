@@ -625,8 +625,8 @@ class SyncGroupPlayer(Player):
             return None
         domain = session_player.provider.domain
         native_domain = self.sync_leader.provider.domain
-        # A non-native protocol stays "active" for leader-selection purposes as
-        # long as at least one member cannot be reached on the leader's native domain.
+        # Keep a non-native protocol "active" for leader-selection purposes unless
+        # the whole group can be reached on the leader's native domain.
         if domain != native_domain and self._all_members_can_play_on_domain(native_domain):
             return native_domain
         return domain
@@ -903,14 +903,14 @@ class SyncGroupPlayer(Player):
 
     def _all_members_can_play_on_domain(self, domain: str) -> bool:
         """
-        Return True if every current member has an available playback path on the given domain.
+        Return True if every current member has a playback path on the given domain.
 
         A playback path is a member's own native playback or one of its
         available linked output protocols. Members that are unavailable or
         expose no playback path at all are ignored, so they never hold the
         group on a protocol.
 
-        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        :param domain: The playback path domain to check (e.g. "airplay", "sonos").
         """
         for member_id in self._attr_group_members:
             member = self.mass.players.get_player(member_id)
