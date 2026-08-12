@@ -8,7 +8,7 @@ import logging
 import os
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
@@ -16,13 +16,7 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_dumps, async_json_loads
 
-from .constants import (
-    DEFAULT_LLM_INSTRUCTIONS,
-    DEFAULT_WEATHER_PROVIDER,
-    DEFAULT_WEATHER_TIMEOUT_SECONDS,
-    EMPTY_SECTION_ID,
-    VALID_WEB_SEARCH_MODES,
-)
+from .constants import EMPTY_SECTION_ID, MERGE_SECTION_PROMPT, VALID_WEB_SEARCH_MODES
 from .helpers import slugify
 
 _slugify = slugify
@@ -44,6 +38,7 @@ class AIRadioStorageMixin:
         _stations_file: Path
         _sections: dict[str, dict[str, Any]]
         _stations: dict[str, dict[str, Any]]
+        _hosts: dict[str, dict[str, Any]]
 
     async def _load_sections(self) -> None:
         """Load shared section definitions from disk."""
@@ -103,29 +98,37 @@ class AIRadioStorageMixin:
             # overwritten again once the user saves a station
             self.logger.error("Stations file is corrupt, starting without stations: %s", err)
             payload = {}
+        version = payload.get("version", 1) if isinstance(payload, dict) else 1
         stations = payload.get("stations", []) if isinstance(payload, dict) else []
-        parsed: dict[str, dict[str, Any]] = {}
+        migrated = False
         sections_changed = False
+        if isinstance(stations, list) and version <= 2 and stations:
+            sections_before = deepcopy(self._sections)
+            self._migrate_stations_v2_to_v3([s for s in stations if isinstance(s, dict)])
+            migrated = True
+            sections_changed = self._sections != sections_before
+        parsed: dict[str, dict[str, Any]] = {}
         if isinstance(stations, list):
             for station in stations:
                 if not isinstance(station, dict):
                     continue
                 try:
-                    if self._upsert_embedded_sections_from_station(station):
-                        sections_changed = True
                     normalized = self._normalize_station(station)
                 except Exception as err:
                     self.logger.warning("Skipping invalid station profile: %s", err)
                     continue
                 parsed[normalized["id"]] = normalized
         self._stations = parsed
-        if sections_changed:
+        if migrated and sections_changed:
             await self._write_sections()
+        if migrated:
+            await self._write_hosts()
+            await self._write_stations()
 
     async def _write_stations(self) -> None:
         """Persist station profiles to disk."""
         payload = {
-            "version": 2,
+            "version": 3,
             "stations": sorted(self._stations.values(), key=lambda item: item["name"]),
         }
         await self._write_json_file(self._stations_file, payload)
@@ -151,13 +154,6 @@ class AIRadioStorageMixin:
                 continue
             sections.append(deepcopy(section))
         return sections, missing
-
-    def _refresh_station_sections(self) -> None:
-        """Rebuild embedded station sections from selected shared ids."""
-        for station in self._stations.values():
-            section_ids = list(station.get("section_ids", []))
-            sections, _missing = self._materialize_sections(section_ids)
-            station["sections"] = sections
 
     def _normalize_section(self, section: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize a shared section definition."""
@@ -204,64 +200,8 @@ class AIRadioStorageMixin:
                 normalized[passthrough_key] = section[passthrough_key]
         return normalized
 
-    def _normalize_general(self, source_general: Any) -> dict[str, Any]:
-        """Normalize station general settings to a known schema."""
-        defaults = cast("dict[str, Any]", deepcopy(self._default_station_template()["general"]))
-        if not isinstance(source_general, dict):
-            return defaults
-
-        def _text(key: str) -> str:
-            value = source_general.get(key, defaults[key])
-            return str(value or defaults[key]).strip() or str(defaults[key])
-
-        def _int(key: str) -> int:
-            value = source_general.get(key, defaults[key])
-            try:
-                return int(value)
-            except TypeError, ValueError:
-                return int(defaults[key])
-
-        return {
-            "instructions": str(source_general.get("instructions") or defaults["instructions"]),
-            "weather_provider": _text("weather_provider"),
-            "weather_timeout_seconds": _int("weather_timeout_seconds"),
-        }
-
-    def _upsert_embedded_sections_from_station(
-        self,
-        station: dict[str, Any],
-        sections_map: dict[str, dict[str, Any]] | None = None,
-    ) -> bool:
-        """Upsert embedded station sections and return whether shared sections changed."""
-        target = self._sections if sections_map is None else sections_map
-        changed = False
-        raw_sections = station.get("sections")
-        if not isinstance(raw_sections, list):
-            return changed
-
-        ids_from_embedded: list[str] = []
-        for item in raw_sections:
-            if not isinstance(item, dict):
-                continue
-            normalized = self._normalize_section(item)
-            ids_from_embedded.append(normalized["id"])
-            existing = target.get(normalized["id"])
-            if existing != normalized:
-                target[normalized["id"]] = normalized
-                changed = True
-
-        raw_ids = station.get("section_ids")
-        if not isinstance(raw_ids, list) or not raw_ids:
-            station["section_ids"] = ids_from_embedded
-        return changed
-
-    def _normalize_station(
-        self,
-        station: dict[str, Any],
-        sections_map: dict[str, dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
+    def _normalize_station(self, station: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize a station profile."""
-        known_sections = self._sections if sections_map is None else sections_map
         station_id = str(station.get("id", "")).strip() or uuid4().hex[:8]
         station_id = _slugify(station_id)
         name = str(station.get("name", "")).strip()
@@ -274,30 +214,11 @@ class AIRadioStorageMixin:
         source_playlist_provider = str(station.get("source_playlist_provider", "library")).strip()
         source_playlist_provider = source_playlist_provider or "library"
 
-        raw_section_order = station.get("section_order")
-        if not isinstance(raw_section_order, list) or not raw_section_order:
-            raise InvalidDataError("Station requires a non-empty 'section_order' list")
-
-        section_ids = self._collect_station_section_ids(station)
-        if not section_ids:
-            raise InvalidDataError("Station requires at least one section id")
-
-        sections, missing = self._materialize_sections(section_ids, known_sections)
-        if missing:
-            raise InvalidDataError(
-                f"Station references unknown sections: {', '.join(sorted(set(missing)))}"
-            )
-
-        self._validate_section_order(raw_section_order, set(section_ids))
-
-        general = self._normalize_general(station.get("general"))
-        merge_section_id = str(station.get("merge_section_id", "")).strip()
-        if merge_section_id:
-            if merge_section_id not in section_ids:
-                raise InvalidDataError("merge_section_id must be selected in station section_ids")
-            merge_section = known_sections.get(merge_section_id)
-            if not merge_section or str(merge_section.get("type", "")).strip().lower() != "ai_meta":
-                raise InvalidDataError("merge_section_id must reference an ai_meta section")
+        host_id = str(station.get("host_id", "")).strip()
+        if not host_id:
+            raise InvalidDataError("Station host_id is required")
+        if host_id not in self._hosts:
+            raise InvalidDataError(f"Station references unknown host: {host_id}")
 
         def _require_number(field: str, raw: Any, default: float, cast: type) -> Any:
             if raw is None or raw == "":
@@ -322,38 +243,8 @@ class AIRadioStorageMixin:
                 ),
             ),
             "shuffle_source_tracks": bool(station.get("shuffle_source_tracks", True)),
-            "merge_section_id": merge_section_id,
-            "general": general,
-            "section_ids": section_ids,
-            "sections": sections,
-            "section_order": deepcopy(raw_section_order),
+            "host_id": host_id,
         }
-
-    def _collect_station_section_ids(self, station: dict[str, Any]) -> list[str]:
-        """Collect station section ids from section_ids or legacy embedded sections."""
-        ids: list[str] = []
-        raw_ids = station.get("section_ids")
-        if isinstance(raw_ids, list):
-            ids.extend(str(item).strip() for item in raw_ids if str(item).strip())
-
-        if not ids:
-            raw_sections = station.get("sections")
-            if isinstance(raw_sections, list):
-                for section in raw_sections:
-                    if not isinstance(section, dict):
-                        continue
-                    section_id = str(section.get("id", "")).strip()
-                    if section_id:
-                        ids.append(section_id)
-
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for section_id in ids:
-            if section_id in seen:
-                continue
-            seen.add(section_id)
-            deduped.append(section_id)
-        return deduped
 
     def _validate_section_order(
         self,
@@ -484,19 +375,15 @@ class AIRadioStorageMixin:
                 "id": "Between_Songs_Smoother",
                 "name": "Between Songs Mix",
                 "type": "ai_meta",
-                "prompt": (
-                    "Merge the drafts below into one coherent radio break. "
-                    "Preserve factual content, remove duplication, and make the "
-                    "final segment sound like one host speaking naturally.\n"
-                    "<section_drafts>"
-                ),
+                "prompt": MERGE_SECTION_PROMPT,
             },
         ]
 
     def _default_station_template(self) -> dict[str, Any]:
         """Return the built-in station template."""
-        default_sections = self._default_sections_template()
-        default_section_ids = [item["id"] for item in default_sections]
+        # must reference a real host so the template validates if saved verbatim; picks the
+        # first sorted host, or default_host on a bare install (the host template creates it)
+        hosts = sorted(self._hosts.values(), key=lambda item: item["name"])
         return {
             "id": "example_station",
             "name": "Example AI Radio Station",
@@ -505,52 +392,7 @@ class AIRadioStorageMixin:
             "default_player_id": "",
             "max_duration_minutes": 0,
             "shuffle_source_tracks": True,
-            "merge_section_id": "Between_Songs_Smoother",
-            "general": {
-                "instructions": DEFAULT_LLM_INSTRUCTIONS,
-                "weather_provider": DEFAULT_WEATHER_PROVIDER,
-                "weather_timeout_seconds": DEFAULT_WEATHER_TIMEOUT_SECONDS,
-            },
-            "section_ids": default_section_ids,
-            "sections": deepcopy(default_sections),
-            "section_order": [
-                {"when": "start_of_playlist", "flow": [{"MUST": "Song_Introduction_Start"}]},
-                {
-                    "when": "between_songs",
-                    "flow": [
-                        {
-                            "ALTERNATIVE": {
-                                "choices": [
-                                    {"section": "Song_Transition", "weight": 100},
-                                ]
-                            }
-                        },
-                        {
-                            "OPTIONAL": {
-                                "section": "Weather_Short",
-                                "chance": 0.2,
-                                "guards": {
-                                    "min_gap_songs": 3,
-                                    "max_per_60min": 1,
-                                    "require_placeholders_present": ["<weather_hourly>"],
-                                },
-                            }
-                        },
-                        {
-                            "OPTIONAL": {
-                                "section": "Global_News",
-                                "chance": 0.12,
-                                "guards": {
-                                    "min_gap_songs": 4,
-                                    "max_per_60min": 1,
-                                    "require_placeholders_present": ["<timestamp>"],
-                                },
-                            }
-                        },
-                    ],
-                },
-                {"when": "end_of_playlist", "flow": [{"MUST": "Song_Introduction_End"}]},
-            ],
+            "host_id": str(hosts[0]["id"]) if hosts else "default_host",
         }
 
     def _sync_write_json_file(self, target: Path, content: str) -> None:

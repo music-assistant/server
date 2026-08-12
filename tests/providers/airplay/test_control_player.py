@@ -1064,6 +1064,9 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
     provider.config = MagicMock()
     provider.config.instance_id = "airplay"
     provider._companion_info_by_address = {}
+    # a bare provider (built via __new__) lacks the bridge manager that
+    # supported_features consults; a real one exists before any player does
+    provider._bridge_manager = MagicMock(get_bridge=MagicMock(return_value=None))
     generic_player = GenericAirPlayPlayer(
         provider=provider,
         player_id=PLAYER_ID,

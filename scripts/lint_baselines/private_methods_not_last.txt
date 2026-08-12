@@ -2,7 +2,7 @@
 # Private methods must live at the bottom of the class (see AGENTS.md).
 # Regenerate with: uv run -m scripts.check_method_order --update-baseline
 music_assistant/models/music_provider.py	5
-music_assistant/models/player.py	58
+music_assistant/models/player.py	59
 music_assistant/providers/_demo_audio_analysis_provider/__init__.py	3
 music_assistant/providers/alexa/__init__.py	1
 music_assistant/providers/apple_music/api_client.py	8

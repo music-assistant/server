@@ -3117,6 +3117,152 @@ class TestPlayAnnouncementCleanup:
         render.wait_finished.assert_not_awaited()
 
 
+class TestNativeAnnouncementRouting:
+    """Announcement routing respects the player's own support and its active output."""
+
+    def _make_player_with_linked_child(
+        self,
+        mock_mass: MagicMock,
+        playback_state: PlaybackState,
+        *,
+        parent_supports_announce: bool = False,
+        active_protocol: str | None = None,
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer, AsyncMock, AsyncMock]:
+        """Create a controller, a player, its linked protocol child and the two path mocks."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_playback_state = playback_state
+        if parent_supports_announce:
+            player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        proto_provider = MockProvider("airplay", mass=mock_mass)
+        proto = MockPlayer(
+            proto_provider, "proto_1", "AirPlay Child", player_type=PlayerType.PROTOCOL
+        )
+        proto._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        controller._players = {"player_1": player, "proto_1": proto}
+        mock_mass.players = controller
+        player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="proto_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=40,
+                )
+            ]
+        )
+        if active_protocol is not None:
+            player.set_active_output_protocol(active_protocol)
+        render = MagicMock()
+        render.wait_ready = AsyncMock(return_value=True)
+        renderer = mock_mass.streams.announcement_renderer
+        renderer.register = MagicMock(return_value=render)
+        renderer.unregister = AsyncMock()
+        mock_mass.streams.get_announcement_url = MagicMock(
+            side_effect=lambda player_id, **_kwargs: f"http://ma/announcement/{player_id}.mp3"
+        )
+        proto.update_state(signal_event=False)
+        player.update_state(signal_event=False)
+        native_path = AsyncMock()
+        generic_path = AsyncMock()
+        controller._play_native_announcement = native_path  # type: ignore[method-assign]
+        controller._play_announcement = generic_path  # type: ignore[method-assign]
+        return controller, player, proto, native_path, generic_path
+
+    async def test_playing_player_does_not_route_to_an_idle_linked_child(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A player rendering through one output must not announce through another.
+
+        E.g. a WiiM playing natively with an idle linked AirPlay child: routing
+        the announcement to the child would seize the device from the native
+        output, with nothing restoring that playback afterwards.
+        """
+        controller, _player, _proto, native_path, generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass, PlaybackState.PLAYING, active_protocol="native"
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_not_awaited()
+        generic_path.assert_awaited_once()
+
+    async def test_idle_player_routes_to_the_linked_child(self, mock_mass: MagicMock) -> None:
+        """An idle player announces natively through any capable linked protocol."""
+        controller, _player, proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(mock_mass, PlaybackState.IDLE)
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+
+    async def test_active_protocol_child_beats_own_native_support(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        The output that is actively rendering wins over the player's own support.
+
+        E.g. a Sonos playing through its AirPlay child: the announcement rides
+        the same audio path as the music (mixed into the live stream, in sync
+        with the rest of a group) instead of a second mechanism firing beside
+        the playback.
+        """
+        controller, _player, proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.PLAYING,
+                parent_supports_announce=True,
+                active_protocol="proto_1",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+
+    async def test_own_native_support_wins_when_playing_natively(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player rendering through its own native output announces natively."""
+        controller, player, _proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.PLAYING,
+                parent_supports_announce=True,
+                active_protocol="native",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is player
+
+    async def test_idle_player_prefers_its_own_support_over_a_linked_child(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Without active playback the player's own announcement support wins."""
+        controller, player, _proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.IDLE,
+                parent_supports_announce=True,
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is player
+
+
 @pytest.mark.usefixtures("running_background_tasks")
 class TestPlayAnnouncementRestore:
     """Test the state restore of the default (fallback) announcement implementation."""

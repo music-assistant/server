@@ -228,14 +228,36 @@ class AnnouncementsMixin:
             )
             # determine if the player has native announcements support
             # or if any linked protocol has announcement support
-            native_announce_support = False
+            announce_player: Player | None
             if announce_player := self._get_control_target(
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
-                require_active=False,
+                require_active=True,
             ):
-                native_announce_support = True
-            else:
+                # The output that is ACTIVELY rendering can announce: the
+                # announcement rides the same audio path as the music (e.g. a
+                # Sonos playing through its AirPlay child gets the clip mixed
+                # into that live stream, in sync with the rest of the group)
+                # instead of a second mechanism firing beside the playback.
+                pass
+            elif PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+                # Not playing through an announce-capable output: the player's
+                # own native support (e.g. Sonos audioClip, which overlays the
+                # clip on whatever source is playing) is the next-best path.
+                announce_player = player
+            elif player.state.playback_state != PlaybackState.PLAYING:
+                # An idle player may announce through any linked protocol. A
+                # PLAYING player deliberately gets no such fallback: routing to
+                # an idle linked protocol (e.g. the AirPlay child of a WiiM
+                # playing natively) would seize the device from the active
+                # output, with nothing restoring that playback afterwards.
+                announce_player = self._get_control_target(
+                    player,
+                    required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
+                    require_active=False,
+                )
+            native_announce_support = announce_player is not None
+            if announce_player is None:
                 announce_player = player
             # create a PlayerMedia object for the announcement so
             # we can send a regular play-media call downstream
