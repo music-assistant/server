@@ -200,6 +200,8 @@
   "common.config_entries.power_control.options.none": "None",
   "common.config_entries.pre_announcement_chime_url.description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
   "common.config_entries.pre_announcement_chime_url.label": "Custom (pre)announcement chime URL",
+  "common.config_entries.prefer_wav_for_live_sources.description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed WAV to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead.",
+  "common.config_entries.prefer_wav_for_live_sources.label": "Prefer low-latency WAV for live sources",
   "common.config_entries.preferred_output_protocol.description": "Select the preferred protocol for audio playback to this device.",
   "common.config_entries.preferred_output_protocol.disabled_reasons.needs_setup": "This output must be set up before it can be used.",
   "common.config_entries.preferred_output_protocol.disabled_reasons.turned_off": "This output is turned off.",

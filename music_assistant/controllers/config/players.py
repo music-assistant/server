@@ -50,6 +50,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_EXPOSE_PLAYER_TO_HA,
@@ -655,6 +656,7 @@ class PlayerConfigMixin:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
                     CONF_ENTRY_OUTPUT_CODEC,
+                    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]

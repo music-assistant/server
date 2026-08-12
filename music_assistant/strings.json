@@ -234,6 +234,10 @@
         "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
       }
     },
+    "prefer_wav_for_live_sources": {
+      "label": "Prefer low-latency WAV for live sources",
+      "description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed WAV to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead."
+    },
     "play_media_overrides_group": {
       "label": "Play Media overrides active group",
       "description": "When this player is currently captured by an active group or sync session, an explicit Play Media command (e.g. starting a new playlist or track from Home Assistant) will release this player from the group/sync and play the new media directly on this player. Disable this to keep the legacy behavior where Play Media is redirected to the group leader. Other commands (next/prev/pause/resume) are always forwarded to the group leader as they act on the existing playback."
