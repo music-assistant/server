@@ -1313,24 +1313,22 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
         often already "... Digital Stereo (HDMI 2)" — to avoid a redundant
         "(HDMI) (HDMI 2)"-style display name.
 
-        Also appends a short hardware tag (see short_hardware_tag): derived
-        from master_device for remap-sink zones, so every zone belonging to
-        the same physical card (front_stereo, rear_stereo,
-        multichannel_stereo, ...) visibly shares one tag, distinct from
-        other cards' tags at a glance. For a raw master sink with no
-        master_device pointing to itself, falls back to the device's own PA
-        sink name — PulseAudio always assigns unique sink names, typically
-        differentiated by a serial or bus-path suffix, even for two
-        otherwise-identical products (e.g. two of the same model USB DAC)
-        whose PA *description* could otherwise read identically with no
-        visible way to tell them apart in the player list.
+        Also appends a short hardware tag (see short_hardware_tag) — but
+        only for a raw master sink, derived from its own PA sink name. A
+        remap-sink zone's tag is embedded directly into its description by
+        compute_remap_topology (positioned before the zone suffix, e.g.
+        "Creative_X_Fi_analog_[cbf7]_front_stereo"), so that sorting
+        players by name groups every zone of the same physical card
+        together — appending another tag here would duplicate it.
         """
         raw_name: str = device.get("description", device["name"])
         label = connector_label(device.get("device_bus"), device["name"])
         if label and label.lower() not in raw_name.lower():
             raw_name = f"{raw_name} ({label.upper()})"
-        tag_source: str = device.get("master_device") or device["name"]
-        return f"{raw_name} [{short_hardware_tag(tag_source)}]"
+        if device.get("master_device"):
+            # Remap-sink zone: tag is already embedded in raw_name above.
+            return raw_name
+        return f"{raw_name} [{short_hardware_tag(device['name'])}]"
 
     async def _ensure_volume_controller(self, resolved_backend: str) -> None:
         """
@@ -1451,13 +1449,14 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             # which does NOT depend on this prefix).
             hardware_tag = short_hardware_tag(master_sink_name)
             card_name = normalize_card_name(alsa_card_name, hardware_tag, label)
-            # Untagged prefix for each sink's PA "description" — keeps the
-            # hash tag out of the human-facing name (it should only ever
-            # appear once, as the bracketed suffix _labeled_display_name()
-            # appends), while card_name above (tag included) stays the
-            # actual PA sink_name, which needs the tag for uniqueness.
+            # Untagged prefix for each sink's PA "description" base — the
+            # tag itself is embedded separately, before the zone suffix
+            # (see compute_remap_topology's hardware_tag param), so player
+            # sorting groups every zone of the same physical card together.
             display_prefix = normalize_card_name(alsa_card_name, None, label)
-            for spec in compute_remap_topology(card_name, channel_map, channels, display_prefix):
+            for spec in compute_remap_topology(
+                card_name, channel_map, channels, display_prefix, hardware_tag
+            ):
                 if spec.sink_name in existing_names:
                     continue
                 argument = build_remap_sink_argument(spec, master_sink_name)
