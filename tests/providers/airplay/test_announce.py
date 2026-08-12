@@ -85,6 +85,7 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.display_name = player_id
     player.synced_to = None
     player.state.active_group = None
+    player.protocol_parent_id = None
     player.playback_state = PlaybackState.PLAYING
     player.volume_level = 30
     player.volume_set = AsyncMock()
@@ -437,6 +438,31 @@ async def test_group_entity_session_leader_announces_alone() -> None:
     members = _make_playing_group(*streams)
     leader = members[0]
     leader.state.active_group = "syncgroup_1"
+    members[1].synced_to = leader.player_id
+
+    await announce.play_announcement(leader, _make_announcement(), None)
+
+    streams[0].announce.assert_awaited_once()
+    streams[1].announce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_protocol_child_reads_group_ownership_from_its_parent() -> None:
+    """
+    A protocol child leading a syncgroup's session still announces alone.
+
+    Protocol players never carry active_group themselves - the model keeps the
+    group state on the device player they render for - so the whole-group
+    handle is found through the protocol parent (the regression heard as an
+    individual announcement playing on the whole syncgroup).
+    """
+    streams = [_make_stream(), _make_stream()]
+    members = _make_playing_group(*streams)
+    leader = members[0]
+    leader.protocol_parent_id = "milo_parent"
+    parent = MagicMock()
+    parent.state.active_group = "syncgroup_1"
+    leader.mass.players.get_player = MagicMock(return_value=parent)
     members[1].synced_to = leader.player_id
 
     await announce.play_announcement(leader, _make_announcement(), None)

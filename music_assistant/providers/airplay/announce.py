@@ -408,7 +408,7 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
         if bridge is not None and bridge.owns_airplay_stream:
             return [player]
         return []
-    if player.state.active_group:
+    if _owning_group_entity(player):
         # A group ENTITY (e.g. a syncgroup) owns this session, and that entity
         # is the whole-group announcement handle: this player addressed
         # individually announces alone, even as the session's sync leader.
@@ -453,7 +453,10 @@ def _resolve_announce_instant(
     # prune settled plans so the registry cannot grow with announcement history
     for key in [key for key, at_ms in plans.items() if at_ms <= now_ms]:
         del plans[key]
-    plan_key = (player.state.active_group or player.synced_to or player.player_id, render_key)
+    plan_key = (
+        _owning_group_entity(player) or player.synced_to or player.player_id,
+        render_key,
+    )
     if (at_unix_ms := plans.get(plan_key)) is not None:
         return at_unix_ms
     # the instant must clear EVERY session member's span: the sibling calls of
@@ -475,6 +478,24 @@ def _shared_announce_instant(streams: Iterable[AirPlayStream]) -> int:
     """
     max_span_ms = max(_member_span_ms(stream) for stream in streams)
     return int(time.time() * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+
+
+def _owning_group_entity(player: AirPlayPlayer) -> str | None:
+    """
+    Return the id of the group ENTITY that owns this player's session, if any.
+
+    ``active_group`` only ever names a real group player (e.g. a syncgroup) -
+    but a protocol player never carries it itself: the model keeps the group
+    state on the device player it renders for, so the ownership is read
+    through the protocol parent when needed.
+    """
+    if player.state.active_group:
+        return player.state.active_group
+    if player.protocol_parent_id and (
+        parent := player.mass.players.get_player(player.protocol_parent_id)
+    ):
+        return parent.state.active_group
+    return None
 
 
 def _member_span_ms(stream: AirPlayStream) -> int:
