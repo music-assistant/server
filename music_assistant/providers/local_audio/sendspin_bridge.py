@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+import hashlib
 import uuid
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -56,7 +57,9 @@ if sys.platform == "linux":
     from .remap_topology import (
         build_remap_sink_argument,
         compute_remap_topology,
+        connector_label,
         normalize_card_name,
+        remap_zone_suffix,
     )
 
 if TYPE_CHECKING:
@@ -116,6 +119,54 @@ def _now_us() -> int:
 def get_device_uuid(device_name: str, hostapi_index: int) -> str:
     """Generate a stable UUID for a local audio device."""
     return str(uuid.uuid5(DEVICE_UUID_NAMESPACE, f"{device_name}:{hostapi_index}"))
+
+
+def identity_seed(device_name: str, device_info: dict[str, Any]) -> str:
+    """
+    Return the stable identity input for get_device_uuid().
+
+    Uses master_device + the recovered zone suffix when present (a remap
+    sink this provider created — see remap_topology.remap_zone_suffix),
+    falling back to the device's own PA sink name otherwise (already
+    stable, since PulseAudio generates it from the physical bus path, not
+    from anything this module names).
+
+    MUST be the single source of truth for this computation. It's called
+    both by discover_and_register() (which registers the MA player) and by
+    SendspinLocalAudioBridge.start() (which registers the bridge as that
+    same player's output protocol) — the two must always resolve to the
+    identical UUID for the same device, or MA has a player with no
+    attached protocol. Computing this independently in two places is
+    exactly how they drifted out of sync previously; do not duplicate it.
+    """
+    master_device: str | None = device_info.get("master_device")
+    zone_suffix = remap_zone_suffix(device_name)
+    if master_device and zone_suffix:
+        return f"{master_device}::{zone_suffix}"
+    return device_name
+
+
+def short_hardware_tag(bus_identity: str, length: int = 4) -> str:
+    """
+    Short, stable hex tag derived from a physical identity string (e.g.
+    master_device) for display/grouping purposes only — e.g. hinting that
+    several players (front_stereo, rear_stereo, multichannel_stereo, ...)
+    all originate from the same physical card, without needing the full
+    card_name/label string repeated in each one.
+
+    NOT a replacement for get_device_uuid()'s player identity — that stays
+    the actual player_id mechanism. A short tag has real, non-negligible
+    collision risk (4 hex digits = 65,536 possible values) and is only
+    appropriate as a cosmetic hint, never as anything relied on to be
+    truly unique.
+
+    Uses hashlib.sha1 rather than the built-in hash() — Python's built-in
+    hash() is randomized per process (PYTHONHASHSEED) unless explicitly
+    disabled, so it would produce a different tag every restart, defeating
+    the entire point of a stable tag.
+    """
+    digest = hashlib.sha1(bus_identity.encode("utf-8")).hexdigest()
+    return digest[:length]
 
 
 class SendspinLocalAudioBridge:
@@ -233,7 +284,9 @@ class SendspinLocalAudioBridge:
     async def start(self) -> None:
         """Register the local audio device as an external Sendspin client."""
         hostapi_index: int = self.device_info.get("hostapi", 0)
-        self._device_uuid = get_device_uuid(self.device_name, hostapi_index)
+        self._device_uuid = get_device_uuid(
+            identity_seed(self.device_name, self.device_info), hostapi_index
+        )
         self._bridge_client_id = bridge_client_id_from_uuid(self._device_uuid)
 
         if sendspin_prov := self._get_sendspin_provider():
@@ -1163,7 +1216,28 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                         device.get("description", device_name),
                     )
                     continue
-                device_map[get_device_uuid(device_name, device.get("hostapi", 0))] = device
+                # Identity is derived from the remap sink's master_device
+                # (a property PulseAudio sets natively on every remap sink —
+                # not something we write ourselves, so no proplist-parsing
+                # risk) plus its zone suffix (recovered via
+                # remap_topology.remap_zone_suffix against this sink's own
+                # name — reliable since these suffixes are literal strings
+                # this module controls). This is independent of the sink's
+                # card-index/connector-label naming, which can change for
+                # reasons unrelated to this specific device (e.g. a second
+                # identical card appearing shifts the first's index) and
+                # would otherwise orphan the existing player and silently
+                # create a new one in its place. Sinks with no
+                # master_device or unrecognized suffix (raw master sinks —
+                # 2ch-or-fewer devices, or a multichannel master not yet
+                # covered by remap topology) fall back to device_name,
+                # which PulseAudio generates from the physical bus path and
+                # is already stable on its own. See identity_seed() —
+                # SendspinLocalAudioBridge.start() must use the exact same
+                # function so the player and its bridge always agree.
+                device_map[
+                    get_device_uuid(identity_seed(device_name, device), device.get("hostapi", 0))
+                ] = device
             self._devices = device_map
 
             for device_uuid, device in self._devices.items():
@@ -1173,12 +1247,49 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                     # previous provider instance (players survive a provider reload):
                     # (re)register so the player is bound to this provider instance
                     player = await self._register_player(
-                        device_uuid, device.get("description", device["name"])
+                        device_uuid, self._labeled_display_name(device)
                     )
                 if player is None:
                     # registration skipped - the player is disabled
                     continue
                 await self.evaluate_bridge(player)
+
+    @staticmethod
+    def _labeled_display_name(device: dict[str, Any]) -> str:
+        """
+        Return a device's display name with connector-type and hardware-card labels applied.
+
+        Applies hdmi/analog/usb labeling (see remap_topology.connector_label)
+        so a raw master sink registering as its own player — a 2ch-or-fewer
+        card, or a multichannel card not yet covered by remap-sink topology —
+        doesn't rely solely on PulseAudio's own per-profile description,
+        which gives no distinguishing signal when two identical cards
+        (same alsa_card_name, same profile) produce identical descriptions.
+
+        Skips adding the connector label if PA's own description already
+        mentions it (case-insensitive) — e.g. an HDMI port's description is
+        often already "... Digital Stereo (HDMI 2)" — to avoid a redundant
+        "(HDMI) (HDMI 2)"-style display name.
+
+        Also appends a short hardware tag (see short_hardware_tag): derived
+        from master_device for remap-sink zones, so every zone belonging to
+        the same physical card (front_stereo, rear_stereo,
+        multichannel_stereo, ...) visibly shares one tag, distinct from
+        other cards' tags at a glance. For a raw master sink with no
+        master_device pointing to itself, falls back to the device's own PA
+        sink name — PulseAudio always assigns unique sink names, typically
+        differentiated by a serial or bus-path suffix, even for two
+        otherwise-identical products (e.g. two of the same model USB DAC)
+        whose PA *description* could otherwise read identically with no
+        visible way to tell them apart in the player list.
+        """
+        raw_name: str = device.get("description", device["name"])
+        label = connector_label(device.get("device_bus"), device["name"])
+        if label and label.lower() not in raw_name.lower():
+            raw_name = f"{raw_name} ({label.upper()})"
+        tag_source: str = device.get("master_device") or device["name"]
+        raw_name = f"{raw_name} [{short_hardware_tag(tag_source)}]"
+        return raw_name
 
     async def evaluate_bridge(self, player: Player) -> None:
         """
@@ -1316,19 +1427,37 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             if not alsa_card_name or not channel_map:
                 continue
 
-            # When two identical cards share the same alsa.card_name (e.g.
-            # two Creative X-Fi cards both report "Creative X-Fi"), their
-            # normalized names would collide, causing the second card's remap
-            # sinks to be silently skipped as "already exists". Append the
-            # ALSA card index to disambiguate: "Creative_X_Fi_card0" vs
-            # "Creative_X_Fi_card3".
-            all_card_names = [d.get("alsa_card_name") for d in devices if not d.get("is_remap")]
-            is_duplicate_card_name = all_card_names.count(alsa_card_name) > 1
-            alsa_card_index: str | None = (
-                device.get("alsa_card_index") if is_duplicate_card_name else None
-            )
-            card_name = normalize_card_name(alsa_card_name, alsa_card_index)
             master_sink_name: str = device["name"]
+            # Label the connector type (hdmi/analog/usb) so an HDMI output
+            # and an analog output on the same physical chip — which share
+            # an identical alsa_card_name and would otherwise differ only
+            # by an opaque card index — are distinguishable at a glance.
+            # Applied unconditionally (unlike the card index below) since
+            # it's informative on its own, not just a collision workaround.
+            label = connector_label(device.get("device_bus"), master_sink_name)
+
+            # When two candidates would produce the *same labeled name* —
+            # not just the same alsa_card_name — their normalized names
+            # would collide, causing the second card's remap sinks to be
+            # silently skipped as "already exists". Checking the labeled
+            # key (name+label) rather than raw alsa_card_name means a card
+            # index is only added when it's actually needed: two identical
+            # X-Fi cards both label "analog" and still collide, so still
+            # get "_card0"/"_card3" — but an HDMI output and an analog
+            # output sharing "HD-Audio Generic" already differ by label
+            # alone ("hdmi" vs "analog") and no longer need one.
+            def _labeled_key(d: dict[str, Any]) -> str:
+                name = d.get("alsa_card_name") or ""
+                lbl = connector_label(d.get("device_bus"), d.get("name", ""))
+                return f"{name}::{lbl}" if lbl else name
+
+            labeled_key = _labeled_key(device)
+            all_labeled_keys = [_labeled_key(d) for d in devices if not d.get("is_remap")]
+            is_duplicate_labeled_name = all_labeled_keys.count(labeled_key) > 1
+            alsa_card_index: str | None = (
+                device.get("alsa_card_index") if is_duplicate_labeled_name else None
+            )
+            card_name = normalize_card_name(alsa_card_name, alsa_card_index, label)
             for spec in compute_remap_topology(card_name, channel_map, channels):
                 if spec.sink_name in existing_names:
                     continue
@@ -1371,17 +1500,37 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                 unmute_status = await self.mass.loop.run_in_executor(
                     None, unmute_playback_switches, str(device_alsa_card_index)
                 )
-                if unmute_status.startswith("ok"):
+                if unmute_status.startswith("ok") and "set_failed" not in unmute_status:
                     self.logger.debug(
                         "unmute_playback_switches on ALSA card %s: %s",
                         device_alsa_card_index,
                         unmute_status,
                     )
-                else:
+                elif unmute_status in ("no_libasound", "attach_failed"):
+                    # Expected in containerized deployments without direct
+                    # /dev/snd access — suspend_resume_sink via PA is
+                    # unaffected either way.
                     self.logger.debug(
                         "unmute_playback_switches on ALSA card %s did not "
                         "complete (%s) — likely no direct /dev/snd access "
                         "from this process; suspend_resume_sink via PA is "
+                        "unaffected",
+                        device_alsa_card_index,
+                        unmute_status,
+                    )
+                else:
+                    # open_failed / register_failed / load_failed mean the
+                    # process DID have some libasound access but the mixer
+                    # sequence broke partway through — a real anomaly, not
+                    # the expected no-/dev/snd-access case above.
+                    # "set_failed" means a target element was correctly
+                    # identified as muted but the actual unmute call itself
+                    # reported failure — that element's true state is
+                    # unknown, worth surfacing rather than assuming success.
+                    self.logger.warning(
+                        "unmute_playback_switches on ALSA card %s reported "
+                        "%s — surround/center/side channels on this card "
+                        "may still be muted; suspend_resume_sink via PA is "
                         "unaffected",
                         device_alsa_card_index,
                         unmute_status,
