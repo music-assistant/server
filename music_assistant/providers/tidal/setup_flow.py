@@ -74,7 +74,7 @@ async def run_setup(session: SetupSession) -> None:
             [
                 ConfigEntry(key=CONF_OOPS_URL, type=ConfigEntryType.STRING, required=True),
             ],
-            step_id="user",
+            step_id="user_finish",
             errors=errors,
             last_step=True,
         )

@@ -22,7 +22,11 @@
   "setup_flow": {
     "user": {
       "title": "Link your Tidal account",
-      "description": "Open the Tidal sign-in page with the link icon. After signing in you land on a 'Page Not Found' page — copy that URL from the address bar and paste it below."
+      "description": ""
+    },
+    "user_finish": {
+      "title": "Save the Oops URL.",
+      "description": ""
     }
   },
   "media": {
