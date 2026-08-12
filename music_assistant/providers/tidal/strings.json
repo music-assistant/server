@@ -16,7 +16,7 @@
       "label": "Redirect URL from Tidal"
     },
     "auth_instructions": {
-      "label": "Use the link icon to open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it below."
+      "label": "On the next page, open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it in the step afterwards."
     }
   },
   "setup_flow": {

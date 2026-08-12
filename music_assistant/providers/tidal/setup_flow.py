@@ -10,14 +10,16 @@ for the duration of the flow (it used to be smuggled through a hidden config val
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
 
 from .auth_manager import TidalAuthManager
 from .constants import (
@@ -56,8 +58,20 @@ async def run_setup(session: SetupSession) -> None:
                 ConfigEntry(
                     key="auth_instructions",
                     type=ConfigEntryType.LABEL,
-                    help_link=authorize_url,
-                ),
+                )
+            ],
+            step_id="user",
+            errors=errors,
+        )
+        with suppress(StepExpiredError, OSError):
+            await session.external_until(
+                asyncio.Future(),
+                authorize_url,
+                step_id="authorize",
+                expires_in=30,
+            )
+        values = await session.form(
+            [
                 ConfigEntry(key=CONF_OOPS_URL, type=ConfigEntryType.STRING, required=True),
             ],
             step_id="user",

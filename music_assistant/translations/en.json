@@ -2317,7 +2317,7 @@
   "provider.theaudiodb.config_entries.enable_images.label": "Enable retrieval of artist/album/track images",
   "provider.theaudiodb.config_entries.enable_track_metadata.label": "Enable retrieval of track metadata.",
   "provider.theaudiodb.manifest.description": "Provides artist images, album art, and rich textual metadata from TheAudioDB for use in the Music Assistant UI.",
-  "provider.tidal.config_entries.auth_instructions.label": "Use the link icon to open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it below.",
+  "provider.tidal.config_entries.auth_instructions.label": "On the next page, open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it in the step afterwards.",
   "provider.tidal.config_entries.oops_url.label": "Redirect URL from Tidal",
   "provider.tidal.config_entries.quality.description": "The maximum streaming quality to request from Tidal.",
   "provider.tidal.config_entries.quality.label": "Quality setting for Tidal:",
