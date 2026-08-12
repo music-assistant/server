@@ -70,6 +70,9 @@ def _make_mock_player(
     player.active_output_protocol = active_output_protocol
     player.playback_state = playback_state
     player.protocol_parent_id = None
+    # stated explicitly: it decides whether the player's own domain counts as a
+    # playback path, which drives the protocol downshift
+    player.is_native_player = True
     player.provider = MagicMock()
     player.provider.domain = provider_domain
 
@@ -551,6 +554,120 @@ class TestDynamicLeaderSwitch:
         assert sgp._attr_group_members == ["bathroom", "living_room"]
         old_leader.set_members.assert_any_await(player_ids_to_remove=["old_leader"])
         bathroom.set_members.assert_any_await(player_ids_to_add=["living_room"])
+
+    @pytest.mark.asyncio
+    async def test_handoff_stays_on_live_protocol_after_downshift(self) -> None:
+        """
+        A pending downshift must not redirect the handoff to the native players.
+
+        Once no member requires the non-native protocol anymore,
+        active_protocol_domain reports the native domain while the stream is
+        still carried by the protocol players, so the handoff has to keep
+        addressing the latter.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_old",
+        )
+        kitchen = _make_mock_player(
+            "kitchen",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_kitchen",
+        )
+        kitchen.linked_output_protocols[0].output_protocol_id = "ap_kitchen"
+        bathroom = _make_mock_player(
+            "bathroom",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_bathroom",
+        )
+        bathroom.linked_output_protocols[0].output_protocol_id = "ap_bathroom"
+
+        ap_old = _make_mock_player("ap_old", provider_domain="airplay")
+        ap_kitchen = _make_mock_player("ap_kitchen", provider_domain="airplay")
+        ap_bathroom = _make_mock_player("ap_bathroom", provider_domain="airplay")
+        mock_session = MagicMock()
+        mock_session.sync_clients = [ap_old, ap_kitchen, ap_bathroom]
+        ap_old.stream = MagicMock()
+        ap_old.stream.session = mock_session
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "kitchen": kitchen,
+                "bathroom": bathroom,
+                "ap_old": ap_old,
+                "ap_kitchen": ap_kitchen,
+                "ap_bathroom": ap_bathroom,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "kitchen", "bathroom"]
+        # all remaining members can play natively, so the group is due to downshift
+        assert sgp.active_protocol_domain == "sonos"
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader == kitchen
+        ap_old.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+        ap_kitchen.set_members.assert_any_await(player_ids_to_add=["ap_bathroom"])
+        # a native grouping command would regroup speakers that stream over AirPlay
+        kitchen.set_members.assert_not_awaited()
+        bathroom.set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leader_selection_prefers_the_live_protocol_after_downshift(self) -> None:
+        """The new leader comes from the live session, not from the downshifted domain."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_old",
+        )
+        # AirPlay device that is also reachable over its Sendspin bridge, so it
+        # does not count as requiring AirPlay and the group is due to downshift
+        apple_tv = _make_mock_player(
+            "apple_tv", provider_domain="airplay", protocol_domains=["sendspin"]
+        )
+        # native-only member that never joined the live session
+        spare = _make_mock_player("spare", provider_domain="sonos")
+
+        ap_old = _make_mock_player("ap_old", provider_domain="airplay")
+        mock_session = MagicMock()
+        mock_session.sync_clients = [ap_old, apple_tv]
+        ap_old.stream = MagicMock()
+        ap_old.stream.session = mock_session
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "apple_tv": apple_tv,
+                "spare": spare,
+                "ap_old": ap_old,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "apple_tv", "spare"]
+        assert sgp.active_protocol_domain == "sonos"
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        # picking the native-only spare would have cost a dissolve + reform
+        assert sgp.sync_leader == apple_tv
+        ap_old.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
 
     def test_align_members_translates_protocol_ids_and_keeps_outsiders_last(self) -> None:
         """A protocol session player's order maps onto the parent members that we track."""
