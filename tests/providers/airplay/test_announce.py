@@ -467,11 +467,30 @@ async def test_bridged_player_with_live_stream_arms_itself() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bridged_player_never_runs_a_session_fallback() -> None:
-    """A bridged player without a live stream fails instead of seizing the device."""
+async def test_bridge_configured_player_mixes_over_its_own_session() -> None:
+    """
+    A bridge that is merely configured never blocks the live mix.
+
+    The regression this pins: a player with a Sendspin bridge set up but
+    playing its own (session-backed) AirPlay stream mixes the clip like any
+    unbridged player - the idle bridge is a bystander.
+    """
+    (member,) = _make_playing_group(_make_stream())
+    bridge = MagicMock(owns_airplay_stream=False)
+    member.provider.bridge_manager.get_bridge = MagicMock(return_value=bridge)
+
+    await announce.play_announcement(member, _make_announcement(), None)
+
+    member.stream.announce.assert_awaited_once()
+    member.stream.wait_announce_done.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bridge_streaming_player_never_runs_a_session_fallback() -> None:
+    """A player whose bridge owns the live stream fails instead of seizing the device."""
     player = _make_player("bridged")
     player.playback_state = PlaybackState.IDLE
-    bridge = MagicMock(owns_airplay_stream=False)
+    bridge = MagicMock(owns_airplay_stream=True)
     player.provider.bridge_manager.get_bridge = MagicMock(return_value=bridge)
 
     with (

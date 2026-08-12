@@ -260,15 +260,20 @@ class AirPlayPlayer(Player):
         # an AirPlay receiver), which only pauses the sync leader while the other
         # members keep playing.
         features = {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
-        # A Sendspin-bridged player advertises announcements only while the
-        # bridge actually streams to it: that stream is a regular AirPlayStream
-        # the clip mixes into. An IDLE bridged player must not advertise - its
-        # dedicated announcement session would fight the bridge for the device,
-        # so without the feature those announcements keep their existing
-        # routing (the generic flow via the Sendspin parent).
+        # A player with a Sendspin bridge CONFIGURED still announces natively
+        # whenever there is a stream to mix into: its own (session-backed)
+        # AirPlay stream, or the bridge's stream while Sendspin plays through
+        # it. Only a bridged player with neither hides the feature - a
+        # dedicated announcement session on it would race the bridge for the
+        # device, so those announcements keep their existing routing (the
+        # generic flow via the Sendspin parent).
         prov = cast("AirPlayProvider", self.provider)
         bridge = prov.bridge_manager.get_bridge(self.player_id)
-        if bridge is not None and not bridge.owns_airplay_stream:
+        if (
+            bridge is not None
+            and not bridge.owns_airplay_stream
+            and not (self.stream is not None and self.stream.running and self.stream.session)
+        ):
             features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
         return features
 

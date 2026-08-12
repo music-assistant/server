@@ -902,6 +902,11 @@ def test_bridged_player_advertises_announcements_only_while_streaming(
     idle_bridge = MagicMock(owns_airplay_stream=False)
     with patch.object(bridge_manager, "get_bridge", return_value=idle_bridge):
         assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+        # ... but a configured-yet-idle bridge never hides the feature while the
+        # player runs its own session-backed stream (playing over AirPlay itself)
+        airplay_player.stream = MagicMock(running=True, session=MagicMock())
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+        airplay_player.stream = None
 
 
 @pytest.mark.asyncio

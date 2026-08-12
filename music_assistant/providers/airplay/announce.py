@@ -383,14 +383,17 @@ async def _announce_with_session(
             f"Cannot announce on {player.display_name}: a grouped AirPlay player "
             "without live playback cannot announce natively"
         )
-    if provider.bridge_manager.get_bridge(player.player_id) is not None:
-        # The device belongs to the bridge; a dedicated announcement session
-        # would seize it from the Sendspin side with nothing restoring that
-        # playback. Only reachable in a stream-ended race - an idle bridged
-        # player does not advertise the announcement feature at all.
+    bridge = provider.bridge_manager.get_bridge(player.player_id)
+    if bridge is not None and bridge.owns_airplay_stream:
+        # The bridge is actively streaming to the device; a dedicated
+        # announcement session would seize it from the Sendspin side with
+        # nothing restoring that playback. Only reachable in a race (the live
+        # mix path handles a playing bridge stream). A bridge that is merely
+        # configured but idle is a bystander: the fallback then behaves
+        # exactly as it does for an unbridged player.
         raise PlayerCommandFailed(
-            f"Cannot announce on {player.display_name}: the player is driven by its "
-            "Sendspin bridge and has no live stream to mix the announcement into"
+            f"Cannot announce on {player.display_name}: the player is being streamed "
+            "to by its Sendspin bridge"
         )
     prev_volumes: dict[AirPlayPlayer, int] = {}
     session: AirPlayStreamSession | None = None
