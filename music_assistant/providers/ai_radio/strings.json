@@ -27,8 +27,8 @@
   },
   "setup_flow": {
     "user": {
-      "title": "Choose the AI Radio engines",
-      "description": "Pick the AI engine that writes the moderator sections and the text-to-speech engine that voices them."
+      "title": "Set up AI Radio",
+      "description": "Pick the AI engine that writes the moderator sections and the text-to-speech engine that voices them. Optionally set a weather location for stations that mention the weather."
     },
     "abort": {
       "no_ai_engine": "AI Radio needs an AI engine. Set up a plugin that provides AI first, for example the Home Assistant plugin with an AI task entity.",
