@@ -3225,7 +3225,7 @@ class TestPlayAnnouncementMessage:
 
         with (
             patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
-            pytest.raises(PlayerCommandFailed, match="can not be announced"),
+            pytest.raises(PlayerCommandFailed, match="rendered the message to a local file"),
         ):
             await controller.play_announcement("player_1", message="hello")
 

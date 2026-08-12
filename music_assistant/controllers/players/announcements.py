@@ -407,7 +407,8 @@ class AnnouncementsMixin:
             # an announcement is always fetched by url, also when it is forwarded to each
             # member of a group, so a clip the engine only rendered to disk cannot be used
             raise PlayerCommandFailed(
-                f"TTS engine '{engine.uid}' returned audio that can not be announced."
+                f"TTS engine '{engine.uid}' rendered the message to a local file. "
+                "Announcements need an engine that serves its audio over http."
             )
         return path
 
