@@ -16,7 +16,7 @@
     },
     "allow_legacy_clients": {
       "label": "Allow legacy clients",
-      "description": "Accept Sendspin clients that deviate from the current specification, including clients that do not support encryption. Unencrypted connections are not authenticated and can be intercepted on the local network. While enabled, the server also avoids newer protocol behavior that older clients might mishandle. Disabling this enforces spec-compliant behavior on both sides, which becomes the default in a future release, after which this option is removed."
+      "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
     },
     "min_pin_length": {
       "label": "Minimum PIN length",

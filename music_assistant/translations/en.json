@@ -1999,7 +1999,7 @@
   "provider.roku_media_assistant.config_entries.roku_app_id.label": "App ID of Media Assistant",
   "provider.roku_media_assistant.manifest.description": "Support for Roku's running Media Assistant.",
   "provider.samsung_wam.manifest.description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
-  "provider.sendspin.config_entries.allow_legacy_clients.description": "Accept Sendspin clients that deviate from the current specification, including clients that do not support encryption. Unencrypted connections are not authenticated and can be intercepted on the local network. While enabled, the server also avoids newer protocol behavior that older clients might mishandle. Disabling this enforces spec-compliant behavior on both sides, which becomes the default in a future release, after which this option is removed.",
+  "provider.sendspin.config_entries.allow_legacy_clients.description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release.",
   "provider.sendspin.config_entries.allow_legacy_clients.label": "Allow legacy clients",
   "provider.sendspin.config_entries.cast_audio_unsupported.label": "Sendspin isn't supported on this Cast device. Use the standard Cast protocol instead.",
   "provider.sendspin.config_entries.dynamic_pin_channel_display.label": "The device shows the PIN on its screen.",
