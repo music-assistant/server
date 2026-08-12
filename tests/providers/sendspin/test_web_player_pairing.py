@@ -41,6 +41,15 @@ class _FakePairingStore:
         return self._record
 
 
+def _user_lookup(*, found: bool) -> Any:
+    """Return an auth get_user stand-in answering as if the account exists or is gone."""
+
+    async def _get_user(user_id: str) -> Any:
+        return SimpleNamespace(user_id=user_id) if found else None
+
+    return _get_user
+
+
 class _WebPlayerServerApi(_FakeServerApi):
     """_FakeServerApi with the pairing surface the web-player entry point uses."""
 
@@ -59,8 +68,12 @@ def _make_web_provider(
     registered: bool = True,
     initialized: bool = True,
     psk_category: PskCategory | None = PskCategory.SENTINEL,
+    caller_has_access: bool = True,
 ) -> tuple[SendspinProvider, list[str]]:
     provider, refreshed = _make_provider(api, monkeypatch)
+    cast("Any", provider.mass).webserver = SimpleNamespace(
+        auth=SimpleNamespace(get_user=_user_lookup(found=caller_has_access))
+    )
     # the provider resolves its translation namespace through the manifest
     cast("Any", provider).manifest = SimpleNamespace(domain="sendspin")
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
@@ -271,3 +284,47 @@ async def test_pair_web_player_repairs_a_client_that_lost_its_pairing(
     await provider.pair_web_player(_TOKEN)
     assert [a.pairing_psk for a in api.attempts] == [_PAIRING_PSK]
     assert refreshed == [_CLIENT_ID]
+
+
+async def test_pair_web_player_withdraws_a_pairing_the_caller_just_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Access withdrawn while the handshake ran leaves no pairing behind."""
+    api = _WebPlayerServerApi()
+    provider, _refreshed = _make_web_provider(api, monkeypatch, caller_has_access=False)
+    evicted: list[str] = []
+
+    async def _record_eviction(owner: str) -> None:
+        evicted.append(owner)
+
+    monkeypatch.setattr(provider, "_evict_pairings_for_owner", _record_eviction)
+    set_current_user(User(user_id="u1", username="maxim", role=UserRole.USER))
+    try:
+        await provider.pair_web_player(_TOKEN)
+    finally:
+        set_current_user(None)
+
+    assert [a.owner for a in api.attempts] == ["user-u1"]
+    assert evicted == ["user-u1"]
+
+
+async def test_pair_web_player_keeps_the_pairing_of_a_live_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The revalidation after pairing leaves an unaffected caller's pairing in place."""
+    api = _WebPlayerServerApi()
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    evicted: list[str] = []
+
+    async def _record_eviction(owner: str) -> None:
+        evicted.append(owner)
+
+    monkeypatch.setattr(provider, "_evict_pairings_for_owner", _record_eviction)
+    set_current_user(User(user_id="u1", username="maxim", role=UserRole.USER))
+    try:
+        await provider.pair_web_player(_TOKEN)
+    finally:
+        set_current_user(None)
+
+    assert [a.owner for a in api.attempts] == ["user-u1"]
+    assert evicted == []

@@ -953,6 +953,9 @@ class SendspinProvider(PlayerProvider):
                 translation_args=alert.params,
                 translation_owner=self.translation_owner,
             ) from err
+        # The handshake takes a moment, in which an eviction can have missed this record.
+        if owner is not None and not await _owner_has_access(owner, self.mass.webserver.auth):
+            await self._evict_pairings_for_owner(owner)
 
     def get_management_session(self, client_id: str) -> ManagementSession | None:
         """Return the client's management session, dropping one whose connection is gone."""
