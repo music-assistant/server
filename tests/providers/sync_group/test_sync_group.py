@@ -169,6 +169,27 @@ class TestProtocolAwareLeaderSelection:
         leader = sgp._select_sync_leader(preferred_protocol_domain="airplay")
         assert leader == player_a
 
+    def test_select_leader_prefers_live_session_member(self) -> None:
+        """A member the live session already feeds outranks a plain protocol match."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # both speak AirPlay, but only player_b takes part in the live session
+        player_a = _make_mock_player(
+            "player_a", provider_domain="sonos", protocol_domains=["airplay"]
+        )
+        player_b = _make_mock_player(
+            "player_b", provider_domain="sonos", protocol_domains=["airplay"]
+        )
+        mass.players.get_player = _player_lookup({"player_a": player_a, "player_b": player_b})
+
+        sgp._attr_group_members = ["player_a", "player_b"]
+
+        leader = sgp._select_sync_leader(
+            preferred_protocol_domain="airplay", preferred_member_ids=["player_b"]
+        )
+        assert leader == player_b
+
     def test_select_leader_no_protocol_uses_first_available(self) -> None:
         """When no preferred protocol, pick first available."""
         mass = _make_mock_mass()
@@ -792,6 +813,73 @@ class TestDynamicLeaderSwitch:
         reform.assert_awaited_once()
         assert reform.await_args is not None
         assert reform.await_args.kwargs.get("preferred_protocol_domain") == "airplay"
+
+    @pytest.mark.asyncio
+    async def test_leader_selection_skips_a_member_the_session_dropped(self) -> None:
+        """
+        A member the session dropped must not cost the group its seamless handoff.
+
+        AirPlay drops a member from its session on a write timeout without pruning it
+        from the group, so it stays an available candidate while no longer having a
+        stream to inherit.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("ap_old", provider_domain="airplay")
+        dropped = _make_mock_player("ap_dropped", provider_domain="airplay")
+        still_playing = _make_mock_player("ap_live", provider_domain="airplay")
+        # the session dropped ap_dropped, but the group bookkeeping still lists it
+        # (and lists it first, so it would be picked on member order alone)
+        old_leader.group_members = ["ap_old", "ap_dropped", "ap_live"]
+        old_leader.live_session_members = ["ap_old", "ap_live"]
+
+        mass.players.get_player = _player_lookup(
+            {"ap_old": old_leader, "ap_dropped": dropped, "ap_live": still_playing}
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["ap_old", "ap_dropped", "ap_live"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("ap_old")
+
+        assert sgp.sync_leader == still_playing
+        # handed off at the protocol level, so playback was never stopped;
+        # the dropped member rejoins as a member of the new leader
+        old_leader.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+        still_playing.set_members.assert_any_await(player_ids_to_add=["ap_dropped"])
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_dissolves_when_no_remaining_member_is_in_the_session(self) -> None:
+        """With every remaining member dropped from the session, the group must re-form."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("ap_old", provider_domain="airplay")
+        dropped_a = _make_mock_player("ap_a", provider_domain="airplay")
+        dropped_b = _make_mock_player("ap_b", provider_domain="airplay")
+        old_leader.group_members = ["ap_old", "ap_a", "ap_b"]
+        old_leader.live_session_members = ["ap_old"]
+
+        mass.players.get_player = _player_lookup(
+            {"ap_old": old_leader, "ap_a": dropped_a, "ap_b": dropped_b}
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["ap_old", "ap_a", "ap_b"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("ap_old")
+
+        # no member has a stream to inherit: stop and re-form with the remaining two
+        old_leader.set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_awaited_with("ap_old")
+        assert sgp._attr_group_members == ["ap_a", "ap_b"]
+        assert sgp._reform_task is not None
+        assert sgp.sync_leader is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
