@@ -175,7 +175,7 @@ async def _handle_playback_auth_actions(
 
 async def _pair_with_spotify_app(librespot_bin: str) -> str:
     """
-    Advertise Music Assistant to the Spotify app and return the credential once it is selected.
+    Advertise the temporary pairing device to the Spotify app and return the selected credential.
 
     A still-running attempt is cancelled first, so pressing the button again restarts pairing
     instead of advertising a second device under the same name.

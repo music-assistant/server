@@ -94,10 +94,6 @@ LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
 
-# authentication failures require the user to reconfigure the provider, so retrying on a
-# timer never resolves them and only spams the log every 120 seconds
-NON_RETRYABLE_ERRORS = (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken)
-
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
 
@@ -787,12 +783,13 @@ class MusicAssistant:
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
-            # authentication errors need the user to reconfigure the provider, so retrying
-            # on a timer would never resolve them
             will_retry = (
                 allow_retry
                 and isinstance(exc, MusicAssistantError)
-                and not isinstance(exc, NON_RETRYABLE_ERRORS)
+                and not isinstance(
+                    exc,
+                    (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
+                )
             )
             if will_retry:
                 self.call_later(

@@ -36,11 +36,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-
-# matches the leading "[<timestamp> " librespot's env_logger output starts each line with,
-# e.g. "[2026-08-12T01:02:42Z WARN  libmdns::fsm] ..."; used to drop the (ever-changing)
-# timestamp from the pairing log dedupe key while keeping the level, target and message
-_LIBRESPOT_TIMESTAMP = re.compile(r"^\[\S+ ")
+# strips librespot's leading timestamp (e.g. "[2026-08-12T01:02:42Z ") so identical
+# WARN/ERROR lines are recognized as repeats regardless of when each one was logged
+PAIRING_LOG_TIMESTAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^ ]+ ")
 
 LOOPBACK_RESPONSE_HTML = """
 <html>
@@ -345,21 +343,12 @@ async def pkce_auth_flow(
 
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:
     """Log the pairing daemon's output so a failure to advertise is diagnosable."""
-    # librespot repeats identical warnings (e.g. libmdns "No route to host") on every
-    # advertisement retry even when pairing succeeds. Its lines are timestamped
-    # (e.g. "[2026-08-12T01:02:42Z WARN  libmdns::fsm] ..."), so the timestamp is
-    # stripped from the dedupe key while the level, target and message are kept:
-    # only the first occurrence of an otherwise identical line is logged as a
-    # warning, exact repeats are demoted to debug
-    seen_warnings: set[str] = set()
+    reported_warnings: set[str] = set()
     async for line in librespot_proc.iter_stderr():
-        if "ERROR" in line or "WARN" in line:
-            dedupe_key = _LIBRESPOT_TIMESTAMP.sub("[", line, count=1)
-            if dedupe_key in seen_warnings:
-                LOGGER.debug("[librespot-pairing] %s", line)
-            else:
-                seen_warnings.add(dedupe_key)
-                LOGGER.warning("[librespot-pairing] %s", line)
+        warning_key = PAIRING_LOG_TIMESTAMP.sub("[", line, count=1)
+        if ("ERROR" in line or "WARN" in line) and warning_key not in reported_warnings:
+            reported_warnings.add(warning_key)
+            LOGGER.warning("[librespot-pairing] %s", line)
         else:
             LOGGER.debug("[librespot-pairing] %s", line)
 
