@@ -4,6 +4,12 @@
       "label": "Bose SoundTouch app key",
       "description": "Optional. A Bose SoundTouch developer app key enables sending announcements to the speaker as an overlay that ducks the current music and resumes it afterwards. Leave empty to disable native announcements (they then play through the linked playback protocol instead)."
     },
+    "action_overwrite_preset": {
+      "label": "Overwrite preset {0}"
+    },
+    "action_overwrite_preset_preset_available": {
+      "label": "Overwrite preset {0} (Preset already present)"
+    },
     "preset_search_media_type": {
       "label": "Media type",
       "description": "Type of media to search.",
