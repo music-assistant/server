@@ -129,6 +129,10 @@ def _make_mock_player(
         outputs.append(live)
     player.output_protocols = outputs
 
+    # mirrors Player.playback_domains: derived from the live view, never the
+    # stale link-time flags
+    player.playback_domains = {output.protocol_domain for output in outputs if output.available}
+
     # State mock
     # real lists, so a test that needs members has to say so instead of silently
     # getting an empty auto-attribute
