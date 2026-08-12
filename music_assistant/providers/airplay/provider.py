@@ -223,6 +223,12 @@ class AirPlayProvider(PlayerProvider):
         self._set_pyatv_log_level()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+        # Native announcement orchestrations by session-leader player id ->
+        # (render key, task). The controller forwards a group announcement to
+        # every member concurrently; the members' calls use this registry to
+        # coalesce onto the leader's single orchestration instead of arming
+        # their members a second time (managed by announce.py).
+        self._announce_tasks: dict[str, tuple[str, asyncio.Task[None]]] = {}
 
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)

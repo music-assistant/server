@@ -5,9 +5,15 @@ The cliairplay binary mixes a raw-PCM clip over the outgoing music with the musi
 ducked underneath - no flush, no re-anchor, the group timeline stays untouched. This
 module renders the shared announcement clip once per member stdin format, arms every
 member of the live session at one shared audible instant and tracks the per-member
-outcome. Whenever there is no live playback to mix into (idle or parked player, or no
-member armed the clip), the announcement runs as a dedicated stream session instead,
-leaving the player idle.
+outcome. Whenever there is no live playback to mix into (idle or parked player), the
+announcement runs as a dedicated stream session instead, leaving the player idle.
+
+A group announcement is forwarded by the player controller to every member
+concurrently; the session leader's call runs one orchestration for the whole session
+and the members' calls coalesce onto it (see the provider's announce-task registry).
+Members of a Sendspin GROUP of bridged players each compute their own instant, so a
+group announcement there can be offset by tens of ms across rooms; cross-player
+coalescing for that case is future work.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import tempfile
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -51,6 +57,16 @@ if TYPE_CHECKING:
 # the timers that apply/restore the announcement volume around the clip.
 _VolumeSchedule = tuple["AirPlayPlayer", int, list[asyncio.TimerHandle]]
 
+# How a synced member's call looks for the leader task of a group announcement.
+# The controller forwards a group announcement to every member in one batch, so
+# the leader registers within a scheduler tick or two of the members' first
+# check - a couple of short polls cover that ordering. Kept tight on purpose:
+# only the timeout tells a group-forwarded member call apart from a DIRECT
+# announcement to that member, which pays the full poll as dead latency before
+# it arms.
+_LEADER_TASK_POLL_INTERVAL_S: Final[float] = 0.1
+_LEADER_TASK_POLL_ATTEMPTS: Final[int] = 3
+
 
 async def play_announcement(
     player: AirPlayPlayer, announcement: PlayerMedia, volume_level: int | None
@@ -59,8 +75,10 @@ async def play_announcement(
     Play an announcement on the player (and the members it leads).
 
     A live playing session mixes the clip over the music without interrupting
-    it; a player that is idle or parked - or whose members could not mix the
-    clip - plays the announcement as a dedicated stream session and ends idle.
+    it; an idle player plays the announcement as a dedicated stream session and
+    ends idle. A group announcement (forwarded per member by the controller) is
+    orchestrated once by the session leader's call; the members' calls coalesce
+    onto that shared run.
 
     :param player: The player the announcement targets.
     :param announcement: The announcement to play.
@@ -71,24 +89,99 @@ async def play_announcement(
         raise PlayerCommandFailed(
             f"Announcement for {player.display_name} carries no announcement data"
         )
+    provider = cast("AirPlayProvider", player.provider)
     renderer = player.mass.streams.announcement_renderer
     render = renderer.acquire(announce_data)
     try:
-        # The whole clip is rendered up front: the live path hands the binary a
-        # complete file, and the exact duration bounds every wait below.
-        duration = await render.wait_finished()
-        if duration is None:
-            duration = render.duration
-        if duration <= 0:
-            player.logger.warning(
-                "Announcement for %s produced no audio; nothing to play", player.display_name
-            )
+        if player.synced_to:
+            if await _join_group_announcement(provider, player, render.key):
+                return
+            # no group announcement to coalesce onto: this is the deliberate
+            # announcement to just this member
+            await _run_announcement(player, announcement, render, volume_level)
             return
-        if await _announce_over_live_session(player, render, duration, volume_level):
-            return
-        await _announce_with_session(player, announcement, render, duration, volume_level)
+        # Leader/solo: publish the orchestration as a task so the concurrently
+        # forwarded member calls of a group announcement await it instead of
+        # arming their members a second time. Registered synchronously (no
+        # await between task creation and registration) so a member's lookup
+        # can never miss an in-flight run.
+        task = player.mass.create_task(
+            _run_announcement(player, announcement, render, volume_level)
+        )
+        provider._announce_tasks[player.player_id] = (render.key, task)
+        try:
+            await task
+        except asyncio.CancelledError:
+            # cancelling the caller must cancel the orchestration itself, so
+            # its cleanup (volume restore, clip files) runs
+            task.cancel()
+            raise
+        finally:
+            provider._announce_tasks.pop(player.player_id, None)
     finally:
         await renderer.release(render)
+
+
+async def _join_group_announcement(
+    provider: AirPlayProvider, player: AirPlayPlayer, render_key: str
+) -> bool:
+    """
+    Await the group announcement the player's sync leader runs, if there is one.
+
+    The leader's orchestration arms every member of the session - including
+    this player, and the announcement volume for all of them - so this call
+    only has to await that shared outcome (which also propagates its failure).
+
+    :param provider: The AirPlay provider holding the announce-task registry.
+    :param player: The synced member whose leader may run the announcement.
+    :param render_key: Identity of the announcement audio, to only ever join
+        the run of the SAME announcement.
+    :return: True when a matching group announcement was found and awaited;
+        False when none appeared (an announcement to just this member).
+    """
+    leader_id = player.synced_to
+    assert leader_id is not None  # only called for synced members
+    for attempt in range(_LEADER_TASK_POLL_ATTEMPTS):
+        entry = provider._announce_tasks.get(leader_id)
+        if entry is not None and entry[0] == render_key:
+            player.logger.debug(
+                "Announcement to %s coalesces onto the group announcement of its leader",
+                player.display_name,
+            )
+            await entry[1]
+            return True
+        if attempt < _LEADER_TASK_POLL_ATTEMPTS - 1:
+            await asyncio.sleep(_LEADER_TASK_POLL_INTERVAL_S)
+    return False
+
+
+async def _run_announcement(
+    player: AirPlayPlayer,
+    announcement: PlayerMedia,
+    render: AnnouncementRender,
+    volume_level: int | None,
+) -> None:
+    """
+    Render the clip, then mix it over live playback or play it as its own session.
+
+    :param player: The player the announcement targets.
+    :param announcement: The announcement to play.
+    :param render: The announcement render to play.
+    :param volume_level: Optional volume level for the announcement.
+    """
+    # The whole clip is rendered up front: the live path hands the binary a
+    # complete file, and the exact duration bounds every wait below.
+    duration = await render.wait_finished()
+    if duration is None:
+        duration = render.duration
+    if duration <= 0:
+        player.logger.warning(
+            "Announcement for %s produced no audio; nothing to play", player.display_name
+        )
+        return
+    if await _announce_over_live_session(player, render, duration, volume_level):
+        return
+    await _announce_with_session(player, announcement, render, duration, volume_level)
 
 
 async def _announce_over_live_session(
@@ -105,8 +198,11 @@ async def _announce_over_live_session(
     :param duration: Exact clip duration in seconds.
     :param volume_level: Optional volume level for the announcement.
     :return: True when at least one member played the clip; False when there is
-        no live playback or no member armed it, so the caller falls back to a
-        dedicated announcement session.
+        no live playback to mix into, so the caller runs the dedicated
+        announcement session instead.
+    :raises PlayerCommandFailed: If there was live playback but no member armed
+        the clip (tearing the playing session down for a fallback would trade
+        the user's music for the announcement).
     """
     clip_files: dict[str, str] = {}
     volume_schedules: list[_VolumeSchedule] = []
@@ -115,9 +211,13 @@ async def _announce_over_live_session(
         # same lock play_media holds to mutate the session - while the
         # multi-second clip waits below run outside it, so provider-internal
         # paths (DACP feedback, member removal on stream loss) are not blocked
-        # for the clip's duration. User-driven playback commands are already
-        # serialized against the whole announcement by the controller's
-        # per-player playback lock.
+        # for the clip's duration. The controller's per-player playback lock
+        # serializes this whole announcement against cmd_stop, cmd_resume,
+        # cmd_power, enqueue_next_media, play_media and other announcements,
+        # but NOT against cmd_play/cmd_pause/cmd_seek - those can land inside
+        # the waits, where the binary's own cancel semantics keep them safe: a
+        # pause or flush cancels the clip cleanly (done cancelled=1) and the
+        # announcement ends with a cancelled outcome instead of wedging.
         async with player._lock:
             members = _live_members(player)
             if not members:
@@ -170,11 +270,16 @@ async def _announce_over_live_session(
             if ack is not None
         }
         if not started:
-            player.logger.info(
-                "No member of %s armed the announcement; playing it as its own session",
-                player.display_name,
+            # Music keeps playing on every member, so falling back to a
+            # dedicated announcement session would stop the user's playback
+            # over a clip that could not be mixed anyway. Silently ignoring
+            # the unknown arm command is exactly what an outdated cliairplay
+            # build does.
+            raise PlayerCommandFailed(
+                f"No member of {player.display_name} armed the announcement; "
+                "the running cliairplay binary may not support announcements yet "
+                "(version mismatch)"
             )
-            return False
         if volume_level is not None:
             for member in members:
                 if (ack := started.get(member.player_id)) is None:
@@ -210,6 +315,19 @@ async def _announce_over_live_session(
                 player.display_name,
                 ", ".join(failed),
             )
+        # announce_done fires when the clip is fully MIXED at the delivery
+        # head - up to a member's span BEFORE it is audible. Returning then
+        # would let the caller restore mutes (and arm a follow-up
+        # announcement) over the audible tail, so hold the return until the
+        # latest audible end across the started members.
+        latest_end_unix_ms = max(
+            (ack_at or at_unix_ms) + (ack_duration or int(duration * 1000))
+            for ack_at, ack_duration in started.values()
+        )
+        await asyncio.sleep(
+            max(0.0, latest_end_unix_ms / 1000 - time.time())
+            + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000
+        )
         return True
     except BaseException:
         # The scheduled volume changes belong to an announcement that is no
@@ -236,17 +354,44 @@ async def _announce_with_session(
     """
     Play the announcement as a dedicated stream session.
 
-    Any existing (parked) session is stopped first. The player ends idle - the
-    same end state the generic announcement flow leaves a non-playing player in;
-    the queue keeps its resume position server-side.
+    Any existing (parked) session led by this player is stopped first. The
+    player ends idle - the same end state the generic announcement flow leaves
+    a non-playing player in; the queue keeps its resume position server-side.
+
+    Known limitation: a synced member of a group without live playback is
+    refused here - its stream belongs to the leader's shared (parked) session,
+    which must not be torn down for a single-member announcement, so that
+    announcement simply does not play. Announcing over a parked session
+    without stopping it needs binary-side support (announce while in
+    STANDBY), which is the planned proper fix.
 
     :param player: The player the announcement targets.
     :param announcement: The announcement media, owning the session's metadata.
     :param render: The (finished) announcement render to play.
     :param duration: Exact clip duration in seconds.
     :param volume_level: Optional volume level for the announcement.
+    :raises PlayerCommandFailed: If the player is a synced group member or is
+        streamed to by its Sendspin bridge - both own no session this path may
+        replace.
     """
     provider = cast("AirPlayProvider", player.provider)
+    if player.synced_to:
+        # The controller's group-forward runs the member calls in a
+        # TaskManager, which does not cancel siblings on a failure, so raising
+        # here cannot take the leader's in-flight announcement down with it.
+        raise PlayerCommandFailed(
+            f"Cannot announce on {player.display_name}: a grouped AirPlay player "
+            "without live playback cannot announce natively"
+        )
+    if provider.bridge_manager.get_bridge(player.player_id) is not None:
+        # The device belongs to the bridge; a dedicated announcement session
+        # would seize it from the Sendspin side with nothing restoring that
+        # playback. Only reachable in a stream-ended race - an idle bridged
+        # player does not advertise the announcement feature at all.
+        raise PlayerCommandFailed(
+            f"Cannot announce on {player.display_name}: the player is driven by its "
+            "Sendspin bridge and has no live stream to mix the announcement into"
+        )
     prev_volumes: dict[AirPlayPlayer, int] = {}
     session: AirPlayStreamSession | None = None
     try:
@@ -278,6 +423,9 @@ async def _announce_with_session(
         player._transitioning = False
         if session is not None:
             await session.stop()
+            # like player.stop(): an idle player must not keep showing media
+            player._attr_current_media = None
+            player.update_state()
         for member, prev_volume in prev_volumes.items():
             await member.volume_set(prev_volume)
 
@@ -298,6 +446,12 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
     if player.synced_to:
         return [player]
     if stream.session is None:
+        # A Sendspin-bridged player plays without a stream session, but its
+        # stream is a regular AirPlayStream the clip mixes into (self-only).
+        provider = cast("AirPlayProvider", player.provider)
+        bridge = provider.bridge_manager.get_bridge(player.player_id)
+        if bridge is not None and bridge.owns_airplay_stream:
+            return [player]
         return []
     return [
         member
@@ -367,13 +521,13 @@ async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat)
     :param render: The (finished) announcement render to read.
     :param pcm_format: The raw PCM format the file must carry.
     """
-    chunks: list[bytes] = []
+    clip = bytearray()
     async for chunk in render.get_stream(pcm_format):
-        chunks.append(chunk)
-    return await asyncio.to_thread(_write_clip_file, b"".join(chunks))
+        clip.extend(chunk)
+    return await asyncio.to_thread(_write_clip_file, clip)
 
 
-def _write_clip_file(data: bytes) -> str:
+def _write_clip_file(data: bytes | bytearray) -> str:
     """Write clip audio to a uniquely named temp file and return its path."""
     fd, path = tempfile.mkstemp(prefix="ma_airplay_announce_", suffix=".pcm")
     with os.fdopen(fd, "wb") as clip_file:

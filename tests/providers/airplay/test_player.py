@@ -882,20 +882,25 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     assert PlayerFeature.PAUSE in airplay_player.supported_features
 
 
-def test_bridged_player_does_not_advertise_announcements(
+def test_bridged_player_advertises_announcements_only_while_streaming(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
-    A Sendspin-bridged player must not advertise PLAY_ANNOUNCEMENT.
+    A Sendspin-bridged player advertises PLAY_ANNOUNCEMENT only while streaming.
 
-    The bridge owns the audio stream, so there is no stream session to mix a
-    clip into - and the fallback path would steal the device from a live bridge
-    stream. Without the feature, announcement routing stays as it was.
+    The bridge's live stream is a regular AirPlayStream the clip mixes into, so
+    the feature stays available then. An idle bridged player must not advertise
+    it - a dedicated announcement session would fight the bridge for the
+    device, so those announcements keep their existing routing.
     """
     bridge_manager = cast("AirPlayProvider", airplay_player.provider).bridge_manager
     with patch.object(bridge_manager, "get_bridge", return_value=None):
         assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
-    with patch.object(bridge_manager, "get_bridge", return_value=object()):
+    streaming_bridge = MagicMock(owns_airplay_stream=True)
+    with patch.object(bridge_manager, "get_bridge", return_value=streaming_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    idle_bridge = MagicMock(owns_airplay_stream=False)
+    with patch.object(bridge_manager, "get_bridge", return_value=idle_bridge):
         assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
 
 
