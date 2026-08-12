@@ -568,8 +568,8 @@ class SyncGroupPlayer(Player):
             # just a regular member(s) added/removed action,
             # we can simply update the syncgroup members on the sync leader.
             # `active_protocol_domain` is derived from live state, so the
-            # group will naturally downshift on the next leader selection if
-            # the last protocol-requiring member was removed.
+            # group will naturally downshift once it re-forms if the last
+            # protocol-requiring member was removed.
             # use _handle_set_members directly to avoid the redirect loop
             # (cmd_set_members redirects sync-leader targets back to this syncgroup)
             async with self.mass.players.get_player_lock(
@@ -615,6 +615,10 @@ class SyncGroupPlayer(Player):
         non-native protocol — in which case the group should downshift and
         this returns the leader's native provider domain. Always computed
         from live state so it cannot drift from reality.
+
+        Because of that downshift this is a hint for the next leader selection,
+        not an address for the live session: use ``_active_session_player()``
+        to reach the players that are carrying the stream right now.
         """
         session_player = self._active_session_player()
         if session_player is None or self.sync_leader is None:
@@ -802,10 +806,8 @@ class SyncGroupPlayer(Player):
         :param new_members: Optional list of newly added member ids to consider
             when no current/static members are available.
         :param preferred_protocol_domain: If provided, prefer members that
-            support this protocol domain so the live session can keep playing
-            on the same protocol. Typically a snapshot of
-            :attr:`active_protocol_domain` taken before the old leader is
-            cleared.
+            support this protocol domain so playback keeps using the same
+            protocol.
         """
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
@@ -1228,6 +1230,10 @@ class SyncGroupPlayer(Player):
         # handoff-eligibility check.
         preferred_domain = self.active_protocol_domain
         session_player = self._active_session_player()
+        # The domain the live session actually runs on. It differs from
+        # `preferred_domain` once the group is due to downshift to native, and
+        # a seamless handoff must stay on the protocol carrying the stream.
+        session_domain = session_player.provider.domain if session_player else None
 
         # Remove the old leader from our group members list
         if old_leader_id in self._attr_group_members:
@@ -1241,7 +1247,7 @@ class SyncGroupPlayer(Player):
         # Pick a new leader preferring one that supports the currently active
         # protocol so the session continuation is seamless.
         self.sync_leader = None
-        new_leader = self._select_sync_leader(preferred_protocol_domain=preferred_domain)
+        new_leader = self._select_sync_leader(preferred_protocol_domain=session_domain)
 
         if not new_leader:
             # No remaining members to take over — stop the old leader's
@@ -1292,17 +1298,17 @@ class SyncGroupPlayer(Player):
 
         # Hand off at the protocol level. We already know:
         # - the old session player (the protocol player that owns the live session)
-        # - the active protocol domain
+        # - the domain that session runs on
         # - the new leader (a parent player whose protocol player is in the session)
         # So we can talk to the protocol players directly and skip the controller's
         # protocol-translation overhead in cmd_set_members.
-        new_target = self._resolve_session_target(new_leader, preferred_domain)
+        new_target = self._resolve_session_target(new_leader, session_domain)
         remaining_protocol_ids: list[str] = []
         for member_id in self._attr_group_members:
             if member_id == new_leader.player_id:
                 continue
             if member := self.mass.players.get_player(member_id):
-                if target := self._resolve_session_target(member, preferred_domain):
+                if target := self._resolve_session_target(member, session_domain):
                     remaining_protocol_ids.append(target.player_id)
 
         # 1. Old leader's session protocol player steps out of the session.
