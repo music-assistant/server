@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
@@ -392,8 +393,10 @@ def generate_m3u(
             remotely = "true" if img.remotely_accessible else "false"
             fields = [img.type, img.path, img.provider, remotely]
             lines.append(f"#EXTIMG:{sep.join(fields)}")
-        if item.title is not None and item.length is not None:
-            lines.append(f"#EXTINF:{item.length},{item.title}")
+        if item.title is not None:
+            # -1 is the M3U convention for unknown length; without it an entry without
+            # duration (such as a radio station) loses its title on every rewrite
+            lines.append(f"#EXTINF:{item.length if item.length is not None else -1},{item.title}")
         lines.append(item.path)
     return "\n".join(lines) + "\n"
 
@@ -406,6 +409,7 @@ def generate_m3u(
 def construct_media_item_from_playlist_item(
     item: PlaylistItem,
     mass: MusicAssistant,
+    default_media_type: MediaType = MediaType.TRACK,
 ) -> MediaItemType | None:
     """
     Construct a MediaItem from a PlaylistItem's stored metadata.
@@ -415,24 +419,38 @@ def construct_media_item_from_playlist_item(
 
     :param item: Parsed PlaylistItem with metadata, providers, and images.
     :param mass: MusicAssistant instance for provider resolution.
+    :param default_media_type: Media type to build when the entry's #EXTMA metadata
+        holds no usable media_type.
     """
     metadata = item.metadata or {}
     try:
-        media_type = MediaType(metadata.get("media_type", "track"))
+        media_type = MediaType(metadata.get("media_type", default_media_type.value))
     except ValueError:
-        media_type = MediaType.TRACK
+        media_type = default_media_type
     name = metadata.get("name") or item.title or item.path
     duration = try_parse_int(item.length, default=None) if item.length else None
 
     provider_mappings = _resolve_provider_mappings(item, mass)
+    if not provider_mappings and item.path.startswith(BUILTIN_URL_SCHEMES):
+        # an item without any mapping never reaches library_add, leaving an unplayable
+        # library entry, so a plain stream URL is mapped to the provider that serves it
+        provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
+    # a set has no order, so sort to keep the chosen mapping stable across runs
+    sorted_mappings = sorted(provider_mappings, key=lambda pm: (pm.provider_instance, pm.item_id))
     first_provider = next(
-        (pm for pm in provider_mappings if pm.available),
-        next(iter(provider_mappings), None),
+        (pm for pm in sorted_mappings if pm.available),
+        next(iter(sorted_mappings), None),
     )
-    item_provider = first_provider.provider_domain if first_provider else "builtin"
-    item_id = first_provider.item_id if first_provider else item.path.rsplit("/", 1)[-1]
+    # prefer the instance over the domain: a domain resolves to whichever instance of it
+    # happens to be loaded first, which is the wrong one when several are configured
+    item_provider = (
+        (first_provider.provider_instance or first_provider.provider_domain)
+        if first_provider
+        else "builtin"
+    )
+    item_id = first_provider.item_id if first_provider else item.path
 
     media_item: MediaItemType
     if media_type == MediaType.SOUND_EFFECT:
@@ -544,6 +562,19 @@ def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[
             )
         )
     return provider_mappings
+
+
+def _builtin_fallback_mappings(path: str, mass: MusicAssistant) -> set[ProviderMapping]:
+    """Return the builtin mapping for a stream URL, which builtin takes as its item_id."""
+    prov = mass.get_provider("builtin")
+    return {
+        ProviderMapping(
+            item_id=path,
+            provider_domain="builtin",
+            provider_instance=prov.instance_id if prov else "builtin",
+            available=prov is not None,
+        )
+    }
 
 
 def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str]]:

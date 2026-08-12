@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -122,6 +123,33 @@ async def test_resolve_dashboard_url_encodes_player_id() -> None:
 
     query = _query(url)
     assert query["path"] == "/now-playing?player=a%26b%3Dc+d"
+
+
+@pytest.mark.parametrize(
+    ("player_id", "expected"),
+    [
+        # dlna/wiim UDNs and MAC-based ids (bluesound, squeezelite, samsung_wam)
+        ("uuid:FF98F7F4-EEC9-70AF", "uuid:FF98F7F4-EEC9-70AF"),
+        ("20:F8:3B:09:6B:92", "20:F8:3B:09:6B:92"),
+        # alexa uses the device name the user typed, verbatim
+        ("Marvin's Echo (Kitchen)!", "Marvin's+Echo+(Kitchen)!"),
+        # every remaining safe character, so the set cannot silently shrink
+        ("a*b@c,d;e$f/g", "a*b@c,d;e$f/g"),
+    ],
+)
+async def test_resolve_dashboard_url_keeps_route_safe_chars_literal(
+    player_id: str, expected: str
+) -> None:
+    """The now_playing route leaves the characters the frontend's router keeps literal."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, player_id)
+
+    assert _query(url)["path"] == f"/now-playing?player={expected}"
 
 
 async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
@@ -588,7 +616,8 @@ async def test_show_dashboard_api_path_now_playing_requires_player_id() -> None:
     [
         (DashboardType.PARTY, None, "/party"),
         (DashboardType.NOW_PLAYING, "player1", "/now-playing?player=player1"),
-        (DashboardType.MUSIC_QUIZ, None, "/music-quiz"),
+        # the viewer-only kiosk view, not the host page (which needs USERS_INVITE)
+        (DashboardType.MUSIC_QUIZ, None, "/music-quiz/dashboard"),
     ],
 )
 def test_dashboard_route_resolves_expected_path(
@@ -663,6 +692,38 @@ async def test_hide_dashboard_unknown_id_is_graceful_noop() -> None:
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
     )
+
+
+async def test_end_session_removes_session_and_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ending an active session drops it, signals sessions updated, and logs a warning."""
+    controller = _make_controller()
+    controller.logger = logging.getLogger("test.dashboard")
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+
+    with caplog.at_level(logging.WARNING, logger="test.dashboard"):
+        controller.end_session("dash1", "the receiver app was closed")
+
+    assert "dash1" not in controller._sessions
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )
+    assert "Living Room" in caplog.text
+    assert "the receiver app was closed" in caplog.text
+
+
+async def test_end_session_unknown_id_is_noop() -> None:
+    """Ending a session for an id without an active session is a silent no-op."""
+    controller = _make_controller()
+
+    controller.end_session("unknown", "some reason")
+
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
 
 
 async def test_get_dashboard_sessions_returns_stored_sessions() -> None:

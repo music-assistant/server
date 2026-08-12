@@ -175,7 +175,7 @@ def mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
@@ -1935,7 +1935,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -1966,7 +1966,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -2002,7 +2002,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -2039,7 +2039,7 @@ class TestJoinActiveNativeSession:
                 return 0
             if key == "max_volume":
                 return 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
 
@@ -8011,6 +8011,73 @@ class TestCleanupProtocolLinks:
         mock_schedule.assert_called_once_with(protocol_player)
 
 
+class TestDetachProtocolChildren:
+    """Tests for detaching protocol players of a removed player that is not registered."""
+
+    @staticmethod
+    def _setup(
+        mock_mass: MagicMock, live_parent_id: str | None
+    ) -> tuple[PlayerController, MockPlayer, dict[str, object]]:
+        """Set up a registered protocol player whose (unregistered) parent is sonos_1."""
+        controller = PlayerController(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players": {"sonos_1": {}, "airplay_live": {}},
+            "players/sonos_1": {"enabled": True},
+            "players/airplay_live": {"enabled": True},
+            "players/airplay_live/values/protocol_parent_id": "sonos_1",
+        }
+
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: config_store.get(key, default)
+        )
+        mock_mass.config.set = MagicMock(
+            side_effect=lambda key, value: config_store.__setitem__(key, value)
+        )
+
+        protocol_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_live",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_protocol_parent_id(live_parent_id)
+        controller._players = {"airplay_live": protocol_player}
+        return controller, protocol_player, config_store
+
+    def test_detach_on_removal_of_an_unregistered_parent(self, mock_mass: MagicMock) -> None:
+        """Removing a player that is no longer registered detaches its protocol player."""
+        controller, protocol_player, config_store = self._setup(mock_mass, "sonos_1")
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller.delete_player_config("sonos_1")
+
+        assert protocol_player.protocol_parent_id is None
+        assert config_store["players/airplay_live/values/protocol_parent_id"] is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    def test_detach_of_a_protocol_player_waiting_for_its_parent(self, mock_mass: MagicMock) -> None:
+        """A protocol player that only has the parent link in its config is detached too."""
+        controller, protocol_player, config_store = self._setup(mock_mass, None)
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller.delete_player_config("sonos_1")
+
+        assert config_store["players/airplay_live/values/protocol_parent_id"] is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    def test_detach_skips_a_protocol_player_of_another_parent(self, mock_mass: MagicMock) -> None:
+        """A protocol player that already moved to another parent keeps its link."""
+        controller, protocol_player, config_store = self._setup(mock_mass, "cast_1")
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller.delete_player_config("sonos_1")
+
+        assert protocol_player.protocol_parent_id == "cast_1"
+        assert config_store["players/airplay_live/values/protocol_parent_id"] == "sonos_1"
+        mock_schedule.assert_not_called()
+
+
 class TestStaleConfigMigration:
     """Tests for protocol parent link repair on startup."""
 
@@ -8456,9 +8523,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, native_parent_id
         )
         mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
 
         # Each protocol's parent_id is restored to the disabled native parent
         parent_restorations = {
@@ -8553,9 +8617,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, "native_a"
         )
         mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
 
     @pytest.mark.asyncio
     async def test_restore_native_claims_carries_config_and_deletes_wrapper(
@@ -8645,9 +8706,7 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         # the wrapper's own config entries are all gone
         assert universal_id not in players_tree
         # cached queue state of the wrapper is purged as well
-        mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            universal_id, permanent=True
-        )
+        mock_mass.player_queues.purge_saved_queue.assert_called_once_with(universal_id)
         # the wrapper itself is not registered as a player
         assert universal_id not in controller._players
         for task in scheduled_tasks:

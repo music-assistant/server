@@ -84,6 +84,8 @@ class AriaCastReceiver(PluginProvider):
     yielded by get_audio_stream exactly like the VBAN receiver.
     """
 
+    reload_on_streams_network_change = True
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this provider."""
@@ -682,7 +684,7 @@ class AriaCastReceiver(PluginProvider):
             "album": m.album,
             "artwork_url": m.image_url,
             "duration_ms": int(m.duration * 1000) if m.duration else None,
-            "position_ms": int(m.elapsed_time * 1000) if m.elapsed_time else None,
+            "position_ms": int(m.elapsed_time * 1000) if m.elapsed_time is not None else None,
             "is_playing": self._is_playing,
         }
 
@@ -702,7 +704,9 @@ class AriaCastReceiver(PluginProvider):
         if duration is not None:
             m.duration = int(duration) // 1000
 
-        position = data.get("positionMs") or data.get("position_ms")
+        # the fallback is on the key rather than on the value, so a reported position
+        # of 0 (the start of a track) is applied instead of read as 'not reported'
+        position = data.get("positionMs", data.get("position_ms"))
         if position is not None:
             m.elapsed_time = int(position) // 1000
             m.elapsed_time_last_updated = time.time()

@@ -33,6 +33,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
+    TTS_PRONUNCIATION_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
@@ -367,6 +368,56 @@ async def test_generate_text_wraps_not_connected_error() -> None:
     assert "hass_1/ai_task.default" in str(error.value)
 
 
+async def test_generate_text_fails_the_section_when_the_engine_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled AI engine fails the section instead of hanging the session."""
+    monkeypatch.setattr("music_assistant.providers.ai_radio.runtime.AI_QUERY_TIMEOUT_SECONDS", 0.01)
+
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.sleep(5)
+        return "section text"
+
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=_answers_too_late)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    with pytest.raises(MusicAssistantError) as error:
+        await runtime._generate_text(
+            station={"general": {"instructions": "test"}},
+            prompt="test prompt",
+            web_mode="disabled",
+        )
+    assert "did not respond within" in str(error.value)
+
+
+async def test_generate_text_reports_an_engine_side_timeout_as_a_query_failure() -> None:
+    """A timeout raised by the engine itself is reported as a query failure, not our cap."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=TimeoutError)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    with pytest.raises(MusicAssistantError) as error:
+        await runtime._generate_text(
+            station={"general": {"instructions": "test"}},
+            prompt="test prompt",
+            web_mode="disabled",
+        )
+    assert "query failed: TimeoutError" in str(error.value)
+
+
 async def test_generate_text_asks_for_the_system_locale_language() -> None:
     """The AI query states the server locale so sections are written in that language."""
     plugin = _create_ai_plugin("hass_1", "ai_task.default")
@@ -387,6 +438,28 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
 
     assert "nl_NL" in plugin.ai_query.await_args.args[0]
     assert plugin.ai_query.await_args.kwargs == {"engine_id": "ai_task.default"}
+
+
+@pytest.mark.parametrize("general", [{"instructions": "Host personality: minimal DJ."}, {}])
+async def test_generate_text_always_states_the_pronunciation_rules(
+    general: dict[str, Any],
+) -> None:
+    """Every query carries the TTS pronunciation rules, with or without station instructions."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    await runtime._generate_text(
+        station={"general": general}, prompt="test prompt", web_mode="allow"
+    )
+
+    assert TTS_PRONUNCIATION_INSTRUCTIONS in plugin.ai_query.await_args.args[0]
 
 
 def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:

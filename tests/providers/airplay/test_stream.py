@@ -4,8 +4,10 @@ import asyncio
 import errno
 import logging
 import os
+import select
 import threading
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -15,12 +17,13 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
+from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     AirPlayRemoteCommand,
@@ -31,6 +34,23 @@ from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
+
+
+def _make_cli_proc(*, quiesced: bool = True, calls: list[str] | None = None) -> MagicMock:
+    """
+    Build a mock cliairplay process that answers its awaited calls.
+
+    :param quiesced: What holding stdin quiet reports about emptying the buffer.
+    :param calls: Records "quiesce" as stdin is held, for ordering assertions.
+    """
+
+    @asynccontextmanager
+    async def _stdin_quiesced(*_args: object) -> AsyncIterator[bool]:
+        if calls is not None:
+            calls.append("quiesce")
+        yield quiesced
+
+    return MagicMock(closed=False, stdin_quiesced=_stdin_quiesced)
 
 
 def _make_player() -> MagicMock:
@@ -44,6 +64,8 @@ def _make_player() -> MagicMock:
     player.volume_level = 40
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
+    player.device_info.manufacturer = "Acme, Inc."
+    player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.state.active_group = None
@@ -67,7 +89,7 @@ def _make_player() -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.ptp_daemon_running = True
+    prov.ptp_daemon_ready = True
     prov.logger = logging.getLogger("test.airplay.prov")
     # auto-detected publish ip: reachable address of this host, but not the interface
     # the stream to this device leaves from - so it is never handed to the binary
@@ -274,12 +296,60 @@ async def test_cli_args_raop_encryption_can_be_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_no_ptp_shared_without_daemon() -> None:
-    """--ptp-shared is only passed while the provider's PTP daemon is running."""
+async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
+    """
+    A daemon that is merely alive must not get --ptp-shared.
+
+    Liveness does not mean the daemon is serving: until it publishes its clock
+    there is nothing to attach to, and a stream that asks anyway silently takes
+    its own timing instead - drifting away from the members that got the clock.
+    """
     player = _make_player()
-    player.provider.ptp_daemon_running = False
+    player.provider.ptp_daemon_running = True
+    player.provider.ptp_daemon_ready = False
     args = await _build_args(player)
     assert "--ptp-shared" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
+    """
+    LinkPlay-family devices get the deep receiver queue from the family table.
+
+    Their pipeline starves at the stock depth - fully once the device is also
+    master of a native multiroom group - so the table maps them to 1750 ms.
+    Both platform generations must match: the newer names Linkplay as
+    manufacturer, the older only marks the platform in fv under OEM brands.
+    """
+    player = _make_player()
+    player.device_info.manufacturer = "Linkplay Technology Inc."
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1750"
+    assert "--ptp-shared" in args
+
+    # Old platform: OEM brand, the Linkplay token only in fv.
+    player = _make_player()
+    player.device_info.manufacturer = "Edifier Inc"
+    player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1750"
+
+    # Non-LinkPlay devices stay on the binary's stock depth.
+    player = _make_player()
+    args = await _build_args(player)
+    assert "--latency" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_buffer_depth_config_overrides_auto() -> None:
+    """A configured buffer depth wins over the device-family default."""
+    player = _make_player()
+    player.device_info.manufacturer = "Linkplay Technology Inc."
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: 1500 if key == CONF_BUFFER_DEPTH else default
+    )
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1500"
 
 
 @pytest.mark.asyncio
@@ -504,6 +574,23 @@ def test_mrp_artwork_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> 
     assert "HTTP ?" not in caplog.text
 
 
+def test_mrp_artwork_rejection_reaches_the_parser_from_the_stderr_reader(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The binary reports artwork on stderr, so the status dispatcher must route it."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        ends_the_loop = stream._handle_status_line(
+            "[STATUS] mrp artwork=rejected reason=progressive_jpeg bytes=48123 "
+            "width=512 height=512 precision=8 sof=0xc2 components=3 progressive=1 "
+            "clear_status=200 staging_max_bytes=131072"
+        )
+
+    assert ends_the_loop is False
+    assert "rejected the now-playing artwork" in caplog.text
+
+
 def test_mrp_channel_status_is_not_read_as_an_http_status(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -619,14 +706,23 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -> None:
-    """A command pipe write reports when no reader can receive the command."""
+async def test_command_pipe_write_returns_false_without_reader(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A command pipe write reports a missing reader without retrying or warning."""
     pipe_path = tmp_path / "commands"
     os.mkfifo(pipe_path)
     writer = AsyncNamedPipeWriter(str(pipe_path))
 
-    with patch("music_assistant.helpers.named_pipe.time.sleep"):
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("music_assistant.helpers.named_pipe.os.open", wraps=os.open) as open_pipe,
+    ):
         assert await writer.write(b"ACTION=STANDBY\n") is False
+
+    # the missing reader is reported once, without retrying or crying wolf
+    open_pipe.assert_called_once()
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
 @pytest.mark.asyncio
@@ -745,12 +841,312 @@ async def test_command_pipe_write_propagates_non_epipe_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pipe_write_reports_a_stalled_reader_without_raising(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A write bigger than the pipe buffer reports failure instead of raising."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    # a reader that never reads, so the pipe buffer fills up and stays full
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        with (
+            caplog.at_level(logging.WARNING),
+            patch("music_assistant.helpers.named_pipe.WRITE_STALL_TIMEOUT", 0.05),
+        ):
+            assert await writer.write(b"\x00" * 176400) is False
+
+        # the reader is still attached, so the descriptor stays usable
+        assert writer._write_fd is not None
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_completes_a_large_write_while_the_reader_drains(
+    tmp_path: Path,
+) -> None:
+    """A write bigger than the pipe buffer completes against a reader that keeps up."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = b"\x00" * 176400
+
+    async def drain() -> bytes:
+        received = bytearray()
+        while len(received) < len(payload):
+            try:
+                chunk = os.read(read_fd, 65536)
+            except BlockingIOError:
+                chunk = b""
+            if not chunk:
+                # no writer attached yet or nothing buffered: yield instead of spinning
+                await asyncio.sleep(0.001)
+                continue
+            received += chunk
+        return bytes(received)
+
+    reader = asyncio.create_task(drain())
+    try:
+        async with asyncio.timeout(10):
+            assert await writer.write(payload) is True
+            # every byte arrives exactly once, so a resumed write never repeats itself
+            assert await reader == payload
+    finally:
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_outlasts_a_reader_slower_than_the_stall_timeout(
+    tmp_path: Path,
+) -> None:
+    """The stall budget covers a lack of progress, not the total time a write takes."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = b"\x00" * 176400
+    stall_timeout = 0.15
+
+    async def drain_slowly() -> int:
+        received = 0
+        while received < len(payload):
+            await asyncio.sleep(0.02)
+            with suppress(BlockingIOError):
+                received += len(os.read(read_fd, 8192))
+        return received
+
+    reader = asyncio.create_task(drain_slowly())
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        async with asyncio.timeout(30):
+            with patch("music_assistant.helpers.named_pipe.WRITE_STALL_TIMEOUT", stall_timeout):
+                assert await writer.write(payload) is True
+            assert await reader == len(payload)
+        # a reader this slow only completes because each pause resets the budget
+        assert loop.time() - started > stall_timeout
+    finally:
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_resumes_after_the_buffer_drains() -> None:
+    """A write that fills the pipe buffer continues once the reader catches up."""
+    data = b"\x00" * 10
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full"), 6],
+        ) as write,
+        patch("music_assistant.helpers.named_pipe.select.poll") as poll,
+    ):
+        assert await writer.write(data) is True
+
+    # the retry picks up where the short write stopped, it never resends
+    assert write.call_args_list == [
+        call(42, memoryview(data)),
+        call(42, memoryview(data)[4:]),
+        call(42, memoryview(data)[4:]),
+    ]
+    poll.return_value.register.assert_called_once_with(42, select.POLLOUT)
+    poll.return_value.poll.assert_called_once_with(WRITE_POLL_INTERVAL_MS)
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_gives_up_when_the_pipe_goes_before_the_first_write() -> None:
+    """A pipe removed the instant a write starts fails cleanly rather than blowing up."""
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+
+    with (
+        patch.object(AsyncNamedPipeWriter, "_ensure_write_fd", return_value=True),
+        patch("music_assistant.helpers.named_pipe.os.write") as write,
+    ):
+        assert await writer.write(b"\x00" * 10) is False
+
+    write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_stops_when_the_descriptor_is_taken_mid_stall() -> None:
+    """A stalled write gives up once the pipe is removed out from under it."""
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    def take_descriptor(pipe_writer: AsyncNamedPipeWriter, _write_fd: int) -> None:
+        pipe_writer._write_fd = None
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full")],
+        ) as write,
+        patch.object(AsyncNamedPipeWriter, "_wait_writable", take_descriptor),
+    ):
+        assert await writer.write(b"\x00" * 10) is False
+
+    # writing on would land in whatever reopened that descriptor number
+    assert write.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_resets_fd_when_the_reader_closes_during_a_stall(
+    tmp_path: Path,
+) -> None:
+    """A reader that goes away while the buffer is full still resets the writer."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    async def close_reader_mid_stall() -> None:
+        await asyncio.sleep(0.05)
+        os.close(read_fd)
+
+    closer = asyncio.create_task(close_reader_mid_stall())
+    try:
+        async with asyncio.timeout(30):
+            assert await writer.write(b"\x00" * 176400) is False
+            await closer
+        # the departed reader is what ends the write, so it must not be left mid-stall
+        assert writer._write_fd is None
+    finally:
+        closer.cancel()
+        with suppress(asyncio.CancelledError):
+            await closer
+        with suppress(OSError):
+            os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_resolves_when_the_reader_attaches(
+    tmp_path: Path,
+) -> None:
+    """The reader wait ends as soon as the binary opens its end of the command pipe."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fds: list[int] = []
+
+    async def attach_reader() -> None:
+        await asyncio.sleep(0.01)
+        read_fds.append(os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK))
+
+    reader = asyncio.create_task(attach_reader())
+    try:
+        assert await writer.wait_for_reader(timeout=1) is True
+        assert read_fds  # resolved on the attach, not before it
+    finally:
+        await reader
+        for read_fd in read_fds:
+            os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_gives_up_at_its_timeout(tmp_path: Path) -> None:
+    """A command pipe nothing ever reads fails the wait within the requested window."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    loop = asyncio.get_running_loop()
+
+    started = loop.time()
+    assert await writer.wait_for_reader(timeout=0.1) is False
+
+    assert 0.1 <= loop.time() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_uses_no_worker_thread(tmp_path: Path) -> None:
+    """Waiting for the binary's reader never strands a blocking worker thread."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+        patch(
+            "music_assistant.helpers.named_pipe.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as to_thread,
+    ):
+        assert await writer.wait_for_reader(timeout=0.1) is False
+
+    to_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_defers_to_an_in_flight_write(tmp_path: Path) -> None:
+    """The reader wait leaves the descriptor to a write that is already under way."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        await writer._write_lock.acquire()
+        wait = asyncio.create_task(writer.wait_for_reader(timeout=1))
+        await asyncio.sleep(0)
+
+        # a reader is attached the whole time, so only the write lock holds this up
+        assert not wait.done()
+
+        writer._write_lock.release()
+        assert await wait is True
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_reuses_the_fd_from_the_reader_wait(tmp_path: Path) -> None:
+    """A command written after the reader wait rides the descriptor that wait opened."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        assert await writer.wait_for_reader(timeout=1) is True
+
+        with patch("music_assistant.helpers.named_pipe.os.open") as open_pipe:
+            assert await writer.write(b"ACTION=STANDBY\n") is True
+
+        open_pipe.assert_not_called()
+        assert os.read(read_fd, 64) == b"ACTION=STANDBY\n"
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
 async def test_cli_command_updates_timestamp_after_successful_delivery() -> None:
     """A delivered command updates the player's last command timestamp."""
     player = _make_player()
     player.last_command_sent = 10.0
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with (
         patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)),
@@ -767,7 +1163,7 @@ async def test_cli_command_preserves_timestamp_when_delivery_fails() -> None:
     player = _make_player()
     player.last_command_sent = 10.0
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
         assert await stream.send_cli_command("ACTION=STANDBY") is False
@@ -781,7 +1177,7 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
     player = _make_player()
     player.last_command_sent = 10.0
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
 
     with (
         patch.object(
@@ -797,12 +1193,12 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_queues_text_metadata_before_connection() -> None:
-    """Text metadata is queued as soon as cliairplay starts."""
+async def test_connect_does_not_write_before_the_binary_can_read() -> None:
+    """Connecting lays out the command pipe and starts cliairplay, pushing nothing into it."""
     player = _make_player()
     stream = AirPlayStream(player)
-    metadata = MagicMock(corrected_elapsed_time=12.5)
-    player.current_media = metadata
+    # media is available, so a push that never happens is by design and not a missing source
+    player.current_media = MagicMock(corrected_elapsed_time=12.5)
     process = MagicMock(closed=False)
     process.start = AsyncMock(return_value=None)
     operation_order: list[str] = []
@@ -812,9 +1208,6 @@ async def test_connect_queues_text_metadata_before_connection() -> None:
 
     async def start_process() -> None:
         operation_order.append("process")
-
-    async def send_metadata(*_args: Any, **_kwargs: Any) -> None:
-        operation_order.append("metadata")
 
     def consume_task(awaitable: Any) -> MagicMock:
         awaitable.close()
@@ -831,32 +1224,23 @@ async def test_connect_queues_text_metadata_before_connection() -> None:
             return_value=process,
         ),
         patch.object(stream.commands_pipe, "create", side_effect=create_pipe),
-        patch.object(stream, "send_metadata", side_effect=send_metadata) as send_metadata_mock,
+        patch.object(stream, "send_metadata", new_callable=AsyncMock) as send_metadata_mock,
     ):
         await stream.connect()
 
-    assert operation_order == ["pipe", "process", "metadata"]
-    send_metadata_mock.assert_awaited_once_with(12, metadata, send_artwork=False)
+    assert operation_order == ["pipe", "process"]
+    send_metadata_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_connect_failure_cleans_up_process_and_pipe() -> None:
-    """A metadata write failure cannot leave a live cliairplay process or FIFO."""
+    """A cliairplay process that fails to start cannot leave a live process or FIFO."""
     player = _make_player()
     stream = AirPlayStream(player)
-    metadata = MagicMock(corrected_elapsed_time=0)
-    player.current_media = metadata
     process = MagicMock(closed=False)
-    process.start = AsyncMock(return_value=None)
+    process.start = AsyncMock(side_effect=OSError("process start failed"))
     process.kill = AsyncMock()
 
-    def consume_task(awaitable: Any) -> MagicMock:
-        awaitable.close()
-        task = MagicMock()
-        task.done.return_value = True
-        return task
-
-    player.provider.mass.create_task.side_effect = consume_task
     with (
         patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
         patch(
@@ -865,13 +1249,7 @@ async def test_connect_failure_cleans_up_process_and_pipe() -> None:
         ),
         patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
-        patch.object(
-            stream,
-            "send_metadata",
-            new_callable=AsyncMock,
-            side_effect=OSError("metadata write failed"),
-        ),
-        pytest.raises(OSError, match="metadata write failed"),
+        pytest.raises(OSError, match="process start failed"),
     ):
         await stream.connect()
 
@@ -886,7 +1264,7 @@ async def test_start_sends_command_and_stamps_position() -> None:
     """START is delivered over the command pipe and stamps the media position."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(
@@ -907,7 +1285,7 @@ async def test_start_join_marks_the_command() -> None:
     """A late-join START carries START_JOIN=1 so the binary enforces clock readiness."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(
@@ -933,7 +1311,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
     """START keeps already-delivered transition artwork settled and retries a superseded render."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     metadata = MagicMock(
         corrected_elapsed_time=0,
@@ -979,6 +1357,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
             new_callable=AsyncMock,
             side_effect=prepare_artwork,
         ),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
     ):
         pretransition_task = asyncio.create_task(stream.send_metadata(None, metadata))
         await render_started.wait()
@@ -992,10 +1371,12 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
     commands = [args.args[0] for args in write_command.await_args_list]
     start_command = f"START_UNIX_MS={START_UNIX_MS}\nACTION=START"
     if complete_before_start:
-        # artwork delivered before the anchor stays settled; re-pushing it
-        # around the START would make an Apple TV re-render its screen
+        # artwork delivered inside the transition bundle stays settled;
+        # re-pushing it around the START would make an Apple TV re-render
+        # its screen
         assert commands[-1] == start_command
-        assert "ARTWORK=/cache/pretransition.jpg" in commands
+        assert any("ARTWORKFILE=/cache/pretransition.jpg" in command for command in commands)
+        assert not any(command.startswith("ARTWORK=") for command in commands)
     else:
         # the anchor superseded the in-flight render; the post-anchor push
         # renders again and delivers the artwork once
@@ -1009,7 +1390,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
 async def test_start_requires_connected_process() -> None:
     """START is rejected without a connected cliairplay process."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     # not connected: _connected event never set
 
     with (
@@ -1025,7 +1406,7 @@ async def test_start_requires_connected_process() -> None:
 async def test_flush_sends_command_and_awaits_ack() -> None:
     """FLUSH is delivered and resolves once the binary reports it flushed."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(
@@ -1043,7 +1424,7 @@ async def test_flush_sends_command_and_awaits_ack() -> None:
 async def test_flush_times_out_without_ack() -> None:
     """FLUSH returns False when the binary never acknowledges it."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1054,7 +1435,7 @@ async def test_flush_times_out_without_ack() -> None:
 async def test_flush_returns_false_when_command_not_delivered() -> None:
     """FLUSH reports failure when the command cannot be delivered."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False):
@@ -1065,7 +1446,7 @@ async def test_flush_returns_false_when_command_not_delivered() -> None:
 async def test_start_raises_when_command_not_delivered() -> None:
     """A dropped START surfaces as an error so the caller can fall back cold."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with (
@@ -1079,7 +1460,7 @@ async def test_start_raises_when_command_not_delivered() -> None:
 async def test_start_fails_fast_on_reported_start_failure() -> None:
     """A reported start failure ends the ack wait at once instead of timing out."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1099,7 +1480,7 @@ async def test_start_fails_fast_on_reported_start_failure() -> None:
 async def test_flush_fails_fast_on_reported_flush_failure() -> None:
     """A reported flush failure resolves the ack wait as a failure, not a timeout."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
@@ -1117,7 +1498,7 @@ async def test_flush_fails_fast_on_reported_flush_failure() -> None:
 async def test_start_failure_does_not_outlive_its_command() -> None:
     """A failed START leaves no error behind that would fail the next one."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     stream._handle_status_line("[STATUS] error code=start_failed")
 
@@ -1134,7 +1515,7 @@ async def test_start_failure_does_not_outlive_its_command() -> None:
 async def test_start_returns_the_instant_the_binary_scheduled() -> None:
     """A corrected ack, not the commanded instant, is what the caller maps content onto."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     corrected = START_UNIX_MS + 700
 
@@ -1148,23 +1529,50 @@ async def test_start_returns_the_instant_the_binary_scheduled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_reports_no_instant_when_the_ack_never_arrives(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An unacknowledged START reports no instant and says the commanded one is assumed."""
+async def test_start_fails_when_the_ack_never_arrives() -> None:
+    """An unacknowledged START fails: nothing may be mapped onto an unconfirmed instant."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
 
     with (
         patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True),
         patch("music_assistant.providers.airplay.stream.AIRPLAY_START_ACK_TIMEOUT_MS", 10),
-        caplog.at_level(logging.WARNING),
+        pytest.raises(PlayerCommandFailed, match="did not acknowledge its start") as err,
     ):
-        assert await stream.start(START_UNIX_MS, 0) is None
+        await stream.start(START_UNIX_MS, 0)
 
-    assert "did not acknowledge its start" in caplog.text
-    assert str(START_UNIX_MS) in caplog.text
+    # the player and the instant nothing confirmed are the whole diagnostic
+    assert "Player A" in str(err.value)
+    assert str(START_UNIX_MS) in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_start_accepts_a_malformed_ack_as_the_commanded_instant() -> None:
+    """An ack that cannot be parsed still answered the START, so the commanded instant stands."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line("[STATUS] started requested_unix_ms=nonsense at_unix_ms=")
+        assert await start_task == START_UNIX_MS
+
+
+@pytest.mark.asyncio
+async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
+    """An ack without at_unix_ms parses cleanly to 0, which must never be returned."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line(f"[STATUS] started requested_unix_ms={START_UNIX_MS}")
+        assert await start_task == START_UNIX_MS
 
 
 @pytest.mark.asyncio
@@ -1179,7 +1587,7 @@ async def test_start_reports_no_instant_when_the_ack_never_arrives(
 async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: float) -> None:
     """A join's ack is held for clock verification, so it waits far longer than a plain start."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     timeouts: list[float] = []
 
@@ -1194,8 +1602,9 @@ async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: fl
             "music_assistant.providers.airplay.stream.asyncio.wait_for",
             side_effect=record_timeout,
         ),
+        pytest.raises(PlayerCommandFailed),
     ):
-        assert await stream.start(START_UNIX_MS, 0, join=join) is None
+        await stream.start(START_UNIX_MS, 0, join=join)
 
     assert timeouts == [expected_timeout]
 
@@ -1204,66 +1613,13 @@ async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: fl
 async def test_flush_returns_false_when_not_connected() -> None:
     """FLUSH is a no-op returning False before the device connects."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     # not connected
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
         assert await stream.flush() is False
 
     write_command.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_named_pipe_writer_open_is_bounded_without_worker_thread() -> None:
-    """A missing FIFO reader times out without stranding a blocking worker thread."""
-    open_error = OSError(errno.ENXIO, "no reader")
-    with (
-        patch(
-            "music_assistant.helpers.named_pipe.os.open",
-            side_effect=open_error,
-        ),
-        patch(
-            "music_assistant.helpers.named_pipe.asyncio.to_thread",
-            new_callable=AsyncMock,
-        ) as to_thread,
-        pytest.raises(TimeoutError, match="Timed out opening named pipe writer"),
-    ):
-        await open_named_pipe_writer("/tmp/generation.pcm", timeout=0)  # noqa: S108
-
-    to_thread.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_named_pipe_writer_open_cancellation_has_no_fd_to_leak() -> None:
-    """Cancellation while waiting for a reader leaves no worker or descriptor behind."""
-    with (
-        patch(
-            "music_assistant.helpers.named_pipe.os.open",
-            side_effect=OSError(errno.ENXIO, "no reader"),
-        ),
-        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
-    ):
-        open_task = asyncio.create_task(
-            open_named_pipe_writer("/tmp/generation.pcm", timeout=10)  # noqa: S108
-        )
-        await asyncio.sleep(0)
-        open_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await open_task
-
-    close_fd.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_named_pipe_writer_open_restores_blocking_mode() -> None:
-    """The descriptor inherited by ffmpeg is switched out of nonblocking mode."""
-    with (
-        patch("music_assistant.helpers.named_pipe.os.open", return_value=42),
-        patch("music_assistant.helpers.named_pipe.os.set_blocking") as set_blocking,
-    ):
-        assert await open_named_pipe_writer("/tmp/generation.pcm") == 42  # noqa: S108
-
-    set_blocking.assert_called_once_with(42, True)
 
 
 def test_flushed_status_sets_flush_event() -> None:
@@ -1274,6 +1630,92 @@ def test_flushed_status_sets_flush_event() -> None:
     assert stream._handle_status_line("[STATUS] flushed") is False
 
     assert stream._flushed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_flush_holds_stdin_quiet_before_commanding_the_flush() -> None:
+    """
+    Queued stdin audio is cleared before FLUSH, so the binary's drain removes it.
+
+    The command travels on a pipe of its own, so audio still in flight when the
+    binary drains would survive to be anchored as the next start's first sample.
+    """
+    calls: list[str] = []
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc(calls=calls)
+    stream._connected.set()
+
+    async def _record_command(command: str) -> bool:
+        calls.append(command)
+        return True
+
+    with patch.object(stream, "_write_cli_command", side_effect=_record_command):
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        assert stream._handle_status_line("[STATUS] flushed") is False
+        assert await flush_task is True
+
+    assert calls == ["quiesce", "ACTION=FLUSH"]
+
+
+@pytest.mark.asyncio
+async def test_flush_fails_when_queued_audio_cannot_be_cleared() -> None:
+    """A drain that never completes fails the flush instead of anchoring stale audio."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc(quiesced=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        assert await stream.flush() is False
+
+    write_command.assert_not_awaited()
+
+
+def test_audio_status_records_the_pending_stdin_depth() -> None:
+    """The [STATUS] audio line reports how much audio is pending on the binary's stdin."""
+    stream = AirPlayStream(_make_player())
+    assert stream.audio_pending_ms == 0
+
+    assert stream._handle_status_line("[STATUS] audio buffered_ms=92") is False
+
+    assert stream.audio_pending_ms == 92
+
+
+def test_unparsable_audio_status_reports_no_pending_audio() -> None:
+    """A malformed depth reports none rather than carrying the previous value."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    assert stream._handle_status_line("[STATUS] audio buffered_ms=nonsense") is False
+
+    assert stream.audio_pending_ms == 0
+
+
+def test_audio_status_without_a_depth_reports_no_pending_audio() -> None:
+    """A line omitting the depth reports none rather than carrying the previous value."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    assert stream._handle_status_line("[STATUS] audio ") is False
+
+    assert stream.audio_pending_ms == 0
+
+
+@pytest.mark.asyncio
+async def test_flush_clears_the_pending_stdin_depth() -> None:
+    """A flush drops the previous cycle's depth so the next report describes the new one."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._handle_status_line("[STATUS] audio buffered_ms=92")
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        stream._handle_status_line("[STATUS] flushed")
+        assert await flush_task is True
+
+    assert stream.audio_pending_ms == 0
 
 
 @pytest.mark.asyncio
@@ -1411,52 +1853,36 @@ def test_elapsed_includes_start_position() -> None:
     )
 
 
-def test_legacy_reanchor_warns_accumulate_per_event() -> None:
-    """The legacy warn line reports a per-event shift, so successive events accumulate."""
+def test_reanchor_status_sets_the_cumulative_total() -> None:
+    """Each [STATUS] REANCHOR line carries the authoritative total, so it SETS the shift."""
     stream = AirPlayStream(_make_player())
     assert stream.cumulative_shift_seconds == 0.0
 
-    for _event in range(2):
-        assert (
-            stream._handle_status_line(
-                "[AP2] Re-anchored after PCM starvation: "
-                "shifted_frames=67870 lead_frames=77175 count=1"
-            )
-            is False
-        )
-
-    # two +1.539s events accumulate to ~3.078s
-    assert stream.cumulative_shift_seconds == pytest.approx(2 * 67870 / 44100)
-
-
-def test_reanchor_status_supersedes_legacy_warn() -> None:
-    """The [STATUS] REANCHOR total is authoritative and stops the legacy warn double count."""
-    stream = AirPlayStream(_make_player())
-
-    # a first legacy warn accumulates until the status line arrives
-    stream._handle_status_line(
-        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=1"
-    )
-    # the machine-readable line SETS from the cumulative total and supersedes the warn
     assert (
         stream._handle_status_line(
             "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=67870 sample_rate=44100"
         )
         is False
     )
-    assert stream._reanchor_status_seen is True
     assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
 
-    # both lines fire per event for new binaries: the warn that follows is ignored,
-    # only the status line's cumulative total is tracked (no double count)
-    stream._handle_status_line(
-        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=2"
-    )
-    assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
+    # the second event reports the running total, never a delta to add
     stream._handle_status_line(
         "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=135740 sample_rate=44100"
     )
     assert stream.cumulative_shift_seconds == pytest.approx(135740 / 44100)
+
+
+def test_human_readable_reanchor_warn_is_not_counted() -> None:
+    """The binary's warn line accompanies the status line; counting it would double it."""
+    stream = AirPlayStream(_make_player())
+
+    ended = stream._handle_status_line(
+        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=1"
+    )
+
+    assert ended is False
+    assert stream.cumulative_shift_seconds == 0.0
 
 
 def test_reanchor_status_prefers_line_sample_rate() -> None:
@@ -1483,28 +1909,15 @@ def test_reanchor_status_ignores_line_without_total() -> None:
     stream._handle_status_line("[STATUS] REANCHOR shifted_frames=67870 sample_rate=44100")
 
     assert stream.cumulative_shift_seconds == 1.5
-    assert stream._reanchor_status_seen is False
-
-
-def test_reanchor_shift_ignores_line_without_frames() -> None:
-    """A malformed legacy re-anchor line leaves the tracked shift unchanged."""
-    stream = AirPlayStream(_make_player())
-    stream.cumulative_shift_seconds = 1.5
-
-    ended = stream._handle_status_line("[AP2] Re-anchored after PCM starvation: shifted_frames=")
-
-    assert ended is False
-    assert stream.cumulative_shift_seconds == 1.5
 
 
 @pytest.mark.asyncio
 async def test_start_resets_reanchor_shift() -> None:
-    """A START re-anchors from scratch, clearing the shift and the status flag."""
+    """A START re-anchors from scratch, clearing the accumulated shift."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     stream.cumulative_shift_seconds = 3.078
-    stream._reanchor_status_seen = True
 
     with patch.object(
         stream,
@@ -1515,17 +1928,14 @@ async def test_start_resets_reanchor_shift() -> None:
         assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
 
     assert stream.cumulative_shift_seconds == 0.0
-    assert stream._reanchor_status_seen is False
 
 
 @pytest.mark.asyncio
 async def test_connect_resets_accumulated_shift() -> None:
-    """A fresh cliairplay process starts from a zero playout shift and cleared flag."""
+    """A fresh cliairplay process starts from a zero playout shift."""
     player = _make_player()
     stream = AirPlayStream(player)
     stream.cumulative_shift_seconds = 5.0
-    stream._reanchor_status_seen = True
-    player.current_media = MagicMock(corrected_elapsed_time=0)
     process = MagicMock(closed=False)
     process.start = AsyncMock(return_value=None)
 
@@ -1540,12 +1950,10 @@ async def test_connect_resets_accumulated_shift() -> None:
         patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
         patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
         patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
-        patch.object(stream, "send_metadata", new_callable=AsyncMock),
     ):
         await stream.connect()
 
     assert stream.cumulative_shift_seconds == 0.0
-    assert stream._reanchor_status_seen is False
 
 
 @pytest.mark.asyncio
@@ -1553,7 +1961,7 @@ async def test_initial_metadata_skips_artwork() -> None:
     """The pre-connect metadata push cannot delay setup on artwork rendering."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._cli_proc = MagicMock(closed=False)
+    stream._cli_proc = _make_cli_proc()
     metadata = MagicMock(
         title="Track",
         artist="Artist",
@@ -1572,18 +1980,18 @@ async def test_initial_metadata_skips_artwork() -> None:
     ):
         await stream.send_metadata(0, metadata, send_artwork=False)
 
-    assert send_command.await_count == 2
-    commands = [args.args[0] for args in send_command.await_args_list]
-    assert "TITLE=Track" in commands[0]
-    # the progress correction rides along right after the metadata push
-    assert commands[1].endswith("PROGRESS=0")
+    # the metadata push resets the device position to zero, so a push at the
+    # start of a track needs no separate progress correction
+    assert send_command.await_count == 1
+    assert "TITLE=Track" in send_command.await_args_list[0].args[0]
+    assert stream._last_progress_sent == 0
     send_artwork.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     """
-    Track metadata is pushed the instant the device connects.
+    Track metadata is pushed the instant the binary can receive it.
 
     Receivers that gate audio rendering on receiving timeline-anchored metadata
     (e.g. Sonos over native AirPlay 2) must not be left silent while a deferred
@@ -1595,13 +2003,25 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     stream = AirPlayStream(player)
     stream._connected.set()  # connection already established
     player.provider.mass.call_later = MagicMock()
+    operation_order: list[str] = []
+
+    async def wait_for_reader(_timeout: float) -> bool:
+        operation_order.append("reader")
+        return True
+
+    async def send_current_metadata(**_kwargs: Any) -> None:
+        operation_order.append("metadata")
 
     with (
         patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
+        patch.object(stream.commands_pipe, "wait_for_reader", side_effect=wait_for_reader),
+        patch.object(stream, "_send_current_metadata", side_effect=send_current_metadata),
         patch.object(stream, "send_cli_command", return_value=None),  # avoid a real coroutine
     ):
         await stream.wait_for_connection()
 
+    # Nothing is written before the binary has a reader on the command pipe.
+    assert operation_order == ["reader", "metadata"]
     # Metadata pushed synchronously on connect...
     player._on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
@@ -1610,6 +2030,83 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     # The volume resend is still deferred (existing behavior preserved).
     assert player.provider.mass.call_later.call_count == 1
     assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
+    """The repeated volume push must carry the volume at fire time, not at connect time."""
+    player = _make_player()
+    player.volume_muted = False
+    player.volume_level = 40
+    stream = AirPlayStream(player)
+    stream._connected.set()  # connection already established
+    player.provider.mass.call_later = MagicMock()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+        send_command.assert_awaited_with("VOLUME=40")
+        deferred = player.provider.mass.call_later.call_args_list[0].args[1]
+
+        # a volume change between the connect and the resend firing must survive
+        player.volume_level = 75
+        await deferred()
+        send_command.assert_awaited_with("VOLUME=75")
+
+        # ...and so must a mute
+        player.volume_muted = True
+        await deferred()
+
+    send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_fails_on_an_unread_command_pipe() -> None:
+    """A binary that never attaches to the command pipe can never be anchored: fail the connect."""
+    player = _make_player()
+    player.logger = MagicMock()
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream._cli_proc = _make_cli_proc()
+
+    with (
+        patch.object(
+            stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=False)
+        ) as wait_for_reader,
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", return_value=None),
+        pytest.raises(PlayerCommandFailed, match="command pipe") as err,
+    ):
+        await stream.wait_for_connection()
+
+    wait_for_reader.assert_awaited_once()
+    assert player.display_name in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_stays_quiet_about_a_stopped_stream() -> None:
+    """A stream torn down while connecting took its command pipe along, which is no fault."""
+    player = _make_player()
+    player.logger = MagicMock()
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream._cli_proc = _make_cli_proc()
+    stream._stopping = True
+
+    with (
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=False)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", return_value=None),
+    ):
+        await stream.wait_for_connection()
+
+    player.logger.warning.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1931,19 +2428,80 @@ async def test_concurrent_metadata_updates_only_send_latest_artwork() -> None:
             new_callable=AsyncMock,
             side_effect=_prepare_artwork,
         ),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
     ):
         old_task = asyncio.create_task(stream.send_metadata(0, old_metadata))
         await first_render_started.wait()
         new_task = asyncio.create_task(stream.send_metadata(0, new_metadata))
-        await asyncio.sleep(0)
+        # the new update supersedes the old render once the old push's render
+        # budget lapses and the metadata lock is released
+        await new_task
         assert stream._metadata_generation == 2
         release_first_render.set()
-        await asyncio.gather(old_task, new_task)
+        await old_task
 
     commands = [call.args[0].decode() for call in write_command.await_args_list]
     assert any("TITLE=New track" in command for command in commands)
     assert not any("ARTWORK=old.jpg" in command for command in commands)
-    assert commands[-1] == "ARTWORK=new.jpg\n"
+    assert "ARTWORKFILE=new.jpg\n" in commands[-1]
+    assert commands[-1].endswith("ACTION=SENDMETA\n")
+
+
+@pytest.mark.asyncio
+async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
+    """Alternating URL forms of the same imageproxy image send artwork only once."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    def make_metadata(image_url: str) -> MagicMock:
+        return MagicMock(
+            corrected_elapsed_time=0,
+            queue_item_id="item-1",
+            title="Track",
+            artist="Artist",
+            album="Album",
+            duration=180,
+            image_url=image_url,
+        )
+
+    # the queue session builds the image URL on the stream server base, the
+    # player state on the webserver base - same image id behind both forms
+    image_id = "ab" * 32
+    other_image_id = "cd" * 32
+    session_media = make_metadata(
+        f"http://192.168.1.5:8097/imageproxy/{image_id}?size=512&fmt=jpeg"
+    )
+    state_media = make_metadata(f"http://192.168.1.5:8095/imageproxy/{image_id}?size=512&fmt=png")
+    other_image_media = make_metadata(
+        f"http://192.168.1.5:8095/imageproxy/{other_image_id}?size=512&fmt=png"
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value="/cache/thumb.jpg",
+        ) as prepare_artwork,
+    ):
+        await stream.send_metadata(None, session_media)
+        generation_after_first_send = stream._metadata_generation
+        # the post-START push (session media) and the media-updated push
+        # (player state) alternate on every seek
+        await stream.send_metadata(None, state_media)
+        await stream.send_metadata(None, session_media)
+        assert stream._metadata_generation == generation_after_first_send
+        await stream.send_metadata(None, other_image_media)
+
+    commands = [call.args[0].decode() for call in write_command.await_args_list]
+    bundled = [command for command in commands if "ARTWORKFILE=" in command]
+    resends = [command for command in commands if command.startswith("ARTWORK=")]
+    assert len(bundled) == 1
+    assert resends == ["ARTWORK=/cache/thumb.jpg\n"]
+    assert prepare_artwork.await_count == 2
+    assert stream._metadata_artwork_checksum == other_image_id
 
 
 @pytest.mark.asyncio
@@ -2060,6 +2618,7 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
             new_callable=AsyncMock,
             side_effect=_prepare_artwork,
         ) as prepare_artwork,
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
     ):
         first_b_task = asyncio.create_task(stream.send_metadata(0, metadata_b))
         await first_artwork_started.wait()
@@ -2076,13 +2635,15 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     assert rendered_images == ["b-image", "c-image", "b-image"]
     assert "ARTWORK=b-stale.jpg\n" not in commands
     assert "ARTWORK=c.jpg\n" not in commands
-    assert commands[-1] == "ARTWORK=b-final.jpg\n"
+    # the final B render completed within the budget, so it rides the bundle
+    assert "ARTWORKFILE=b-final.jpg\n" in commands[-1]
+    assert commands[-1].endswith("ACTION=SENDMETA\n")
     assert stream._metadata_artwork_checksum == "b-image"
 
 
 @pytest.mark.asyncio
 async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
-    """The ARTWORK command passes the absolute cache path returned by preparation."""
+    """The staged artwork carries the absolute cache path returned by preparation."""
     player = _make_player()
     stream = AirPlayStream(player)
     metadata = MagicMock(
@@ -2101,7 +2662,159 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
     ):
         await stream.send_metadata(None, metadata)
 
-    assert send_command.await_args_list[-1] == call(f"ARTWORK={cached_path}")
+    assert f"ARTWORKFILE={cached_path}\n" in send_command.await_args_list[-1].args[0]
+
+
+@pytest.mark.asyncio
+async def test_track_change_bundles_ready_artwork_into_a_single_push() -> None:
+    """A track change whose artwork renders within budget lands as ONE bundled write."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value="/cache/art.jpg")),
+    ):
+        await stream.send_metadata(0, metadata)
+
+    assert write_command.await_count == 1
+    lines = write_command.await_args_list[0].args[0].decode().splitlines()
+    assert "TITLE=Track" in lines
+    assert "ITEMID=item-1" in lines
+    # the artwork is staged before the SENDMETA applies the whole bundle
+    assert lines[-2:] == ["ARTWORKFILE=/cache/art.jpg", "ACTION=SENDMETA"]
+    # the push resets the device position to zero: no PROGRESS correction
+    assert stream._last_progress_sent == 0
+    assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_track_change_artwork_missing_the_budget_follows_as_artwork_command() -> None:
+    """A render missing the bundling budget still delivers via ARTWORK once it completes."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    release_render = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        await release_render.wait()
+        return "/cache/late.jpg"
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream, "_prepare_artwork", new_callable=AsyncMock, side_effect=_prepare_artwork
+        ),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.01),
+    ):
+        push = asyncio.create_task(stream.send_metadata(0, metadata))
+        async with asyncio.timeout(2):
+            while write_command.await_count == 0:
+                await asyncio.sleep(0)
+        # the identity bundle went out without artwork once the budget lapsed
+        assert stream._metadata_artwork_checksum == ""
+        release_render.set()
+        await push
+
+    commands = [args.args[0].decode() for args in write_command.await_args_list]
+    assert "ARTWORKFILE" not in commands[0]
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    assert [command for command in commands if command.startswith("ARTWORK=")] == [
+        "ARTWORK=/cache/late.jpg\n"
+    ]
+    assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_pending_start_interrupts_the_artwork_wait() -> None:
+    """A pending START releases the bounded artwork wait instead of queueing behind it."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    release_render = asyncio.Event()
+    render_started = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        render_started.set()
+        await release_render.wait()
+        return "/cache/late.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            side_effect=_acking_write_cli_command(stream),
+        ) as write_command,
+        patch.object(
+            stream, "_prepare_artwork", new_callable=AsyncMock, side_effect=_prepare_artwork
+        ),
+    ):
+        push = asyncio.create_task(stream.send_metadata(0, metadata))
+        await render_started.wait()
+        # the metadata push sits in its render budget holding the lock; the
+        # START must release that wait instead of losing its anchor lead to it
+        assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
+        release_render.set()
+        await push
+
+    commands = [args.args[0] for args in write_command.await_args_list]
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    assert "ARTWORKFILE" not in commands[0]
+    assert commands[1].startswith(f"START_UNIX_MS={START_UNIX_MS}")
+
+
+@pytest.mark.asyncio
+async def test_track_change_starting_mid_track_sends_a_progress_correction() -> None:
+    """A track change landing mid-position corrects the timeline after the bundle."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value="/cache/art.jpg")),
+    ):
+        await stream.send_metadata(120, metadata)
+
+    commands = [args.args[0].decode() for args in write_command.await_args_list]
+    assert len(commands) == 2
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    # the push reset the device position to zero, so the mid-track start is
+    # corrected right after
+    assert commands[1].endswith("PROGRESS=120\n")
+    assert stream._last_progress_sent == 120
 
 
 @pytest.mark.asyncio
@@ -2117,13 +2830,21 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         image_url="image",
     )
     artwork_path = "/cache/thumbnails/artwork.jpg"
+    release_render = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        # the first render misses the bundling budget, so the artwork goes
+        # out through the stand-alone ARTWORK command
+        if not release_render.is_set():
+            await release_render.wait()
+        return artwork_path
 
     with (
         patch.object(
             stream,
             "_prepare_artwork",
             new_callable=AsyncMock,
-            return_value=artwork_path,
+            side_effect=_prepare_artwork,
         ) as prepare_artwork,
         patch.object(
             stream,
@@ -2131,8 +2852,14 @@ async def test_failed_artwork_delivery_is_retried() -> None:
             new_callable=AsyncMock,
             side_effect=[True, False, True],
         ) as send_command,
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.01),
     ):
-        await stream.send_metadata(None, metadata)
+        first_push = asyncio.create_task(stream.send_metadata(None, metadata))
+        async with asyncio.timeout(2):
+            while send_command.await_count == 0:
+                await asyncio.sleep(0)
+        release_render.set()
+        await first_push
         assert stream._metadata_artwork_checksum == ""
         await stream.send_metadata(None, metadata)
 
@@ -2186,7 +2913,8 @@ async def test_text_refinement_keeps_delivered_artwork_settled() -> None:
 
     prepare_artwork.assert_awaited_once()
     commands = [args.args[0] for args in send_command.await_args_list]
-    assert commands.count(f"ARTWORK={artwork_path}") == 1
+    assert sum(f"ARTWORKFILE={artwork_path}\n" in command for command in commands) == 1
+    assert "ARTWORKFILE" not in commands[-1]
     assert "TITLE=Track (Remastered)" in commands[-1]
 
 
@@ -2408,7 +3136,7 @@ async def test_generic_connect_failure_keeps_the_timeout_semantics() -> None:
 @pytest.mark.asyncio
 async def test_dead_process_fails_the_connect_wait_immediately() -> None:
     """
-    An older binary reports no reason at all, so the wait keeps its timeout error.
+    A binary that reports no reason at all leaves the wait its plain timeout error.
 
     It must still end the moment the process is gone instead of running out the
     full connect timeout.

@@ -10,7 +10,7 @@ import time
 from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,6 +18,7 @@ from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ImageType, ProviderIconVariant
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
@@ -33,7 +34,9 @@ from music_assistant.helpers.images import (
     load_provider_icon,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
+from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -182,6 +185,72 @@ async def test_concurrent_requests_share_one_fetch(
     assert calls == ["/some/image.png"]
 
 
+async def test_cancelled_caller_of_a_failing_fetch_logs_no_loop_error(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source fetch failing after a caller gave up is not reported to the loop handler."""
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def failing_fetch(
+        _mass: MusicAssistant, path_or_url: str, _provider: str, _depth: int
+    ) -> tuple[bytes, bool]:
+        calls.append(path_or_url)
+        await release.wait()
+        raise FileNotFoundError(f"Image not found: {path_or_url}")
+
+    monkeypatch.setattr(images, "_fetch_source_image", failing_fetch)
+    with collect_loop_errors() as reported:
+        task_a = asyncio.create_task(get_image_data(mass_minimal, "/some/image.png", "builtin"))
+        task_b = asyncio.create_task(get_image_data(mass_minimal, "/some/image.png", "builtin"))
+        # let both callers await the (same) in-flight fetch, then cancel one
+        await asyncio.sleep(0)
+        task_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task_a
+        # release the fetch only once the cancellation is fully processed, so the
+        # failure reliably lands after the giving-up caller is gone
+        release.set()
+        with pytest.raises(FileNotFoundError):
+            await task_b
+
+    assert calls == ["/some/image.png"]
+    assert reported == []
+
+
+async def test_cancelled_caller_of_a_failing_thumb_logs_no_loop_error(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thumbnail generation failing after its caller gave up is not reported either."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    generation: list[asyncio.Task[Any]] = []
+
+    async def failing_source(_mass: MusicAssistant, path_or_url: str, _provider: str) -> bytes:
+        current = asyncio.current_task()
+        assert current is not None
+        generation.append(current)
+        entered.set()
+        await release.wait()
+        raise FileNotFoundError(f"Image not found: {path_or_url}")
+
+    monkeypatch.setattr(images, "get_image_data", failing_source)
+    with collect_loop_errors() as reported:
+        caller = asyncio.create_task(
+            get_image_thumb(mass_minimal, "/some/image.png", 256, "builtin")
+        )
+        await entered.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        # only fail the generation once the cancellation is fully processed
+        release.set()
+        await asyncio.wait(generation)
+
+    assert isinstance(generation[0].exception(), FileNotFoundError)
+    assert reported == []
+
+
 async def test_data_uri_is_decoded_without_caching(
     mass_minimal: MusicAssistant, fetch_calls: list[tuple[str, str]]
 ) -> None:
@@ -311,6 +380,34 @@ async def test_failing_source_fails_fast_with_single_warning(
         await get_image_thumb(mass_minimal, remote_url, 256, "builtin")
 
     assert len(fetch_calls) == 1
+    warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert len(warnings) == 1
+    assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_provider_reported_missing_image_fails_fast_with_single_warning(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A provider reporting a missing image is asked once, then fails fast without new logs."""
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(
+        side_effect=MediaNotFoundError("Image path is a directory: Some Artist")
+    )
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(MediaNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+    # follow-up requests (a thumbnail, a palette) fail fast from the negative cache,
+    # without asking the provider again and without logging again
+    with pytest.raises(FileNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+
+    assert len(fetch_calls) == 1
+    assert fake_provider.resolve_image.await_count == 1
     warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
     assert len(warnings) == 1
     assert "not retrying" in warnings[0].getMessage()

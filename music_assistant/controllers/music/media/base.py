@@ -26,7 +26,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.helpers import get_global_cache_value
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -56,7 +56,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
 )
-from music_assistant.helpers.compare import compare_media_item, create_safe_string
+from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
@@ -1093,6 +1093,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # edge case: already deleted / race condition
             return
 
+        remaining_mappings = {
+            x
+            for x in library_item.provider_mappings
+            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
+        }
+        if not remaining_mappings:
+            # this was the last mapping, so remove the entire library item, which also
+            # clears its provider mapping rows. Dropping those rows up front would leave
+            # the item behind without any mappings if the removal itself fails.
+            with suppress(MediaNotFoundError):
+                await self.remove_item_from_library(db_id)
+            return
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -1112,33 +1125,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
-        library_item.provider_mappings = {
-            x
-            for x in library_item.provider_mappings
-            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
-        }
-        if library_item.provider_mappings:
-            # if this was the last mapping for the provider instance, strip any artwork
-            # that belonged to it (e.g. local file paths that are no longer resolvable)
-            images_changed = not any(
-                x.provider_instance == provider_instance_id for x in library_item.provider_mappings
-            ) and await self._remove_provider_images(db_id, provider_instance_id)
-            self.logger.debug(
-                "removed provider_mapping %s/%s from item id %s",
-                provider_instance_id,
-                provider_item_id,
-                db_id,
-            )
-            # the removed provider mapping is itself a change to the item, so always notify
-            # (unless suppressed during a bulk cleanup); re-fetch first when images were
-            # stripped so the event payload stays accurate
-            if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-                event_item = await self.get_library_item(db_id) if images_changed else library_item
-                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
-        else:
-            # remove item if it has no more providers
-            with suppress(AssertionError):
-                await self.remove_item_from_library(db_id)
+        library_item.provider_mappings = remaining_mappings
+        # if this was the last mapping for the provider instance, strip any artwork
+        # that belonged to it (e.g. local file paths that are no longer resolvable)
+        images_changed = not any(
+            x.provider_instance == provider_instance_id for x in remaining_mappings
+        ) and await self._remove_provider_images(db_id, provider_instance_id)
+        self.logger.debug(
+            "removed provider_mapping %s/%s from item id %s",
+            provider_instance_id,
+            provider_item_id,
+            db_id,
+        )
+        # the removed provider mapping is itself a change to the item, so always notify
+        # (unless suppressed during a bulk cleanup); re-fetch first when images were
+        # stripped so the event payload stays accurate
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            event_item = await self.get_library_item(db_id) if images_changed else library_item
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
 
     @final
     async def remove_provider_mappings(self, item_id: str | int, provider_instance_id: str) -> None:
@@ -1147,8 +1151,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         try:
             library_item = await self.get_library_item(db_id)
         except MediaNotFoundError:
-            # edge case: already deleted / race condition
-            library_item = None
+            # edge case: already deleted / race condition, just drop any leftover rows
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {
+                    "media_type": self.media_type.value,
+                    "item_id": db_id,
+                    "provider_instance": provider_instance_id,
+                },
+            )
+            return
+
+        remaining_mappings = {
+            x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
+        }
+        if not remaining_mappings:
+            # these were the last mappings, so remove the entire library item, which also
+            # clears its provider mapping rows. Dropping those rows up front would leave
+            # the item behind without any mappings if the removal itself fails.
+            with suppress(MediaNotFoundError):
+                await self.remove_item_from_library(db_id)
+            return
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -1158,32 +1182,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider_instance": provider_instance_id,
             },
         )
-        if library_item is None:
-            return
-        # update the item's provider mappings (and check if we still have any)
-        library_item.provider_mappings = {
-            x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
-        }
-        if library_item.provider_mappings:
-            # the item is kept (it still has other providers), but it may carry artwork
-            # that belonged to the removed provider (e.g. local file paths that are no
-            # longer resolvable), so strip those images from the stored metadata
-            images_changed = await self._remove_provider_images(db_id, provider_instance_id)
-            self.logger.debug(
-                "removed all provider mappings for provider %s from item id %s",
-                provider_instance_id,
-                db_id,
-            )
-            # the removed provider mapping(s) are themselves a change to the item, so
-            # always notify (unless suppressed during a bulk cleanup); re-fetch first when
-            # images were stripped so the event payload stays accurate
-            if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-                event_item = await self.get_library_item(db_id) if images_changed else library_item
-                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
-        else:
-            # remove item if it has no more providers
-            with suppress(AssertionError):
-                await self.remove_item_from_library(db_id)
+        library_item.provider_mappings = remaining_mappings
+        # the item is kept (it still has other providers), but it may carry artwork
+        # that belonged to the removed provider (e.g. local file paths that are no
+        # longer resolvable), so strip those images from the stored metadata
+        images_changed = await self._remove_provider_images(db_id, provider_instance_id)
+        self.logger.debug(
+            "removed all provider mappings for provider %s from item id %s",
+            provider_instance_id,
+            db_id,
+        )
+        # the removed provider mapping(s) are themselves a change to the item, so
+        # always notify (unless suppressed during a bulk cleanup); re-fetch first when
+        # images were stripped so the event payload stays accurate
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            event_item = await self.get_library_item(db_id) if images_changed else library_item
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
 
     @final
     async def set_provider_mappings(
@@ -1192,15 +1206,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_mappings: Iterable[ProviderMapping],
         overwrite: bool = False,
     ) -> None:
-        """Update the provider_items table for the media item."""
+        """
+        Update the provider_mappings table for the media item.
+
+        An empty set of mappings never clears the stored rows: an item without any
+        mapping can not be played or resolved.
+        """
         db_id = int(item_id)  # ensure integer
-        if overwrite:
-            # on overwrite, clear the provider_mappings table first
-            # this is done for filesystem provider changing the path (and thus item_id)
-            await self.mass.music.database.delete(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": self.media_type.value, "item_id": db_id},
-            )
         prov_map_objs: list[dict[str, Any]] = []
         for provider_mapping in provider_mappings:
             prov_map_obj = {
@@ -1216,6 +1228,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             prov_map_objs.append(prov_map_obj)
+        if not prov_map_objs:
+            if overwrite:
+                # a caller asking to replace all mappings with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning(
+                    "Ignoring request to clear all provider mappings of %s item id %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        if overwrite:
+            # on overwrite, clear the provider_mappings table first
+            # this is done for filesystem provider changing the path (and thus item_id)
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
         await self.mass.music.database.upsert_many(
             DB_TABLE_PROVIDER_MAPPINGS,
             prov_map_objs,
@@ -1855,6 +1884,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
         """Select the correct provider id to use for fetching the item."""
+        if not library_item.provider_mappings:
+            msg = (
+                f"{self.media_type.value} {library_item.item_id} "
+                "is no longer available on any provider"
+            )
+            raise MediaNotFoundError(msg)
         user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         if not user_provider_filter:
@@ -2090,6 +2125,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         {single_extra_order_keys}
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
+                        json_extract(iter_coll.value, '$.search_title') as collection_search_title,
+                        json_extract(iter_coll.value, '$.search_sort_title') as collection_search_sort_title,
                         CASE
                             WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
                             THEN 1
@@ -2111,8 +2148,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SELECT
                 'collection' as type,
                 collection_title as name,
-                replace(lower(collection_title),' ','') as search_name,
-                replace(lower(collection_title),' ','') as search_sort_name,
+                COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
+                COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
                 MAX(timestamp_added) as timestamp_added,
                 MAX(timestamp_modified) as timestamp_modified,
                 MAX(last_played) as last_played,

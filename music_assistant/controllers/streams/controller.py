@@ -7,6 +7,7 @@ purely to stream audio packets to players.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import struct
@@ -51,6 +52,7 @@ from music_assistant.constants import (
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -83,6 +85,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
+    FLOW_STREAM_LEAD_OUT_SECONDS,
     BufferSize,
     get_available_buffer_sizes,
 )
@@ -103,6 +106,7 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
+    get_publish_ip_candidates,
     get_source_ip_for_target,
     sanitize_http_header_value,
 )
@@ -159,14 +163,14 @@ async def _wav_passthrough_stream(
 
 
 def _get_publish_addresses(
-    bind_ip: str, configured_publish_ip: str | None, all_ip_addresses: tuple[str, ...]
+    bind_ip: str, configured_publish_ip: str | None, publish_candidates: tuple[str, ...]
 ) -> list[str]:
     """
-    Return the addresses this host should advertise to players on the local network.
+    Return the addresses this host publishes on, best candidate first.
 
     :param bind_ip: The configured bind IP (a wildcard means all interfaces).
     :param configured_publish_ip: The explicitly configured publish IP, or None when auto.
-    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    :param publish_candidates: Host addresses reachable from the local network, ranked.
     """
     if configured_publish_ip:
         # an explicitly configured address is the authoritative answer
@@ -174,11 +178,9 @@ def _get_publish_addresses(
     if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
         # only one interface is served, so no other address can be reached
         return [bind_ip]
-    # Auto-detected: the primary address is only a guess at which interface the players
-    # live on, so advertise every address (highest ranked first) and let the device pick
-    # one it can reach. On a multi-homed host - a VPN or docker interface alongside the
-    # LAN - the primary-route address is regularly not the one on the players' network.
-    return list(all_ip_addresses)
+    # auto-detected: keep the whole ranked list - publish_ip takes the best of them and
+    # the network fingerprint watches all of them to spot an interface change
+    return list(publish_candidates)
 
 
 class StreamsController(CoreController):
@@ -200,10 +202,13 @@ class StreamsController(CoreController):
         self.manifest.icon = "cast-audio"
         self.announcement_renderer = AnnouncementRenderer()
         self._bind_ip: str = "0.0.0.0"
+        self._base_url: str = ""
         self._configured_publish_ip: str | None = None
-        # every address players may reach this host on, best candidate first - for mDNS
-        # records, which can carry them all, unlike the single-valued publish_ip
-        self.publish_addresses: list[str] = []
+        # every address players may reach this host on, best candidate first; publish_ip is
+        # the first of them and the network fingerprint watches the whole list for changes
+        self._publish_addresses: list[str] = []
+        # the network as it was at the previous setup, to spot a runtime change
+        self._network_fingerprint: tuple[str, str, int, tuple[str, ...]] | None = None
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
@@ -235,7 +240,7 @@ class StreamsController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
-        return self._server.base_url
+        return self._base_url
 
     @property
     def bind_ip(self) -> str:
@@ -447,17 +452,12 @@ class StreamsController(CoreController):
         self._configured_publish_ip = (
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
-        # resolve the "auto" default (or an unset value) to this server's primary IP
-        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
-        self.publish_ip = self._configured_publish_ip or all_ip_addresses[0]
-        self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
-        self.publish_addresses = _get_publish_addresses(
-            bind_ip, self._configured_publish_ip, all_ip_addresses
-        )
+        publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
+        bind_ip = str(config.get_value(CONF_BIND_IP))
+        self._resolve_publish_state(bind_ip, publish_candidates)
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
             static_routes=[
                 (
                     "*",
@@ -473,9 +473,10 @@ class StreamsController(CoreController):
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
         )
-        # adopt the port the server actually bound to: a configured port of 0 is only
-        # resolved by the OS at bind time
+        # adopt what the server actually bound to: a configured port of 0 is only resolved
+        # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
+        self._resolve_publish_state(self._server.bind_ip or DEFAULT_HOST, publish_candidates)
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
@@ -490,6 +491,7 @@ class StreamsController(CoreController):
             self.publish_ip,
             self.publish_port,
         )
+        await self._reload_network_dependent_providers()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -507,19 +509,25 @@ class StreamsController(CoreController):
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         protocol_player = self.mass.players.get_player(player_id)
-        # AudioSource is realtime: serve as WAV (PCM + header) so the encode
-        # step is a no-op passthrough — drops a whole ffmpeg from the
-        # consumer-side pipeline and the latency that comes with it.
-        if media.media_type == MediaType.AUDIO_SOURCE:
-            output_codec = ContentType.WAV
-        else:
-            conf_output_codec = cast(
-                "str",
-                protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
-                if protocol_player
-                else "flac",
+        conf_output_codec = cast(
+            "str",
+            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
+            if protocol_player
+            else "flac",
+        )
+        prefer_wav_for_live_sources = (
+            media.media_type == MediaType.AUDIO_SOURCE
+            and protocol_player is not None
+            and cast(
+                "bool",
+                protocol_player.config.get_value(CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False),
             )
-            output_codec = ContentType.try_parse(conf_output_codec)
+        )
+        output_codec = (
+            ContentType.WAV
+            if prefer_wav_for_live_sources
+            else ContentType.try_parse(conf_output_codec)
+        )
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
@@ -551,7 +559,9 @@ class StreamsController(CoreController):
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
-        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+        return (
+            f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+        )
 
     def update_stream_metadata(
         self,
@@ -1109,9 +1119,10 @@ class StreamsController(CoreController):
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
             # allow buffer ahead of a few seconds and read rest in (near) realtime
-            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
+            extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
+        client_disconnected = False
         try:
             # aclosing guarantees the flow stream (and thus the ffmpeg process chain
             # behind it) is torn down immediately when the player disconnects
@@ -1123,6 +1134,7 @@ class StreamsController(CoreController):
                         await resp.write(chunk)
                     except BrokenPipeError, ConnectionResetError, ConnectionError:
                         # race condition
+                        client_disconnected = True
                         break
 
                     if not enable_icy:
@@ -1151,6 +1163,9 @@ class StreamsController(CoreController):
                     await resp.write(length_b + metadata)
         finally:
             self._active_output_streams -= 1
+
+        if not client_disconnected and http_profile == "forced_content_length":
+            await self._finish_flow_stream(resp, queue_id, session_id)
 
         return resp
 
@@ -1390,6 +1405,9 @@ class StreamsController(CoreController):
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
+                seek_position=(
+                    int(queue_item.streamdetails.seek_position) if queue_item.streamdetails else 0
+                ),
                 playback_speed=cast(
                     "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                 ),
@@ -1629,6 +1647,33 @@ class StreamsController(CoreController):
             return "default"
         return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
+    async def _finish_flow_stream(
+        self, resp: web.StreamResponse, queue_id: str, session_id: str
+    ) -> None:
+        """
+        Close a fully served flow stream, giving the player time to drain when it ends the queue.
+
+        :param resp: The flow stream response, already fully written.
+        :param queue_id: Id of the queue the flow stream belongs to.
+        :param session_id: Stream session this response was opened for.
+        """
+        if self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
+            # the player is still holding a few seconds of audio it has not rendered yet
+            # and drops that as soon as the stream ends, so let it play out first.
+            # a flow that ends to be restarted right away gets no such grace: there the
+            # player should go idle as soon as possible so the next stream can start.
+            self.logger.debug(
+                "Flow stream for queue %s reached the end of the queue - holding the "
+                "connection open for %ss so the player can play out its buffer",
+                queue_id,
+                FLOW_STREAM_LEAD_OUT_SECONDS,
+            )
+            await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+        # aiohttp derives keep-alive from the request, so the 'Connection: close' we
+        # advertise is relayed to the player but never applied to the response itself.
+        # Without this the player is left waiting on a stream that already ended.
+        resp.force_close()
+
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -1642,8 +1687,52 @@ class StreamsController(CoreController):
             )
         else:
             self.logger.debug(
-                "Got %s request to %s from %s", request.method, request.path, request.remote
+                "Got %s request to %s from %s (HTTP/%s.%s, connection: %s)",
+                request.method,
+                request.path,
+                request.remote,
+                request.version.major,
+                request.version.minor,
+                request.headers.get("Connection", "-"),
             )
+
+    async def _reload_network_dependent_providers(self) -> None:
+        """Reload the providers that captured the streamserver network, if it changed."""
+        previous = self._network_fingerprint
+        current = (
+            self._bind_ip,
+            str(self.publish_ip),
+            cast("int", self.publish_port),
+            tuple(self._publish_addresses),
+        )
+        if previous is None or previous == current:
+            self._network_fingerprint = current
+            return
+        # these providers bind or advertise the network while they load, so a plain
+        # reload is what moves them over - they share no lighter rebind path
+        instance_ids = [
+            prov.instance_id
+            for prov in self.mass.providers
+            if prov.reload_on_streams_network_change
+        ]
+        for instance_id in instance_ids:
+            try:
+                config = await self.mass.config.get_provider_config(instance_id)
+                self.logger.info(
+                    "Streamserver network changed, reloading provider %s",
+                    config.name or config.domain,
+                )
+                await self.mass.load_provider_config(config)
+            except Exception as err:
+                self.logger.warning(
+                    "Error reloading provider %s: %s",
+                    instance_id,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
+        # only mark the new network as applied once the loop completed, so a run cut short
+        # by a second config change runs again on the next reload
+        self._network_fingerprint = current
 
     def _setup_smart_fades_logger(self, config: CoreConfig) -> None:
         """Set up smart fades logger level."""
@@ -1652,6 +1741,23 @@ class StreamsController(CoreController):
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
             self.audio.smart_fades_mixer.logger.setLevel(log_level)
+
+    def _resolve_publish_state(self, bind_ip: str, publish_candidates: tuple[str, ...]) -> None:
+        """
+        Resolve the addresses and base URL to advertise for the given bind address.
+
+        Reads ``self.publish_port``, so set that first.
+
+        :param bind_ip: Address the streamserver binds to (a wildcard means all interfaces).
+        :param publish_candidates: Host addresses reachable from the local network, ranked.
+        """
+        self._bind_ip = bind_ip
+        self._publish_addresses = _get_publish_addresses(
+            bind_ip, self._configured_publish_ip, publish_candidates
+        )
+        # the single address players are handed, taken from the top of the ranked list
+        self.publish_ip = self._publish_addresses[0]
+        self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

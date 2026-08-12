@@ -7,10 +7,10 @@ import contextlib
 import hashlib
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import jwt as pyjwt
 from music_assistant_models.auth import (
@@ -53,6 +53,7 @@ from music_assistant.helpers.jwt_auth import JWTHelper
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -115,6 +116,7 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -271,10 +273,10 @@ class AuthenticationManager:
             return None
         return str(token_row["token_id"])
 
-    @api_command("auth/user", required_scope=Scope.USERS_MANAGE)
+    @api_command("auth/user", required_scope=Scope.USERS_READ)
     async def get_user(self, user_id: str) -> User | None:
         """
-        Get user by ID (admin only).
+        Get user by ID (requires the users.read scope).
 
         :param user_id: The user ID.
         :return: User object or None if not found.
@@ -707,6 +709,26 @@ class AuthenticationManager:
             token_id,
         )
 
+    def subscribe_user_access_revoked(self, callback: Callable[[User], None]) -> Callable[[], None]:
+        """
+        Subscribe to a user's access being withdrawn.
+
+        Fires on deliberate access withdrawal: bulk token revocation
+        (revoke_tokens_for_user), account disable, and account deletion. Revoking a
+        single token (e.g. a logout) does not fire it, so credentials bound to the
+        account survive a plain logout.
+
+        :param callback: Called with the affected user.
+        :return: Callable that removes the subscription.
+        """
+        self._access_revoked_callbacks.append(callback)
+
+        def _unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._access_revoked_callbacks.remove(callback)
+
+        return _unsubscribe
+
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
         Revoke all auth tokens for a user.
@@ -718,21 +740,24 @@ class AuthenticationManager:
         :return: Number of tokens revoked.
         """
         token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
-        if not token_rows:
-            return 0
 
         # Disconnect any WebSocket connections using these tokens
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
-        # Delete all tokens in one go
-        await self.database.execute(
-            "DELETE FROM auth_tokens WHERE user_id = :user_id",
-            {"user_id": user.user_id},
-        )
-        await self.database.commit()
+        if token_rows:
+            # Delete all tokens in one go
+            await self.database.execute(
+                "DELETE FROM auth_tokens WHERE user_id = :user_id",
+                {"user_id": user.user_id},
+            )
+            await self.database.commit()
+            self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
 
-        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        # Notify even with no tokens left: subscribers may hold credentials tied to
+        # this user's access that must be withdrawn regardless.
+        self._notify_user_access_revoked(user)
+
         return len(token_rows)
 
     @api_command("auth/tokens")
@@ -766,10 +791,10 @@ class AuthenticationManager:
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
-    @api_command("auth/users", required_scope=Scope.USERS_MANAGE)
+    @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
         """
-        Get all users (admin only).
+        Get all users (requires the users.read scope).
 
         System users are excluded from the list.
 
@@ -856,6 +881,11 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot disable your own account")
 
+        # Look up the user before disabling (get_user hides disabled accounts)
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+
         await self.database.update(
             "users",
             {"user_id": user_id},
@@ -864,6 +894,12 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # A disabled account's tokens stop authenticating, so credentials bound to its
+        # access must be withdrawn with them (they return on the next login after enable).
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
 
         self.logger.info("User account disabled (user_id=%s)", user_id)
 
@@ -1158,6 +1194,12 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # Deletion cascades the user's tokens away, so it must announce the access
+        # withdrawal itself for credentials bound to this user.
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
 
         self.logger.info(
             "User '%s' deleted by admin '%s'",
@@ -1793,9 +1835,14 @@ class AuthenticationManager:
                 break
 
         if ha_provider:
-            # Get URL from the HA provider config
-            ha_url = ha_provider.config.get_value("url")
-            assert isinstance(ha_url, str)
+            ha_provider = cast("HomeAssistantProvider", ha_provider)
+            ha_url = ha_provider.url
+            if not ha_url:
+                self.logger.warning(
+                    "Home Assistant provider has no URL configured, "
+                    "Home Assistant OAuth login is not available"
+                )
+                return
             ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
             self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                 self.mass, "homeassistant", ha_config
@@ -1821,9 +1868,16 @@ class AuthenticationManager:
         if ha_provider:
             # HA provider exists and is available - ensure OAuth provider is registered
             if "homeassistant" not in self.login_providers:
-                # Get URL from the HA provider config
-                ha_url = ha_provider.config.get_value("url")
-                assert isinstance(ha_url, str)
+                ha_provider = cast("HomeAssistantProvider", ha_provider)
+                ha_url = ha_provider.url
+                if not ha_url:
+                    # missing URL must never break the login providers endpoint,
+                    # simply leave the HA OAuth provider unregistered
+                    self.logger.debug(
+                        "Home Assistant provider has no URL configured, "
+                        "Home Assistant OAuth login is not available"
+                    )
+                    return
                 ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
                 self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                     self.mass, "homeassistant", ha_config
@@ -2069,6 +2123,11 @@ class AuthenticationManager:
             days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
         )
         return now < rotate_after
+
+    def _notify_user_access_revoked(self, user: User) -> None:
+        """Dispatch an access withdrawal to subscribers, isolating them from each other."""
+        for callback in list(self._access_revoked_callbacks):
+            self.mass.loop.call_soon(callback, user)
 
 
 def _join_code_rate_limit_key() -> tuple[str, bool]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -14,7 +15,7 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
     default_value="various_artists",
-    help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
+    help_link="https://music-assistant.io/music-providers/local-files/#tagging-files",
     required=False,
     options=[
         ConfigValueOption("track_artist"),
@@ -44,9 +45,18 @@ CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
         ConfigValueOption("sound_effects"),
     ],
 )
-CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
-    {**CONF_ENTRY_CONTENT_TYPE.to_dict(), "read_only": True}
-)
+
+
+def content_type_config_entry(content_type: str) -> ConfigEntry:
+    """
+    Return the read-only mirror of the (setup flow owned) content type for the options page.
+
+    :param content_type: The content type resolved from the provider's setup data.
+    """
+    # mirrored as the entry default so the other entries resolve their depends_on chain
+    # against it without it ever being persisted back into the stored values
+    return replace(CONF_ENTRY_CONTENT_TYPE, read_only=True, default_value=content_type)
+
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",

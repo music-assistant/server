@@ -103,7 +103,13 @@ class TransitionRenderer:
         self._append_shelf(filters, plan.eq_plan.low_in, "fadein")
         self._append_shelf(filters, plan.eq_plan.high_in, "fadein")
         self._append_shelf(filters, plan.eq_plan.mid_in, "fadein")
-        filters.append(CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples))
+        filters.append(
+            CrossfadeFilter(
+                logger=self.logger,
+                crossfade_samples=crossfade_samples,
+                fadeout_curve=plan.fadeout_curve,
+            )
+        )
         return filters
 
     def _append_shelf(

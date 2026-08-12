@@ -116,7 +116,7 @@
     },
     "icon": {
       "label": "Icon",
-      "description": "Material design icon for this player.\n\nSee https://pictogrammers.com/library/mdi/."
+      "description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons."
     },
     "ignore_album_playlists": {
       "label": "Ignore playlists with album tracks within album folders",
@@ -198,7 +198,7 @@
     },
     "manual_discovery_ip_addresses": {
       "label": "Manual IP addresses for discovery",
-      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network. using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nIn case of special network setups or when you run into issues where one or more players are not discovered, you can manually add the IP addresses of the players here. \n\nNote that this setting is not recommended for normal use and should only be used if you know what you are doing. Also, if players are not on the same subnet asthe Music Assistant server, you may run into issues with streaming. In that case always ensure that the players can reach the server on the network and double check the base URL configuration of the Stream server in the settings."
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network. using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nIn case of special network setups or when you run into issues where one or more players are not discovered, you can manually add the IP addresses of the players here. \n\nNote that this setting is not recommended for normal use and should only be used if you know what you are doing. Also, if players are not on the same subnet as the Music Assistant server, you may run into issues with streaming. In that case always ensure that the players can reach the server on the network and double check the base URL configuration of the Stream server in the settings."
     },
     "max_volume": {
       "label": "Maximum volume",
@@ -225,14 +225,18 @@
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
         "aac": "AAC (lossy)",
-        "wav": "WAV (lossless, uncompressed)"
+        "wav": "WAV (uncompressed PCM)"
       },
       "option_descriptions": {
         "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
         "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
         "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
-        "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
+        "wav": "Uncompressed PCM audio in a WAV container — highest bandwidth. Only needed for players that can't handle FLAC."
       }
+    },
+    "prefer_wav_for_live_sources": {
+      "label": "Prefer low-latency WAV for live sources",
+      "description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed PCM audio in a WAV container to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead."
     },
     "play_media_overrides_group": {
       "label": "Play Media overrides active group",
@@ -287,11 +291,11 @@
       }
     },
     "protocol_enable": {
-      "label": "Enable",
+      "label": "Enable this protocol on this player",
       "description": "Enable or disable this output protocol for the player."
     },
     "protocol_enable_via": {
-      "label": "Enable",
+      "label": "Enable this protocol on this player",
       "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
     },
     "pre_announcement_chime_url": {
@@ -1059,6 +1063,26 @@
       },
       "favorite_radio_stations": {
         "name": "Favorite Radio stations"
+      },
+      "forgotten_tracks": {
+        "name": "Forgotten Tracks",
+        "subtitle": "Rediscover tracks you haven't heard in a while"
+      },
+      "forgotten_albums": {
+        "name": "Forgotten Albums",
+        "subtitle": "Rediscover albums you haven't heard in a while"
+      },
+      "forgotten_artists": {
+        "name": "Forgotten Artists",
+        "subtitle": "Rediscover artists you haven't heard in a while"
+      },
+      "most_played_tracks": {
+        "name": "Most Played Tracks",
+        "subtitle": "Your all-time favorites"
+      },
+      "never_played_tracks": {
+        "name": "Never / Rarely Played",
+        "subtitle": "Discover what you haven't explored yet"
       }
     }
   },
@@ -1183,12 +1207,16 @@
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}.",
     "mount_failed": "Unable to connect to the remote location: {0}",
-    "unmount_failed": "The previous connection to the remote location could not be closed: {0}"
+    "unmount_failed": "The previous connection to the remote location could not be closed: {0}",
+    "user_not_found": "The user {0} could not be found."
   },
   "setup_flow": {
     "select_child": {
       "title": "Choose a device to set up",
       "description": "This player wraps multiple devices that still need setup. Pick the one to set up now."
+    },
+    "finish_library_sync": {
+      "description": "Your library is imported in the background and can take a while the first time. It keeps filling up as the import progresses, so it is normal for things to look empty or incomplete at first."
     }
   },
   "page": {

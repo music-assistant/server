@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from types import SimpleNamespace
+from dataclasses import replace
+from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -13,12 +14,13 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     FlowStepType,
     PlayerType,
+    ProviderFeature,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -31,6 +33,7 @@ from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
+from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player, _state_fingerprint
@@ -53,6 +56,11 @@ PORT_ENTRY = ConfigEntry(key="port", type=ConfigEntryType.INTEGER, required=Fals
 PASSWORD_ENTRY = ConfigEntry(key="password", type=ConfigEntryType.SECURE_STRING, required=True)
 REGION_ENTRY = ConfigEntry(
     key="region", type=ConfigEntryType.STRING, required=True, default_value="eu"
+)
+USE_PROXY_ENTRY = ConfigEntry(key="use_proxy", type=ConfigEntryType.BOOLEAN, default_value=False)
+# required with no default to fall back on, so only the gate keeps it satisfiable
+PROXY_HOST_ENTRY = ConfigEntry(
+    key="proxy_host", type=ConfigEntryType.STRING, required=True, depends_on=USE_PROXY_ENTRY.key
 )
 
 
@@ -91,6 +99,12 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     mass_minimal.music.on_provider_loaded = AsyncMock()
     # awaited at the head of the real provider unload path
     mass_minimal.music.unschedule_provider_sync = AsyncMock()
+    # the real implementation, so the FINISH step's library-import copy is decided by the
+    # loaded provider's actual LIBRARY_* features rather than by a permissive mock;
+    # binding it to the mock is only sound because the method does not read self
+    mass_minimal.music.library_supported = MethodType(
+        MusicController.library_supported, mass_minimal.music
+    )
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
     try:
@@ -193,7 +207,9 @@ class _FlowlessProvider(MusicProvider):
         return self.declared_entries
 
 
-def _use_provider_module(entries: tuple[ConfigEntry, ...]) -> Any:
+def _use_provider_module(
+    entries: tuple[ConfigEntry, ...], features: set[ProviderFeature] | None = None
+) -> Any:
     """
     Patch the module loader so the fake domain really loads a provider instance.
 
@@ -201,12 +217,13 @@ def _use_provider_module(entries: tuple[ConfigEntry, ...]) -> Any:
     is served a stub module whose ``setup`` returns a real provider declaring the given entries.
 
     :param entries: The (options) config entries the loaded provider declares.
+    :param features: The provider features the loaded provider declares.
     """
 
     async def setup(
         mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> _FlowlessProvider:
-        provider = _FlowlessProvider(mass, manifest, config)
+        provider = _FlowlessProvider(mass, manifest, config, supported_features=features)
         provider.declared_entries = entries
         return provider
 
@@ -236,6 +253,41 @@ async def test_flowless_provider_loads_with_resolvable_entries(flow_mass: MusicA
     provider.config.validate()
     assert provider.config.get_value("port") == 80
     assert provider.config.get_value("region") == "eu"
+
+
+@pytest.mark.parametrize(
+    ("features", "expected_step_id"),
+    [
+        ({ProviderFeature.LIBRARY_TRACKS}, "finish_library_sync"),
+        (set(), "finish"),
+    ],
+    ids=["library_provider", "browse_only_provider"],
+)
+async def test_finish_step_id_reflects_library_import(
+    flow_mass: MusicAssistant, features: set[ProviderFeature], expected_step_id: str
+) -> None:
+    """Only a provider that imports a library gets the FINISH step explaining the import."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([USERNAME_ENTRY], step_id="credentials")
+        await session.finish(values)
+
+    with _use_flow(flow_mass, run_setup), _use_provider_module((), features):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "marcel"})
+    assert finish_step.type == FlowStepType.FINISH
+    assert finish_step.step_id == expected_step_id
+
+
+async def test_zero_input_library_provider_finish_step_id(flow_mass: MusicAssistant) -> None:
+    """A flow-less provider's synthesized FINISH step carries the library-import copy too."""
+    with (
+        patch.object(flow_mass.config, "_get_setup_flow_module", AsyncMock(return_value=None)),
+        _use_provider_module((), {ProviderFeature.LIBRARY_PLAYLISTS}),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.type == FlowStepType.FINISH
+    assert step.step_id == "finish_library_sync"
 
 
 async def test_flowless_provider_required_entry_without_default_rolls_back(
@@ -341,6 +393,64 @@ async def test_form_validation_errors(flow_mass: MusicAssistant) -> None:
     assert finish_step.type == FlowStepType.FINISH
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
     assert raw_conf["setup_data"]["port"] == 8095
+
+
+async def test_gated_required_entry_does_not_block_submit(flow_mass: MusicAssistant) -> None:
+    """A required entry behind an unmet dependency renders disabled, so it may stay empty."""
+    submitted: dict[str, ConfigValueType] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        submitted.update(await session.form([USE_PROXY_ENTRY, PROXY_HOST_ENTRY]))
+        await session.finish(submitted)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": False})
+    assert finish_step.type == FlowStepType.FINISH
+    assert submitted == {"use_proxy": False, "proxy_host": None}
+
+
+async def test_gated_required_entry_is_demanded_once_its_gate_opens(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Opening the gate in the same submit makes the entry required again."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.finish(await session.form([USE_PROXY_ENTRY, PROXY_HOST_ENTRY]))
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        error_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": True})
+        assert error_step.type == FlowStepType.FORM
+        assert error_step.errors == {"proxy_host": "required"}
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+
+
+async def test_gate_is_read_from_the_submitted_values(flow_mass: MusicAssistant) -> None:
+    """Closing a prefilled gate takes effect wherever the gate sits on the form."""
+    submitted: dict[str, ConfigValueType] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        # gate listed behind what it gates, and prefilled as a reconfigure run would
+        submitted.update(
+            await session.form([PROXY_HOST_ENTRY, replace(USE_PROXY_ENTRY, value=True)])
+        )
+        await session.finish(submitted)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"use_proxy": False})
+    assert finish_step.type == FlowStepType.FINISH
+    assert submitted == {"use_proxy": False, "proxy_host": None}
 
 
 async def test_submit_returns_next_form_step(flow_mass: MusicAssistant) -> None:
@@ -925,6 +1035,8 @@ async def test_reconfigure_prefill_and_success(flow_mass: MusicAssistant) -> Non
         )
     assert finish_step.type == FlowStepType.FINISH
     assert finish_step.result == {"instance_id": instance_id}
+    # the library of an existing instance is already there, so no import copy is offered
+    assert finish_step.step_id == "finish"
     mock_load.assert_awaited_once()
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     # new value merged in (encrypted), untouched keys preserved, last_error cleared
@@ -1457,18 +1569,42 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
 async def test_spotify_flow_hosted_bounce_roundtrip(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real Spotify flow: hosted-bounce external auth then a stored refresh token."""
+    """The real Spotify flow: hosted-bounce auth, playback authorization, stored credentials."""
     from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        CONF_LIBRESPOT_CREDENTIALS,
         CONF_REFRESH_TOKEN_GLOBAL,
     )
-    from music_assistant.providers.spotify.setup_flow import run_setup  # noqa: PLC0415
+    from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
+        CONF_PLAYBACK_AUTH_METHOD,
+        CONF_PLAYBACK_CALLBACK_URL,
+        PLAYBACK_AUTH_BROWSER,
+        run_setup,
+    )
 
     monkeypatch.setattr(
         "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
     )
     # seed the lazy http_session backing field so the token exchange uses our stub
     monkeypatch.setattr(
-        flow_mass, "_http_session", _fake_json_session({"refresh_token": "rt_global"})
+        flow_mass,
+        "_http_session",
+        _fake_json_session({"refresh_token": "rt_global", "access_token": "at_keymaster"}),
+    )
+    # the playback steps shell out to librespot; stub the binary lookup and the exchange
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.get_librespot_binary",
+        AsyncMock(return_value="/bin/librespot"),
+    )
+    credentials_via_token = AsyncMock(return_value='{"username": "u", "auth_data": "d"}')
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
+        credentials_via_token,
+    )
+    # the browser is not on this host, so the loopback target is unreachable and the flow has
+    # to fall back to asking the user to paste the URL they landed on
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.await_loopback_authorization",
+        MagicMock(side_effect=OSError),
     )
     with (
         _use_flow(flow_mass, run_setup),
@@ -1485,17 +1621,54 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert step.flow_id in step.url
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
-        # after the token exchange the optional developer step is shown
+        # playback needs its own authorization; pick the browser fallback
         await _wait_for(
-            lambda: session.current_step is not None and session.current_step.step_id == "developer"
+            lambda: (
+                session.current_step is not None and session.current_step.step_id == "playback_auth"
+            )
         )
-        # skipping the developer client id (blank) finishes the flow
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_AUTH_METHOD: PLAYBACK_AUTH_BROWSER}
+        )
+        # the browser step advertises the keymaster client id on a loopback redirect, which is
+        # the only redirect Spotify accepts for it, so the user pastes the URL back
+        browser_step = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.step_id == "playback_browser"
+                else None
+            )
+        )
+        assert browser_step.translation_params is not None
+        authorize_url = browser_step.translation_params[0]
+        assert "65b708073fc0480ea92a077233ca87bd" in authorize_url
+        assert "127.0.0.1" in authorize_url
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id,
+            {CONF_PLAYBACK_CALLBACK_URL: "http://127.0.0.1:5588/login?code=playback_code"},
+        )
+        # the developer key is offered as an opt-in once everything required is collected
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "developer_optin"
+            )
+        )
+        # declining the opt-in finishes the flow without asking for a client id
         finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {})
     assert finish_step.type == FlowStepType.FINISH
+    # the pasted URL's code is what gets exchanged for the playback credential
+    assert credentials_via_token.await_args is not None
+    assert credentials_via_token.await_args.args == ("/bin/librespot", "at_keymaster")
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
     assert (
         flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_REFRESH_TOKEN_GLOBAL])
         == "rt_global"
+    )
+    assert (
+        flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_LIBRESPOT_CREDENTIALS])
+        == '{"username": "u", "auth_data": "d"}'
     )
 
 

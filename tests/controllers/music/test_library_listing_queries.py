@@ -19,7 +19,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.enums import AlbumType, ArtistType, MediaType
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -39,7 +40,6 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.music.media.base import MediaControllerBase
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
 pytestmark = pytest.mark.asyncio
@@ -634,6 +634,63 @@ async def test_audiobook_collections_collapse_and_preserve_order(
     collection = await controller.get_collection(collections["Alpha Series"].item_id)
     assert [item.name for item in collection.items] == ["Alpha 1", "Alpha 1.5", "Alpha 2"]
     assert all(isinstance(item, Audiobook) for item in collection.items)
+
+
+async def test_artist_audiobooks_collapse_collections(
+    mass: MusicAssistant,
+) -> None:
+    """Artist audiobook listings collapse collections while preserving the artist scope."""
+    author = Artist(
+        item_id="0",
+        provider="library",
+        name="Test Author",
+        provider_mappings={_mapping()},
+        artist_type=ArtistType.AUTHOR,
+    )
+    author = await mass.music.artists.add_item_to_library(author)
+
+    for name, sequence in (("Book 2", 2), ("Book 1", 1)):
+        await mass.music.audiobooks.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                authors=UniqueList([author]),
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Test Collection", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Standalone",
+            provider_mappings={_mapping()},
+            authors=UniqueList([author]),
+        )
+    )
+
+    result = await mass.music.artists.audiobooks(
+        author.item_id,
+        author.provider,
+        author.artist_type,
+        in_library_only=True,
+        collapse_collections=True,
+    )
+
+    assert len(result) == 2
+
+    collection = next(item for item in result if isinstance(item, MediaCollection))
+    standalone = next(item for item in result if isinstance(item, Audiobook))
+
+    assert collection.name == "Test Collection"
+    assert [item.name for item in collection.items] == ["Book 1", "Book 2"]
+    assert standalone.name == "Standalone"
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:

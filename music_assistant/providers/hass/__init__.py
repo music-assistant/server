@@ -14,15 +14,19 @@ import logging
 import os
 from functools import partial
 from itertools import batched
+from sys import intern
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -43,13 +47,27 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
-from .constants import OFF_STATES, MediaPlayerEntityFeature, parse_supported_features
+from .constants import (
+    CONF_MUTE_CONTROLS,
+    CONF_POWER_CONTROLS,
+    CONF_VOLUME_CONTROLS,
+    OFF_STATES,
+    MediaPlayerEntityFeature,
+    parse_supported_features,
+)
+from .control_entities import (
+    SEARCH_CONTROL_ENTITIES_LIMIT,
+    ControlEntitySearch,
+    HassControlEntitySearchResult,
+)
+from .helpers import ControlCapabilities, get_control_name, is_entity_id
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Mapping
 
     from aiohttp import ClientSession
     from hass_client.models import (
+        Area,
         CompressedState,
         Context,
         Device,
@@ -69,9 +87,6 @@ DOMAIN = "hass"
 CONF_URL = "url"
 CONF_AUTH_TOKEN = "token"
 CONF_VERIFY_SSL = "verify_ssl"
-CONF_POWER_CONTROLS = "power_controls"
-CONF_MUTE_CONTROLS = "mute_controls"
-CONF_VOLUME_CONTROLS = "volume_controls"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
 STATE_FETCH_BATCH_SIZE = 500
@@ -81,12 +96,22 @@ ENGINE_REFRESH_DEBOUNCE = 2
 # window in which repeated device lookups reuse one listing, so a burst of players
 # connecting does not fetch the (unfilterable) device registry once per player
 DEVICE_REGISTRY_CACHE_TTL = 60
+# areas are renamed even less often than devices, and only ever supply a label
+AREA_REGISTRY_CACHE_TTL = 60
 
-# Home Assistant entity domains Music Assistant can offer as player controls.
-CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
+SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
+
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
 FEATURE_DOMAIN_PREFIXES = tuple(f"{domain}." for domain in FEATURE_DOMAINS)
+
+# Entity registry fields a change to which can alter the mirrored registry. Beyond the
+# mirrored fields themselves, disabled_by decides whether an entity is listed at all, and
+# config_entry_id joins them because Home Assistant can clear disabled_by while reporting
+# only the move to the other config entry.
+REGISTRY_FIELDS_AFFECTING_MIRROR = frozenset(
+    {"entity_id", "platform", "device_id", "area_id", "disabled_by", "config_entry_id"}
+)
 
 
 class DeviceMediaPlayerInfo(TypedDict):
@@ -98,20 +123,17 @@ class DeviceMediaPlayerInfo(TypedDict):
     announce_entity_id: str | None
 
 
-class HassRegistryEntity(TypedDict):
-    """Home Assistant entity registry entry, limited to the fields Music Assistant uses."""
+class HassRegistryEntity(NamedTuple):
+    """
+    Home Assistant entity registry entry, limited to the fields Music Assistant uses.
 
-    entity_id: str
+    The entity ID is not a field: entries are always keyed by it.
+    """
+
     platform: str
     device_id: str | None
-
-
-class _ControlCapabilities(NamedTuple):
-    """The player control roles a Home Assistant entity can serve."""
-
-    power: bool = False
-    volume: bool = False
-    mute: bool = False
+    # the area the entity is assigned to directly, overriding the one of its device
+    area_id: str | None
 
 
 async def setup(
@@ -121,58 +143,19 @@ async def setup(
     return HomeAssistantProvider(mass, manifest, config, set())
 
 
-async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigEntry, ...]:
-    """Return the (entity based) config entries."""
-    all_power_entities: list[ConfigValueOption] = []
-    all_mute_entities: list[ConfigValueOption] = []
-    all_volume_entities: list[ConfigValueOption] = []
-    if not hass_prov.hass.connected:
-        return ()
-    states = await hass_prov.get_states(domains=CONTROL_DOMAINS)
-    for state in states:
-        capabilities = _get_control_capabilities(state, hass_prov.logger)
-        option = ConfigValueOption(
-            state["entity_id"], title=_get_control_name(state["entity_id"], state)
+def _control_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return the config entries holding the entities selected as player controls."""
+    return tuple(
+        ConfigEntry(
+            key=conf_key,
+            type=ConfigEntryType.STRING,
+            multi_value=True,
+            required=True,
+            default_value=[],
+            category="player_controls",
         )
-        if capabilities.power:
-            all_power_entities.append(option)
-        if capabilities.volume:
-            all_volume_entities.append(option)
-        if capabilities.mute:
-            all_mute_entities.append(option)
-    all_power_entities.sort(key=lambda x: x.title or "")
-    all_mute_entities.sort(key=lambda x: x.title or "")
-    all_volume_entities.sort(key=lambda x: x.title or "")
-    entries: list[ConfigEntry] = [
-        ConfigEntry(
-            key=CONF_POWER_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=all_power_entities,
-            default_value=[],
-            category="player_controls",
-        ),
-        ConfigEntry(
-            key=CONF_VOLUME_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=all_volume_entities,
-            default_value=[],
-            category="player_controls",
-        ),
-        ConfigEntry(
-            key=CONF_MUTE_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=all_mute_entities,
-            default_value=[],
-            category="player_controls",
-        ),
-    ]
-    return tuple(entries)
+        for conf_key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
+    )
 
 
 class HomeAssistantProvider(PluginProvider):
@@ -187,11 +170,26 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _tts_engines: list[TTSEngine]
     _startup_complete: bool = False
-    _entity_registry: dict[str, HassRegistryEntity] | None = None
+    _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
     _entity_registry_lock: asyncio.Lock
-    _wanted_controls: dict[str, _ControlCapabilities] | None = None
+    _wanted_controls: dict[str, ControlCapabilities] | None = None
     _control_reconcile_lock: asyncio.Lock
+    _control_entity_search: ControlEntitySearch
+    _unregister_search_command: Callable[[], None] | None = None
+
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        url = self.get_setup_value(CONF_URL)
+        if isinstance(url, str) and url:
+            return url
+        return None
+
+    @property
+    def entity_registry_generation(self) -> int:
+        """Return a counter that changes whenever the mirrored entity registry is dropped."""
+        return self._entity_registry_generation
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -237,46 +235,7 @@ class HomeAssistantProvider(PluginProvider):
             # url/token/verify_ssl are collected by the setup flow instead (see setup_flow.py)
             base_entries = ()
 
-        # append player controls entries (if we have an active instance)
-        if self.available:
-            try:
-                return (
-                    *base_entries,
-                    *(await _get_config_entries(self)),
-                )
-            except TimeoutError:
-                # listing the selectable entities needs a live sweep of Home Assistant, so a
-                # slow or busy instance must not fail config resolution for the whole server.
-                # The entries below carry no options but do keep any stored selection.
-                self.logger.warning(
-                    "Timeout fetching entities from Home Assistant, "
-                    "player control options are unavailable until the next refresh"
-                )
-
-        return (
-            *base_entries,
-            ConfigEntry(
-                key=CONF_POWER_CONTROLS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label=CONF_POWER_CONTROLS,
-                default_value=[],
-            ),
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROLS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label=CONF_VOLUME_CONTROLS,
-                default_value=[],
-            ),
-            ConfigEntry(
-                key=CONF_MUTE_CONTROLS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label=CONF_MUTE_CONTROLS,
-                default_value=[],
-            ),
-        )
+        return (*base_entries, *_control_config_entries())
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
@@ -297,6 +256,14 @@ class HomeAssistantProvider(PluginProvider):
         self.hass = HomeAssistantClient(url, token, http_session)
         self._entity_registry = None
         self._entity_registry_lock = asyncio.Lock()
+        self._control_entity_search = ControlEntitySearch(self)
+        # registering here rather than in loaded_in_mass pairs the command with the teardown
+        # in _disconnect_hass, so a reload can never leave it registered twice
+        self._unregister_search_command = self.mass.register_api_command(
+            SEARCH_CONTROL_ENTITIES_COMMAND,
+            self.search_control_entities,
+            required_scope=Scope.CONFIG_PROVIDERS_READ,
+        )
         try:
             await self.hass.connect()
         except BaseHassClientError as err:
@@ -372,12 +339,15 @@ class HomeAssistantProvider(PluginProvider):
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
 
-    async def get_entity_registry(self) -> dict[str, HassRegistryEntity]:
+    async def get_entity_registry(self) -> Mapping[str, HassRegistryEntity]:
         """
         Return the Home Assistant entity registry, keyed by entity ID.
 
         Entities that are disabled in Home Assistant are absent from the result, and so are
         entities without a unique ID: those are not part of Home Assistant's registry at all.
+
+        The result is shared between all callers and is read-only: both the mapping and
+        its entries reject writes.
         """
         if (registry := self._entity_registry) is not None:
             return registry
@@ -419,6 +389,44 @@ class HomeAssistantProvider(PluginProvider):
         """
         return await self._fetch_device_registry()
 
+    async def get_area_registry(self) -> dict[str, Area]:
+        """
+        Return the Home Assistant area registry, keyed by area ID.
+
+        The listing is reused for a short while, so an area change may take up to
+        AREA_REGISTRY_CACHE_TTL seconds to be reflected.
+        """
+        return await self._fetch_area_registry()
+
+    async def search_control_entities(
+        self,
+        search: str | None = None,
+        control_type: str | None = None,
+        limit: int = SEARCH_CONTROL_ENTITIES_LIMIT,
+    ) -> HassControlEntitySearchResult:
+        """
+        Search the Home Assistant entities that can be used as a player control.
+
+        Music Assistant's own players are never part of the result. Consecutive searches are
+        served from a short lived cache that an entity registry change drops right away, so a
+        newly added or removed entity shows up immediately, while a device or area rename can
+        lag by up to a minute.
+
+        :param search: Text to match, case insensitively, against the entity ID, the entity
+            name, its device name and its area name. Every whitespace separated word must
+            match one of those fields, though not necessarily the same one. All eligible
+            entities match when omitted.
+        :param control_type: Restrict the result to entities that can serve this control role,
+            given as one of the provider's control config keys (``power_controls``,
+            ``volume_controls`` or ``mute_controls``). All roles are returned when omitted.
+        :param limit: Maximum number of entities (not groups) to return, itself capped at
+            ``SEARCH_CONTROL_ENTITIES_MAX_LIMIT``.
+        :return: The matching entities grouped by the device and area they belong to, ordered
+            by area, device and entity name, plus a flag telling whether matches were left out
+            to honor the limit.
+        """
+        return await self._control_entity_search.search(search, control_type, limit)
+
     async def get_media_player_device_infos(
         self,
         mac_addresses: Collection[str],
@@ -451,13 +459,13 @@ class HomeAssistantProvider(PluginProvider):
         if not device_by_mac:
             return {}
         media_players_by_device: dict[str, list[str]] = {}
-        for entry in (await self.get_entity_registry()).values():
+        for entity_id, entry in (await self.get_entity_registry()).items():
             if (
-                entry["platform"] == platform
-                and entry["entity_id"].startswith("media_player.")
-                and (device_id := entry["device_id"])
+                entry.platform == platform
+                and entity_id.startswith("media_player.")
+                and (device_id := entry.device_id)
             ):
-                media_players_by_device.setdefault(device_id, []).append(entry["entity_id"])
+                media_players_by_device.setdefault(device_id, []).append(entity_id)
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
@@ -694,9 +702,16 @@ class HomeAssistantProvider(PluginProvider):
         if not self._startup_complete:
             return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
-        # schedule a reload of the provider
+        # schedule a reload of the provider, armed under the load path's task id so any
+        # (re)load starting before it fires cancels it
         self.available = False
-        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)
+        self.mass.call_later(
+            5,
+            self.mass.load_provider,
+            self.instance_id,
+            allow_retry=True,
+            task_id=f"load_provider_{self.instance_id}",
+        )
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""
@@ -715,11 +730,11 @@ class HomeAssistantProvider(PluginProvider):
         # the wanted selection is determined inside the lock, so a reconcile that had to
         # wait for another one cannot apply a selection that was already superseded
         async with self._control_reconcile_lock:
-            power_controls = cast("list[str]", self.config.get_value(CONF_POWER_CONTROLS))
-            mute_controls = cast("list[str]", self.config.get_value(CONF_MUTE_CONTROLS))
-            volume_controls = cast("list[str]", self.config.get_value(CONF_VOLUME_CONTROLS))
-            wanted_controls: dict[str, _ControlCapabilities] = {
-                entity_id: _ControlCapabilities(
+            power_controls = self._selected_control_entities(CONF_POWER_CONTROLS)
+            mute_controls = self._selected_control_entities(CONF_MUTE_CONTROLS)
+            volume_controls = self._selected_control_entities(CONF_VOLUME_CONTROLS)
+            wanted_controls: dict[str, ControlCapabilities] = {
+                entity_id: ControlCapabilities(
                     power=entity_id in power_controls,
                     volume=entity_id in volume_controls,
                     mute=entity_id in mute_controls,
@@ -745,11 +760,32 @@ class HomeAssistantProvider(PluginProvider):
             await self._subscribe_control_states()
             self._wanted_controls = wanted_controls
 
+    def _selected_control_entities(self, conf_key: str) -> list[str]:
+        """
+        Return the entity IDs selected in the given player control setting.
+
+        :param conf_key: The control config key to read the selection from.
+        """
+        entity_ids: list[str] = []
+        for value in cast("list[str]", self.config.get_value(conf_key)):
+            if is_entity_id(value):
+                entity_ids.append(value)
+                continue
+            # Home Assistant rejects an entire state fetch or subscription over a single
+            # value that is not an entity ID, so a leftover selection would otherwise
+            # take down every control of this provider
+            self.logger.warning(
+                "Ignoring %r in the %s setting: it is not a Home Assistant entity ID",
+                value,
+                conf_key,
+            )
+        return entity_ids
+
     def _create_player_control(
         self,
         entity_id: str,
         hass_state: State | None,
-        capabilities: _ControlCapabilities,
+        capabilities: ControlCapabilities,
     ) -> PlayerControl:
         """
         Return a ready to use PlayerControl for a Home Assistant entity.
@@ -762,7 +798,7 @@ class HomeAssistantProvider(PluginProvider):
         control = PlayerControl(
             id=entity_id,
             provider=self.instance_id,
-            name=_get_control_name(entity_id, hass_state),
+            name=get_control_name(entity_id, hass_state),
         )
         if capabilities.power:
             control.supports_power = True
@@ -915,6 +951,10 @@ class HomeAssistantProvider(PluginProvider):
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""
+        if unregister := self._unregister_search_command:
+            self._unregister_search_command = None
+            unregister()
+        self._control_entity_search.close()
         if unsubscribe := self._unsubscribe_controls:
             self._unsubscribe_controls = None
             unsubscribe()
@@ -993,6 +1033,7 @@ class HomeAssistantProvider(PluginProvider):
                 ai_engines.append(AIEngine(id=entity_id, name=name, provider=self))
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
+        changed = (self._tts_engines, self._ai_engines) != (tts_engines, ai_engines)
         self._tts_engines = tts_engines
         self._ai_engines = ai_engines
         self._supported_features.discard(ProviderFeature.TTS)
@@ -1001,6 +1042,12 @@ class HomeAssistantProvider(PluginProvider):
             self._supported_features.add(ProviderFeature.TTS)
         if ai_engines:
             self._supported_features.add(ProviderFeature.AI_QUERY)
+        # the entities can come and go without this provider (un)loading, so tell the
+        # consumers of our engines that their selection may need re-evaluating. They read
+        # the lists straight from their handler, so this has to stay below the assignments.
+        # during startup the load itself signals once we are done.
+        if changed and self._startup_complete:
+            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""
@@ -1014,10 +1061,20 @@ class HomeAssistantProvider(PluginProvider):
 
     def _on_entity_registry_update(self, event: Event) -> None:
         """Handle an entity registry update event."""
-        # any registry change invalidates the cached registry, whatever domain it concerns
-        self._entity_registry = None
-        self._entity_registry_generation += 1
-        entity_id = event["data"].get("entity_id", "")
+        data = event["data"]
+        if _affects_mirrored_registry(data):
+            self._entity_registry = None
+            self._entity_registry_generation += 1
+        elif self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            # the kept mirror rests on which fields Home Assistant reports, so leave a
+            # trail that tells a stale entity listing apart from a lookup that never ran
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Keeping the mirrored entity registry, %s changed on %s",
+                ", ".join(data["changes"]),
+                data.get("entity_id", "?"),
+            )
+        entity_id = data.get("entity_id", "")
         if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
             return
         self._schedule_engine_refresh()
@@ -1037,7 +1094,11 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
-    async def _fetch_entity_registry(self) -> dict[str, HassRegistryEntity]:
+    # unlike _fetch_device_registry, this listing is mirrored for the lifetime of the
+    # connection rather than kept behind a TTL: it runs to several megabytes on a large
+    # setup, and Home Assistant announces every change, so the mirror is both the cheaper
+    # and the more accurate option
+    async def _fetch_entity_registry(self) -> Mapping[str, HassRegistryEntity]:
         """Fetch the entity registry from Home Assistant, keyed by entity ID."""
         # the display variant of the registry listing carries abbreviated keys and only the
         # fields the Home Assistant frontend needs, making it several times smaller
@@ -1045,14 +1106,23 @@ class HomeAssistantProvider(PluginProvider):
             "dict[str, Any]",
             await self.hass.send_command("config/entity_registry/list_for_display"),
         )
-        return {
-            entry["ei"]: HassRegistryEntity(
-                entity_id=entry["ei"],
-                platform=entry["pl"],
-                device_id=entry.get("di"),
+        # the listing repeats a handful of platform names, one device id per device and one
+        # area id per area over all of its entities, so hold on to a single string object
+        # per distinct value
+        device_ids: dict[str, str] = {}
+        area_ids: dict[str, str] = {}
+        registry: dict[str, HassRegistryEntity] = {}
+        for entry in result["entities"]:
+            if (device_id := entry.get("di")) is not None:
+                device_id = device_ids.setdefault(device_id, device_id)
+            if (area_id := entry.get("ai")) is not None:
+                area_id = area_ids.setdefault(area_id, area_id)
+            registry[entry["ei"]] = HassRegistryEntity(
+                platform=intern(entry["pl"]),
+                device_id=device_id,
+                area_id=area_id,
             )
-            for entry in result["entities"]
-        }
+        return MappingProxyType(registry)
 
     # the lock sits outside the cache to keep a burst of lookups from fetching once per
     # caller. use_cache stores in the background, so the callers that reach a still-cold
@@ -1065,53 +1135,31 @@ class HomeAssistantProvider(PluginProvider):
         # the Device TypedDict; get_device_registry restores the type for callers
         return {device["id"]: device for device in await self.hass.get_device_registry()}
 
+    @lock
+    @use_cache(expiration=AREA_REGISTRY_CACHE_TTL)
+    async def _fetch_area_registry(self) -> dict[str, Any]:
+        """Fetch the area registry from Home Assistant, keyed by area ID."""
+        # use_cache rebuilds the cached value from this return annotation, which rules out
+        # the Area TypedDict; get_area_registry restores the type for callers
+        return {area["area_id"]: area for area in await self.hass.get_area_registry()}
 
-def _get_control_capabilities(state: State, logger: logging.Logger) -> _ControlCapabilities:
+
+def _affects_mirrored_registry(data: Mapping[str, Any]) -> bool:
     """
-    Return the player control roles the given Home Assistant entity can serve.
+    Return whether an entity registry update can change the mirrored entity registry.
 
-    :param state: The current state of the entity to inspect.
-    :param logger: Logger to report an unparsable supported_features attribute on.
-    :return: The supported roles; all False when the entity is unusable as a player control.
+    :param data: The data of a Home Assistant entity_registry_updated event.
     """
-    entity_platform = state["entity_id"].split(".")[0]
-    if entity_platform in ("switch", "input_boolean"):
-        # simple on/off controls are suitable as power and mute controls
-        return _ControlCapabilities(power=True, mute=True)
-    if entity_platform in ("number", "input_number"):
-        # number and input_number are very similar, both are suitable for volume control
-        return _ControlCapabilities(volume=True)
-    # media player can be used as control, depending on features
-    if entity_platform != "media_player":
-        return _ControlCapabilities()
-    if "mass_player_type" in state["attributes"]:
-        # filter out mass players
-        return _ControlCapabilities()
-    supported_features = parse_supported_features(
-        state["attributes"].get("supported_features"),
-        state["entity_id"],
-        logger,
-    )
-    return _ControlCapabilities(
-        power=(
-            MediaPlayerEntityFeature.TURN_ON in supported_features
-            and MediaPlayerEntityFeature.TURN_OFF in supported_features
-        ),
-        volume=MediaPlayerEntityFeature.VOLUME_SET in supported_features,
-        mute=MediaPlayerEntityFeature.VOLUME_MUTE in supported_features,
-    )
-
-
-def _get_control_name(entity_id: str, state: State | None) -> str:
-    """
-    Return the human readable name to present a Home Assistant entity control under.
-
-    :param entity_id: The entity the control is based on.
-    :param state: The entity's current state, if known.
-    """
-    if state and (friendly_name := state["attributes"].get("friendly_name")):
-        return f"{friendly_name} ({entity_id})"
-    return entity_id
+    if data.get("action") != "update":
+        # a created or removed entity always enters or leaves the listing
+        return True
+    # an update reports the fields it touched, so a change that only concerns fields we do
+    # not mirror (a rename, an icon, a label) leaves our listing accurate. an update can also
+    # report no fields at all, as a device rename re-derives a name field that Home Assistant
+    # strips from the report, so treat that as a change of unknown reach
+    if not (changes := data.get("changes")):
+        return True
+    return not REGISTRY_FIELDS_AFFECTING_MIRROR.isdisjoint(changes)
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:

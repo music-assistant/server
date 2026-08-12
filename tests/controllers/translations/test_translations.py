@@ -11,11 +11,21 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.background_task import BackgroundTask
-from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ProviderConfig,
+)
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    FlowStepType,
+    MediaType,
+    ProviderType,
+)
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
@@ -501,6 +511,60 @@ def test_core_owned_strings_moved_out_of_common() -> None:
     # genuinely shared network config (built by several modules) stays in common
     assert "common.config_entries.bind_ip.label" in source
     assert "common.config_entries.bind_port.label" in source
+
+
+def test_setup_flow_finish_library_sync_is_shared() -> None:
+    """
+    The FINISH step explaining the initial library import resolves for any music provider.
+
+    The copy is authored once in common, so a provider that ships no strings of its own still
+    gets it via the owner -> common fallback.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    step = SetupFlowStep(
+        flow_id="test",
+        step_id="finish_library_sync",
+        type=FlowStepType.FINISH,
+        translation_owner="provider.qobuz",
+    )
+    with _active_resolver(ctrl, None):
+        serialized = step.to_dict()
+    assert (
+        serialized["description"]
+        == ctrl._source["common.setup_flow.finish_library_sync.description"]
+    )
+
+
+def test_config_action_result_localized_serialization() -> None:
+    """ConfigActionResult resolves its message from the owner's config_actions group."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    result = ConfigActionResult(
+        translation_key="clear_cache.result", translation_owner="core.cache"
+    )
+    # no resolver -> no message yet, machinery kept for internal round-trips
+    plain = result.to_dict()
+    assert plain["message"] is None
+    assert plain["translation_key"] == "clear_cache.result"
+    # resolver bound -> message filled from the owner's strings, machinery stripped
+    with _active_resolver(ctrl, None):
+        localized = result.to_dict()
+    assert localized["message"] == "The cache has been cleared"
+    for machinery_key in ("translation_key", "translation_args", "translation_owner"):
+        assert machinery_key not in localized
+
+
+def test_config_action_result_keys_are_authored() -> None:
+    """Every migrated action result key resolves under its owning core module."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    cases = [
+        ("clear_cache.result", "core.cache", "The cache has been cleared"),
+        ("reset_db.result", "core.music", "The database has been reset."),
+    ]
+    for key, owner, expected in cases:
+        assert ctrl.get_translation(f"config_actions.{key}", owner=owner) == expected
 
 
 def test_error_result_message_localized_serialization() -> None:

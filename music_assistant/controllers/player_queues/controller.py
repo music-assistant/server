@@ -955,6 +955,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
+            queue_data.flow_queue_exhausted = None
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -1287,23 +1288,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"save_queue_cache_{player_id}")
         self._set_transitioning(player_id, False)
         if permanent:
-            # if the player is permanently removed, we also remove the cached queue data
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                )
-            )
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
-                )
-            )
+            self.purge_saved_queue(player_id)
         self._queue_data.pop(player_id, None)
         self._managed_pool.forget(player_id)
+
+    def purge_saved_queue(self, queue_id: str) -> None:
+        """Delete the persisted state and items of the given queue."""
+        for category in (CACHE_CATEGORY_PLAYER_QUEUE_STATE, CACHE_CATEGORY_PLAYER_QUEUE_ITEMS):
+            # a removal runs both the player teardown and the config cleanup, so keep the
+            # delete to one task per category instead of one per caller
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=queue_id,
+                    provider=self.domain,
+                    category=category,
+                ),
+                task_id=f"purge_saved_queue_{queue_id}_{category}",
+            )
 
     async def load_next_queue_item(
         self,
@@ -1384,7 +1385,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if current_index is not None:
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
-    def queue_buffer_completed(self, queue_id: str) -> None:
+    def queue_buffer_completed(self, queue_id: str, queue_exhausted: bool) -> None:
         """
         Call when the flow stream has finished generating all audio data for a queue.
 
@@ -1395,6 +1396,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         items have been added to the queue in the meantime, resuming playback if so.
 
         :param queue_id: The queue ID.
+        :param queue_exhausted: Whether the flow ended because the queue ran out of items,
+            as opposed to ending early to restart on a format change or a live item.
         """
         queue = self.get(queue_id)
         if not queue:
@@ -1407,6 +1410,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # record so player providers can detect flow EOF without an idle report
         if original_session_id is not None:
             queue_data.flow_buffer_completed = original_session_id
+            if queue_exhausted:
+                queue_data.flow_queue_exhausted = original_session_id
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
@@ -1452,6 +1457,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_data is None or queue_data.session_id is None:
             return False
         return queue_data.flow_buffer_completed == queue_data.session_id
+
+    def flow_queue_exhausted(self, queue_id: str, session_id: str) -> bool:
+        """
+        Return whether the given flow stream session played the queue to its end.
+
+        False while a session is still streaming, and for a flow stream that ended early
+        to be restarted (a format change or a live item), where the player is expected to
+        pick up the next stream right away.
+
+        :param queue_id: The queue ID.
+        :param session_id: The stream session to check.
+        """
+        queue_data = self.queue_data_or_none(queue_id)
+        if queue_data is None or queue_data.session_id != session_id:
+            return False
+        return queue_data.flow_queue_exhausted == session_id
 
     # Main queue manipulation methods
 
