@@ -316,10 +316,10 @@ async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     """
     LinkPlay-family devices get the deep receiver queue from the family table.
 
-    Their pipeline starves at the stock depth - fully once the device is also
-    master of a native multiroom group - so the table maps them to 1750 ms.
-    Both platform generations must match: the newer names Linkplay as
-    manufacturer, the older only marks the platform in fv under OEM brands.
+    Both platform generations must match - the newer names Linkplay as
+    manufacturer, the older only marks the platform in fv under OEM brands -
+    and they starve at different depths, so each generation carries its own
+    value rather than the older one inheriting the newer one's.
     """
     player = _make_player()
     player.device_info.manufacturer = "Linkplay Technology Inc."
@@ -327,12 +327,13 @@ async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     assert _arg_value(args, "--latency") == "1750"
     assert "--ptp-shared" in args
 
-    # Old platform: OEM brand, the Linkplay token only in fv.
+    # Old platform: OEM brand, the Linkplay token only in fv. Starves far
+    # deeper than the newer platform above.
     player = _make_player()
     player.device_info.manufacturer = "Edifier Inc"
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "1750"
+    assert _arg_value(args, "--latency") == "2500"
 
     # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()

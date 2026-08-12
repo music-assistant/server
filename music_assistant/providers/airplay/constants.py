@@ -109,15 +109,22 @@ AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # model wildcard, firmware wildcard) -> depth in ms, matched case-insensitively
 # in order, first match wins; unmatched devices stay on Automatic (the binary's
 # stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
-# behind a perfectly healthy session - and need the full 1750 ms once the
-# device is also master of a native multiroom group, at the cost of slower
-# warm seeks. Extend the table as field reports identify more starving devices.
+# behind a perfectly healthy session - so their queue is deepened, at the cost
+# of slower warm seeks (the depth IS the audible latency of a seek or skip).
+# Extend the table as field reports identify more starving devices.
 AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
     # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
+    # 1750 ms is what a WiiM needs once it is also master of a native multiroom
+    # group.
     ("linkplay*", "*", "*", 1750),
     # The older LinkPlay platform ships under OEM brands (Edifier, ...) but
-    # marks the platform in its firmware string.
-    ("*", "*", "p20.linkplay.*", 1750),
+    # marks the platform in its firmware string. It starves far deeper: an
+    # Edifier MS50A stays silent at 2250 ms and renders from 2500 ms, which is
+    # the 2250 ms pipeline the same device declares as its RAOP latency plus the
+    # binary's delivery margin. Every shallower value - including the 1750 ms
+    # this row used to inherit from the row above - is below what the device
+    # itself asks for.
+    ("*", "*", "p20.linkplay.*", 2500),
 )
 # Per-player override of the splice receiver-queue depth in ms (0 = automatic).
 CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
