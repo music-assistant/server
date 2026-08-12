@@ -4,9 +4,9 @@
   "stage": "stable",
   "name": "SiriusXM",
   "description": "Stream SiriusXM’s radio, talk, and curated music channels.",
-  "codeowners": ["@btoconnor"],
-  "credits": ["[sxm-client](https://github.com/AngellusMortis/sxm-client)"],
-  "requirements": ["sxm==0.2.8"],
+  "codeowners": ["@btoconnor", "@MizterB"],
+  "credits": ["[aiosxm](https://github.com/MizterB/aiosxm)"],
+  "requirements": ["aiosxm==0.2.0"],
   "documentation": "https://music-assistant.io/music-providers/siriusxm/",
   "multi_instance": false
 }
