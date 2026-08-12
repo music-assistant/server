@@ -3308,10 +3308,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         Pick the new leader for an ad-hoc sync group leadership transfer.
 
-        Prefers a remaining member that supports the protocol the group is currently
-        playing on, so the other members can be regrouped under it; falls back to the
-        first remaining member. The members' own ``can_group_with`` is unusable here
-        because it is empty while they are still synced to the old leader.
+        Prefers a remaining member that can currently be reached on the protocol the
+        group is playing on, so the other members can be regrouped under it; falls back
+        to the first remaining member. The members' own ``can_group_with`` is unusable
+        here because it is empty while they are still synced to the old leader.
 
         :param leader: The current sync leader being removed.
         :param remaining_members: Candidate member player_ids, already filtered for
@@ -3326,10 +3326,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 member = self.get_player(member_id)
                 if member is None:
                     continue
-                if member.provider.domain == active_domain or any(
-                    protocol.protocol_domain == active_domain and protocol.available
-                    for protocol in member.linked_output_protocols
-                ):
+                if active_domain in member.playback_domains:
                     return member_id
         return remaining_members[0]
 

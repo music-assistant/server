@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.player import OutputProtocol
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -465,28 +466,81 @@ class TestPlayerBaseIsActiveSession:
         assert player.is_active_session is False
 
 
+def _make_ad_hoc_group(
+    controller: PlayerController, mock_mass: MagicMock, airplay_available: bool
+) -> None:
+    """
+    Register an ad-hoc group playing over AirPlay, with only member "b" on that domain.
+
+    Member "a" is a plain native player, member "b" is a native player with a linked
+    AirPlay protocol player whose availability is driven by ``airplay_available``.
+    """
+    sonos = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+    airplay = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+
+    leader = MockPlayer(sonos, "leader", "Leader")
+    leader_protocol = MockPlayer(
+        airplay, "leader_airplay", "Leader AirPlay", player_type=PlayerType.PROTOCOL
+    )
+    leader.set_linked_output_protocols([_airplay_link(leader_protocol.player_id)])
+    leader.set_active_output_protocol(leader_protocol.player_id)
+
+    member_a = MockPlayer(sonos, "a", "Member A")
+    member_b = MockPlayer(sonos, "b", "Member B")
+    member_b_protocol = MockPlayer(
+        airplay, "b_airplay", "B AirPlay", player_type=PlayerType.PROTOCOL
+    )
+    member_b_protocol._attr_available = airplay_available
+    member_b.set_linked_output_protocols([_airplay_link(member_b_protocol.player_id)])
+
+    for player in (leader, member_a, member_b):
+        player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        player._cache.clear()
+
+    controller._players = {
+        p.player_id: p for p in (leader, leader_protocol, member_a, member_b, member_b_protocol)
+    }
+    mock_mass.players = controller
+
+
+def _airplay_link(protocol_id: str) -> OutputProtocol:
+    """Build an AirPlay link the way production does: without an `available` argument."""
+    return OutputProtocol(
+        output_protocol_id=protocol_id,
+        name="AirPlay",
+        protocol_domain="airplay",
+        priority=10,
+    )
+
+
 class TestAdHocLeadershipTransfer:
     """Unjoining an ad-hoc sync leader transfers leadership instead of dissolving."""
 
     def test_select_ad_hoc_leader_prefers_active_protocol(
-        self, controller: PlayerController
+        self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
         """The new leader should be a member that supports the group's active protocol."""
-        # leader is playing via an airplay protocol player
-        leader = MagicMock()
-        leader.active_output_protocol = "leader_airplay"
-        protocol_player = MagicMock()
-        protocol_player.provider.domain = "airplay"
-        # member_a can't do airplay, member_b can
-        member_a = MagicMock()
-        member_a.provider.domain = "sonos"
-        member_a.linked_output_protocols = []
-        member_b = MagicMock()
-        member_b.provider.domain = "airplay"
-        member_b.linked_output_protocols = []
-        controller._players = {"leader_airplay": protocol_player, "a": member_a, "b": member_b}
+        # member_a can't do airplay, member_b has an airplay protocol player that is up
+        _make_ad_hoc_group(controller, mock_mass, airplay_available=True)
 
+        leader = controller.get_player("leader")
+        assert leader is not None
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "b"
+
+    def test_select_ad_hoc_leader_skips_offline_protocol(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A member whose protocol player went offline must not inherit the session."""
+        # member_b still claims an airplay link, but its protocol player is gone
+        _make_ad_hoc_group(controller, mock_mass, airplay_available=False)
+
+        leader = controller.get_player("leader")
+        assert leader is not None
+        member_b = controller.get_player("b")
+        assert member_b is not None
+        assert member_b.linked_output_protocols[0].available is True
+
+        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
 
     def test_select_ad_hoc_leader_falls_back_to_first(self, controller: PlayerController) -> None:
         """Without an active protocol to match, fall back to the first remaining member."""
