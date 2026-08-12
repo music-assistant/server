@@ -2308,6 +2308,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 direction = SortDirection.ASC
 
             if sql_sort := self._get_sort_sql(field, direction):
+                sql_sort = sql_sort.replace(f"{self.db_table}.", "")
                 sql_query += f" ORDER BY {sql_sort}"
 
         return sql_query
