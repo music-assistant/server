@@ -1451,7 +1451,13 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             # which does NOT depend on this prefix).
             hardware_tag = short_hardware_tag(master_sink_name)
             card_name = normalize_card_name(alsa_card_name, hardware_tag, label)
-            for spec in compute_remap_topology(card_name, channel_map, channels):
+            # Untagged prefix for each sink's PA "description" — keeps the
+            # hash tag out of the human-facing name (it should only ever
+            # appear once, as the bracketed suffix _labeled_display_name()
+            # appends), while card_name above (tag included) stays the
+            # actual PA sink_name, which needs the tag for uniqueness.
+            display_prefix = normalize_card_name(alsa_card_name, None, label)
+            for spec in compute_remap_topology(card_name, channel_map, channels, display_prefix):
                 if spec.sink_name in existing_names:
                     continue
                 argument = build_remap_sink_argument(spec, master_sink_name)
