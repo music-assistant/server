@@ -84,17 +84,17 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.player_id = player_id
     player.display_name = player_id
     player.synced_to = None
+    player.state.active_group = None
     player.playback_state = PlaybackState.PLAYING
     player.volume_level = 30
     player.volume_set = AsyncMock()
     player.stream = stream
     player._lock = asyncio.Lock()
     player.logger = logging.getLogger("test.airplay.announce")
-    # the leader path wraps its orchestration in a mass-created task
     player.mass.create_task = MagicMock(
         side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
     )
-    player.provider._announce_tasks = {}
+    player.provider._announce_plans = {}
     player.provider.bridge_manager.get_bridge = MagicMock(return_value=None)
     renderer = player.mass.streams.announcement_renderer
     renderer.acquire = MagicMock(return_value=_make_render())
@@ -385,8 +385,14 @@ async def test_session_path_stops_a_parked_session_first() -> None:
 
 
 @pytest.mark.asyncio
-async def test_group_forwarded_member_calls_coalesce_onto_the_leader() -> None:
-    """The controller's group-forward arms every member exactly once, via the leader."""
+async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> None:
+    """
+    A group-entity fan-out arms each member once, at one shared instant.
+
+    The controller forwards a group-entity announcement per member; each call
+    arms only its OWN member, and all of them share one audible instant through
+    the provider's plan registry, so every room renders in sync.
+    """
     streams = [_make_stream(), _make_stream(), _make_stream()]
     members = _make_playing_group(*streams)
     leader, member_1, member_2 = members
@@ -394,9 +400,13 @@ async def test_group_forwarded_member_calls_coalesce_onto_the_leader() -> None:
     render = _make_render()
     for member in members:
         member.provider = provider
+        member.state.active_group = "syncgroup_1"
         if member is not leader:
             member.synced_to = leader.player_id
         member.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    # the second member reports a far larger span: the shared instant must
+    # clear it for every sibling arm
+    streams[1].latency_lead_ms = 2000
     announcement = _make_announcement()
 
     await asyncio.gather(
@@ -405,30 +415,47 @@ async def test_group_forwarded_member_calls_coalesce_onto_the_leader() -> None:
         announce.play_announcement(member_2, announcement, None),
     )
 
-    # one orchestration armed every member; the member calls awaited it
-    # instead of arming their own stream a second time
+    instants = set()
     for stream in streams:
         stream.announce.assert_awaited_once()
         stream.wait_announce_done.assert_awaited_once()
-    assert provider._announce_tasks == {}
-    for member in members:
-        member.mass.streams.announcement_renderer.release.assert_awaited_once()
+        instants.add(stream.announce.await_args.args[1])
+    assert len(instants) == 1
+    # the shared instant cleared the largest member span (2s + margin)
+    assert next(iter(instants)) >= int(time.time() * 1000) + 2000
 
 
 @pytest.mark.asyncio
-async def test_member_without_group_announcement_arms_itself() -> None:
-    """A direct announcement to one synced member still mixes on just that member."""
+async def test_group_entity_session_leader_announces_alone() -> None:
+    """
+    A group entity's session leader addressed individually announces alone.
+
+    The entity itself is the whole-group handle, so leading the underlying
+    session does not widen an individual announcement.
+    """
+    streams = [_make_stream(), _make_stream()]
+    members = _make_playing_group(*streams)
+    leader = members[0]
+    leader.state.active_group = "syncgroup_1"
+    members[1].synced_to = leader.player_id
+
+    await announce.play_announcement(leader, _make_announcement(), None)
+
+    streams[0].announce.assert_awaited_once()
+    streams[1].announce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_member_announced_directly_arms_itself() -> None:
+    """A direct announcement to one synced member mixes on just that member."""
     stream = _make_stream()
     members = _make_playing_group(stream)
     member = members[0]
     member.synced_to = "some_leader"
 
-    with patch.object(announce, "_LEADER_TASK_POLL_INTERVAL_S", 0):
-        await announce.play_announcement(member, _make_announcement(), None)
+    await announce.play_announcement(member, _make_announcement(), None)
 
     stream.announce.assert_awaited_once()
-    # a member's own run is never published for others to join
-    assert member.provider._announce_tasks == {}
 
 
 @pytest.mark.asyncio
@@ -447,10 +474,7 @@ async def test_synced_member_without_live_playback_is_refused() -> None:
     parked_session = parked_stream.session
     parked_session.stop = AsyncMock()
 
-    with (
-        patch.object(announce, "_LEADER_TASK_POLL_INTERVAL_S", 0),
-        pytest.raises(PlayerCommandFailed, match="without live playback"),
-    ):
+    with pytest.raises(PlayerCommandFailed, match="without live playback"):
         await announce.play_announcement(member, _make_announcement(), None)
 
     parked_session.stop.assert_not_awaited()

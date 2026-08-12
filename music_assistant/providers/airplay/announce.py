@@ -8,17 +8,18 @@ member of the live session at one shared audible instant and tracks the per-memb
 outcome. Whenever there is no live playback to mix into (idle or parked player), the
 announcement runs as a dedicated stream session instead, leaving the player idle.
 
-Targeting semantics: the leader of an (ad-hoc) sync group represents the whole
-group - announcing to it plays on every member, exactly like playing media to it
-does. A synced member addressed individually announces alone, over its own ducked
-copy of the group's music, while the other rooms play on untouched.
+Targeting semantics: a player addressed individually announces alone - over its own
+ducked copy of the group's music, while the other rooms play on untouched - whenever
+a group ENTITY exists as the whole-group handle (a syncgroup member, even the one
+leading the underlying session). Only an ad-hoc sync leader, which has no entity
+above it, represents its whole group, exactly like playing media to it does.
 
-A group announcement is forwarded by the player controller to every member
-concurrently; the session leader's call runs one orchestration for the whole session
-and the members' calls coalesce onto it (see the provider's announce-task registry).
+A group-entity announcement is forwarded by the player controller to every member
+concurrently; each call arms its own member and they share one audible instant via
+the provider's announce-plan registry, so every room renders the clip in sync.
 Members of a Sendspin GROUP of bridged players each compute their own instant, so a
 group announcement there can be offset by tens of ms across rooms; cross-player
-coalescing for that case is future work.
+plan sharing for that case is future work.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import tempfile
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -67,28 +68,18 @@ if TYPE_CHECKING:
 # releases a tracked entry that never fired).
 _VolumeSchedule = tuple["AirPlayPlayer", int, list[str]]
 
-# How a synced member's call looks for the leader task of a group announcement.
-# The controller forwards a group announcement to every member in one batch, so
-# the leader registers within a scheduler tick or two of the members' first
-# check - a couple of short polls cover that ordering. Kept tight on purpose:
-# only the timeout tells a group-forwarded member call apart from a DIRECT
-# announcement to that member, which pays the full poll as dead latency before
-# it arms.
-_LEADER_TASK_POLL_INTERVAL_S: Final[float] = 0.1
-_LEADER_TASK_POLL_ATTEMPTS: Final[int] = 3
-
 
 async def play_announcement(
     player: AirPlayPlayer, announcement: PlayerMedia, volume_level: int | None
 ) -> None:
     """
-    Play an announcement on the player (and the members it leads).
+    Play an announcement on the player (and, for an ad-hoc leader, its members).
 
     A live playing session mixes the clip over the music without interrupting
     it; an idle player plays the announcement as a dedicated stream session and
-    ends idle. A group announcement (forwarded per member by the controller) is
-    orchestrated once by the session leader's call; the members' calls coalesce
-    onto that shared run.
+    ends idle. A group-entity announcement is forwarded per member by the
+    controller; the members share one audible instant through the provider's
+    announce-plan registry so every room renders the clip in sync.
 
     :param player: The player the announcement targets.
     :param announcement: The announcement to play.
@@ -99,70 +90,12 @@ async def play_announcement(
         raise PlayerCommandFailed(
             f"Announcement for {player.display_name} carries no announcement data"
         )
-    provider = cast("AirPlayProvider", player.provider)
     renderer = player.mass.streams.announcement_renderer
     render = renderer.acquire(announce_data)
     try:
-        if player.synced_to:
-            if await _join_group_announcement(provider, player, render.key):
-                return
-            # no group announcement to coalesce onto: this is the deliberate
-            # announcement to just this member
-            await _run_announcement(player, announcement, render, volume_level)
-            return
-        # Leader/solo: publish the orchestration as a task so the concurrently
-        # forwarded member calls of a group announcement await it instead of
-        # arming their members a second time. Registered synchronously (no
-        # await between task creation and registration) so a member's lookup
-        # can never miss an in-flight run.
-        task = player.mass.create_task(
-            _run_announcement(player, announcement, render, volume_level)
-        )
-        provider._announce_tasks[player.player_id] = (render.key, task)
-        try:
-            await task
-        except asyncio.CancelledError:
-            # cancelling the caller must cancel the orchestration itself, so
-            # its cleanup (volume restore, clip files) runs
-            task.cancel()
-            raise
-        finally:
-            provider._announce_tasks.pop(player.player_id, None)
+        await _run_announcement(player, announcement, render, volume_level)
     finally:
         await renderer.release(render)
-
-
-async def _join_group_announcement(
-    provider: AirPlayProvider, player: AirPlayPlayer, render_key: str
-) -> bool:
-    """
-    Await the group announcement the player's sync leader runs, if there is one.
-
-    The leader's orchestration arms every member of the session - including
-    this player, and the announcement volume for all of them - so this call
-    only has to await that shared outcome (which also propagates its failure).
-
-    :param provider: The AirPlay provider holding the announce-task registry.
-    :param player: The synced member whose leader may run the announcement.
-    :param render_key: Identity of the announcement audio, to only ever join
-        the run of the SAME announcement.
-    :return: True when a matching group announcement was found and awaited;
-        False when none appeared (an announcement to just this member).
-    """
-    leader_id = player.synced_to
-    assert leader_id is not None  # only called for synced members
-    for attempt in range(_LEADER_TASK_POLL_ATTEMPTS):
-        entry = provider._announce_tasks.get(leader_id)
-        if entry is not None and entry[0] == render_key:
-            player.logger.debug(
-                "Announcement to %s coalesces onto the group announcement of its leader",
-                player.display_name,
-            )
-            await entry[1]
-            return True
-        if attempt < _LEADER_TASK_POLL_ATTEMPTS - 1:
-            await asyncio.sleep(_LEADER_TASK_POLL_INTERVAL_S)
-    return False
 
 
 async def _run_announcement(
@@ -244,7 +177,7 @@ async def _announce_over_live_session(
                     clip_files[clip_key] = await _render_clip_file(render, stream.pcm_format)
             # resolved only now: file rendering above must not eat into the
             # margin the shared instant carries
-            at_unix_ms = _shared_announce_instant(streams.values())
+            at_unix_ms = _resolve_announce_instant(player, members, render.key)
             delivered = await asyncio.gather(
                 *[
                     streams[member.player_id].announce(
@@ -475,11 +408,61 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
         if bridge is not None and bridge.owns_airplay_stream:
             return [player]
         return []
+    if player.state.active_group:
+        # A group ENTITY (e.g. a syncgroup) owns this session, and that entity
+        # is the whole-group announcement handle: this player addressed
+        # individually announces alone, even as the session's sync leader.
+        return [player]
+    # An ad-hoc leader has no entity above it, so it IS the group handle:
+    # announcing to it covers every member of its session.
     return [
         member
         for member in stream.session.sync_clients
         if member.stream is not None and member.stream.running and member.stream.connected
     ]
+
+
+def _resolve_announce_instant(
+    player: AirPlayPlayer, members: list[AirPlayPlayer], render_key: str
+) -> int:
+    """
+    Return the audible instant (unix ms) the announcement is armed for.
+
+    When the targets are only a part of a multi-member session (a group-entity
+    announcement is fanned out per member by the controller, each call arming
+    its own member), the instant is shared through the provider's plan
+    registry: the first call computes it from EVERY session member's span, the
+    concurrent sibling calls reuse it, and every room renders the clip in
+    sync. A call that arms its whole target set at once (ad-hoc leader, solo,
+    bridged) needs no plan.
+
+    :param player: The player this call targets.
+    :param members: The members this call arms.
+    :param render_key: Identity of the announcement audio; instants are only
+        ever shared between arms of the SAME announcement.
+    """
+    session = player.stream.session if player.stream else None
+    session_members = session.sync_clients if session else members
+    if len(members) >= len(session_members):
+        return _shared_announce_instant(
+            member.stream for member in members if member.stream is not None
+        )
+    provider = cast("AirPlayProvider", player.provider)
+    plans = provider._announce_plans
+    now_ms = int(time.time() * 1000)
+    # prune settled plans so the registry cannot grow with announcement history
+    for key in [key for key, at_ms in plans.items() if at_ms <= now_ms]:
+        del plans[key]
+    plan_key = (player.state.active_group or player.synced_to or player.player_id, render_key)
+    if (at_unix_ms := plans.get(plan_key)) is not None:
+        return at_unix_ms
+    # the instant must clear EVERY session member's span: the sibling calls of
+    # a group fan-out reuse it for their own members
+    at_unix_ms = _shared_announce_instant(
+        member.stream for member in session_members if member.stream is not None
+    )
+    plans[plan_key] = at_unix_ms
+    return at_unix_ms
 
 
 def _shared_announce_instant(streams: Iterable[AirPlayStream]) -> int:
