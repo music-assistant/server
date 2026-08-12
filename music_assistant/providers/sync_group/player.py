@@ -896,6 +896,18 @@ class SyncGroupPlayer(Player):
                 result.append(pid)
         return result
 
+    def _member_playback_domains(self, player: Player) -> set[str]:
+        """
+        Return the protocol domains a player can be reached on right now.
+
+        Only outputs that are available at this moment count, so a protocol whose
+        player went offline is left out. A wrapper player (UniversalPlayer)
+        contributes its linked protocols but never its own domain.
+
+        :param player: The player to inspect.
+        """
+        return {output.protocol_domain for output in player.output_protocols if output.available}
+
     def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
         """
         Check if a player supports the given protocol domain.
@@ -903,21 +915,14 @@ class SyncGroupPlayer(Player):
         :param player: The player to check.
         :param domain: The protocol domain string (e.g. "airplay", "sonos").
         """
-        if player.provider.domain == domain:
-            return True
-        for protocol in player.linked_output_protocols:
-            if protocol.protocol_domain == domain and protocol.available:
-                return True
-        return False
+        return domain in self._member_playback_domains(player)
 
     def _all_members_can_play_on_domain(self, domain: str) -> bool:
         """
         Return True if every current member has a playback path on the given domain.
 
-        A playback path is a member's own native playback or one of its
-        available linked output protocols. Members that are unavailable or
-        expose no playback path at all are ignored, so they never hold the
-        group on a protocol.
+        Members that are unavailable or expose no playback path at all are
+        ignored, so they never hold the group on a protocol.
 
         :param domain: The playback path domain to check (e.g. "airplay", "sonos").
         """
@@ -925,16 +930,7 @@ class SyncGroupPlayer(Player):
             member = self.mass.players.get_player(member_id)
             if member is None or not member.state.available:
                 continue
-            # Collect the set of available playback path domains for this member.
-            # UniversalPlayer wrappers have no native path of their own: their
-            # ``provider.domain`` is ``universal_player``, which is never a
-            # domain the group can play on.
-            paths: set[str] = set()
-            if member.is_native_player:
-                paths.add(member.provider.domain)
-            for protocol in member.linked_output_protocols:
-                if protocol.available:
-                    paths.add(protocol.protocol_domain)
+            paths = self._member_playback_domains(member)
             if paths and domain not in paths:
                 return False
         return True
