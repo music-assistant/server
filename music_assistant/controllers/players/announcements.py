@@ -229,23 +229,32 @@ class AnnouncementsMixin:
             # determine if the player has native announcements support
             # or if any linked protocol has announcement support
             announce_player: Player | None
-            if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
-                # The player's own native support always wins over a linked
-                # protocol: e.g. a Sonos overlays the clip on whatever source
-                # is playing (audioClip), which beats interrupting that
-                # playback by routing the announcement to its AirPlay child.
+            if announce_player := self._get_control_target(
+                player,
+                required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
+                require_active=True,
+            ):
+                # The output that is ACTIVELY rendering can announce: the
+                # announcement rides the same audio path as the music (e.g. a
+                # Sonos playing through its AirPlay child gets the clip mixed
+                # into that live stream, in sync with the rest of the group)
+                # instead of a second mechanism firing beside the playback.
+                pass
+            elif PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+                # Not playing through an announce-capable output: the player's
+                # own native support (e.g. Sonos audioClip, which overlays the
+                # clip on whatever source is playing) is the next-best path.
                 announce_player = player
-            else:
+            elif player.state.playback_state != PlaybackState.PLAYING:
+                # An idle player may announce through any linked protocol. A
+                # PLAYING player deliberately gets no such fallback: routing to
+                # an idle linked protocol (e.g. the AirPlay child of a WiiM
+                # playing natively) would seize the device from the active
+                # output, with nothing restoring that playback afterwards.
                 announce_player = self._get_control_target(
                     player,
                     required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
-                    # A playing player only announces natively through the
-                    # output that is actually rendering: routing to an idle
-                    # linked protocol (e.g. the AirPlay child of a WiiM playing
-                    # natively) would seize the device from the active output,
-                    # with nothing restoring that playback afterwards. An idle
-                    # player may announce through any linked protocol.
-                    require_active=player.state.playback_state == PlaybackState.PLAYING,
+                    require_active=False,
                 )
             native_announce_support = announce_player is not None
             if announce_player is None:

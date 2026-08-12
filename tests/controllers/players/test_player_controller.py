@@ -3202,22 +3202,58 @@ class TestNativeAnnouncementRouting:
         native_path.assert_awaited_once()
         assert native_path.call_args.args[1] is proto
 
-    async def test_own_native_support_beats_the_active_protocol_child(
+    async def test_active_protocol_child_beats_own_native_support(
         self, mock_mass: MagicMock
     ) -> None:
         """
-        A player's own announcement support wins over its rendering protocol child.
+        The output that is actively rendering wins over the player's own support.
 
-        E.g. a Sonos playing through its AirPlay child: its native announcement
-        overlays the clip on whatever source plays, which beats interrupting
-        the child's stream.
+        E.g. a Sonos playing through its AirPlay child: the announcement rides
+        the same audio path as the music (mixed into the live stream, in sync
+        with the rest of a group) instead of a second mechanism firing beside
+        the playback.
         """
-        controller, player, _proto, native_path, _generic_path = (
+        controller, _player, proto, native_path, _generic_path = (
             self._make_player_with_linked_child(
                 mock_mass,
                 PlaybackState.PLAYING,
                 parent_supports_announce=True,
                 active_protocol="proto_1",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+
+    async def test_own_native_support_wins_when_playing_natively(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player rendering through its own native output announces natively."""
+        controller, player, _proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.PLAYING,
+                parent_supports_announce=True,
+                active_protocol="native",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is player
+
+    async def test_idle_player_prefers_its_own_support_over_a_linked_child(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Without active playback the player's own announcement support wins."""
+        controller, player, _proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.IDLE,
+                parent_supports_announce=True,
             )
         )
 
