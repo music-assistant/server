@@ -35,6 +35,7 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
+from music_assistant.providers.airplay.provider import AirPlayProvider
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -879,6 +880,33 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     # sync leader: still advertises PAUSE
     airplay_player._attr_group_members = ["test_player", "child"]
     assert PlayerFeature.PAUSE in airplay_player.supported_features
+
+
+def test_bridged_player_advertises_announcements_only_while_streaming(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A Sendspin-bridged player advertises PLAY_ANNOUNCEMENT only while streaming.
+
+    The bridge's live stream is a regular AirPlayStream the clip mixes into, so
+    the feature stays available then. An idle bridged player must not advertise
+    it - a dedicated announcement session would fight the bridge for the
+    device, so those announcements keep their existing routing.
+    """
+    bridge_manager = cast("AirPlayProvider", airplay_player.provider).bridge_manager
+    with patch.object(bridge_manager, "get_bridge", return_value=None):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    streaming_bridge = MagicMock(owns_airplay_stream=True)
+    with patch.object(bridge_manager, "get_bridge", return_value=streaming_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    idle_bridge = MagicMock(owns_airplay_stream=False)
+    with patch.object(bridge_manager, "get_bridge", return_value=idle_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+        # ... but a configured-yet-idle bridge never hides the feature while the
+        # player runs its own session-backed stream (playing over AirPlay itself)
+        airplay_player.stream = MagicMock(running=True, session=MagicMock())
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+        airplay_player.stream = None
 
 
 @pytest.mark.asyncio
