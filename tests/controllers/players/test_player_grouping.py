@@ -542,6 +542,43 @@ class TestAdHocLeadershipTransfer:
 
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
 
+    def test_select_ad_hoc_leader_accepts_native_member_on_active_domain(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A member that plays the active protocol natively is still a valid leader."""
+        # a Chromecast speaker has no linked protocol player: it *is* the chromecast output
+        chromecast = MockProvider("chromecast", instance_id="chromecast", mass=mock_mass)
+        sonos = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        leader = MockPlayer(sonos, "leader", "Leader")
+        leader_protocol = MockPlayer(
+            chromecast, "leader_cast", "Leader Cast", player_type=PlayerType.PROTOCOL
+        )
+        leader.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id=leader_protocol.player_id,
+                    name="Chromecast",
+                    protocol_domain="chromecast",
+                    priority=30,
+                )
+            ]
+        )
+        leader.set_active_output_protocol(leader_protocol.player_id)
+
+        member_a = MockPlayer(sonos, "a", "Member A")
+        member_c = MockPlayer(chromecast, "c", "Member C")
+        for player in (leader, member_a, member_c):
+            player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+            player._cache.clear()
+
+        controller._players = {
+            p.player_id: p for p in (leader, leader_protocol, member_a, member_c)
+        }
+        mock_mass.players = controller
+
+        assert controller._select_ad_hoc_leader(leader, ["a", "c"]) == "c"
+
     def test_select_ad_hoc_leader_falls_back_to_first(self, controller: PlayerController) -> None:
         """Without an active protocol to match, fall back to the first remaining member."""
         leader = MagicMock()

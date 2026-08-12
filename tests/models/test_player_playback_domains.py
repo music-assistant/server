@@ -44,11 +44,13 @@ def _link_protocol(
     protocol_id: str,
     domain: str,
     available: bool,
+    needs_setup: bool = False,
 ) -> MockPlayer:
     """Link a protocol player of the given domain to the parent and register it."""
     provider = MockProvider(domain, instance_id=domain, mass=mock_mass)
     protocol_player = MockPlayer(provider, protocol_id, domain, player_type=PlayerType.PROTOCOL)
     protocol_player._attr_available = available
+    protocol_player._attr_needs_setup = needs_setup
     protocol_player._cache.clear()
     parent.set_linked_output_protocols(
         [
@@ -105,6 +107,12 @@ class TestPlaybackDomains:
         assert player.linked_output_protocols[0].available is True
         assert player.playback_domains == {"sonos"}
 
+    def test_linked_protocol_needing_setup_is_left_out(self, mock_mass: MagicMock) -> None:
+        """Test that an unpaired protocol receiver cannot accept a stream."""
+        player = _make_native_player(mock_mass)
+        _link_protocol(mock_mass, player, "ap_1", "airplay", available=True, needs_setup=True)
+        assert player.playback_domains == {"sonos"}
+
     def test_unregistered_linked_protocol_is_left_out(self, mock_mass: MagicMock) -> None:
         """Test that a linked protocol without a live player is not reported."""
         player = _make_native_player(mock_mass)
@@ -121,6 +129,18 @@ class TestPlaybackDomains:
         player._cache.clear()
         _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
         assert player.playback_domains == {"airplay"}
+
+    def test_protocol_endpoint_reports_own_domain(self, mock_mass: MagicMock) -> None:
+        """Test that a player that is itself a protocol endpoint reports its domain."""
+        provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        player = MockPlayer(provider, "ap_1", "AirPlay", player_type=PlayerType.PROTOCOL)
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        player._cache.clear()
+        assert player.playback_domains == {"airplay"}
+
+        player._attr_available = False
+        player._cache.clear()
+        assert player.playback_domains == set()
 
     def test_recomputed_after_state_update(self, mock_mass: MagicMock) -> None:
         """Test that the cached value follows the protocol player going offline."""
