@@ -132,10 +132,9 @@ async def test_pairing_output_demotes_duplicate_warnings(
 
     async def stderr_lines() -> AsyncIterator[str]:
         for line in (
-            "WARN libmdns: No route to host",
-            "WARN libmdns: No route to host",
-            "ERROR discovery interrupted",
-            "ERROR discovery interrupted",
+            "[2026-08-12T00:30:01Z WARN  libmdns] No route to host",
+            "[2026-08-12T00:30:02Z WARN  libmdns] No route to host",
+            "[2026-08-12T00:30:03Z WARN  libmdns] Interface unavailable",
         ):
             yield line
 
@@ -150,13 +149,11 @@ async def test_pairing_output_demotes_duplicate_warnings(
         logging.WARNING,
         logging.DEBUG,
         logging.WARNING,
-        logging.DEBUG,
     ]
     assert [record.getMessage() for record in records] == [
-        "[librespot-pairing] WARN libmdns: No route to host",
-        "[librespot-pairing] WARN libmdns: No route to host",
-        "[librespot-pairing] ERROR discovery interrupted",
-        "[librespot-pairing] ERROR discovery interrupted",
+        "[librespot-pairing] [2026-08-12T00:30:01Z WARN  libmdns] No route to host",
+        "[librespot-pairing] [2026-08-12T00:30:02Z WARN  libmdns] No route to host",
+        "[librespot-pairing] [2026-08-12T00:30:03Z WARN  libmdns] Interface unavailable",
     ]
 
 
