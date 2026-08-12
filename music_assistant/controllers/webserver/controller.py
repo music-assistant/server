@@ -25,9 +25,17 @@ from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
@@ -54,7 +62,11 @@ from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
 )
-from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    get_ip_addresses,
+    get_publish_ip_candidates,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -92,14 +104,14 @@ CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
 
 def _get_publish_addresses(
-    bind_ip: str | None, publish_ip: str, all_ip_addresses: tuple[str, ...]
+    bind_ip: str | None, publish_ip: str, publish_candidates: tuple[str, ...]
 ) -> list[str]:
     """
     Return the IP addresses the webserver should publish/advertise.
 
     :param bind_ip: The configured bind IP (None or a wildcard means all interfaces).
     :param publish_ip: The resolved primary publish IP.
-    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    :param publish_candidates: Host addresses reachable from the local network, ranked.
     """
     addresses = [publish_ip]
     if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
@@ -107,7 +119,7 @@ def _get_publish_addresses(
     # bound to all interfaces: also publish the primary address of the other
     # IP family (if any) so both IPv4-only and IPv6-only clients can connect
     publish_is_ipv6 = ":" in publish_ip
-    for ip in all_ip_addresses:
+    for ip in publish_candidates:
         if (":" in ip) != publish_is_ipv6:
             addresses.append(ip)
             break
@@ -158,6 +170,10 @@ class WebserverController(CoreController):
         self.clients: set[WebsocketClientHandler] = set()
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
+        # whether SSL is switched on in the config, resolved at setup
+        self._ssl_configured: bool = False
+        # whether the webserver actually serves TLS, resolved at setup
+        self._ssl_active: bool = False
         self.bind_ip: str | None = None
         self.publish_addresses: list[str] = []
         self.manifest.name = "Web Server (frontend and api)"
@@ -188,7 +204,7 @@ class WebserverController(CoreController):
         # IP need not exist on this host at all (e.g. a container or NAT setup), so derive
         # the address from what the webserver actually binds to
         connect_ip = _get_internal_connect_ip(self.bind_ip, self.publish_ip)
-        protocol = "https" if self.config.get_value(CONF_ENABLE_SSL, False) else "http"
+        protocol = "https" if self._ssl_active else "http"
         return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
 
     @property
@@ -205,8 +221,10 @@ class WebserverController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         return await self._build_config_entries()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot action button press and re-render the config entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot action button press and report its outcome."""
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
             # before verifying - the action no longer receives the (unsaved) form values
@@ -214,7 +232,15 @@ class WebserverController(CoreController):
                 str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
                 str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
             )
-            return await self._build_config_entries(format_certificate_info(cert_info))
+            if not cert_info.is_valid:
+                # a result only ever reports success, so an unusable certificate must raise
+                raise InvalidDataError(
+                    f"Certificate verification failed: {cert_info.error_message}",
+                    translation_key="ssl_verification_failed",
+                    translation_args=[cert_info.error_message or ""],
+                    translation_owner=self.translation_owner,
+                )
+            return ConfigActionResult(message=format_certificate_info(cert_info))
         return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
@@ -282,13 +308,13 @@ class WebserverController(CoreController):
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
-        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
-        default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
-            # on the internal ("172.30.32.) IP for the HA ingress proxy
+            # on the internal ("172.30.32.") IP for the HA ingress proxy - that address
+            # lives on a docker bridge, so it needs the unfiltered adapter list
+            all_ip_addresses = await get_ip_addresses(include_ipv6=True)
             ingress_host = next(
-                (x for x in all_ip_addresses if x.startswith("172.30.32.")), default_publish_ip
+                (x for x in all_ip_addresses if x.startswith("172.30.32.")), all_ip_addresses[0]
             )
             ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
@@ -297,32 +323,25 @@ class WebserverController(CoreController):
         assert isinstance(port_value, int)
         self.publish_port = port_value
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
-        self.bind_ip = bind_ip
-        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
-            self.publish_ip = bind_ip
-        else:
-            self.publish_ip = default_publish_ip
-        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
-        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
-        # resolve the URL that the "auto" base_url default (or an unset value) translates to
-        protocol = "https" if ssl_enabled else "http"
-        self._auto_base_url = (
-            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
-        )
-
         # Create SSL context if SSL is enabled
         ssl_context = None
-        if ssl_enabled:
+        self._ssl_configured = bool(config.get_value(CONF_ENABLE_SSL, False))
+        if self._ssl_configured:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
                 str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
                 logger=self.logger,
             )
+        # a missing or invalid certificate falls back to plain HTTP, so every URL we hand
+        # out must follow the context that was actually created, not the configured value
+        self._ssl_active = ssl_context is not None
+        protocol = "https" if self._ssl_active else "http"
+        publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
+        self._resolve_publish_state(bind_ip, publish_candidates, protocol)
 
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,
-            base_url=self._auto_base_url,
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
@@ -331,10 +350,10 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        # adopt the port the server actually bound to: a configured port of 0 is only
-        # resolved by the OS at bind time
+        # adopt what the server actually bound to: a configured port of 0 is only resolved
+        # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
-        self._auto_base_url = self._server.base_url
+        self._resolve_publish_state(self._server.bind_ip, publish_candidates, protocol)
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
@@ -412,24 +431,28 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
-    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+    def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
         """
-        Set the sendspin player_id on websocket clients for a specific user.
+        Set the sendspin player_id on the websocket clients holding the given token.
 
         This is called by the sendspin proxy when a client connects, allowing
-        the player controller to auto-whitelist the player for that user's session.
+        the player controller to auto-whitelist the player for that session.
+        Party guests all share one guest account, so the token (one per guest
+        device) decides which sessions (all tabs of that browser) a web player
+        belongs to, not the user.
 
-        :param user_id: The user ID to set the sendspin player for.
+        :param token: The access token the sendspin proxy authenticated with.
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._authenticated_user and client._authenticated_user.user_id == user_id:
-                client._sendspin_player_id = player_id
-                self.logger.debug(
-                    "Set sendspin player %s for websocket client of user %s",
-                    player_id,
-                    client._authenticated_user.username,
-                )
+            if client._current_token != token:
+                continue
+            client._sendspin_player_id = player_id
+            self.logger.debug(
+                "Set sendspin player %s for websocket client of user %s",
+                player_id,
+                client._authenticated_user.username if client._authenticated_user else "unknown",
+            )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
         """
@@ -474,8 +497,32 @@ class WebserverController(CoreController):
                 await resp.write(chunk)
         return resp
 
-    async def _build_config_entries(self, ssl_verify_result: str = "") -> tuple[ConfigEntry, ...]:
-        """Build this module's config entries, optionally carrying an SSL verify result."""
+    def _resolve_publish_state(
+        self, bind_ip: str | None, publish_candidates: tuple[str, ...], protocol: str
+    ) -> None:
+        """
+        Resolve the addresses and base URL to advertise for the given bind address.
+
+        Reads ``self.publish_port``, so set that first.
+
+        :param bind_ip: Address the webserver binds to (None or a wildcard means all interfaces).
+        :param publish_candidates: Host addresses reachable from the local network, ranked.
+        :param protocol: URL scheme the webserver serves.
+        """
+        self.bind_ip = bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = publish_candidates[0]
+        self.publish_addresses = _get_publish_addresses(
+            bind_ip, self.publish_ip, publish_candidates
+        )
+        self._auto_base_url = (
+            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+        )
+
+    async def _build_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Build this module's config entries."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
@@ -497,12 +544,23 @@ class WebserverController(CoreController):
                 default_value=DEFAULT_SERVER_PORT,
                 requires_reload=True,
             ),
+            # the two alerts are mutually exclusive: the generic one while SSL is switched off,
+            # and the SSL specific one when a certificate failed to load and left the webserver
+            # on plain HTTP
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
                 required=False,
+                hidden=self._ssl_configured,
                 depends_on=CONF_ENABLE_SSL,
                 depends_on_value=False,
+            ),
+            ConfigEntry(
+                key="ssl_inactive_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not self._ssl_configured or self._ssl_active,
+                depends_on=CONF_ENABLE_SSL,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
@@ -528,14 +586,6 @@ class WebserverController(CoreController):
                 key=CONF_ACTION_VERIFY_SSL,
                 type=ConfigEntryType.ACTION,
                 action=CONF_ACTION_VERIFY_SSL,
-                depends_on=CONF_ENABLE_SSL,
-                required=False,
-            ),
-            ConfigEntry(
-                key="ssl_verify_result",
-                type=ConfigEntryType.LABEL,
-                label=ssl_verify_result,
-                hidden=not ssl_verify_result,
                 depends_on=CONF_ENABLE_SSL,
                 required=False,
             ),
@@ -646,7 +696,7 @@ class WebserverController(CoreController):
             return self._localized_json_response(result, locale)
         except InsufficientPermissions as e:
             return web.Response(status=403, text=str(e))
-        except InvalidDataError as e:
+        except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace

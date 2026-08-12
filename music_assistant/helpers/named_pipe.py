@@ -6,12 +6,21 @@ import asyncio
 import errno as errno_module
 import logging
 import os
+import select
+import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
 
 _LOGGER = logging.getLogger("named_pipe")
+
+# How long a write waits on a full pipe buffer that the reader never drains.
+WRITE_STALL_TIMEOUT = 2.0
+# Upper bound for a single write, so a barely-moving reader cannot park it for minutes.
+WRITE_TOTAL_TIMEOUT = 30.0
+# Length of one wait slice, which caps how long a reader that left goes unnoticed.
+WRITE_POLL_INTERVAL_MS = 250
 
 
 class AsyncNamedPipeWriter:
@@ -87,12 +96,43 @@ class AsyncNamedPipeWriter:
                     len(data),
                 )
                 return False
+            # hold on to the descriptor a concurrent remove() may swap out from under us
+            write_fd = self._write_fd
+            if write_fd is None:
+                return False
             data_view = memoryview(data)
             total_bytes_written = 0
+            give_up_at = time.monotonic() + WRITE_TOTAL_TIMEOUT
+            stall_ends_at: float | None = None
             try:
-                assert self._write_fd is not None
                 while total_bytes_written < len(data_view):
-                    bytes_written = os.write(self._write_fd, data_view[total_bytes_written:])
+                    # a cancelled write releases the lock but keeps this thread going,
+                    # so stop once remove() has taken the descriptor
+                    if self._write_fd != write_fd:
+                        return False
+                    try:
+                        bytes_written = os.write(write_fd, data_view[total_bytes_written:])
+                    except BlockingIOError:
+                        # A full buffer means the reader is behind, not gone, so wait for it
+                        # to drain and try again. Only the write itself tells the two apart:
+                        # a full pipe whose reader left is not reported as broken everywhere,
+                        # so the wait is sliced rather than trusted to end on its own.
+                        now = time.monotonic()
+                        if stall_ends_at is None:
+                            stall_ends_at = now + WRITE_STALL_TIMEOUT
+                        if now < stall_ends_at and now < give_up_at:
+                            self._wait_writable(write_fd)
+                            continue
+                        _LOGGER.debug(
+                            "Named pipe write stalled on %s "
+                            "(owner=%s, %d of %d bytes written): reader is not draining",
+                            self._pipe_path,
+                            self._log_owner,
+                            total_bytes_written,
+                            len(data),
+                        )
+                        return False
+                    stall_ends_at = None
                     if bytes_written == 0:
                         _LOGGER.debug(
                             "Named pipe write made no progress on %s "
@@ -107,10 +147,11 @@ class AsyncNamedPipeWriter:
                 return True
             except OSError as e:
                 if e.errno == errno_module.EPIPE:
-                    # Reader closed, reset fd for next attempt
-                    if self._write_fd is not None:
+                    # Reader closed, reset fd for next attempt. A concurrent remove()
+                    # may already have replaced it, and then owns it instead.
+                    if self._write_fd == write_fd:
                         with suppress(Exception):
-                            os.close(self._write_fd)
+                            os.close(write_fd)
                         self._write_fd = None
                     _LOGGER.debug(
                         "Named pipe write failed (EPIPE) on %s "
@@ -148,6 +189,17 @@ class AsyncNamedPipeWriter:
     def _log_owner(self) -> str:
         """Return a short descriptor for logging (owner_id or pipe path)."""
         return self._owner_id or self._pipe_path
+
+    def _wait_writable(self, write_fd: int) -> None:
+        """
+        Wait a short while for the pipe to accept data again.
+
+        :param write_fd: Descriptor of the pipe's write end.
+        """
+        # poll() rather than select(), which rejects a descriptor of 1024 or above
+        poller = select.poll()
+        poller.register(write_fd, select.POLLOUT)
+        poller.poll(WRITE_POLL_INTERVAL_MS)
 
     def _ensure_write_fd(self) -> bool:
         """Open the write end while a reader is attached. Returns True if successful."""

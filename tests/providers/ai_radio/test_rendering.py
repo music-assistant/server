@@ -11,10 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
     ATTR_MAX_CHARS,
@@ -306,6 +311,57 @@ async def test_probe_failure_is_not_fatal() -> None:
     assert streamdetails.duration is None
 
 
+class RealProbeRenderer(DummyRenderer):
+    """Harness that exercises the mixin's real duration probe instead of the stub."""
+
+    _probe_duration = AIRadioRenderMixin._probe_duration
+
+
+def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRenderer:
+    """Build a renderer whose duration probe fails with the given ffprobe message."""
+
+    async def _raise(*_args: Any, **_kwargs: Any) -> AudioTags:
+        raise InvalidDataError(message)
+
+    monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.async_parse_tags", _raise)
+    renderer = RealProbeRenderer()
+    renderer._sessions = {"sess": SessionState(session_id="sess", station_id="st")}
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    return renderer
+
+
+async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine that hands out a URL it cannot render fails the clip, not the playback."""
+    renderer = _failing_probe(
+        "Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 "
+        "(Server returned 5XX Server Error reply)",
+        monkeypatch,
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    session = renderer._sessions["sess"]
+    assert session.skipped_sections == 1
+    assert "enough credit" in session.last_render_error
+
+
+async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A probe that only fails to measure the audio leaves the clip playable."""
+    renderer = _failing_probe(
+        "Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 "
+        "(Invalid or unsupported media file)",
+        monkeypatch,
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.duration is None
+    assert renderer._sessions["sess"].skipped_sections == 0
+
+
 async def test_render_tts_media_streams_a_url_over_http() -> None:
     """A TTS engine returning a proxy URL yields an HTTP stream with the MP3 default format."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
@@ -351,6 +407,40 @@ async def test_render_tts_media_rejects_an_unplayable_path(path: str) -> None:
 
     with pytest.raises(InvalidDataError, match="unusable stream path"):
         await renderer._render_tts_media("hello world")
+
+
+async def test_render_tts_media_gives_up_on_a_stalled_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled TTS engine fails the clip instead of pinning the render path."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.rendering.TTS_QUERY_TIMEOUT_SECONDS", 0.01
+    )
+
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        await asyncio.sleep(5)
+        return SimpleNamespace(
+            path="http://example.test/late.mp3",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+        )
+
+    renderer = _tts_renderer("http://example.test/late.mp3")
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(side_effect=_answers_too_late)
+
+    with pytest.raises(MusicAssistantError, match="did not respond within"):
+        await renderer._render_tts_media("hello world")
+
+
+async def test_render_tts_media_reports_an_engine_side_timeout_as_is() -> None:
+    """A timeout raised by the TTS engine itself is not reported as our own cap."""
+    renderer = _tts_renderer("http://example.test/late.mp3")
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(side_effect=TimeoutError)
+
+    with pytest.raises(TimeoutError) as error:
+        await renderer._render_tts_media("hello world")
+    assert "did not respond within" not in str(error.value)
 
 
 async def test_local_file_clip_yields_local_file_streamdetails(tmp_path: Path) -> None:

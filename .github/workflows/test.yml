@@ -134,7 +134,6 @@ jobs:
 
     steps:
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
-      # libchromaprint1 is a direct dependency of acoustid_lookup, which imports it.
       - name: Cache apt packages
         uses: actions/cache@v6
         with:
@@ -142,12 +141,14 @@ jobs:
           key: apt-ffmpeg-${{ runner.os }}-trixie
       # git must be present before checkout, or it degrades to a REST tarball download;
       # build-essential + libssl-dev are needed to build aiolibdatachannel from its git
-      # source; curl + gpg are needed by the codecov action
+      # source; curl + gpg are needed by the codecov action; libportaudio2 is needed by
+      # the local audio tests on the sounddevice backend, which skip rather than fail
+      # without it
       - name: Install ffmpeg and build tools
         run: |
           # Restore cached .deb files to apt cache (if any)
           cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          apt-get update && apt-get install -y ffmpeg libchromaprint1 git build-essential libssl-dev curl gpg
+          apt-get update && apt-get install -y ffmpeg libportaudio2 git build-essential libssl-dev curl gpg
           # Save .deb files for next run
           mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
       - name: Check out code from GitHub
@@ -168,7 +169,12 @@ jobs:
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
-        # `-o addopts=` clears the default "--cov music_assistant" so the scope applies.
+        # --dist loadfile keeps each test file on one xdist worker: snapshot updates
+        # never race on an .ambr file and module-scoped fixtures are reused.
+        # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
+        # crash leaves the controller blocked on its event queue forever, so the job only
+        # ends at its 30m cap with no summary. Shutting down instead fails in seconds and
+        # names the crashing test; a crashed worker invalidates the run either way.
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
@@ -198,7 +204,7 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7

@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import pathlib
+import tempfile
 import threading
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
@@ -18,7 +20,44 @@ from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports, utf8_safe
+
+NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """
+    Give this test process its own numba kernel cache.
+
+    librosa compiles its numba kernels with ``cache=True`` into a directory shared by
+    every process on the machine. numba updates that cache's index non-atomically, so
+    xdist workers filling a cold cache can leave an entry pointing at another
+    signature's machine code — calling it then segfaults the worker.
+    See https://github.com/numba/numba/issues/10128.
+    """
+    cache_dir = tempfile.TemporaryDirectory(prefix="ma-numba-cache-")
+    config.stash[NUMBA_CACHE_DIR] = cache_dir
+    # numba reads this once, when it is imported; nothing here imports it that early.
+    os.environ["NUMBA_CACHE_DIR"] = cache_dir.name
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Drop this test process's numba kernel cache."""
+    if (cache_dir := config.stash.get(NUMBA_CACHE_DIR, None)) is not None:
+        cache_dir.cleanup()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_report_to_serializable() -> Generator[None, object, object]:
+    """
+    Make serialized test reports strict-UTF-8 safe for pytest-xdist.
+
+    Lone surrogates in a captured report (e.g. undecodable filesystem paths) kill
+    the execnet worker channel. Covers test reports only; other xdist payloads
+    (warnings, log-start nodeids) are serialized outside this hook.
+    """
+    data = yield
+    return utf8_safe(data)
 
 
 @pytest.fixture(autouse=True)

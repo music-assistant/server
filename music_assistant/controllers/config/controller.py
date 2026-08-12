@@ -7,6 +7,7 @@ import base64
 import contextlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -68,7 +69,10 @@ class ConfigController(
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
+        self._save_requested = 0
+        self._save_written = 0
         self._save_lock = asyncio.Lock()
+        self._disk_lock = threading.Lock()
 
     async def setup(self) -> None:
         """Async initialize of controller."""
@@ -127,10 +131,13 @@ class ConfigController(
 
     async def close(self) -> None:
         """Handle logic on server stop."""
-        if not self._timer_handle:
-            # no point in forcing a save when there are no changes pending
-            return
-        await self._async_save()
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+        if self._save_written != self._save_requested:
+            # the latest change never made it to disk: its save is either still waiting
+            # out the debounce delay or was cancelled on stop, so write it here
+            await self._async_save()
         LOGGER.debug("Stopped.")
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -200,13 +207,12 @@ class ConfigController(
             self._timer_handle.cancel()
             self._timer_handle = None
 
+        self._save_requested += 1
         if immediate:
-            self.mass.loop.create_task(self._async_save())
+            self.mass.create_task(self._async_save)
         else:
             # schedule the save for later
-            self._timer_handle = self.mass.loop.call_later(
-                DEFAULT_SAVE_DELAY, self.mass.create_task, self._async_save
-            )
+            self._timer_handle = self.mass.loop.call_later(DEFAULT_SAVE_DELAY, self._start_save)
 
     def encrypt_string(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
@@ -294,33 +300,47 @@ class ConfigController(
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
+    def _start_save(self) -> None:
+        """Start the save task, called by the save timer."""
+        self._timer_handle = None
+        self.mass.create_task(self._async_save)
+
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
         async with self._save_lock:
+            # remember which change we are about to write: anything requested after this
+            # point is not part of it, and must leave the settings marked as unsaved
+            requested = self._save_requested
             json_data = await async_json_dumps(self._data, indent=True)
             await asyncio.to_thread(self._save_to_disk, json_data)
+            self._save_written = requested
         LOGGER.debug("Saved data to persistent storage")
 
     def _save_to_disk(self, json_data: str) -> None:
         """Atomically write the settings file to disk, rotating the previous one to backup."""
-        filename = Path(self.filename)
-        filename_temp = Path(f"{self.filename}.tmp")
-        with filename_temp.open("w", encoding="utf-8") as _file:
-            _file.write(json_data)
-            _file.flush()
-            # fsync so a power failure can not leave a zero-length file behind (#5716)
-            os.fsync(_file.fileno())
-        with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
-            # only rotate a parseable file to the backup, so a corrupt
-            # (crash leftover) file can never clobber a possibly good backup
-            json_loads(filename.read_bytes())
-            filename.replace(f"{self.filename}.backup")
-        filename_temp.replace(filename)
-        # best effort: fsync the directory as well so the renames themselves
-        # survive a power failure (not supported on all platforms/filesystems)
-        with contextlib.suppress(OSError):
-            dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+        # cancelling a save does not stop the worker thread it already handed the write
+        # to, so _save_lock is released while this is still running. guard the file
+        # itself here, in the thread that actually writes it, or a second writer would
+        # race this one over the same temp file and leave no settings at all
+        with self._disk_lock:
+            filename = Path(self.filename)
+            filename_temp = Path(f"{self.filename}.tmp")
+            with filename_temp.open("w", encoding="utf-8") as _file:
+                _file.write(json_data)
+                _file.flush()
+                # fsync so a power failure can not leave a zero-length file behind (#5716)
+                os.fsync(_file.fileno())
+            with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
+                # only rotate a parseable file to the backup, so a corrupt
+                # (crash leftover) file can never clobber a possibly good backup
+                json_loads(filename.read_bytes())
+                filename.replace(f"{self.filename}.backup")
+            filename_temp.replace(filename)
+            # best effort: fsync the directory as well so the renames themselves
+            # survive a power failure (not supported on all platforms/filesystems)
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)

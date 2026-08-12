@@ -89,6 +89,7 @@ ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
+    reload_on_streams_network_change = True
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
@@ -241,14 +242,7 @@ class AirPlayProvider(PlayerProvider):
         self._dacp_info = AsyncServiceInfo(
             DACP_DISCOVERY_TYPE,
             name=server_id,
-            # The DACP socket above listens on all interfaces, so advertise every address
-            # the players may reach us on. Advertising only the primary-route address
-            # leaves receivers on another interface of a multi-homed host unable to send
-            # their ActiveRemote callbacks: their transport/volume buttons and their
-            # device-prevent-playback notifications never arrive, while audio plays on.
-            addresses=[
-                await get_ip_pton(address) for address in self.mass.streams.publish_addresses
-            ],
+            addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
             port=dacp_port,
             properties={
                 "txtvers": "1",

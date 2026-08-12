@@ -16,15 +16,15 @@ from bidict import bidict
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
 from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.helpers import create_safe_string
 from snapcast.control.server import CONTROL_PORT, Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import CONF_ENABLED, CONF_LOG_LEVEL, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.helpers.util import get_ip_pton, select_announce_addresses
+from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.snapcast.constants import (
     CONF_CATEGORY_BUILT_IN,
@@ -36,9 +36,12 @@ from music_assistant.providers.snapcast.constants import (
     CONF_SERVER_INITIAL_VOLUME,
     CONF_SERVER_SEND_AUDIO_TO_MUTED,
     CONF_SERVER_TRANSPORT_CODEC,
+    CONF_STREAM_BIT_DEPTH,
     CONF_STREAM_IDLE_THRESHOLD,
+    CONF_STREAM_SAMPLE_RATE,
     CONF_USE_EXTERNAL_SERVER,
     CONTROL_SCRIPT,
+    DEFAULT_SNAPCAST_FORMAT,
     DEFAULT_SNAPSERVER_CONFIG_FILE,
     DEFAULT_SNAPSERVER_IP,
     DEFAULT_SNAPSERVER_PLUGIN_DIR,
@@ -47,8 +50,11 @@ from music_assistant.providers.snapcast.constants import (
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
     SHIPPED_SNAPSERVER_CONFIG_FILE,
+    SNAPCAST_BIT_DEPTHS,
+    SNAPCAST_SAMPLE_RATES,
     SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPWEB_DIR,
+    snapcast_stream_format,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.snapcast.player import SnapCastPlayer
@@ -56,6 +62,7 @@ from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
     from .snap_cntrl_proto import SnapclientProto, SnapgroupProto, SnapserverProto
@@ -76,6 +83,7 @@ async def _create_cntrl_server(
 class SnapCastProvider(PlayerProvider):
     """SnapCastProvider."""
 
+    reload_on_streams_network_change = True
     _snapserver: SnapserverProto
     _snapserver_runner: asyncio.Task[None] | None
     _snapserver_started: asyncio.Event | None
@@ -88,6 +96,12 @@ class SnapCastProvider(PlayerProvider):
     _snapcast_ma_streams: dict[str, SnapcastMAStream]
     _snapcast_ma_streams_lock: asyncio.Lock
     _last_status_refresh: float
+    _snapcast_stream_format: AudioFormat
+
+    @property
+    def stream_audio_format(self) -> AudioFormat:
+        """Return the configured PCM format for Music Assistant Snapcast TCP sources."""
+        return getattr(self, "_snapcast_stream_format", DEFAULT_SNAPCAST_FORMAT)
 
     @property
     def queue_control_available(self) -> bool:
@@ -215,6 +229,24 @@ class SnapCastProvider(PlayerProvider):
                 required=True,
                 advanced=local_snapserver_present,
             ),
+            ConfigEntry(
+                key=CONF_STREAM_SAMPLE_RATE,
+                type=ConfigEntryType.INTEGER,
+                options=[ConfigValueOption(rate) for rate in SNAPCAST_SAMPLE_RATES],
+                default_value=DEFAULT_SNAPCAST_FORMAT.sample_rate,
+                required=False,
+                depends_on=CONF_USE_EXTERNAL_SERVER,
+                advanced=local_snapserver_present,
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_BIT_DEPTH,
+                type=ConfigEntryType.INTEGER,
+                options=[ConfigValueOption(depth) for depth in SNAPCAST_BIT_DEPTHS],
+                default_value=DEFAULT_SNAPCAST_FORMAT.bit_depth,
+                required=False,
+                depends_on=CONF_USE_EXTERNAL_SERVER,
+                advanced=local_snapserver_present,
+            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -250,6 +282,15 @@ class SnapCastProvider(PlayerProvider):
                 str(self.config.get_value(CONF_SERVER_CONTROL_PORT))
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
+        # Higher rates / 24-bit are only supported with an external Snapserver for now.
+        # The built-in server always stays at the default 48 kHz / 16-bit format.
+        if self._use_builtin_server:
+            self._snapcast_stream_format = DEFAULT_SNAPCAST_FORMAT
+        else:
+            self._snapcast_stream_format = snapcast_stream_format(
+                cast("int", self.config.get_value(CONF_STREAM_SAMPLE_RATE)),
+                cast("int", self.config.get_value(CONF_STREAM_BIT_DEPTH)),
+            )
         self._ids_map = bidict({})
         self._last_status_refresh = 0.0
 
@@ -410,10 +451,7 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError("Snapserver is already started!")
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
-        # the snapserver listens on all interfaces, so announce the addresses a client
-        # could reach us on and let it pick one on its own network
-        announce_addresses = select_announce_addresses(self.mass.streams.publish_addresses)
-        addresses = [await get_ip_pton(address) for address in announce_addresses]
+        addresses = [await get_ip_pton(self.mass.streams.publish_ip)]
         # register the snapcast mdns services
         for name, port in (
             ("-http", 1780),
@@ -459,7 +497,11 @@ class SnapCastProvider(PlayerProvider):
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp-control.enabled=true",
             f"--tcp-control.port={self._snapcast_server_control_port}",
-            "--stream.sampleformat=48000:16:2",
+            (
+                f"--stream.sampleformat={self.stream_audio_format.sample_rate}"
+                f":{self.stream_audio_format.bit_depth}"
+                f":{self.stream_audio_format.channels}"
+            ),
             f"--stream.buffer={self._snapcast_server_buffer_size}",
             f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
@@ -580,8 +622,15 @@ class SnapCastProvider(PlayerProvider):
             "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.",
             str(exc),
         )
-        # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)
+        # schedule a reload of the provider, armed under the load path's task id so any
+        # (re)load starting before it fires cancels it
+        self.mass.call_later(
+            5,
+            self.mass.load_provider,
+            self.instance_id,
+            allow_retry=True,
+            task_id=f"load_provider_{self.instance_id}",
+        )
 
     async def remove_player(self, player_id: str) -> None:
         """Remove the client from the snapserver when it is deleted."""

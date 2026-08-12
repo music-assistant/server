@@ -23,6 +23,7 @@ from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_FLOW_MODE_SAMPLE_RATE,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PROTOCOL_KEY_SPLITTER,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
     FLOW_MODE_SAMPLE_RATE_SMART,
@@ -217,3 +218,38 @@ async def test_injected_protocol_entry_resolves_under_origin_provider(
     proto_entry = next(entry for entry in entries if entry.key == PREFIXED_KEY)
     assert proto_entry.translation_owner == "provider.dlna"
     assert proto_entry.translation_key == CONF_FLOW_MODE_SAMPLE_RATE
+
+
+async def test_player_entries_resolve_under_their_own_provider(mass: MusicAssistant) -> None:
+    """A player's own entries carry its provider's namespace, so its strings.json is consulted."""
+    await _setup_parent_with_protocol_child(mass)
+
+    entries = await mass.config.get_player_config_entries(PARENT_ID)
+    own_entries = [entry for entry in entries if CONF_PROTOCOL_KEY_SPLITTER not in entry.key]
+
+    assert own_entries
+    assert {entry.translation_owner for entry in own_entries} == {"provider.sonos"}
+
+
+async def test_live_source_wav_preference_is_only_exposed_for_http_players(
+    mass: MusicAssistant,
+) -> None:
+    """Only HTTP player protocols expose the live source WAV preference."""
+    await _setup_parent_with_protocol_child(mass)
+    parent_entries = await mass.config.get_player_config_entries(PARENT_ID)
+    dlna_key = f"{CHILD_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_PREFER_WAV_FOR_LIVE_SOURCES}"
+    assert next(entry for entry in parent_entries if entry.key == dlna_key).default_value is False
+
+    sendspin_provider = _TestProvider(mass, "sendspin")
+    mass._providers[sendspin_provider.instance_id] = sendspin_provider  # type: ignore[assignment]
+    mass._provider_manifests[sendspin_provider.domain] = sendspin_provider.manifest
+    sendspin_player = _TestPlayer(
+        sendspin_provider,
+        "sendspin_1",
+        "Sendspin Player",
+        PlayerType.PROTOCOL,
+    )
+
+    entries = await mass.config._get_player_config_entries(sendspin_player)
+
+    assert CONF_PREFER_WAV_FOR_LIVE_SOURCES not in {entry.key for entry in entries}

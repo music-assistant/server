@@ -62,7 +62,8 @@ def _provider(
     provider.config = SimpleNamespace(instance_id="hass--test")  # type: ignore[assignment]
     provider.manifest = SimpleNamespace(domain="hass")  # type: ignore[assignment]
     provider.mass = SimpleNamespace(  # type: ignore[assignment]
-        cache=_Cache(), create_task=asyncio.create_task
+        cache=_Cache(),
+        create_task=lambda coro, **_kwargs: asyncio.ensure_future(coro),
     )
     provider.get_states = AsyncMock(return_value=states)  # type: ignore[method-assign]
     provider.logger = logging.getLogger("test.hass")

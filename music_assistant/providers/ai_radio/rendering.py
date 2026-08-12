@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ContentType, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -24,6 +28,8 @@ from .constants import (
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     DEFERRED_PLACEHOLDERS,
+    TTS_QUERY_TIMEOUT_SECONDS,
+    TTS_SERVER_ERROR_MARKERS,
 )
 from .helpers import soft_limit_text
 
@@ -69,9 +75,10 @@ class AIRadioRenderMixin:
                 queue_item.extra_attributes[ATTR_RENDERED_TEXT] = text
                 # the signal is what marks the items cache dirty and schedules the persist
                 self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
-            path, stream_type, audio_format = await self._mint_clip_media(queue_item, text, item_id)
+            path, stream_type, audio_format, duration = await self._mint_clip_media(
+                queue_item, text, item_id
+            )
 
-        duration = await self._probe_duration(path)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -169,10 +176,13 @@ class AIRadioRenderMixin:
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
-    ) -> tuple[str, StreamType, AudioFormat]:
+    ) -> tuple[str, StreamType, AudioFormat, int | None]:
         """Convert the script to playable audio via the configured TTS engine."""
         try:
-            return await self._render_tts_media(text)
+            path, stream_type, audio_format = await self._render_tts_media(text)
+            # the probe is the first fetch, so a failed render surfaces here and not in playback
+            duration = await self._probe_duration(path)
+            return path, stream_type, audio_format, duration
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
             self._record_skip(queue_item, f"TTS failed: {err}")
@@ -181,7 +191,16 @@ class AIRadioRenderMixin:
     async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
         engine = await self._get_tts_engine()
-        stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
+        try:
+            async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
+        except TimeoutError as err:
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            if not query_timeout.expired():
+                raise
+            raise MusicAssistantError(
+                f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
+            ) from err
         path = str(getattr(stream_details, "path", "") or "").strip()
         if path.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             stream_type = StreamType.HTTP
@@ -203,6 +222,11 @@ class AIRadioRenderMixin:
         try:
             tags = await async_parse_tags(path, require_duration=True)
         except (InvalidDataError, OSError) as err:
+            if any(marker in str(err) for marker in TTS_SERVER_ERROR_MARKERS):
+                raise MusicAssistantError(
+                    "Error during TTS generation. Does your TTS provider have enough credit? "
+                    "Check the logs of your TTS provider for the reason."
+                ) from err
             self.logger.warning("Could not determine AI Radio clip duration: %s", err)
             return None
         return int(tags.duration) if tags.duration else None

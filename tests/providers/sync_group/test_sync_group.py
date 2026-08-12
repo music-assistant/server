@@ -293,6 +293,84 @@ class TestActiveProtocolDomain:
         assert getattr(sgp, "sync_leader") is None  # noqa: B009
         mass.players.schedule_active_output_protocol_clear.assert_called_once_with(leader)
 
+    @pytest.mark.asyncio
+    async def test_dissolve_ungroups_from_the_member_holding_the_group(self) -> None:
+        """
+        Dissolve must ungroup from the member that actually holds the group members.
+
+        A provider can promote a different member to protocol leader than the one we
+        track; ungrouping from our leader would then be a no-op and leave the members
+        grouped and streaming with no way back.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # our tracked leader no longer holds any members
+        living_room = _make_mock_player("living_room", provider_domain="sendspin")
+        bathroom = _make_mock_player("bathroom", provider_domain="sendspin")
+        kitchen = _make_mock_player("kitchen", provider_domain="sendspin")
+        bathroom.state.group_members = ["bathroom", "living_room", "kitchen"]
+
+        mass.players.get_player = _player_lookup(
+            {"living_room": living_room, "bathroom": bathroom, "kitchen": kitchen}
+        )
+
+        sgp.sync_leader = living_room
+        sgp._attr_group_members = ["living_room", "bathroom", "kitchen"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            bathroom, player_ids_to_remove=["living_room", "kitchen"]
+        )
+        # the promoted owner must be stopped too, our callers only stop the tracked leader
+        mass.players._handle_cmd_stop.assert_awaited_once_with("bathroom")
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+
+    @pytest.mark.asyncio
+    async def test_dissolve_keeps_using_the_sync_leader_when_it_holds_the_group(self) -> None:
+        """A leader that still holds its members must stay the dissolve target."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sendspin")
+        member = _make_mock_player("member", provider_domain="sendspin")
+        leader.state.group_members = ["leader", "member"]
+
+        mass.players.get_player = _player_lookup({"leader": leader, "member": member})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_remove=["member"]
+        )
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dissolve_ignores_a_member_leading_an_unrelated_group(self) -> None:
+        """A member grouped outside of MA must never be adopted as the dissolve target."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        living_room = _make_mock_player("living_room", provider_domain="sendspin")
+        member = _make_mock_player("member", provider_domain="sendspin")
+        # member leads a group that shares no player with us
+        member.state.group_members = ["member", "outsider"]
+
+        mass.players.get_player = _player_lookup({"living_room": living_room, "member": member})
+        sgp.sync_leader = living_room
+        sgp._attr_group_members = ["living_room", "member"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
 
 class TestControllerLockCategory:
     """Test that the controller's lock categories serialize correctly."""
@@ -431,6 +509,97 @@ class TestDynamicLeaderSwitch:
         ap_protocol.set_members.assert_not_awaited()
         mass.players.wait_for_player_update.assert_called()
         assert "old_leader" not in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_dynamic_leader_switch_follows_live_session_order(self) -> None:
+        """
+        The new leader must be the member that inherits the live session.
+
+        Providers promote their own first remaining member, so a leader picked from a
+        drifted member order would leave the group tracking a different player than the
+        one actually holding the session.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("old_leader", provider_domain="sendspin")
+        living_room = _make_mock_player("living_room", provider_domain="sendspin")
+        bathroom = _make_mock_player("bathroom", provider_domain="sendspin")
+        # no stream/session object (Sendspin, Snapcast) -> handoff is assumed safe
+        old_leader.stream = None
+        # the live session hands over to bathroom, our own order says living_room.
+        # state.group_members is deliberately left unordered: only the raw attribute
+        # carries the provider's member order.
+        old_leader.group_members = ["old_leader", "bathroom", "living_room"]
+        old_leader.state.group_members = ["old_leader", "living_room", "bathroom"]
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "living_room": living_room,
+                "bathroom": bathroom,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "living_room", "bathroom"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader == bathroom
+        assert sgp._attr_group_members == ["bathroom", "living_room"]
+        old_leader.set_members.assert_any_await(player_ids_to_remove=["old_leader"])
+        bathroom.set_members.assert_any_await(player_ids_to_add=["living_room"])
+
+    def test_align_members_translates_protocol_ids_and_keeps_outsiders_last(self) -> None:
+        """A protocol session player's order maps onto the parent members that we track."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        living_room = _make_mock_player("living_room")
+        bathroom = _make_mock_player("bathroom")
+        # tracked but not part of the live session
+        offline = _make_mock_player("offline")
+        ap_living_room = _make_mock_player("ap_living_room", provider_domain="airplay")
+        ap_bathroom = _make_mock_player("ap_bathroom", provider_domain="airplay")
+        ap_living_room.protocol_parent_id = "living_room"
+        ap_bathroom.protocol_parent_id = "bathroom"
+
+        session_player = _make_mock_player("ap_old", provider_domain="airplay")
+        session_player.group_members = ["ap_old", "ap_bathroom", "ap_living_room"]
+
+        mass.players.get_player = _player_lookup(
+            {
+                "living_room": living_room,
+                "bathroom": bathroom,
+                "offline": offline,
+                "ap_living_room": ap_living_room,
+                "ap_bathroom": ap_bathroom,
+                "ap_old": session_player,
+            }
+        )
+        sgp._attr_group_members = ["living_room", "bathroom", "offline"]
+
+        sgp._align_members_with_session(session_player)
+
+        assert sgp._attr_group_members == ["bathroom", "living_room", "offline"]
+
+    def test_align_members_leaves_order_untouched_without_a_live_session(self) -> None:
+        """Without a session (or with one holding none of our members) the order stands."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        stranger = _make_mock_player("stranger", provider_domain="airplay")
+        stranger.group_members = ["stranger"]
+        mass.players.get_player = _player_lookup({"stranger": stranger})
+        sgp._attr_group_members = ["living_room", "bathroom"]
+
+        sgp._align_members_with_session(None)
+        assert sgp._attr_group_members == ["living_room", "bathroom"]
+
+        sgp._align_members_with_session(stranger)
+        assert sgp._attr_group_members == ["living_room", "bathroom"]
 
 
 class TestPowerLifecycle:
@@ -884,7 +1053,7 @@ class TestPresetMembersInDynamicGroup:
         mass.players.get_player = _player_lookup(
             {"offline_member": offline_member, "candidate": candidate}
         )
-        mass.players.all_players = MagicMock(return_value=[candidate])
+        mass.players.iter_players = MagicMock(return_value=[candidate])
 
         assert "candidate" in sgp.can_group_with
 
@@ -905,7 +1074,7 @@ class TestPresetMembersInDynamicGroup:
         result = sgp.can_group_with
 
         assert {"online_member", "friend"} <= result
-        mass.players.all_players.assert_not_called()
+        mass.players.iter_players.assert_not_called()
 
 
 class TestGetConfigEntriesMemberPicker:

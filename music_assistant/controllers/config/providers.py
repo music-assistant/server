@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 import shortuuid
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
@@ -216,9 +217,13 @@ class ProviderConfigMixin:
     @api_command("config/providers/invoke_action", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def invoke_provider_config_action(
         self, instance_id: str, action: str
-    ) -> list[ConfigEntry]:
+    ) -> list[ConfigEntry] | ConfigActionResult:
         """
-        Run a one-shot action button from a provider's options and return the entries.
+        Run a one-shot action button from a provider's options.
+
+        A ``ConfigActionResult`` holds the outcome to report to the user; an empty list
+        means the action ran with nothing to report; a non-empty list holds the entries
+        the options page should re-render with.
 
         :param instance_id: The provider instance id (must be loaded).
         :param action: The action id of the pressed button.
@@ -227,9 +232,12 @@ class ProviderConfigMixin:
         if provider is None:
             msg = f"Provider {instance_id} is not loaded"
             raise ActionUnavailable(msg)
-        return self._wrap_provider_config_entries(
-            provider, await provider.handle_config_action(action)
-        )
+        if (result := await provider.handle_config_action(action)) is None:
+            return []
+        if isinstance(result, ConfigActionResult):
+            result.translation_owner = result.translation_owner or f"provider.{provider.domain}"
+            return result
+        return self._wrap_provider_config_entries(provider, result)
 
     def seed_stored_config_values(self, config: ProviderConfig) -> None:
         """
@@ -320,7 +328,7 @@ class ProviderConfigMixin:
                 if not isinstance(player_conf, dict):
                     continue
                 if player_conf.get("provider") == instance_id:
-                    self.remove(f"{CONF_PLAYERS}/{player_conf.get('player_id') or key}")
+                    self.mass.players.delete_player_config(player_conf.get("player_id") or key)
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""

@@ -14,6 +14,7 @@ from music_assistant.constants import (
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
+    CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_NFS_SUBFOLDER_MIGRATED,
@@ -329,8 +330,9 @@ _LEGACY_ICON_MAP: dict[str, str] = {
 # "hue_username", the scrobblers under "_username", Open Subsonic its url under "baseURL").
 # Notes on the non-obvious entries:
 # - the filesystem providers' "content_type" is also surfaced by get_config_entries, but
-#   only as a read-only LABEL mirror (UI_ONLY, never persisted back to values), so moving
-#   it to setup_data is safe and required (it is read via get_provider_setup_value).
+#   only as a read-only mirror that carries the setup value as its default (so it is never
+#   persisted back to values), so moving it to setup_data is safe and required (it is read
+#   via get_provider_setup_value).
 # - hass "url"/"token"/"verify_ssl": on a Home Assistant add-on these come from fixed
 #   (hidden) config entries whose values equal what a stored copy would hold, so moving a
 #   stored copy is a harmless no-op there while restoring normal installs.
@@ -606,6 +608,19 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # back to the player-type default.
     # TODO: remove after 2.12 release
     if _migrate_player_icons(data):
+        changed = True
+
+    # Drop the stored HTTP profile of Bluesound players; the setting is no longer offered
+    # because BluOS only plays back correctly on the forced content length profile.
+    # TODO: remove after 2.12 release
+    if _migrate_bluesound_http_profile(data):
+        changed = True
+
+    # Drop disabled protocol player configs that lost their parent player: the device they
+    # belong to can never register again while such a config lingers, and it is not shown
+    # in the UI so there is no way to enable it again.
+    # TODO: remove after 2.12 release
+    if _migrate_orphaned_disabled_protocol_configs(data):
         changed = True
 
     return changed
@@ -1367,6 +1382,85 @@ def _migrate_output_limiter(data: dict[str, Any]) -> bool:
     if changed:
         LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
     return changed
+
+
+# the only HTTP profile BluOS devices play back correctly on
+FORCED_HTTP_PROFILE = "forced_content_length"
+
+
+def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
+    """
+    Drop a stored HTTP profile that Bluesound players can no longer select.
+
+    BluOS keeps looping the audio on any profile other than the forced content length one,
+    so the setting is no longer offered. A player left on another profile would stay broken
+    with no way back, so that pick is removed.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        if not str(player_cfg.get("provider", "")).startswith("bluesound"):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
+            del player_values[CONF_HTTP_PROFILE]
+            changed = True
+    if changed:
+        LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
+    """
+    Remove disabled protocol player configs that no longer belong to a player.
+
+    A protocol player is only ever presented as part of the player that owns it, so a
+    disabled config that outlived its owner keeps the device from registering again while
+    offering no way to enable it.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    linked_ids: set[str] = set()
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
+            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
+    orphaned: list[str] = []
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if player_cfg.get("player_type") != "protocol":
+            continue
+        if player_cfg.get("enabled", True):
+            continue
+        # a player owns a protocol player from either side of the link
+        if player_id in linked_ids:
+            continue
+        player_values = player_cfg.get("values")
+        parent_id = (
+            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
+        )
+        if parent_id in all_player_configs:
+            continue
+        orphaned.append(player_id)
+    dsp_configs = data.get(CONF_PLAYER_DSP)
+    for player_id in orphaned:
+        del all_player_configs[player_id]
+        if isinstance(dsp_configs, dict):
+            dsp_configs.pop(player_id, None)
+        LOGGER.warning("Removed orphaned player configuration %s", player_id)
+    return bool(orphaned)
 
 
 def _migrate_bose_soundtouch_presets(data: dict[str, Any]) -> bool:
