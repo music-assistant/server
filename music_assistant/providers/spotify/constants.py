@@ -27,7 +27,7 @@ LIBRESPOT_REDIRECT_PATH = "/login"
 LIBRESPOT_REDIRECT_URI = f"http://127.0.0.1:{LIBRESPOT_REDIRECT_PORT}{LIBRESPOT_REDIRECT_PATH}"
 LOOPBACK_WAIT_TIMEOUT = 30  # seconds before offering the manual paste instead
 # name advertised to the Spotify app while pairing; also shown in the setup flow instructions
-PAIRING_DEVICE_NAME = "Music Assistant"
+PAIRING_DEVICE_NAME = "Music Assistant Pairing"
 PAIRING_TIMEOUT = 300  # seconds the pairing step waits for the user to pick the device
 CHECK_AUTH_TIMEOUT = 30  # seconds
 CREDENTIALS_FILE = "credentials.json"
