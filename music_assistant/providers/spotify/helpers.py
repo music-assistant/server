@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import tempfile
 import time
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,11 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
+
+# matches the leading "[<timestamp> " librespot's env_logger output starts each line with,
+# e.g. "[2026-08-12T01:02:42Z WARN  libmdns::fsm] ..."; used to drop the (ever-changing)
+# timestamp from the pairing log dedupe key while keeping the level, target and message
+_LIBRESPOT_TIMESTAMP = re.compile(r"^\[\S+ ")
 
 LOOPBACK_RESPONSE_HTML = """
 <html>
@@ -340,15 +346,19 @@ async def pkce_auth_flow(
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:
     """Log the pairing daemon's output so a failure to advertise is diagnosable."""
     # librespot repeats identical warnings (e.g. libmdns "No route to host") on every
-    # advertisement retry even when pairing succeeds, so only the first occurrence of a
-    # given line is logged as a warning; exact repeats are demoted to debug
+    # advertisement retry even when pairing succeeds. Its lines are timestamped
+    # (e.g. "[2026-08-12T01:02:42Z WARN  libmdns::fsm] ..."), so the timestamp is
+    # stripped from the dedupe key while the level, target and message are kept:
+    # only the first occurrence of an otherwise identical line is logged as a
+    # warning, exact repeats are demoted to debug
     seen_warnings: set[str] = set()
     async for line in librespot_proc.iter_stderr():
         if "ERROR" in line or "WARN" in line:
-            if line in seen_warnings:
+            dedupe_key = _LIBRESPOT_TIMESTAMP.sub("[", line, count=1)
+            if dedupe_key in seen_warnings:
                 LOGGER.debug("[librespot-pairing] %s", line)
             else:
-                seen_warnings.add(line)
+                seen_warnings.add(dedupe_key)
                 LOGGER.warning("[librespot-pairing] %s", line)
         else:
             LOGGER.debug("[librespot-pairing] %s", line)
