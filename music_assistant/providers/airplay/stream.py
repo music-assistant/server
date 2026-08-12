@@ -477,7 +477,7 @@ class AirPlayStream:
             return False
         return True
 
-    async def announce(self, file_path: str, at_unix_ms: int, duck_db: int) -> bool:
+    async def announce(self, file_path: str, at_unix_ms: int, duck_db: float) -> bool:
         """
         Arm the binary's native announcement mixer with a clip file.
 

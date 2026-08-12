@@ -276,10 +276,34 @@ async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     bump, restore = scheduled
     assert bump.args[1:] == (member.volume_set, 55)
     assert restore.args[1:] == (member.volume_set, 30)
-    # the bump delay derives from the acked instant (~0.2s out), the restore
-    # follows it by the acked clip duration plus the (zeroed) pad
-    assert 0.0 < bump.args[0] <= 0.25
-    assert restore.args[0] - bump.args[0] == pytest.approx(0.1)
+    # the bump derives from the acked instant (~0.2s out) plus the into-the-clip
+    # bias (capped at half this 0.1s clip); the restore follows the acked clip
+    # duration plus the (zeroed) pad, measured from the instant itself
+    assert 0.0 < bump.args[0] <= 0.3
+    assert restore.args[0] - bump.args[0] == pytest.approx(0.05)
+
+
+def test_member_duck_compensates_the_volume_bump() -> None:
+    """
+    The duck deepens by exactly the device-volume bump so the music never rises.
+
+    38 -> 61 volume points is +6.9 dB on the AirPlay dB scale; the -12 dB duck
+    becomes -18.9 dB so the music's perceived level stays at the configured
+    duck depth (the regression heard as "the music was not ducked"). A bump
+    down shallows it symmetrically, and without a bump the base duck applies.
+    """
+    member = _make_player("m")
+    member.volume_level = 38
+    assert announce._member_duck_db(member, 61) == pytest.approx(-18.9)
+    assert announce._member_duck_db(member, 18) == pytest.approx(-6.0)
+    assert announce._member_duck_db(member, None) == pytest.approx(-12.0)
+    assert announce._member_duck_db(member, 38) == pytest.approx(-12.0)
+    # extreme bumps clamp to the binary's usable range (never boost the music)
+    member.volume_level = 0
+    assert announce._member_duck_db(member, 100) == pytest.approx(-42.0)
+    assert announce._member_duck_db(member, 0) == pytest.approx(-12.0)
+    member.volume_level = 100
+    assert announce._member_duck_db(member, 0) == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio

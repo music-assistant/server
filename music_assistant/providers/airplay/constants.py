@@ -234,6 +234,18 @@ AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS: Final[int] = 5000
 # Pad after the clip's audible end before the pre-announcement volume is
 # restored: covers the jitter between the acked instant and true audibility.
 AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS: Final[int] = 500
+# Delay of the announcement-volume bump past the clip's audible start: a bump
+# that lands early (a receiver playing out later than the reported instant)
+# raises the still-playing music, so it is biased into the clip where the duck
+# ramp masks it - the pre-announce chime covers the first moments anyway.
+AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 300
+# The AirPlay volume parameter is linear dB: 0..100 maps onto -30..0 dB on
+# every flow (libraop raopcl_float_volume, reused verbatim by the native AP2
+# SET_PARAMETER path), so one volume point is exactly 0.3 dB of output. This
+# makes the announcement volume bump's effect on the music bed computable, and
+# the duck is deepened by the same amount to keep the music's perceived level
+# at the configured duck depth.
+AIRPLAY_VOLUME_DB_PER_POINT: Final[float] = 0.3
 # Drain margin for a dedicated announcement session: covers the receiver
 # playing out its buffered audio after the clip's last byte was fed.
 AIRPLAY_ANNOUNCE_SESSION_DRAIN_S: Final[float] = 2.0

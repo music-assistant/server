@@ -36,7 +36,9 @@ from .constants import (
     AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS,
     AIRPLAY_ANNOUNCE_SESSION_DRAIN_S,
     AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS,
+    AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS,
     AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS,
+    AIRPLAY_VOLUME_DB_PER_POINT,
 )
 from .stream_session import AirPlayStreamSession
 
@@ -237,12 +239,12 @@ async def _announce_over_live_session(
             at_unix_ms = _shared_announce_instant(streams.values())
             delivered = await asyncio.gather(
                 *[
-                    stream.announce(
-                        clip_files[_format_key(stream.pcm_format)],
+                    streams[member.player_id].announce(
+                        clip_files[_format_key(streams[member.player_id].pcm_format)],
                         at_unix_ms,
-                        AIRPLAY_ANNOUNCE_DUCK_DB,
+                        _member_duck_db(member, volume_level),
                     )
-                    for stream in streams.values()
+                    for member in members
                 ],
                 return_exceptions=True,
             )
@@ -484,6 +486,25 @@ def _member_span_ms(stream: AirPlayStream) -> int:
     return AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS
 
 
+def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
+    """
+    Return the music duck (dB) for one member, compensated for its volume bump.
+
+    The announcement volume is applied as DEVICE volume, which raises the music
+    bed together with the clip. The AirPlay volume scale is linear dB (see
+    AIRPLAY_VOLUME_DB_PER_POINT), so that rise is exactly known and the duck is
+    deepened by the same amount - the music keeps its configured perceived duck
+    depth while the clip plays at the configured announcement loudness. A bump
+    DOWN (a night-mode announcement quieter than the music) symmetrically
+    shallows the duck, and the result never leaves the binary's usable range.
+    """
+    duck_db = float(AIRPLAY_ANNOUNCE_DUCK_DB)
+    if volume_level is None or member.volume_level is None:
+        return duck_db
+    bump_db = (volume_level - member.volume_level) * AIRPLAY_VOLUME_DB_PER_POINT
+    return min(0.0, max(-60.0, duck_db - bump_db))
+
+
 def _schedule_member_volume(
     member: AirPlayPlayer, volume_level: int, at_unix_ms: int, clip_seconds: float
 ) -> _VolumeSchedule | None:
@@ -504,8 +525,13 @@ def _schedule_member_volume(
     if prev_volume is None or prev_volume == volume_level:
         return None
     delay = max(0.0, at_unix_ms / 1000 - time.time())
+    # The bump is biased INTO the clip: a receiver that plays out later than
+    # the reported instant would otherwise get louder while the old music is
+    # still sounding. The duck ramp (and the pre-announce chime) masks the
+    # late bump; short clips cap the bias at their midpoint.
+    bump_delay = delay + min(AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS / 1000, clip_seconds / 2)
     handles = [
-        member.mass.call_later(delay, member.volume_set, volume_level),
+        member.mass.call_later(bump_delay, member.volume_set, volume_level),
         member.mass.call_later(
             delay + clip_seconds + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000,
             member.volume_set,
