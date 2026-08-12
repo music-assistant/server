@@ -6,7 +6,7 @@
     },
     "target_players": {
       "label": "Target players",
-      "description": "Comma-separated MA player_ids to expose as DLNA renderers. Use \"*\" or leave empty to auto-create a renderer for every MA player."
+      "description": "Select the Music Assistant players to expose as DLNA renderers. Leave the selection empty to create a renderer for every eligible player."
     },
     "bind_ip": {
       "label": "Bind IP address",

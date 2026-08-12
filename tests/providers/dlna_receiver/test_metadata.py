@@ -53,6 +53,18 @@ def test_parse_didl_metadata_extracts_supported_fields() -> None:
     }
 
 
+def test_parse_didl_metadata_preserves_escaped_title() -> None:
+    """XML entities are decoded exactly once by the DIDL parser."""
+    metadata = """\
+<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <item><dc:title>Simon &amp; Garfunkel</dc:title></item>
+</DIDL-Lite>
+"""
+
+    assert parse_didl_metadata(metadata)["title"] == "Simon & Garfunkel"
+
+
 def test_parse_didl_metadata_rejects_oversized_document() -> None:
     """Oversized DIDL is rejected whole instead of parsing a truncated document."""
     metadata = "<title>must-not-survive</title>" + (" " * (64 * 1024))

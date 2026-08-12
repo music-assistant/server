@@ -7,9 +7,11 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType, IdentifierType
+
+from music_assistant.models.player import Player
 
 from .constants import UDN_NAMESPACE
 from .models import RendererInstance
@@ -58,7 +60,7 @@ class RendererRegistry:
     def __init__(
         self,
         mass: MusicAssistant,
-        target_spec: str,
+        target_player_ids: frozenset[str],
         friendly_prefix: str,
         bind_ip: str,
         base_port: int,
@@ -67,7 +69,7 @@ class RendererRegistry:
         """Initialize registry configuration without opening network resources."""
         self.mass = mass
         self.instances: dict[str, RendererInstance] = {}
-        self._target_spec = target_spec
+        self._target_player_ids = target_player_ids
         self._friendly_prefix = friendly_prefix
         self._bind_ip = bind_ip
         self._base_port = base_port
@@ -135,51 +137,34 @@ class RendererRegistry:
 
     def _initial_player_specs(self) -> list[tuple[str, str]]:
         """Resolve configured targets for initial startup."""
-        if self._target_spec == "*":
-            return [
-                (player.player_id, self._display_name(player))
-                for player in self._eligible_all_players()
-            ]
+        players = self._eligible_all_players()
+        if self._target_player_ids:
+            players = [player for player in players if player.player_id in self._target_player_ids]
+        return [(player.player_id, self._display_name(player)) for player in players]
 
-        specs: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for value in self._target_spec.split(","):
-            player_id = value.strip()
-            if not player_id or player_id in seen:
-                continue
-            seen.add(player_id)
-            player = self.mass.players.get_player(player_id)
-            specs.append((player_id, self._display_name(player) if player else player_id))
-        return specs
-
-    def _desired_player(self, player_id: str) -> Any | None:
+    def _desired_player(self, player_id: str) -> Player | None:
         """Return a player when the configured policy wants a renderer for it."""
-        if self._target_spec != "*":
-            targets = {item.strip() for item in self._target_spec.split(",") if item.strip()}
-            if player_id not in targets:
-                return None
-            return self.mass.players.get_player(player_id)
+        if self._target_player_ids and player_id not in self._target_player_ids:
+            return None
 
         return next(
             (player for player in self._eligible_all_players() if player.player_id == player_id),
             None,
         )
 
-    def _eligible_all_players(self) -> list[Any]:
+    def _eligible_all_players(self) -> list[Player]:
         """Return non-protocol players excluding this registry's own renderers."""
         players = self.mass.players.all_players(
             return_unavailable=True,
             return_protocol_players=False,
         )
         candidate_uuids = self._own_uuids | {
-            _normalize_uuid(deterministic_udn(player.player_id)) for player in players
+            normalize_udn_uuid(deterministic_udn(player.player_id)) for player in players
         }
-        result: list[Any] = []
+        result: list[Player] = []
         for player in players:
-            identifier = getattr(getattr(player, "device_info", None), "identifiers", {}).get(
-                IdentifierType.UUID
-            )
-            if identifier and _normalize_uuid(identifier) in candidate_uuids:
+            identifier = player.device_info.identifiers.get(IdentifierType.UUID)
+            if identifier and normalize_udn_uuid(identifier) in candidate_uuids:
                 LOGGER.debug(
                     "Filtering out own renderer player: %s (%s)",
                     player.player_id,
@@ -201,7 +186,7 @@ class RendererRegistry:
             f"{self._friendly_prefix} — {player_name}" if player_name else self._friendly_prefix
         )
         udn = deterministic_udn(player_id)
-        self._own_uuids.add(_normalize_uuid(udn))
+        self._own_uuids.add(normalize_udn_uuid(udn))
         renderer = UPnPRenderer(
             friendly_name=friendly_name,
             bind_ip=self._bind_ip,
@@ -280,11 +265,11 @@ class RendererRegistry:
             raise ExceptionGroup("Failed to stop renderer resources", errors)
 
     @staticmethod
-    def _display_name(player: Any) -> str:
+    def _display_name(player: Player) -> str:
         """Return the best display name exposed by a player object."""
         return str(player.display_name or player.name or player.player_id)
 
 
-def _normalize_uuid(value: str) -> str:
+def normalize_udn_uuid(value: str) -> str:
     """Normalize UUID representations used by UPnP and Music Assistant."""
     return value.strip().lower().removeprefix("uuid:").replace("-", "").replace(":", "")

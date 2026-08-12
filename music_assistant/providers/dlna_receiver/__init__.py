@@ -17,10 +17,10 @@ Architecture
 
 Multi-player mode
 ~~~~~~~~~~~~~~~~~
-When ``target_players`` contains multiple comma-separated player_id values
-(or the special value ``*``), the provider creates one virtual DLNA
-renderer per player, each with a unique UDN and HTTP port.  DLNA control
-points see each renderer as a separate device — e.g.
+The ``target_players`` multi-select controls which Music Assistant players
+receive virtual DLNA renderers. An empty selection dynamically includes every
+eligible player. Each renderer has a unique UDN and HTTP port, so DLNA control
+points see every selected player as a separate device — e.g.
 "Music Assistant — Kitchen", "Music Assistant — Living Room".
 """
 

@@ -686,17 +686,14 @@ class UPnPRenderer:
             return web.Response(status=412, text="Missing CALLBACK header")
 
         try:
-            sid, timeout = manager.subscribe(
+            sid, timeout = await manager.subscribe(
                 callback,
                 request.headers.get("TIMEOUT"),
             )
         except ValueError as exc:
             return web.Response(status=412, text=str(exc))
 
-        # Send initial event with current state
-        await manager.notify_initial(sid, initial_vars)
-
-        return web.Response(
+        response = web.Response(
             status=200,
             headers={
                 "SID": sid,
@@ -704,6 +701,10 @@ class UPnPRenderer:
                 "Server": "UPnP/1.0 MusicAssistant/1.0",
             },
         )
+        await response.prepare(request)
+        await response.write_eof()
+        manager.track_initial_notify(sid, initial_vars)
+        return response
 
     @staticmethod
     def _handle_unsubscribe(

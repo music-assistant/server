@@ -1107,7 +1107,7 @@
   "provider.dlna_receiver.config_entries.friendly_name.label": "Friendly name prefix",
   "provider.dlna_receiver.config_entries.http_port.description": "Base port for UPnP HTTP servers. In multi-player mode, each renderer uses an incrementing port (8298, 8299, …).",
   "provider.dlna_receiver.config_entries.http_port.label": "HTTP base port",
-  "provider.dlna_receiver.config_entries.target_players.description": "Comma-separated MA player_ids to expose as DLNA renderers. Use \"*\" or leave empty to auto-create a renderer for every MA player.",
+  "provider.dlna_receiver.config_entries.target_players.description": "Select the Music Assistant players to expose as DLNA renderers. Leave the selection empty to create a renderer for every eligible player.",
   "provider.dlna_receiver.config_entries.target_players.label": "Target players",
   "provider.dlna_receiver.manifest.description": "Expose Music Assistant as a UPnP/DLNA MediaRenderer so external apps can cast audio to any MA player.",
   "provider.emby.config_entries.ip_address.description": "The url of the Emby server to connect to.",

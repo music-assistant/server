@@ -11,19 +11,29 @@ import asyncio
 import json
 import types
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, QueueOption, StreamType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.enums import (
+    ContentType,
+    IdentifierType,
+    MediaType,
+    QueueOption,
+    StreamType,
+)
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import CONF_BIND_IP
 from music_assistant.providers.dlna_receiver import __file__ as provider_package_file
 from music_assistant.providers.dlna_receiver.constants import (
-    CONF_TARGET_PLAYER,
     CONF_TARGET_PLAYERS,
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
@@ -99,7 +109,7 @@ class _StubConfig:
 
     def __init__(
         self,
-        values: dict[str, str],
+        values: dict[str, str | list[str]],
         instance_id: str = "dlna_receiver_test",
         name: str = "DLNA Receiver",
     ) -> None:
@@ -107,11 +117,11 @@ class _StubConfig:
         self.instance_id = instance_id
         self.name = name
 
-    def get_value(self, key: str) -> str | None:
+    def get_value(self, key: str) -> str | list[str] | None:
         return self._values.get(key)
 
 
-def _make_provider(cls, values: dict[str, str]):  # type: ignore[no-untyped-def]
+def _make_provider(cls, values: dict[str, str | list[str]]):  # type: ignore[no-untyped-def]
     inst = cls.__new__(cls)
     inst.config = _StubConfig(values)
     return inst
@@ -125,27 +135,6 @@ def _mass_stub(**values: object) -> types.SimpleNamespace:
         return asyncio.create_task(coroutine)
 
     return types.SimpleNamespace(create_task=_create_task, **values)
-
-
-def test_raw_target_prefers_new_key(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """_raw_target uses CONF_TARGET_PLAYERS when set."""
-    inst = _make_provider(provider_cls, {CONF_TARGET_PLAYERS: "p1,p2"})
-    assert inst._raw_target() == "p1,p2"
-
-
-def test_raw_target_falls_back_to_legacy_key(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """Legacy CONF_TARGET_PLAYER with '*' must surface via _raw_target."""
-    inst = _make_provider(
-        provider_cls,
-        {CONF_TARGET_PLAYERS: "", CONF_TARGET_PLAYER: "*"},
-    )
-    assert inst._raw_target() == "*"
-
-
-def test_raw_target_defaults_to_all_players(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """No configured targets defaults to all available players."""
-    inst = _make_provider(provider_cls, {})
-    assert inst._raw_target() == "*"
 
 
 def test_manifest_has_provider_icon() -> None:
@@ -162,7 +151,7 @@ def test_manifest_uses_canonical_docs_without_unused_credit() -> None:
     assert "credits" not in manifest
 
 
-async def test_loaded_without_players_does_not_create_unbound_renderer(provider_cls) -> None:  # type: ignore[no-untyped-def]
+async def test_async_init_without_players_does_not_create_unbound_renderer(provider_cls) -> None:  # type: ignore[no-untyped-def]
     """The all-players default waits instead of advertising a dead renderer."""
 
     def _all_players(**_kwargs: object) -> list[object]:
@@ -183,7 +172,7 @@ async def test_loaded_without_players_does_not_create_unbound_renderer(provider_
         cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
     )
 
-    await prov.loaded_in_mass()
+    await prov.handle_async_init()
     try:
         assert prov._instances == {}
         assert prov._registry is not None
@@ -191,7 +180,7 @@ async def test_loaded_without_players_does_not_create_unbound_renderer(provider_
         await prov.unload()
 
 
-async def test_loaded_publishes_registry_instances_while_start_is_in_progress(
+async def test_async_init_publishes_registry_instances_while_start_is_in_progress(
     provider_cls: type[DLNAReceiverProvider],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -226,12 +215,14 @@ async def test_loaded_publishes_registry_instances_while_start_is_in_progress(
         cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
         cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
     )
-    load_task = asyncio.create_task(prov.loaded_in_mass())
+    load_task = asyncio.create_task(prov.handle_async_init())
     await entered.wait()
 
     try:
         sources = await prov.get_audio_sources()
-        streamdetails = await prov.get_stream_details("player_kitchen", "queue1")
+        streamdetails = await prov.get_stream_details(
+            item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE
+        )
         assert [source.item_id for source in sources] == ["player_kitchen"]
         assert streamdetails.item_id == "player_kitchen"
     finally:
@@ -240,11 +231,11 @@ async def test_loaded_publishes_registry_instances_while_start_is_in_progress(
         await prov.unload()
 
 
-async def test_loaded_reports_registry_start_failure_and_returns(
+async def test_async_init_propagates_registry_start_failure(
     provider_cls: type[DLNAReceiverProvider],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A post-load startup failure must schedule provider unload with its original error."""
+    """A startup failure must leave awaited provider initialization unchanged."""
     import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
 
     start_error = SetupFailedError("SSDP unavailable")
@@ -267,12 +258,48 @@ async def test_loaded_reports_registry_start_failure_and_returns(
         cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
         cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
     )
-    reported: list[Exception] = []
-    monkeypatch.setattr(prov, "unload_with_error", reported.append)
+    with pytest.raises(SetupFailedError, match="SSDP unavailable") as exc_info:
+        await prov.handle_async_init()
+
+    assert exc_info.value is start_error
+
+
+async def test_async_init_rejects_invalid_bind_ip(
+    provider_cls: type[DLNAReceiverProvider],
+) -> None:
+    """Invalid bind configuration fails during the awaited load phase."""
+    prov = provider_cls(
+        cast("Any", _mass_stub(cache=None)),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({CONF_BIND_IP: "not-an-ip"})),
+    )
+
+    with pytest.raises(SetupFailedError, match="concrete IPv4 bind address"):
+        await prov.handle_async_init()
+
+
+async def test_loaded_in_mass_does_not_open_network_resources(
+    provider_cls: type[DLNAReceiverProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post-registration hook cannot create or start a renderer registry."""
+    import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
+
+    class _UnexpectedRegistry:
+        """Fail if the post-registration hook tries to open network resources."""
+
+        def __init__(self, **_kwargs: object) -> None:
+            pytest.fail("loaded_in_mass constructed RendererRegistry")
+
+    monkeypatch.setattr(provider_module, "RendererRegistry", _UnexpectedRegistry)
+    prov = provider_cls(
+        cast("Any", _mass_stub(cache=None)),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
+    )
 
     await prov.loaded_in_mass()
 
-    assert reported == [start_error]
+    assert prov._registry is None
 
 
 # ---------------------------------------------------------------------
@@ -316,7 +343,13 @@ def _make_contract_provider(
     never drift from the constructor's state initialization.
     """
     prov = cls(
-        cast("Any", _mass_stub(cache=None)),
+        cast(
+            "Any",
+            _mass_stub(
+                cache=None,
+                players=types.SimpleNamespace(all_players=lambda **_kwargs: []),
+            ),
+        ),
         cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
         cast("Any", _StubConfig({})),
     )
@@ -374,7 +407,9 @@ def test_get_stream_details_returns_custom_stream(provider_cls) -> None:  # type
         },
     )
 
-    sd = asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+    sd = asyncio.run(
+        prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+    )
 
     assert sd.provider == prov.instance_id
     assert sd.item_id == "player_kitchen"
@@ -385,6 +420,47 @@ def test_get_stream_details_returns_custom_stream(provider_cls) -> None:  # type
     assert sd.decoded_audio_format is None
 
 
+def test_get_stream_details_accepts_plugin_contract_keywords(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """The plugin stream-details override accepts the base contract keywords."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    details = asyncio.run(
+        prov.get_stream_details(
+            item_id="player_kitchen",
+            media_type=MediaType.AUDIO_SOURCE,
+        )
+    )
+
+    assert details.item_id == "player_kitchen"
+
+
+def test_get_stream_details_rejects_non_audio_source_media_type(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Only AudioSource requests can resolve a DLNA receiver stream."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        asyncio.run(
+            prov.get_stream_details(
+                item_id="player_kitchen",
+                media_type=MediaType.TRACK,
+            )
+        )
+
+
 def test_get_stream_details_unknown_source_raises(provider_cls) -> None:  # type: ignore[no-untyped-def]
     """Requesting an unknown source id raises MediaNotFoundError."""
     from music_assistant_models.errors import MediaNotFoundError  # noqa: PLC0415
@@ -392,7 +468,7 @@ def test_get_stream_details_unknown_source_raises(provider_cls) -> None:  # type
     prov = _make_contract_provider(provider_cls, {})
 
     with pytest.raises(MediaNotFoundError):
-        asyncio.run(prov.get_stream_details("nope", "queue1"))
+        asyncio.run(prov.get_stream_details(item_id="nope", media_type=MediaType.AUDIO_SOURCE))
 
 
 def test_get_stream_details_without_active_stream_raises(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -405,7 +481,9 @@ def test_get_stream_details_without_active_stream_raises(provider_cls) -> None: 
     )
 
     with pytest.raises(AudioError):
-        asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+        asyncio.run(
+            prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+        )
 
 
 def test_get_stream_details_is_side_effect_free(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -419,7 +497,9 @@ def test_get_stream_details_is_side_effect_free(provider_cls) -> None:  # type: 
         },
     )
 
-    asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+    asyncio.run(
+        prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+    )
 
     assert prov._claims == {}
 
@@ -644,7 +724,9 @@ def test_get_audio_stream_raises_without_url(provider_cls) -> None:  # type: ign
     inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
     prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
 
-    sd = asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+    sd = asyncio.run(
+        prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+    )
     inst.current_stream_url = None
 
     async def _consume() -> None:
@@ -653,6 +735,162 @@ def test_get_audio_stream_raises_without_url(provider_cls) -> None:  # type: ign
 
     with pytest.raises(AudioError):
         asyncio.run(_consume())
+
+
+class _StreamResponse:
+    """Async context manager carrying one fake upstream HTTP response."""
+
+    def __init__(
+        self,
+        status: int,
+        *,
+        location: str | None = None,
+        chunks: tuple[bytes, ...] = (),
+    ) -> None:
+        self.status = status
+        self.headers = {"Location": location} if location is not None else {}
+        self.content = self
+        self._chunks = chunks
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def iter_any(self) -> AsyncGenerator[bytes]:
+        """Yield configured response chunks."""
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _StreamSession:
+    """Shared-session double recording manual redirect requests."""
+
+    def __init__(self, responses: list[_StreamResponse]) -> None:
+        self._responses = responses
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def get(self, url: str, **kwargs: object) -> _StreamResponse:
+        """Return the next configured response and record request options."""
+        self.calls.append((url, kwargs))
+        return self._responses.pop(0)
+
+
+def test_get_audio_stream_validates_each_manual_redirect(
+    provider_cls: type[DLNAReceiverProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original destination and every redirect are checked before GET."""
+    import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
+
+    checked: list[str] = []
+
+    async def _allow(url: str) -> str:
+        checked.append(url)
+        return url
+
+    monkeypatch.setattr(provider_module, "_validate_outbound_url", _allow)
+    session = _StreamSession(
+        [
+            _StreamResponse(302, location="/next.flac"),
+            _StreamResponse(200, chunks=(b"audio",)),
+        ]
+    )
+    start_url = "http://192.168.1.20/start.flac"
+    inst = _make_instance("player_kitchen", "Kitchen", start_url)
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    prov.mass = cast("Any", _mass_stub(http_session=session))
+    details = asyncio.run(
+        prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+    )
+
+    async def _consume() -> list[bytes]:
+        return [chunk async for chunk in prov.get_audio_stream(details)]
+
+    assert asyncio.run(_consume()) == [b"audio"]
+    assert checked == [start_url, "http://192.168.1.20/next.flac"]
+    assert [call[0] for call in session.calls] == checked
+    assert all(call[1]["allow_redirects"] is False for call in session.calls)
+
+
+def test_get_audio_stream_rejects_sixth_redirect(
+    provider_cls: type[DLNAReceiverProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At most five redirect transitions are followed."""
+    import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
+
+    async def _allow(url: str) -> str:
+        return url
+
+    monkeypatch.setattr(provider_module, "_validate_outbound_url", _allow)
+    session = _StreamSession([_StreamResponse(302, location=f"/hop-{idx}") for idx in range(1, 7)])
+    inst = _make_instance("player_kitchen", "Kitchen", "http://192.168.1.20/start")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    prov.mass = cast("Any", _mass_stub(http_session=session))
+    details = asyncio.run(
+        prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+    )
+
+    async def _consume() -> None:
+        async for _chunk in prov.get_audio_stream(details):
+            pass
+
+    with pytest.raises(AudioError, match="redirect"):
+        asyncio.run(_consume())
+    assert len(session.calls) == 6
+
+
+def test_get_audio_stream_rejects_unsafe_redirect_without_leaking_query(
+    provider_cls: type[DLNAReceiverProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A denied redirect is not requested and its credentials stay redacted."""
+    import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
+
+    async def _policy(url: str) -> str | None:
+        return None if "127.0.0.1" in url else url
+
+    monkeypatch.setattr(provider_module, "_validate_outbound_url", _policy)
+    session = _StreamSession(
+        [_StreamResponse(302, location="http://127.0.0.1/private?token=secret")]
+    )
+    inst = _make_instance("player_kitchen", "Kitchen", "http://192.168.1.20/start")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    prov.mass = cast("Any", _mass_stub(http_session=session))
+    details = asyncio.run(
+        prov.get_stream_details(item_id="player_kitchen", media_type=MediaType.AUDIO_SOURCE)
+    )
+
+    async def _consume() -> None:
+        async for _chunk in prov.get_audio_stream(details):
+            pass
+
+    with pytest.raises(AudioError) as exc_info:
+        asyncio.run(_consume())
+    assert "secret" not in str(exc_info.value)
+    assert len(session.calls) == 1
+
+
+def test_set_transport_uri_rejects_loopback_before_state_change(
+    provider_cls: type[DLNAReceiverProvider],
+) -> None:
+    """SetAVTransportURI rejects loopback while retaining an existing stream."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://192.168.1.20/prior")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    with pytest.raises(ValueError, match="disallowed"):
+        asyncio.run(prov._on_set_transport_uri(inst, "http://127.0.0.1/private", None))
+
+    assert inst.current_stream_url == "http://192.168.1.20/prior"
+
+
+def test_set_transport_uri_allows_lan_destination(provider_cls: type[DLNAReceiverProvider]) -> None:
+    """LAN and NAS stream URLs remain accepted by SetAVTransportURI."""
+    inst = _make_instance("player_kitchen", "Kitchen")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    asyncio.run(prov._on_set_transport_uri(inst, "http://192.168.1.20/audio.flac", None))
+
+    assert inst.current_stream_url == "http://192.168.1.20/audio.flac"
 
 
 def test_on_source_selected_stops_previous_queue_on_handoff(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -745,7 +983,53 @@ async def test_instance_config_entries_expose_runtime_options(provider_cls) -> N
         "http_port",
     }
     target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
-    assert target_entry.default_value == "*"
+    assert target_entry.multi_value is True
+    assert target_entry.default_value == []
+
+
+async def test_target_player_options_are_sorted_and_keep_missing_selection(
+    provider_cls: type[DLNAReceiverProvider],
+) -> None:
+    """Player options use stable IDs and retain a missing saved target disabled."""
+    own_uuid = deterministic_udn("kitchen").removeprefix("uuid:").upper()
+    players = [
+        types.SimpleNamespace(
+            player_id="bedroom",
+            display_name="Bedroom",
+            name="Bedroom",
+            device_info=types.SimpleNamespace(identifiers={}),
+        ),
+        types.SimpleNamespace(
+            player_id="kitchen",
+            display_name="Kitchen",
+            name="Kitchen",
+            device_info=types.SimpleNamespace(identifiers={}),
+        ),
+        types.SimpleNamespace(
+            player_id="own-renderer",
+            display_name="Music Assistant — Kitchen",
+            name="Music Assistant — Kitchen",
+            device_info=types.SimpleNamespace(identifiers={IdentifierType.UUID: own_uuid}),
+        ),
+    ]
+    mass = _mass_stub(
+        cache=None,
+        players=types.SimpleNamespace(all_players=lambda **_kwargs: players),
+    )
+    prov = provider_cls(
+        cast("Any", mass),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({CONF_TARGET_PLAYERS: ["kitchen", "missing"]})),
+    )
+
+    entries = await prov.get_config_entries()
+
+    target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
+    assert [(option.value, option.title, option.disabled) for option in target_entry.options] == [
+        ("bedroom", "Bedroom", False),
+        ("kitchen", "Kitchen", False),
+        ("missing", "missing", True),
+    ]
 
 
 async def test_on_play_reports_expected_playback_failure(provider_cls) -> None:  # type: ignore[no-untyped-def]

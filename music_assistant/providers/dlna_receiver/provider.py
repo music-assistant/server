@@ -18,12 +18,14 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urljoin
 
 import aiohttp
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    IdentifierType,
     MediaType,
     ProviderFeature,
     QueueOption,
@@ -47,7 +49,6 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import (
     CONF_FRIENDLY_NAME,
     CONF_HTTP_PORT,
-    CONF_TARGET_PLAYER,
     CONF_TARGET_PLAYERS,
     DEFAULT_FRIENDLY_NAME,
     DEFAULT_HTTP_PORT,
@@ -55,7 +56,12 @@ from .constants import (
     TRANSPORT_STATE_PLAYING,
     TRANSPORT_STATE_STOPPED,
 )
-from .lifecycle import RendererCallbacks, RendererRegistry
+from .lifecycle import (
+    RendererCallbacks,
+    RendererRegistry,
+    deterministic_udn,
+    normalize_udn_uuid,
+)
 from .metadata import (
     clear_playback,
     freeze_elapsed,
@@ -65,13 +71,14 @@ from .metadata import (
 )
 from .models import RendererInstance
 from .urls import redact_url as _redact_url
-from .urls import validate_stream_url as _validate_stream_url
+from .urls import validate_outbound_url as _validate_outbound_url
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
 
 LOGGER = logging.getLogger(__name__)
 
@@ -115,7 +122,7 @@ class DLNAReceiverProvider(PluginProvider):
         manifest: ProviderManifest,
         config: ProviderConfig,
     ) -> None:
-        """Initialize provider state; renderer instances are created in loaded_in_mass."""
+        """Initialize provider state before asynchronous setup."""
         super().__init__(mass, manifest, config, self.SUPPORTED_FEATURES)
         self._instances: dict[str, RendererInstance] = {}
         self._registry: RendererRegistry | None = None
@@ -125,11 +132,6 @@ class DLNAReceiverProvider(PluginProvider):
         # on_source_unselected when the session token matches.
         self._claims: dict[str, tuple[str, str]] = {}
         self._metadata_task: asyncio.Task[None] | None = None
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return supported features."""
-        return {ProviderFeature.AUDIO_SOURCE}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return editable options for this provider instance."""
@@ -143,8 +145,10 @@ class DLNAReceiverProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_TARGET_PLAYERS,
                 type=ConfigEntryType.STRING,
-                default_value="*",
+                default_value=[],
                 required=False,
+                options=self._target_player_options(),
+                multi_value=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -163,8 +167,8 @@ class DLNAReceiverProvider(PluginProvider):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def loaded_in_mass(self) -> None:
-        """Initialize renderer instances when loaded in Music Assistant."""
+    async def handle_async_init(self) -> None:
+        """Initialize renderer instances during the awaited provider load phase."""
         self._friendly_prefix = str(
             self.config.get_value(CONF_FRIENDLY_NAME) or DEFAULT_FRIENDLY_NAME,
         )
@@ -196,7 +200,7 @@ class DLNAReceiverProvider(PluginProvider):
         )
         self._registry = RendererRegistry(
             mass=self.mass,
-            target_spec=self._raw_target(),
+            target_player_ids=self._configured_target_player_ids(),
             friendly_prefix=self._friendly_prefix,
             bind_ip=self._bind_ip,
             base_port=base_port,
@@ -212,11 +216,7 @@ class DLNAReceiverProvider(PluginProvider):
             ),
         )
         self._instances = self._registry.instances
-        try:
-            await self._registry.start()
-        except Exception as err:
-            self.unload_with_error(err)
-            return
+        await self._registry.start()
 
         if not self._instances:
             LOGGER.info(
@@ -256,26 +256,27 @@ class DLNAReceiverProvider(PluginProvider):
             self._audio_source_for(source_id, inst) for source_id, inst in self._instances.items()
         ]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the received DLNA audio.
 
-        :param source_id: The AudioSource.item_id requested for playback.
-        :param queue_id: The queue that owns this playback session.
-        :raises MediaNotFoundError: If the source id matches no renderer.
+        :param item_id: The AudioSource.item_id requested for playback.
+        :param media_type: The requested media type, which must be AUDIO_SOURCE.
+        :raises MediaNotFoundError: If the media type or source id is unsupported.
         :raises AudioError: If no DLNA sender has pushed a stream URL yet.
         """
-        del queue_id  # ownership is claimed in on_source_selected
-        inst = self._instances.get(source_id)
+        if media_type is not MediaType.AUDIO_SOURCE:
+            raise MediaNotFoundError(f"Unsupported media type: {media_type}")
+        inst = self._instances.get(item_id)
         if inst is None:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         if not inst.current_stream_url:
             raise AudioError(
                 "DLNA renderer has no active stream — start casting from the sender app first"
             )
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._probe_audio_format(),
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
@@ -314,27 +315,44 @@ class DLNAReceiverProvider(PluginProvider):
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
         bytes_streamed = False
         # Reuse MA's shared HTTP session (matches streams/audio.py) so we
-        # don't open a fresh TCP connector + DNS cache per activation.
+        # don't open a fresh TCP connector + DNS cache per activation. The
+        # policy lookup and the shared connector's lookup are not pinned to
+        # one DNS answer, so a residual DNS-rebinding TOCTOU window remains.
         try:
-            async with self.mass.http_session.get(stream_url, timeout=timeout) as resp:
-                # Re-validate after any redirects: the final URL still has to
-                # be an http(s) endpoint, otherwise refuse to stream. (aiohttp
-                # won't follow non-http schemes, but belt-and-suspenders.)
-                final_url = str(resp.url)
-                if _validate_stream_url(final_url) is None:
+            current_url = stream_url
+            for redirect_count in range(6):
+                safe_url = await _validate_outbound_url(current_url)
+                if safe_url is None:
                     raise AudioError(
-                        f"Upstream DLNA source redirected to disallowed URL: "
-                        f"{_redact_url(final_url)}"
+                        f"Outbound DLNA source destination is not allowed: "
+                        f"{_redact_url(current_url)}"
                     )
-                # Accept any 2xx (e.g. 206 Partial Content is common for audio).
-                if not 200 <= resp.status < 300:
-                    raise AudioError(
-                        f"Upstream DLNA source returned HTTP {resp.status} for "
-                        f"{_redact_url(stream_url)}"
-                    )
-                async for chunk in resp.content.iter_any():
-                    bytes_streamed = True
-                    yield chunk
+                async with self.mass.http_session.get(
+                    safe_url,
+                    timeout=timeout,
+                    allow_redirects=False,
+                ) as resp:
+                    if 300 <= resp.status < 400:
+                        if redirect_count >= 5:
+                            raise AudioError("Upstream DLNA source exceeded five redirects")
+                        location = resp.headers.get("Location")
+                        if not location:
+                            raise AudioError("Upstream DLNA source redirect has no Location")
+                        try:
+                            current_url = urljoin(safe_url, location)
+                        except ValueError as err:
+                            raise AudioError("Upstream DLNA source redirect is invalid") from err
+                        continue
+                    # Accept any 2xx (e.g. 206 Partial Content is common for audio).
+                    if not 200 <= resp.status < 300:
+                        raise AudioError(
+                            f"Upstream DLNA source returned HTTP {resp.status} for "
+                            f"{_redact_url(safe_url)}"
+                        )
+                    async for chunk in resp.content.iter_any():
+                        bytes_streamed = True
+                        yield chunk
+                    break
         except (aiohttp.ClientError, TimeoutError) as err:
             # A drop mid-stream just ends the stream (the sender went away);
             # a failure before the first byte is a real error to surface.
@@ -405,16 +423,42 @@ class DLNAReceiverProvider(PluginProvider):
             await inst.renderer.set_transport_state(TRANSPORT_STATE_STOPPED)
             clear_playback(inst)
 
-    def _raw_target(self) -> str:
-        """
-        Return the configured target spec, defaulting to all players.
+    def _configured_target_player_ids(self) -> frozenset[str]:
+        """Return the configured exact player allowlist, or empty for all players."""
+        value = self.config.get_value(CONF_TARGET_PLAYERS)
+        if not isinstance(value, list):
+            return frozenset()
+        return frozenset(item for item in value if isinstance(item, str) and item)
 
-        Preserve the legacy single-player key for existing installations.
-        """
-        raw = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
-        if not raw:
-            raw = str(self.config.get_value(CONF_TARGET_PLAYER) or "").strip()
-        return raw or "*"
+    def _target_player_options(self) -> list[ConfigValueOption]:
+        """Return selectable MA players plus unavailable saved selections."""
+        selected_ids = self._configured_target_player_ids()
+        players: list[Player] = self.mass.players.all_players(
+            return_unavailable=True,
+            return_protocol_players=False,
+        )
+        candidate_uuids = {
+            normalize_udn_uuid(deterministic_udn(player_id))
+            for player_id in ({player.player_id for player in players} | set(selected_ids))
+        }
+        available_players = [
+            player
+            for player in players
+            if not (
+                (identifier := player.device_info.identifiers.get(IdentifierType.UUID))
+                and normalize_udn_uuid(identifier) in candidate_uuids
+            )
+        ]
+        options = [
+            ConfigValueOption(player.player_id, title=player.display_name)
+            for player in available_players
+        ]
+        available_ids = {player.player_id for player in available_players}
+        options.extend(
+            ConfigValueOption(player_id, title=player_id, disabled=True)
+            for player_id in selected_ids - available_ids
+        )
+        return sorted(options, key=lambda option: (str(option.title).casefold(), str(option.value)))
 
     # ------------------------------------------------------------------
     # AudioSource helpers
@@ -479,14 +523,14 @@ class DLNAReceiverProvider(PluginProvider):
             control point sees the rejection instead of a silent
             200 OK.
         """
-        safe_url = _validate_stream_url(uri)
+        safe_url = await _validate_outbound_url(uri)
         if safe_url is None:
             LOGGER.warning(
-                "Rejecting transport URI for '%s' (unsupported scheme/host): %s",
+                "Rejecting transport URI for '%s' (destination not allowed): %s",
                 inst.player_name or "(default)",
                 _redact_url(uri),
             )
-            raise ValueError("unsupported URI scheme or missing host")
+            raise ValueError("unsupported or disallowed stream destination")
         LOGGER.info(
             "Received transport URI for '%s': %s",
             inst.player_name or "(default)",

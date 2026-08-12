@@ -8,6 +8,9 @@ requiring the full MA runtime to be importable.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import socket
 from urllib.parse import urlsplit, urlunsplit
 
 ALLOWED_STREAM_SCHEMES = frozenset({"http", "https"})
@@ -25,7 +28,56 @@ def validate_stream_url(uri: str) -> str | None:
         return None
     if not parts.hostname:
         return None
+    try:
+        _ = parts.port
+    except ValueError:
+        return None
     return uri
+
+
+async def validate_outbound_url(uri: str) -> str | None:
+    """Return an outbound URL when every resolved destination address is allowed."""
+    if validate_stream_url(uri) is None:
+        return None
+    hostname = urlsplit(uri).hostname
+    if hostname is None:
+        return None
+
+    try:
+        literal = ipaddress.ip_address(hostname)
+    except ValueError:
+        try:
+            answers = await asyncio.get_running_loop().getaddrinfo(
+                hostname,
+                None,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError, UnicodeError:
+            return None
+        if not answers:
+            return None
+        try:
+            addresses = [ipaddress.ip_address(answer[4][0]) for answer in answers]
+        except IndexError, TypeError, ValueError:
+            return None
+        if not all(_is_allowed_destination(address) for address in addresses):
+            return None
+        return uri
+
+    return uri if _is_allowed_destination(literal) else None
+
+
+def _is_allowed_destination(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return whether an IP address is permitted for outbound DLNA traffic."""
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return not (
+        address.is_unspecified
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+    )
 
 
 def redact_url(uri: str) -> str:
@@ -41,6 +93,7 @@ def redact_url(uri: str) -> str:
     """
     try:
         parts = urlsplit(uri)
+        port = parts.port
     except ValueError:
         return "<invalid-url>"
     host = parts.hostname or ""
@@ -49,8 +102,8 @@ def redact_url(uri: str) -> str:
     if ":" in host:
         host = f"[{host}]"
     netloc = host
-    if parts.port:
-        netloc = f"{netloc}:{parts.port}"
+    if port:
+        netloc = f"{netloc}:{port}"
     if parts.username or parts.password:
         netloc = f"***@{netloc}"
     # Drop query + fragment (positions 3 and 4) regardless of whether

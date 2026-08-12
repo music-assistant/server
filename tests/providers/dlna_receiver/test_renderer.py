@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from music_assistant.providers.dlna_receiver.metadata import parse_didl_metadata
 from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
 
 if TYPE_CHECKING:
@@ -187,6 +190,41 @@ async def test_play_pause_stop(
     )
     assert resp.status == 200
     assert renderer.transport_state == "STOPPED"
+
+
+async def test_set_av_transport_uri_preserves_escaped_didl_metadata(
+    client: TestClient[Request, Application], renderer: UPnPRenderer
+) -> None:
+    """SOAP decoding leaves DIDL entities for the DIDL parser to decode once."""
+    received: list[dict[str, str | None]] = []
+
+    async def _capture(_uri: str, metadata: str | None) -> None:
+        received.append(parse_didl_metadata(metadata))
+
+    renderer.on_set_av_transport_uri = _capture
+    body = """\
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <InstanceID>0</InstanceID>
+      <CurrentURI>http://example.com/stream.flac</CurrentURI>
+      <CurrentURIMetaData>&lt;DIDL-Lite xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot; xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot;&gt;&lt;item&gt;&lt;dc:title&gt;Simon &amp;amp; Garfunkel&lt;/dc:title&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</CurrentURIMetaData>
+    </u:SetAVTransportURI>
+  </s:Body>
+</s:Envelope>
+"""
+
+    resp = await client.post(
+        "/AVTransport/control",
+        headers={
+            "SOAPACTION": '"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"',
+        },
+        data=body,
+    )
+
+    assert resp.status == 200
+    assert received[0]["title"] == "Simon & Garfunkel"
+    assert "Simon &amp; Garfunkel" in renderer.current_uri_metadata
 
 
 async def test_play_callback_receives_prior_transport_state(
@@ -384,6 +422,50 @@ async def test_set_av_transport_uri_rejected(
     assert "<errorCode>716</errorCode>" in text
     # State was NOT mutated by the rejected request.
     assert renderer.current_uri == "http://prior.example/stream.flac"
+
+
+async def test_subscribe_response_completes_before_slow_initial_notify(
+    client: TestClient[Request, Application],
+    renderer: UPnPRenderer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow callback cannot delay the SUBSCRIBE response carrying its SID."""
+    import music_assistant.providers.dlna_receiver.eventing as eventing_module  # noqa: PLC0415
+
+    callback_entered = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def _allow_test_server(url: str) -> str:
+        return url
+
+    async def _slow_notify(_request: Request) -> web.Response:
+        callback_entered.set()
+        await release_callback.wait()
+        return web.Response(status=200)
+
+    monkeypatch.setattr(eventing_module, "validate_outbound_url", _allow_test_server)
+    callback_app = web.Application()
+    callback_app.router.add_route("NOTIFY", "/callback", _slow_notify)
+    callback_server = TestServer(callback_app)
+    await callback_server.start_server()
+    await renderer._evt_av_transport.start()
+    response_task = asyncio.create_task(
+        client.request(
+            "SUBSCRIBE",
+            "/AVTransport/event",
+            headers={"CALLBACK": f"<{callback_server.make_url('/callback')}>"},
+        )
+    )
+    try:
+        await asyncio.wait_for(callback_entered.wait(), timeout=1)
+        response = await asyncio.wait_for(asyncio.shield(response_task), timeout=0.2)
+        assert response.status == 200
+        assert response.headers["SID"].startswith("uuid:")
+    finally:
+        release_callback.set()
+        await response_task
+        await renderer._evt_av_transport.stop()
+        await callback_server.close()
 
 
 def test_description_url_brackets_ipv6() -> None:

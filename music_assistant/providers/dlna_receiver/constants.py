@@ -15,7 +15,6 @@ SSDP_MAX_AGE = 1800  # seconds
 
 # Config entry keys
 CONF_FRIENDLY_NAME = "friendly_name"
-CONF_TARGET_PLAYER = "target_player"
 CONF_TARGET_PLAYERS = "target_players"
 CONF_HTTP_PORT = "http_port"
 

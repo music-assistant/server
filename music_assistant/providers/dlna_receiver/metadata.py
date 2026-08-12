@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import time
 import xml.etree.ElementTree as ET
-from html import unescape
 
 from .models import RendererInstance
 
@@ -30,7 +29,6 @@ def parse_didl_metadata(metadata: str | None) -> dict[str, str | None]:
         LOGGER.info("DIDL metadata rejected: document exceeds %d chars", _MAX_DIDL_CHARS)
         return result
 
-    metadata = unescape(metadata)
     lowered = metadata.lower()
     if "<!doctype" in lowered or "<!entity" in lowered:
         LOGGER.info("DIDL metadata rejected: DOCTYPE/ENTITY declaration present")

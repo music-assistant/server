@@ -11,11 +11,14 @@ import asyncio
 import contextlib
 import logging
 import uuid
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from time import monotonic
 from xml.sax.saxutils import escape
 
 import aiohttp
+
+from .urls import redact_url, validate_outbound_url, validate_stream_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -96,7 +99,7 @@ class EventingManager:
             self._session = None
         self._subscriptions.clear()
 
-    def subscribe(
+    async def subscribe(
         self,
         callback_header: str,
         timeout_header: str | None = None,
@@ -113,6 +116,9 @@ class EventingManager:
         callback_urls = self._parse_callback_header(callback_header)
         if not callback_urls:
             raise ValueError("No valid callback URLs in CALLBACK header")
+        for url in callback_urls:
+            if await validate_outbound_url(url) is None:
+                raise ValueError("GENA callback destination is not allowed")
 
         self._remove_expired_subscriptions()
         if len(self._subscriptions) >= self.MAX_SUBSCRIPTIONS:
@@ -129,7 +135,7 @@ class EventingManager:
         LOGGER.info(
             "New GENA subscription: SID=%s, callbacks=%s, timeout=%ds",
             sid,
-            callback_urls,
+            [redact_url(url) for url in callback_urls],
             timeout,
         )
         return sid, timeout
@@ -186,11 +192,7 @@ class EventingManager:
             if sub.is_expired:
                 expired_sids.append(sid)
                 continue
-            task: asyncio.Task[None] = asyncio.create_task(
-                self._send_notify(sub, xml_body),
-            )
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
+            self._track_task(self._send_notify(sub, xml_body))
 
         for sid in expired_sids:
             self._subscriptions.pop(sid, None)
@@ -202,6 +204,10 @@ class EventingManager:
             return
         xml_body = self._build_propertyset(all_vars)
         await self._send_notify(sub, xml_body)
+
+    def track_initial_notify(self, sid: str, all_vars: dict[str, str]) -> None:
+        """Schedule an initial event as a manager-owned background task."""
+        self._track_task(self.notify_initial(sid, all_vars))
 
     # ------------------------------------------------------------------
     # Internal
@@ -231,29 +237,63 @@ class EventingManager:
 
             # UDA §4.1.2: CALLBACK lists URLs in preference order. Use the first
             # one that actually accepts the NOTIFY (2xx); on HTTP errors or network
-            # failures, fall through to the next URL.
+            # failures, fall through to the next URL. The injected shared session
+            # may perform a separate cached lookup after validation, leaving a
+            # residual DNS-rebinding TOCTOU window.
             for url in sub.callback_urls:
+                safe_url = await validate_outbound_url(url)
+                if safe_url is None:
+                    LOGGER.warning(
+                        "NOTIFY callback destination is not allowed: %s",
+                        redact_url(url),
+                    )
+                    continue
                 try:
                     async with session.request(
                         "NOTIFY",
-                        url,
+                        safe_url,
                         headers=headers,
                         data=xml_body,
                         timeout=timeout,
+                        allow_redirects=False,
                     ) as resp:
                         if resp.status >= 300:
                             LOGGER.warning(
                                 "NOTIFY to %s returned %s",
-                                url,
+                                redact_url(safe_url),
                                 resp.status,
                             )
                             continue
-                        LOGGER.debug("NOTIFY sent to %s (SEQ=%d)", url, sub.seq - 1)
+                        LOGGER.debug(
+                            "NOTIFY sent to %s (SEQ=%d)",
+                            redact_url(safe_url),
+                            sub.seq - 1,
+                        )
                         return
                 except aiohttp.ClientError, TimeoutError:
-                    LOGGER.debug("NOTIFY to %s failed, trying next callback", url)
+                    LOGGER.debug(
+                        "NOTIFY to %s failed, trying next callback",
+                        redact_url(safe_url),
+                    )
 
             LOGGER.warning("All NOTIFY callbacks failed for SID %s", sub.sid)
+
+    def _track_task(self, coroutine: Coroutine[object, object, None]) -> None:
+        """Track a background eventing task through completion or shutdown."""
+        task = asyncio.create_task(coroutine)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._handle_task_done)
+
+    def _handle_task_done(self, task: asyncio.Task[None]) -> None:
+        """Retrieve a task result, log unexpected failure, and release ownership."""
+        self._pending_tasks.discard(task)
+        if task.cancelled():
+            return
+        if error := task.exception():
+            LOGGER.error(
+                "GENA eventing task failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     @staticmethod
     def _build_propertyset(variables: dict[str, str]) -> str:
@@ -282,7 +322,7 @@ class EventingManager:
             part = raw.strip()
             if part.startswith("<"):
                 url = part[1:]
-                if url.startswith(("http://", "https://")):
+                if validate_stream_url(url) is not None:
                     urls.append(url)
         return urls
 

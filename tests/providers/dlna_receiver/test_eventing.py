@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
+from typing import Self, cast
 
 import aiohttp
 import pytest
@@ -19,63 +19,78 @@ def manager() -> EventingManager:
     return EventingManager()
 
 
-def test_subscribe_returns_sid_and_timeout(manager: EventingManager) -> None:
+async def test_subscribe_returns_sid_and_timeout(manager: EventingManager) -> None:
     """subscribe() returns a uuid SID and the default timeout."""
-    sid, timeout = manager.subscribe("<http://192.168.1.5:8080/callback>")
+    sid, timeout = await manager.subscribe("<http://192.168.1.5:8080/callback>")
     assert sid.startswith("uuid:")
     assert timeout == 1800
 
 
-def test_subscribe_custom_timeout(manager: EventingManager) -> None:
+async def test_subscribe_custom_timeout(manager: EventingManager) -> None:
     """subscribe() honors a custom Second-N timeout header."""
-    _sid, timeout = manager.subscribe(
+    _sid, timeout = await manager.subscribe(
         "<http://192.168.1.5:8080/callback>",
         "Second-300",
     )
     assert timeout == 300
 
 
-def test_subscribe_multiple_callbacks(manager: EventingManager) -> None:
+async def test_subscribe_multiple_callbacks(manager: EventingManager) -> None:
     """subscribe() stores all callback URLs from a multi-URL CALLBACK header."""
-    sid, _ = manager.subscribe(
-        "<http://host1:8080/cb><http://host2:8080/cb>",
+    sid, _ = await manager.subscribe(
+        "<http://192.168.1.5:8080/cb><http://10.0.0.5:8080/cb>",
     )
     sub = manager._subscriptions[sid]
     assert len(sub.callback_urls) == 2
 
 
-def test_subscribe_no_callback_raises(manager: EventingManager) -> None:
+async def test_subscribe_no_callback_raises(manager: EventingManager) -> None:
     """subscribe() rejects an empty CALLBACK header."""
     with pytest.raises(ValueError, match="No valid callback URLs"):
-        manager.subscribe("")
+        await manager.subscribe("")
 
 
-def test_subscribe_rejects_when_active_limit_is_reached(manager: EventingManager) -> None:
+async def test_subscribe_rejects_loopback_callback(manager: EventingManager) -> None:
+    """GENA callbacks cannot target loopback services."""
+    with pytest.raises(ValueError, match="callback"):
+        await manager.subscribe("<http://127.0.0.1:8080/callback>")
+
+    assert manager._subscriptions == {}
+
+
+async def test_subscribe_allows_lan_callback(manager: EventingManager) -> None:
+    """GENA callbacks on the control point's LAN remain supported."""
+    sid, _timeout = await manager.subscribe("<http://192.168.1.5:8080/callback>")
+
+    assert manager._subscriptions[sid].callback_urls == ["http://192.168.1.5:8080/callback"]
+
+
+async def test_subscribe_rejects_when_active_limit_is_reached(manager: EventingManager) -> None:
     """New subscriptions are rejected once the per-service limit is reached."""
     for idx in range(EventingManager.MAX_SUBSCRIPTIONS):
-        manager.subscribe(f"<http://host:8080/callback/{idx}>")
+        await manager.subscribe(f"<http://192.168.1.5:8080/callback/{idx}>")
 
     with pytest.raises(ValueError, match="limit"):
-        manager.subscribe("<http://host:8080/callback/overflow>")
+        await manager.subscribe("<http://192.168.1.5:8080/callback/overflow>")
 
 
-def test_subscribe_reclaims_expired_slot_at_limit(manager: EventingManager) -> None:
+async def test_subscribe_reclaims_expired_slot_at_limit(manager: EventingManager) -> None:
     """Expired subscriptions are removed before enforcing the active limit."""
     first_sid = ""
     for idx in range(EventingManager.MAX_SUBSCRIPTIONS):
-        sid, _timeout = manager.subscribe(f"<http://host:8080/callback/{idx}>")
+        sid, _timeout = await manager.subscribe(f"<http://192.168.1.5:8080/callback/{idx}>")
         first_sid = first_sid or sid
     manager._subscriptions[first_sid].created_at -= 1801
 
-    manager.subscribe("<http://host:8080/callback/replacement>")
+    await manager.subscribe("<http://192.168.1.5:8080/callback/replacement>")
 
     assert first_sid not in manager._subscriptions
     assert len(manager._subscriptions) == EventingManager.MAX_SUBSCRIPTIONS
 
 
-def test_unsubscribe(manager: EventingManager) -> None:
+async def test_unsubscribe(manager: EventingManager) -> None:
     """unsubscribe() removes the subscription by SID."""
-    sid, _ = manager.subscribe("<http://host:8080/cb>")
+    sid, _ = await manager.subscribe("<http://192.168.1.5:8080/cb>")
     assert sid in manager._subscriptions
     manager.unsubscribe(sid)
     assert sid not in manager._subscriptions
@@ -86,9 +101,9 @@ def test_unsubscribe_unknown_is_noop(manager: EventingManager) -> None:
     manager.unsubscribe("uuid:nonexistent")  # should not raise
 
 
-def test_renew(manager: EventingManager) -> None:
+async def test_renew(manager: EventingManager) -> None:
     """renew() updates the timeout for an active subscription."""
-    sid, _ = manager.subscribe("<http://host:8080/cb>", "Second-100")
+    sid, _ = await manager.subscribe("<http://192.168.1.5:8080/cb>", "Second-100")
     new_timeout = manager.renew(sid, "Second-600")
     assert new_timeout == 600
 
@@ -99,7 +114,7 @@ def test_renew_unknown_raises(manager: EventingManager) -> None:
         manager.renew("uuid:nonexistent")
 
 
-def test_renew_expired_raises_and_removes(manager: EventingManager) -> None:
+async def test_renew_expired_raises_and_removes(manager: EventingManager) -> None:
     """
     renew() on an expired SID raises KeyError AND evicts the stale entry.
 
@@ -107,7 +122,7 @@ def test_renew_expired_raises_and_removes(manager: EventingManager) -> None:
     Precondition Failed — the renderer surfaces the KeyError as 412, and
     the manager must not keep the dead subscription around.
     """
-    sid, _ = manager.subscribe("<http://host:8080/cb>", "Second-100")
+    sid, _ = await manager.subscribe("<http://192.168.1.5:8080/cb>", "Second-100")
     # Force expiry by backdating the subscription's creation timestamp.
     manager._subscriptions[sid].created_at -= 1000
     assert manager._subscriptions[sid].is_expired
@@ -178,7 +193,9 @@ async def test_notify_no_subscribers(manager: EventingManager) -> None:
     await manager.notify({"TransportState": "PLAYING"})
 
 
-async def test_notify_serializes_delivery_per_subscription() -> None:
+async def test_notify_serializes_delivery_per_subscription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Concurrent state changes never overlap NOTIFY delivery for one SID."""
     active_requests = 0
     max_active_requests = 0
@@ -200,10 +217,16 @@ async def test_notify_serializes_delivery_per_subscription() -> None:
     session = aiohttp.ClientSession()
     manager = EventingManager(session=session)
     try:
-        await manager.start()
-        manager.subscribe(f"<{server.make_url('/callback')}>")
+        import music_assistant.providers.dlna_receiver.eventing as eventing_module  # noqa: PLC0415
 
-        await manager.notify({"TransportState": "STOPPED"})
+        async def _allow_test_server(url: str) -> str:
+            return url
+
+        monkeypatch.setattr(eventing_module, "validate_outbound_url", _allow_test_server)
+        await manager.start()
+        sid, _timeout = await manager.subscribe(f"<{server.make_url('/callback')}>")
+        manager.track_initial_notify(sid, {"TransportState": "STOPPED"})
+        await asyncio.gather(*list(manager._pending_tasks))
         await manager.notify({"TransportState": "PLAYING"})
         await asyncio.gather(*list(manager._pending_tasks))
 
@@ -258,7 +281,7 @@ async def test_notify_does_not_hide_unexpected_session_errors() -> None:
             raise RuntimeError("session contract broken")
 
     manager = EventingManager(session=cast("aiohttp.ClientSession", _BrokenSession()))
-    sid, _timeout = manager.subscribe("<http://receiver.local/callback>")
+    sid, _timeout = await manager.subscribe("<http://192.168.1.5/callback>")
 
     with pytest.raises(RuntimeError, match="session contract broken"):
         await manager._send_notify(manager._subscriptions[sid], "<propertyset/>")
@@ -274,6 +297,114 @@ async def test_notify_treats_client_errors_as_delivery_failures() -> None:
             raise aiohttp.ClientConnectionError("offline")
 
     manager = EventingManager(session=cast("aiohttp.ClientSession", _OfflineSession()))
-    sid, _timeout = manager.subscribe("<http://receiver.local/callback>")
+    sid, _timeout = await manager.subscribe("<http://192.168.1.5/callback>")
 
     await manager._send_notify(manager._subscriptions[sid], "<propertyset/>")
+
+
+async def test_notify_does_not_follow_redirect_and_tries_next_callback() -> None:
+    """A redirecting callback fails over without aiohttp following its Location."""
+
+    class _Response:
+        def __init__(self, status: int) -> None:
+            self.status = status
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _RedirectSession:
+        closed = False
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+            self._statuses = [302, 200]
+
+        def request(self, _method: str, url: str, **kwargs: object) -> _Response:
+            self.calls.append((url, kwargs))
+            return _Response(self._statuses.pop(0))
+
+    session = _RedirectSession()
+    manager = EventingManager(session=cast("aiohttp.ClientSession", session))
+    sid, _timeout = await manager.subscribe("<http://192.168.1.5/first><http://192.168.1.6/second>")
+
+    await manager._send_notify(manager._subscriptions[sid], "<propertyset/>")
+
+    assert [url for url, _kwargs in session.calls] == [
+        "http://192.168.1.5/first",
+        "http://192.168.1.6/second",
+    ]
+    assert all(kwargs["allow_redirects"] is False for _url, kwargs in session.calls)
+
+
+async def test_subscribe_logs_only_redacted_callback_url(
+    manager: EventingManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Callback credentials, query, and fragment never enter subscription logs."""
+    callback = "http://alice:secret@192.168.1.5/cb?token=signed#private"
+
+    with caplog.at_level("INFO"):
+        await manager.subscribe(f"<{callback}>")
+
+    assert "alice" not in caplog.text
+    assert "secret" not in caplog.text
+    assert "signed" not in caplog.text
+
+
+async def test_stop_cancels_tracked_initial_notify() -> None:
+    """Shutdown cancels and awaits an in-flight initial event task."""
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class _HangingRequest:
+        async def __aenter__(self) -> None:
+            entered.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _HangingSession:
+        closed = False
+
+        def request(self, *_args: object, **_kwargs: object) -> _HangingRequest:
+            return _HangingRequest()
+
+    manager = EventingManager(session=cast("aiohttp.ClientSession", _HangingSession()))
+    sid, _timeout = await manager.subscribe("<http://192.168.1.5/callback>")
+    manager.track_initial_notify(sid, {"TransportState": "STOPPED"})
+    await entered.wait()
+
+    await manager.stop()
+
+    assert cancelled.is_set()
+    assert manager._pending_tasks == set()
+
+
+async def test_tracked_notify_logs_unexpected_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unexpected background delivery errors are retrieved and logged."""
+
+    class _BrokenSession:
+        closed = False
+
+        def request(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("session contract broken in background")
+
+    manager = EventingManager(session=cast("aiohttp.ClientSession", _BrokenSession()))
+    sid, _timeout = await manager.subscribe("<http://192.168.1.5/callback>")
+
+    with caplog.at_level("ERROR"):
+        manager.track_initial_notify(sid, {"TransportState": "STOPPED"})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert "session contract broken in background" in caplog.text
+    assert manager._pending_tasks == set()
