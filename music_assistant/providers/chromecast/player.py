@@ -434,13 +434,15 @@ class ChromecastPlayer(Player):
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
         self.cancel_pending_app_quit()
-        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
-            return  # already active with a compatible media receiver app
-
         if self.config.get_value(CONF_USE_MASS_APP, True):
             app_id = MASS_APP_ID
         else:
             app_id = APP_MEDIA_RECEIVER
+
+        # compare against the configured app, not any compatible one: otherwise the
+        # use_mass_app setting is ignored for as long as the other app is running
+        if self.cc.app_id == app_id:
+            return  # the configured receiver app is already active
 
         event = asyncio.Event()
         launched = False
