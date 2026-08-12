@@ -402,6 +402,27 @@ class TestStalePositionOnNewStream:
         assert player._attr_elapsed_time == 0
 
     @pytest.mark.asyncio
+    async def test_failed_play_media_releases_the_guard(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device that never took our stream must not stay guarded against its own position."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+        mock_wiim_device.async_play = AsyncMock(side_effect=WiimDeviceException("boom"))
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="New Track"))
+
+        device_media = MagicMock()
+        device_media.uri = "wiimu_airplay"
+        device_media.position = 42
+        mock_wiim_device.current_media = device_media
+
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 42
+
+    @pytest.mark.asyncio
     async def test_sync_position_ignores_position_reported_without_uri(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:

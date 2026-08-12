@@ -155,6 +155,8 @@ class WiimPlayer(Player):
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except (WiimDeviceException, WiimRequestException) as err:
+            # The device never took our stream, so the guard must not outlive the attempt.
+            self._ma_stream_uri = None
             self._handle_command_error("play_media", err)
             return
         self._update_ma_state_from_sdk_cache()
