@@ -30,6 +30,8 @@ from music_assistant.providers.spotify.constants import (
     CONF_PLAYBACK_CALLBACK_URL,
     CONF_REFRESH_TOKEN_GLOBAL,
     CREDENTIALS_FILE,
+    PAIRING_DEVICE_NAME,
+    PAIRING_TIMEOUT,
 )
 from music_assistant.providers.spotify.helpers import authorization_code_from_url
 from music_assistant.providers.spotify.provider import SpotifyProvider
@@ -74,11 +76,12 @@ async def test_missing_credential_fails_the_load(tmp_path: Path) -> None:
 
 
 async def test_pairing_action_stores_the_credential(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Selecting Music Assistant in the Spotify app stores the credential for playback."""
+    """Selecting the pairing device in the Spotify app stores the credential for playback."""
     _patch_librespot(monkeypatch)
+    pairing_mock = AsyncMock(return_value=STORED_CREDENTIALS)
     monkeypatch.setattr(
         "music_assistant.providers.spotify.librespot_credentials_via_pairing",
-        AsyncMock(return_value=STORED_CREDENTIALS),
+        pairing_mock,
     )
     values = _authenticated_values()
 
@@ -88,6 +91,28 @@ async def test_pairing_action_stores_the_credential(monkeypatch: pytest.MonkeyPa
     # with playback authorized, the authorize buttons make way for the clear action
     assert _entry(entries, CONF_ACTION_AUTH_PLAYBACK).hidden
     assert not _entry(entries, CONF_ACTION_CLEAR_AUTH_PLAYBACK).hidden
+
+
+async def test_pairing_advertises_the_non_colliding_device_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The pairing action advertises a name distinct from the Spotify Connect player.
+
+    Both previously advertised as "Music Assistant", so selecting the existing Spotify
+    Connect player in the Spotify app left the playback credential empty.
+    """
+    _patch_librespot(monkeypatch)
+    pairing_mock = AsyncMock(return_value=STORED_CREDENTIALS)
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.librespot_credentials_via_pairing",
+        pairing_mock,
+    )
+
+    await _get_entries(action=CONF_ACTION_AUTH_PLAYBACK, values=_authenticated_values())
+
+    pairing_mock.assert_awaited_once_with("/bin/librespot", PAIRING_DEVICE_NAME, PAIRING_TIMEOUT)
+    assert PAIRING_DEVICE_NAME != "Music Assistant"
 
 
 async def test_pairing_timeout_points_at_the_browser_option(

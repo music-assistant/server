@@ -411,8 +411,8 @@ async def get_config_entries(
             key=CONF_ACTION_AUTH_PLAYBACK,
             type=ConfigEntryType.ACTION,
             label="Authorize playback with the Spotify app",
-            description="Advertises Music Assistant in the Spotify app for a few minutes, "
-            "so you can select it there to authorize playback.",
+            description=f"Advertises '{PAIRING_DEVICE_NAME}' in the Spotify app for a few "
+            "minutes, so you can select it there to authorize playback.",
             action=CONF_ACTION_AUTH_PLAYBACK,
             action_label="Authorize playback",
             required=False,
@@ -424,7 +424,7 @@ async def get_config_entries(
             type=ConfigEntryType.ACTION,
             label="Authorize playback with a web browser",
             description="Opens Spotify in a new browser tab to authorize playback. Use this "
-            "when Music Assistant does not appear in the Spotify app.",
+            f"when '{PAIRING_DEVICE_NAME}' does not appear in the Spotify app.",
             action=CONF_ACTION_AUTH_PLAYBACK_BROWSER,
             action_label="Authorize in browser",
             required=False,

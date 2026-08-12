@@ -35,8 +35,10 @@ LIBRESPOT_REDIRECT_PORT = 5588
 LIBRESPOT_REDIRECT_PATH = "/login"
 LIBRESPOT_REDIRECT_URI = f"http://127.0.0.1:{LIBRESPOT_REDIRECT_PORT}{LIBRESPOT_REDIRECT_PATH}"
 LOOPBACK_WAIT_TIMEOUT = 30  # seconds before offering the manual paste instead
-# name advertised to the Spotify app while pairing; also shown in the instructions
-PAIRING_DEVICE_NAME = "Music Assistant"
+# name advertised to the Spotify app while pairing; also shown in the instructions.
+# Must differ from the Spotify Connect player's own "Music Assistant" name, or picking the
+# existing player in the Spotify app leaves the playback credential empty.
+PAIRING_DEVICE_NAME = "Music Assistant Pairing"
 PAIRING_TIMEOUT = 120  # seconds the pairing action waits for the user to pick the device
 CHECK_AUTH_TIMEOUT = 30  # seconds
 CREDENTIALS_FILE = "credentials.json"

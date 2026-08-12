@@ -339,9 +339,17 @@ async def pkce_auth_flow(
 
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:
     """Log the pairing daemon's output so a failure to advertise is diagnosable."""
+    # librespot repeats identical warnings (e.g. libmdns "No route to host") on every
+    # advertisement retry even when pairing succeeds, so only the first occurrence of a
+    # given line is logged as a warning; exact repeats are demoted to debug
+    seen_warnings: set[str] = set()
     async for line in librespot_proc.iter_stderr():
         if "ERROR" in line or "WARN" in line:
-            LOGGER.warning("[librespot-pairing] %s", line)
+            if line in seen_warnings:
+                LOGGER.debug("[librespot-pairing] %s", line)
+            else:
+                seen_warnings.add(line)
+                LOGGER.warning("[librespot-pairing] %s", line)
         else:
             LOGGER.debug("[librespot-pairing] %s", line)
 
