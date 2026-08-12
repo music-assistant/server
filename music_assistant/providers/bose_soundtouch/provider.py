@@ -11,7 +11,6 @@ from zeroconf import ServiceStateChange
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.bose_soundtouch.client.exceptions import SoundtouchError
 
 from .client import SessionConfiguration, SoundtouchDevice
 from .config import (
