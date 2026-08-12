@@ -171,6 +171,7 @@ CONF_UNDERLYING_PLAYER_ID: Final[str] = (
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
+CONF_PREFER_WAV_FOR_LIVE_SOURCES: Final[str] = "prefer_wav_for_live_sources"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"  # legacy; consumed by one-time migration
 CONF_CROSSFADE_MODE: Final[str] = "crossfade_mode"
@@ -500,6 +501,18 @@ CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
 )
 CONF_ENTRY_OUTPUT_CODEC_ENFORCE_FLAC = ConfigEntry.from_dict(
     {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
+)
+
+CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES = ConfigEntry(
+    key=CONF_PREFER_WAV_FOR_LIVE_SOURCES,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
+)
+CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES.to_dict(), "default_value": True}
 )
 
 
