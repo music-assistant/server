@@ -83,6 +83,7 @@ class SessionState:
         return {
             "session_id": self.session_id,
             "station_id": self.station_id,
+            "queue_id": self.queue_id,
             "status": self.status,
             "created_at": self.created_at,
             "started_at": self.started_at,

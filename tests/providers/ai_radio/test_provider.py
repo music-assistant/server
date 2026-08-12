@@ -131,6 +131,20 @@ def test_resolve_session_for_stop_raises_when_nothing_running() -> None:
         provider._resolve_session_for_stop(session_id=None, station_id=None)
 
 
+def test_session_state_as_dict_reports_the_resolved_queue() -> None:
+    """Serialize the queue id once a run has resolved its target queue."""
+    session = SessionState(session_id="s1", station_id="st", queue_id="living_room")
+
+    assert session.as_dict()["queue_id"] == "living_room"
+
+
+def test_session_state_as_dict_reports_no_queue_before_resolution() -> None:
+    """Report no queue id before a run resolves its target queue."""
+    session = SessionState(session_id="s1", station_id="st")
+
+    assert session.as_dict()["queue_id"] is None
+
+
 @pytest.mark.asyncio
 async def test_start_run_dynamic_requires_player_id() -> None:
     """Reject dynamic run start when no player is configured."""
