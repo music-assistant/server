@@ -3,7 +3,7 @@
   "domain": "filesystem_yandex_disk",
   "name": "Yandex Disk",
   "description": "Stream music, audiobooks and podcasts stored on Yandex Disk",
-  "documentation": "https://music-assistant.io/music-providers/filesystem/",
+  "documentation": "https://music-assistant.io/music-providers/yandex-disk/",
   "codeowners": ["@TrudenBoy"],
   "credits": [
     "[yadisk](https://github.com/ivknv/yadisk)"
