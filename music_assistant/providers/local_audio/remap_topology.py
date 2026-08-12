@@ -130,6 +130,7 @@ def compute_remap_topology(
     channel_map: list[str],
     max_output_channels: int,
     display_prefix: str | None = None,
+    hardware_tag: str | None = None,
 ) -> list[RemapSinkSpec]:
     """
     Compute the remap-sink topology for one multi-channel master sink.
@@ -142,14 +143,16 @@ def compute_remap_topology(
         names, e.g. ["front-left", "front-right", "rear-left", ...]).
     :param max_output_channels: The master sink's channel count.
     :param display_prefix: Optional untagged card name prefix (i.e.
-        normalize_card_name() called without a hardware_tag), used for
-        each sink's PA "description" property instead of its sink_name.
-        Keeps the hash tag out of the human-facing name — it should only
-        ever appear once, as the bracketed suffix _labeled_display_name()
-        appends — rather than duplicated inside the name itself, which
-        happens if description is left to default to sink_name (the
-        tag-included technical identifier). Falls back to card_name
-        (tag included) if not given, matching the old behavior.
+        normalize_card_name() called without a hardware_tag), used as the
+        base of each sink's PA "description" property. Falls back to
+        card_name (tag included) if not given.
+    :param hardware_tag: Optional short stable hash tag (see
+        sendspin_bridge.short_hardware_tag()), embedded into each sink's
+        description as "..._[tag]_suffix" — positioned before the zone
+        suffix rather than at the very end, so that sorting players by
+        name groups every zone of the same physical card together (with
+        zone type as the secondary sort key within that group), rather
+        than grouping same-named zones together across different cards.
     :returns: List of RemapSinkSpec to create. Empty if the master is
         already stereo or smaller (channels <= 2) — nothing to remap.
     """
@@ -157,6 +160,7 @@ def compute_remap_topology(
         return []
 
     description_prefix = display_prefix if display_prefix is not None else card_name
+    tag_infix = f"_[{hardware_tag}]" if hardware_tag else ""
     channel_set = set(channel_map)
     specs: list[RemapSinkSpec] = []
 
@@ -165,7 +169,7 @@ def compute_remap_topology(
             specs.append(
                 RemapSinkSpec(
                     sink_name=f"{card_name}_{suffix}",
-                    description=f"{description_prefix}_{suffix}",
+                    description=f"{description_prefix}{tag_infix}_{suffix}",
                     master_channel_map=(ch_a, ch_b),
                     channel_map=ZONE_CHANNEL_MAP,
                     channels=2,
@@ -176,7 +180,7 @@ def compute_remap_topology(
         specs.append(
             RemapSinkSpec(
                 sink_name=f"{card_name}_multichannel_stereo",
-                description=f"{description_prefix}_multichannel_stereo",
+                description=f"{description_prefix}{tag_infix}_multichannel_stereo",
                 master_channel_map=tuple(channel_map),
                 channel_map=tuple(channel_map),
                 channels=max_output_channels,
