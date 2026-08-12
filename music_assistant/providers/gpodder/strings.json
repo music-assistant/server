@@ -13,8 +13,8 @@
       "description": "Password for gPodder instance."
     },
     "device_id": {
-      "label": "Device ID",
-      "description": "Device ID of user."
+      "label": "Device ID (optional)",
+      "description": "Optional device ID of user."
     },
     "url_nc": {
       "label": "Nextcloud URL",
