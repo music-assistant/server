@@ -160,7 +160,12 @@ async def create_ai_engine_config_entries(
     :param category: The settings category to show the entries under.
     """
     return _create_engine_config_entries(
-        await get_ai_engines(mass), key, depends_on, required, category, "ai_engine_unavailable"
+        await get_ai_engines(mass),
+        key,
+        depends_on,
+        required,
+        category,
+        unavailable_translation_key="ai_engine_unavailable",
     )
 
 
@@ -184,7 +189,12 @@ async def create_tts_engine_config_entries(
     :param category: The settings category to show the entries under.
     """
     return _create_engine_config_entries(
-        await get_tts_engines(mass), key, depends_on, required, category, "tts_engine_unavailable"
+        await get_tts_engines(mass),
+        key,
+        depends_on,
+        required,
+        category,
+        unavailable_translation_key="tts_engine_unavailable",
     )
 
 
@@ -261,7 +271,8 @@ def _create_engine_config_entries(
     depends_on: str | None,
     required: bool = False,
     category: str = "features",
-    unavailable_translation_key: str | None = None,
+    *,
+    unavailable_translation_key: str,
 ) -> tuple[ConfigEntry, ...]:
     """Build the picker (and unavailable alert) config entries for the given engines."""
     entry = ConfigEntry(

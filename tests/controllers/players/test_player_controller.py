@@ -57,7 +57,9 @@ from music_assistant.constants import (
     CONF_VOLUME_STEP,
 )
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
@@ -3196,6 +3198,24 @@ class TestPlayAnnouncementMessage:
 
         registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
         assert registered["pre_announce"] is True
+
+    async def test_the_engine_gets_the_shorter_announcement_timeout(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The engine is capped well below the background default, it holds the player lock."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        query = AsyncMock(return_value=SimpleNamespace(path="http://speech/spoken.mp3"))
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(f"{self.ANNOUNCE_MODULE}.query_tts_engine", query),
+        ):
+            await controller.play_announcement("player_1", message="hello")
+
+        assert query.call_args.kwargs["timeout"] == ANNOUNCEMENT_TTS_TIMEOUT
+        assert ANNOUNCEMENT_TTS_TIMEOUT < TTS_QUERY_TIMEOUT_SECONDS
 
     async def test_an_engine_without_a_message_is_rejected(self, mock_mass: MagicMock) -> None:
         """Naming an engine for a url announcement is rejected instead of silently ignored."""
