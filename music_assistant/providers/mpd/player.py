@@ -18,7 +18,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import CONF_PASSWORD
+from music_assistant.constants import (
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    CONF_PASSWORD,
+)
 from music_assistant.models.player import Player
 from music_assistant.models.setup_flow import SetupFlowError
 
@@ -112,6 +115,7 @@ class MPDPlayer(Player):
         """
         return [
             CONF_ENTRY_OUTPUT_CODEC_MPD,
+            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
 
     async def on_config_updated(self) -> None:
