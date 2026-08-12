@@ -758,23 +758,31 @@ class SyncGroupPlayer(Player):
         self._cancel_reform_timer()
         self._playback_start_at = float("-inf")
         if sync_leader := self.sync_leader:
-            # dissolve the temporary syncgroup from the sync leader
+            # dissolve the temporary syncgroup from the player that holds the members:
+            # ungrouping from a leader that no longer holds them is a no-op and would
+            # leave the members grouped and streaming with no way back
+            group_leader = self._protocol_group_leader(sync_leader)
             sync_children = [
-                x for x in sync_leader.state.group_members if x != sync_leader.player_id
+                x for x in group_leader.state.group_members if x != group_leader.player_id
             ]
             if sync_children:
                 # wait for the leader's state to reflect the ungroup
                 # use _handle_set_members directly to avoid the redirect loop
                 # (cmd_set_members redirects sync-leader targets back to this syncgroup)
                 async with (
-                    self.mass.players.wait_for_player_update(sync_leader.player_id, timeout=5),
+                    self.mass.players.wait_for_player_update(group_leader.player_id, timeout=5),
                     self.mass.players.get_player_lock(
-                        sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+                        group_leader.player_id, PlayerLockPurpose.PLAYBACK
                     ),
                 ):
                     await self.mass.players._handle_set_members(
-                        sync_leader, player_ids_to_remove=sync_children
+                        group_leader, player_ids_to_remove=sync_children
                     )
+            if group_leader is not sync_leader:
+                # our callers only ever stop the leader we track, so a provider-promoted
+                # one would keep streaming on its own once the members are released
+                await self.mass.players._handle_cmd_stop(group_leader.player_id)
+                self.mass.players.schedule_active_output_protocol_clear(group_leader)
         # Clear the leader's active protocol once it stops playing; the controller's
         # clearing in _handle_cmd_stop is skipped for a still-grouped protocol player.
         if sync_leader:
@@ -850,6 +858,9 @@ class SyncGroupPlayer(Player):
     #     (_member_supports_protocol_domain / _select_sync_leader)
     #   - downshift to the native protocol when the last protocol-requiring
     #     member is gone (_any_member_requires_protocol_domain)
+    #   - stay aligned with the protocol's own view of the group, both in member
+    #     order (_align_members_with_session) and in who leads it
+    #     (_protocol_group_leader)
     # The helpers below cover those needs. Composition decisions (which protocol
     # to use given the current member mix) intentionally live in the group:
     # individual protocol providers don't have visibility into the rest of the
@@ -941,6 +952,62 @@ class SyncGroupPlayer(Player):
         ):
             return protocol_player
         return self.sync_leader
+
+    def _align_members_with_session(self, session_player: Player | None) -> None:
+        """
+        Re-order the tracked members to match the live session's member order.
+
+        Members that are not part of the live session keep their relative order at
+        the end of the list.
+
+        :param session_player: The player that owns the live sync session.
+        """
+        if session_player is None:
+            return
+        # the provider's own group_members, not state.group_members: the latter is
+        # set-derived for non-protocol players and loses the member order
+        session_order = [
+            x
+            for x in self._translate_to_parent_ids(session_player.group_members)
+            if x in self._attr_group_members
+        ]
+        if not session_order:
+            return
+        self._attr_group_members = [
+            *session_order,
+            *[x for x in self._attr_group_members if x not in session_order],
+        ]
+
+    def _protocol_group_leader(self, sync_leader: Player) -> Player:
+        """
+        Return the member that currently holds the protocol-level group.
+
+        This is normally the sync leader itself, but a provider may have promoted a
+        different member at the protocol level. Falls back to the sync leader when no
+        member reports holding others.
+
+        :param sync_leader: The sync leader tracked by this group.
+        """
+        if sync_leader.state.group_members:
+            return sync_leader
+        for member_id in self._attr_group_members:
+            if member_id == sync_leader.player_id:
+                continue
+            member = self.mass.players.get_player(member_id)
+            if member is None or not member.state.available:
+                continue
+            # a leader always lists itself alongside its members; only adopt one that
+            # holds members of this group, never a group formed outside of MA
+            held = [x for x in member.state.group_members if x != member_id]
+            if held and not set(held).isdisjoint(self._attr_group_members):
+                self.logger.warning(
+                    "Syncgroup %s tracks %s as leader but %s holds the group members",
+                    self.display_name,
+                    sync_leader.display_name,
+                    member.display_name,
+                )
+                return member
+        return sync_leader
 
     def _update_attributes(self) -> None:
         """Update dynamic attributes."""
@@ -1165,6 +1232,11 @@ class SyncGroupPlayer(Player):
         # Remove the old leader from our group members list
         if old_leader_id in self._attr_group_members:
             self._attr_group_members.remove(old_leader_id)
+
+        # A provider may hand the live session to its own first remaining member, so our
+        # member order has to match the session's before we pick from it — otherwise we
+        # end up tracking a different leader than the one that inherits the session.
+        self._align_members_with_session(session_player)
 
         # Pick a new leader preferring one that supports the currently active
         # protocol so the session continuation is seamless.
