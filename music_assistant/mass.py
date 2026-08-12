@@ -17,7 +17,14 @@ from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InvalidToken,
+    LoginFailed,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.provider import ProviderManifest
@@ -776,7 +783,14 @@ class MusicAssistant:
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
-            will_retry = allow_retry and isinstance(exc, MusicAssistantError)
+            will_retry = (
+                allow_retry
+                and isinstance(exc, MusicAssistantError)
+                and not isinstance(
+                    exc,
+                    (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
+                )
+            )
             if will_retry:
                 self.call_later(
                     120,
