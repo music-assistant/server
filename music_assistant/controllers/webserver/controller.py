@@ -431,24 +431,28 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
-    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+    def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
         """
-        Set the sendspin player_id on websocket clients for a specific user.
+        Set the sendspin player_id on the websocket clients holding the given token.
 
         This is called by the sendspin proxy when a client connects, allowing
-        the player controller to auto-whitelist the player for that user's session.
+        the player controller to auto-whitelist the player for that session.
+        Party guests all share one guest account, so the token (one per guest
+        device) decides which sessions (all tabs of that browser) a web player
+        belongs to, not the user.
 
-        :param user_id: The user ID to set the sendspin player for.
+        :param token: The access token the sendspin proxy authenticated with.
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._authenticated_user and client._authenticated_user.user_id == user_id:
-                client._sendspin_player_id = player_id
-                self.logger.debug(
-                    "Set sendspin player %s for websocket client of user %s",
-                    player_id,
-                    client._authenticated_user.username,
-                )
+            if client._current_token != token:
+                continue
+            client._sendspin_player_id = player_id
+            self.logger.debug(
+                "Set sendspin player %s for websocket client of user %s",
+                player_id,
+                client._authenticated_user.username if client._authenticated_user else "unknown",
+            )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
         """

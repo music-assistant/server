@@ -277,6 +277,17 @@ class AirPlayPlayer(Player):
         """Return True: members are attached to this player's own stream session."""
         return True
 
+    @property
+    def live_session_members(self) -> list[str]:
+        """Return the id's of the players the running stream session feeds."""
+        # group membership is bookkeeping that outlives the session: a member can be
+        # dropped from the session (write failures) or never make it in (a refused
+        # late join) while still being listed as part of the group, and without a
+        # session there is nobody to render with at all
+        if self.stream and self.stream.running and self.stream.session:
+            return [x.player_id for x in self.stream.session.sync_clients]
+        return []
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # Pairing/credentials are no longer config entries: they are collected by the

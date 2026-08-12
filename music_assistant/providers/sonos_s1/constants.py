@@ -119,6 +119,10 @@ SUBSCRIPTION_SERVICES = {
 DISCOVERY_INTERVAL = 1800
 NEVER_TIME = 0
 RESUB_COOLDOWN_SECONDS = 10.0
+# S1 speakers often drop or delay control requests while busy, so a single failed request
+# is not enough to mark a speaker offline. A failing ping is only trusted once events and
+# polls have both been silent for this long.
+AVAILABILITY_TIMEOUT = 60.0
 # S1 speakers apply a command a moment after acknowledging it, so the resulting state is
 # read back with a short delay instead of trusting the response to the command itself.
 COMMAND_POLL_DELAY = 2

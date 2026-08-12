@@ -445,8 +445,8 @@ class SendspinBasePlayer(Player):
                         key=CONF_PAIRING_METHOD,
                         type=ConfigEntryType.STRING,
                         required=True,
-                        default_value=options[0],
                         options=[ConfigValueOption(value=option) for option in options],
+                        expanded_options=True,
                     )
                 ],
                 step_id="select_method",
@@ -1410,7 +1410,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
 
-        await self.playback_session.cancel("new media requested")
+        # The spec reserves stream/end for queue-empty, not track changes.
+        await self.playback_session.cancel("new media requested", keep_stream=True)
 
         # Cast-only: reset future before start() to avoid racing _on_stream_start
         # and to cancel any stale pending future from a previous timed-out attempt.

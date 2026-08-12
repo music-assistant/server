@@ -9,6 +9,7 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     create_sample_rates_config_entry,
 )
 
@@ -40,6 +41,7 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     # enable flow mode by default as cast devices handle a continuous
     # flow stream more reliably than enqueueing individual tracks
