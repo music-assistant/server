@@ -568,8 +568,8 @@ class SyncGroupPlayer(Player):
             # just a regular member(s) added/removed action,
             # we can simply update the syncgroup members on the sync leader.
             # `active_protocol_domain` is derived from live state, so the
-            # group will naturally downshift once it re-forms if the last
-            # protocol-requiring member was removed.
+            # group will naturally downshift once it re-forms if every
+            # remaining member can play on the leader's native protocol.
             # use _handle_set_members directly to avoid the redirect loop
             # (cmd_set_members redirects sync-leader targets back to this syncgroup)
             async with self.mass.players.get_player_lock(
@@ -611,10 +611,10 @@ class SyncGroupPlayer(Player):
         Derive the active protocol domain for this sync group on the fly.
 
         Returns the domain of the protocol currently carrying the live stream
-        session, EXCEPT when no remaining member actually requires that
-        non-native protocol — in which case the group should downshift and
-        this returns the leader's native provider domain. Always computed
-        from live state so it cannot drift from reality.
+        session, EXCEPT when every remaining member can also play on the
+        leader's native domain — in which case the group should downshift and
+        this returns that native domain. Always computed from live state so it
+        cannot drift from reality.
 
         Because of that downshift this is a hint for the next leader selection,
         not an address for the live session: use ``_active_session_player()``
@@ -625,9 +625,9 @@ class SyncGroupPlayer(Player):
             return None
         domain = session_player.provider.domain
         native_domain = self.sync_leader.provider.domain
-        # If a non-native protocol is in use, only keep it as "active" for
-        # leader-selection purposes when some member still requires it.
-        if domain != native_domain and not self._any_member_requires_protocol_domain(domain):
+        # Keep a non-native protocol "active" for leader-selection purposes unless
+        # the whole group can be reached on the leader's native domain.
+        if domain != native_domain and self._all_members_can_play_on_domain(native_domain):
             return native_domain
         return domain
 
@@ -858,8 +858,8 @@ class SyncGroupPlayer(Player):
     #     the right object
     #   - choose new leaders that keep protocol continuity
     #     (_member_supports_protocol_domain / _select_sync_leader)
-    #   - downshift to the native protocol when the last protocol-requiring
-    #     member is gone (_any_member_requires_protocol_domain)
+    #   - downshift to the native protocol once every remaining member can play
+    #     on it (_all_members_can_play_on_domain)
     #   - stay aligned with the protocol's own view of the group, both in member
     #     order (_align_members_with_session) and in who leads it
     #     (_protocol_group_leader)
@@ -901,37 +901,34 @@ class SyncGroupPlayer(Player):
                 return True
         return False
 
-    def _any_member_requires_protocol_domain(self, domain: str) -> bool:
+    def _all_members_can_play_on_domain(self, domain: str) -> bool:
         """
-        Return True if any current member can only play via the given protocol domain.
+        Return True if every current member has a playback path on the given domain.
 
-        A member "requires" the protocol when all of its available playback
-        paths are on that domain — i.e. it has no native playback path outside
-        this domain AND no linked output protocol outside this domain. This
-        covers plain protocol-domain players (e.g. AirPlay) as well as
-        UniversalPlayer wrappers whose native ``provider.domain`` is
-        ``universal_player`` but which can still only play via a single
-        linked protocol.
+        A playback path is a member's own native playback or one of its
+        available linked output protocols. Members that are unavailable or
+        expose no playback path at all are ignored, so they never hold the
+        group on a protocol.
 
-        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        :param domain: The playback path domain to check (e.g. "airplay", "sonos").
         """
         for member_id in self._attr_group_members:
             member = self.mass.players.get_player(member_id)
             if member is None or not member.state.available:
                 continue
             # Collect the set of available playback path domains for this member.
+            # UniversalPlayer wrappers have no native path of their own: their
+            # ``provider.domain`` is ``universal_player``, which is never a
+            # domain the group can play on.
             paths: set[str] = set()
             if member.is_native_player:
                 paths.add(member.provider.domain)
             for protocol in member.linked_output_protocols:
                 if protocol.available:
                     paths.add(protocol.protocol_domain)
-            if not paths:
-                # nothing available at all, skip rather than force a protocol
-                continue
-            if paths == {domain}:
-                return True
-        return False
+            if paths and domain not in paths:
+                return False
+        return True
 
     def _active_session_player(self) -> Player | None:
         """

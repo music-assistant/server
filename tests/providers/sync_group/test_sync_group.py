@@ -266,6 +266,89 @@ class TestActiveProtocolDomain:
         sgp._attr_group_members = ["leader"]
         assert sgp.active_protocol_domain == "sonos"
 
+    def test_bridged_airplay_member_keeps_the_protocol(self) -> None:
+        """An AirPlay device holds the group on AirPlay despite its Sendspin bridge."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader", provider_domain="sonos", active_output_protocol="ap_leader"
+        )
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        # an Apple TV plays AirPlay natively and carries a Sendspin bridge on top,
+        # so its playback paths are airplay + sendspin - neither reaches sonos
+        apple_tv = _make_mock_player(
+            "apple_tv", provider_domain="airplay", protocol_domains=["sendspin"]
+        )
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "ap_leader": ap_protocol, "apple_tv": apple_tv}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "apple_tv"]
+        assert sgp.active_protocol_domain == "airplay"
+
+    def test_member_from_another_provider_keeps_the_protocol(self) -> None:
+        """A member of a different provider keeps the shared protocol active."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="sonos",
+            protocol_domains=["sendspin"],
+            active_output_protocol="sp_leader",
+        )
+        sp_protocol = _make_mock_player("sp_leader", provider_domain="sendspin")
+        # a Chromecast can only meet the Sonos leader on the shared sendspin bridge
+        chromecast = _make_mock_player(
+            "chromecast", provider_domain="chromecast", protocol_domains=["sendspin"]
+        )
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "sp_leader": sp_protocol, "chromecast": chromecast}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "chromecast"]
+        assert sgp.active_protocol_domain == "sendspin"
+
+    def test_universal_leader_never_downshifts_to_its_wrapper_domain(self) -> None:
+        """A wrapped leader has no native path, so the live protocol stays active."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        # universal players play exclusively through their linked protocols
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="universal_player",
+            protocol_domains=["airplay", "sendspin"],
+            active_output_protocol="ap_leader",
+        )
+        leader.is_native_player = False
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        mass.players.get_player = _player_lookup({"leader": leader, "ap_leader": ap_protocol})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        assert sgp.active_protocol_domain == "airplay"
+
+    def test_unreachable_members_do_not_block_the_downshift(self) -> None:
+        """Members that are offline or have no playback path are ignored."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader", provider_domain="sonos", active_output_protocol="ap_leader"
+        )
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        offline = _make_mock_player("offline", provider_domain="airplay", available=False)
+        no_paths = _make_mock_player("no_paths", provider_domain="airplay")
+        no_paths.is_native_player = False
+        mass.players.get_player = _player_lookup(
+            {
+                "leader": leader,
+                "ap_leader": ap_protocol,
+                "offline": offline,
+                "no_paths": no_paths,
+            }
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "offline", "no_paths", "gone"]
+        assert sgp.active_protocol_domain == "sonos"
+
     def test_dissolve_clears_sync_leader(self) -> None:
         """Verify _dissolve_syncgroup clears the sync leader."""
         mass = _make_mock_mass()
@@ -635,37 +718,80 @@ class TestDynamicLeaderSwitch:
             protocol_domains=["airplay"],
             active_output_protocol="ap_old",
         )
-        # AirPlay device that is also reachable over its Sendspin bridge, so it
-        # does not count as requiring AirPlay and the group is due to downshift
-        apple_tv = _make_mock_player(
-            "apple_tv", provider_domain="airplay", protocol_domains=["sendspin"]
+        # streams over AirPlay but can also play natively, so it does not hold
+        # the group on AirPlay and the group is due to downshift
+        kitchen = _make_mock_player(
+            "kitchen",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_kitchen",
         )
+        kitchen.linked_output_protocols[0].output_protocol_id = "ap_kitchen"
         # native-only member that never joined the live session
         spare = _make_mock_player("spare", provider_domain="sonos")
 
         ap_old = _make_mock_player("ap_old", provider_domain="airplay")
-        ap_old.group_members = ["ap_old", "apple_tv"]
-        ap_old.live_session_members = ["ap_old", "apple_tv"]
+        ap_kitchen = _make_mock_player("ap_kitchen", provider_domain="airplay")
+        ap_kitchen.protocol_parent_id = "kitchen"
+        # the session reports who takes part but no order, so our tracked order stands
+        ap_old.group_members = []
+        ap_old.live_session_members = ["ap_old", "ap_kitchen"]
 
         mass.players.get_player = _player_lookup(
             {
                 "old_leader": old_leader,
-                "apple_tv": apple_tv,
+                "kitchen": kitchen,
                 "spare": spare,
                 "ap_old": ap_old,
+                "ap_kitchen": ap_kitchen,
             }
         )
 
         sgp.sync_leader = old_leader
-        sgp._attr_group_members = ["old_leader", "apple_tv", "spare"]
+        # spare comes first, so selecting on the downshifted domain would pick it
+        sgp._attr_group_members = ["old_leader", "spare", "kitchen"]
         assert sgp.active_protocol_domain == "sonos"
 
         with patch.object(sgp, "update_state"):
             await sgp._dynamic_leader_switch("old_leader")
 
         # picking the native-only spare would have cost a dissolve + reform
-        assert sgp.sync_leader == apple_tv
+        assert sgp.sync_leader == kitchen
         ap_old.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+
+    @pytest.mark.asyncio
+    async def test_reform_hint_keeps_the_protocol_a_member_depends_on(self) -> None:
+        """The re-form hint names a protocol the remaining member can actually play on."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_old",
+        )
+        # reachable over AirPlay and its Sendspin bridge, but never over sonos
+        apple_tv = _make_mock_player(
+            "apple_tv", provider_domain="airplay", protocol_domains=["sendspin"]
+        )
+        ap_old = _make_mock_player("ap_old", provider_domain="airplay")
+        ap_old.group_members = []
+        # the remaining member never joined the session, so no seamless handoff
+        ap_old.live_session_members = ["ap_old"]
+
+        mass.players.get_player = _player_lookup(
+            {"old_leader": old_leader, "apple_tv": apple_tv, "ap_old": ap_old}
+        )
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "apple_tv"]
+
+        with patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform:
+            await sgp._dynamic_leader_switch("old_leader")
+
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("preferred_protocol_domain") == "airplay"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
