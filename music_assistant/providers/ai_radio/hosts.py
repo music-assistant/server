@@ -431,11 +431,7 @@ class AIRadioHostsMixin:
         return [_compile_preset_host(preset) for preset in PRESET_HOSTS]
 
     def _migrate_stations_v2_to_v3(self, stations: list[dict[str, Any]]) -> None:
-        """
-        Extract host profiles out of v2 stations and slim the stations in place.
-
-        :param stations: v2 station dicts, mutated in place to the v3 shape.
-        """
+        """Extract host profiles out of v2 stations and slim the stations in place."""
         legacy_keys = ("general", "sections", "section_ids", "section_order", "merge_section_id")
         seen: dict[str, str] = {}
         for station in stations:

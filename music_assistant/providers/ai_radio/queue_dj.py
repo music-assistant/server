@@ -75,9 +75,8 @@ class AIRadioQueueDJMixin:
                         raise InvalidDataError(f"Unknown host id: {host_id}")
                     armed = self._arm_dj_state(queue_id, host_id)
                 await self._write_queue_dj()
-            # any pending clip other than the armed session's own carries a persona and voice
-            # that is no longer the queue's, so it has to go before the replan can plant this
-            # host's clips into the gaps it frees up
+            # stale clips carry the old host's persona, so they must go before a replan
+            # can reuse the gaps they occupy
             self._remove_pending_dj_clips(queue_id)
         except Exception:
             # an armed state that never reached its cleanup stays unready forever, which
@@ -88,10 +87,9 @@ class AIRadioQueueDJMixin:
                         del self._dj_queues[queue_id]
             raise
         if armed is not None:
-            # only now may this state plan: a pass racing the cleanup above would see the
-            # gaps the old clips still occupy, mark them served and leave them empty.
-            # a newer switch may already have replaced us, and marks its own state
             if self._dj_queues.get(queue_id) is armed:
+                # only if we're still the live state: a newer switch may have replaced us.
+                # flipped after cleanup so a racing pass doesn't mark old clips' gaps served
                 armed.ready = True
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
@@ -184,9 +182,8 @@ class AIRadioQueueDJMixin:
             try:
                 await self._replan_queue(queue_id)
             except Exception:
-                # clearing the request keeps a later event able to schedule a fresh task,
-                # and returning keeps a permanently failing host from hot-looping here.
-                # a re-arm mid-pass swapped in a new state, so clear the live one
+                # cleared (not left pending) so a later event can retry without hot-looping
+                # here; re-fetched since a re-arm mid-pass may have swapped in a new state
                 self.logger.exception("Queue DJ replan failed for %s", queue_id)
                 if (live_state := self._dj_queues.get(queue_id)) is not None:
                     live_state.replan_pending = False
@@ -201,9 +198,8 @@ class AIRadioQueueDJMixin:
             # cleared up front so an event landing mid-pass requests a fresh pass
             state.replan_pending = False
             if not state.ready:
-                # a switch armed this state and is still clearing the previous host's clips.
-                # planning now would mark the gaps those clips still hold as served, so this
-                # request is dropped: the switch schedules its own pass once it is done
+                # a switch armed this state but hasn't finished clearing the old clips yet;
+                # planning now would mark their gaps served. the switch replans once ready
                 self.logger.debug("Queue %s is waiting for its DJ switch cleanup", queue_id)
                 return
             if any(
@@ -216,9 +212,8 @@ class AIRadioQueueDJMixin:
                 return
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
-                # an unknown queue is usually one that has not registered yet (players
-                # appear seconds after this provider loads), so the state is kept and the
-                # QUEUE_ADDED event resumes injection. PLAYER_REMOVED is what drops it.
+                # usually the queue just hasn't registered yet (players appear seconds after
+                # load); state is kept, QUEUE_ADDED resumes it, PLAYER_REMOVED is what drops it
                 self.logger.debug("Queue %s is not registered (yet), skipping replan", queue_id)
                 return
             items = self._dj_queue_items(queue_id)
@@ -234,10 +229,8 @@ class AIRadioQueueDJMixin:
                     "Queue %s has no plannable gap ahead of the player, skipping replan", queue_id
                 )
                 return
-            # the planner counts songs and minutes from the first window track, so the
-            # offsets have to be measured to that same point or the axis shifts between
-            # passes and the OPTIONAL guards compare positions that never line up.
-            # recomputed absolutely every pass, so a cleared or replaced queue self-corrects
+            # measured from the same point the planner counts from, or OPTIONAL guard
+            # positions drift between passes. recomputed every pass so state self-corrects
             state.songs_before_window, state.minutes_before_window = self._dj_window_offsets(
                 items, window[0].queue_item_id
             )
@@ -278,11 +271,11 @@ class AIRadioQueueDJMixin:
                 runtime_tokens=runtime_tokens,
                 decided_next_item_ids=state.decided_gap_ids,
             )
-            # the clips are spliced into a working copy of the whole queue and applied in one
-            # update: a call per clip floods every connected client with queue events.
-            # the guard is re-read once here because the planning awaits above can take
-            # seconds, in which the player may have buffered ahead
+            # spliced into a working copy and applied as one update; a call per clip would
+            # flood every client with queue events
             working = self._dj_queue_items(queue_id)
+            # re-read: the planning awaits above can take seconds, letting the player buffer
+            # further ahead
             guard_index = self._dj_guard_index(queue)
             # insert order is not load bearing: every clip resolves its own target position
             # in the working copy. descending walks back from the queue tail
@@ -311,9 +304,8 @@ class AIRadioQueueDJMixin:
                         evaluated_gap_ids.discard(str(target["item_id"]))
             if injected:
                 self.mass.player_queues.update_items(queue_id, working)
-            # the planner registers a guard event for everything it selects, but a rejected
-            # clip never airs: leaving its event in would make it block its own successor for
-            # a whole guard window, and double-count once a reopened gap is filled again
+            # a rejected clip never airs, so its guard event must be removed: left in, it
+            # would block its own successor for a full guard window and double-count later
             for section in rejected:
                 for section_id, event in section.history_events:
                     if (events := history.get(section_id)) and event in events:
@@ -378,10 +370,8 @@ class AIRadioQueueDJMixin:
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
             return
-        # a queue runs exactly one DJ, so the live session is the only one whose clips may
-        # stay: that keeps the clips a re-enable racing this cleanup already injected, while
-        # clips of a session nothing remembers anymore (ids are re-rolled on every provider
-        # load) are cleared instead of lingering in the gaps forever
+        # only the live session's clips survive, so a re-enable racing this cleanup keeps
+        # its own; clips from a session nothing remembers (ids re-roll each load) are cleared
         live_state = self._dj_queues.get(queue_id)
         keep_session_id = live_state.dj_session_id if live_state is not None else None
         guard_index = self._dj_guard_index(queue)

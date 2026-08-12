@@ -381,9 +381,8 @@ class AIRadioStorageMixin:
 
     def _default_station_template(self) -> dict[str, Any]:
         """Return the built-in station template."""
-        # the template has to validate when it is saved verbatim, so it points at a host that
-        # exists: the first one as hosts are listed. only a bare install has none, and there
-        # the host template creates default_host
+        # must reference a real host so the template validates if saved verbatim; picks the
+        # first sorted host, or default_host on a bare install (the host template creates it)
         hosts = sorted(self._hosts.values(), key=lambda item: item["name"])
         return {
             "id": "example_station",
