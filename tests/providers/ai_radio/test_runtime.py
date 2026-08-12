@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -40,7 +42,9 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_PRONUNCIATION_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
+from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
+from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
 class StubConfig:
@@ -74,6 +78,10 @@ class DummyRuntime(AIRadioRuntimeMixin):
 
     def _schedule_replan(self, queue_id: str) -> None:
         """No-op stand-in for the queue DJ mixin's replan scheduling."""
+
+    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+        """No-op stand-in for the queue DJ mixin's set_queue_dj."""
+        return {}
 
     def _materialize_sections(
         self, section_ids: list[str], sections_map: dict[str, dict[str, Any]] | None = None
@@ -1103,6 +1111,32 @@ class ShowRuntime(DummyRuntime):
         return {}
 
 
+class ShowRuntimeWithDJ(AIRadioQueueDJMixin, AIRadioStorageMixin, ShowRuntime):
+    """ShowRuntime harness that also carries sticky queue DJ state."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Initialize show runtime state plus queue DJ bookkeeping."""
+        super().__init__()
+        self._hosts: dict[str, dict[str, Any]] = {
+            "rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""},
+        }
+        self._dj_queues: dict[str, Any] = {}
+        self._dj_file = tmp_path / "queue_dj.json"
+        self._dj_lock = asyncio.Lock()
+        self._unloading = False
+
+
+def _recording_create_task(scheduled: list[str]) -> Callable[..., None]:
+    """Return a create_task stub that records the task id and discards the coroutine."""
+
+    def _create_task(coro: Any, task_id: str | None = None, **_kwargs: Any) -> None:
+        if task_id:
+            scheduled.append(task_id)
+        coro.close()
+
+    return _create_task
+
+
 async def test_run_show_loads_the_whole_show_then_plays_index_zero() -> None:
     """The show is loaded in one call, fully stamped, before playback is started."""
     runtime = ShowRuntime()
@@ -1176,6 +1210,64 @@ async def test_run_show_targets_active_group_queue() -> None:
     assert load_queue_ids == ["group_1"]
     assert play_index_queue_ids == ["group_1"]
     assert session.queue_id == "group_1"
+
+
+async def test_run_show_clears_the_queues_sticky_dj(tmp_path: Path) -> None:
+    """Starting a show drops that queue's existing sticky DJ assignment."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    _set_runtime_mass(runtime, _show_mass_stub())
+    await runtime.set_queue_dj("living_room", "rick")
+    assert "living_room" in runtime._dj_queues
+
+    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
+
+    assert "living_room" not in runtime._dj_queues
+    persisted = json.loads(runtime._dj_file.read_text())
+    assert persisted["queues"] == {}
+
+
+async def test_run_show_clears_the_dj_on_the_resolved_group_queue(tmp_path: Path) -> None:
+    """A grouped player's DJ is cleared on the active (group) queue, not the raw player id."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    _set_runtime_mass(
+        runtime,
+        _show_mass_stub(get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1")),
+    )
+    # a stale assignment on the raw player id must survive untouched: the show never
+    # played there, only on the resolved group queue
+    await runtime.set_queue_dj("living_room", "rick")
+    await runtime.set_queue_dj("group_1", "rick")
+
+    await runtime._run_show(SessionState(session_id="s1", station_id="st"), _show_station())
+
+    assert "group_1" not in runtime._dj_queues
+    assert "living_room" in runtime._dj_queues
+
+
+async def test_run_session_finally_replans_a_dj_armed_mid_show(tmp_path: Path) -> None:
+    """A DJ armed via the menu while a show plays still gets scheduled once the show ends."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    scheduled: list[str] = []
+    _set_runtime_mass(runtime, _show_mass_stub(create_task=_recording_create_task(scheduled)))
+    session = SessionState(session_id="sess", station_id="st", queue_id="living_room")
+    runtime._sessions[session.session_id] = session
+
+    # arming mid-show already requested a pass; that pass would drain against the running-show
+    # guard in _replan_queue and clear replan_pending without planning anything, so reset it
+    # here to isolate the finally block's own request instead of piggybacking on this one
+    await runtime.set_queue_dj("living_room", "rick")
+    runtime._dj_queues["living_room"].replan_pending = False
+    scheduled.clear()
+
+    async def _run_show_stub(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("show over")
+
+    runtime._run_show = _run_show_stub  # type: ignore[method-assign]
+
+    await runtime._run_session(session.session_id, {"id": "st"})
+
+    assert scheduled == ["ai_radio_dj_replan_living_room"]
+    assert runtime._dj_queues["living_room"].ready is True
 
 
 async def test_run_show_ends_as_stopped_when_the_user_stops_the_queue() -> None:

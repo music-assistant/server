@@ -108,6 +108,9 @@ class AIRadioRuntimeMixin:
         def _schedule_replan(self, queue_id: str) -> None:
             """Request a replan pass for the given queue."""
 
+        async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+            """Enable, switch or disable the sticky AI DJ on a queue."""
+
     def _set_session_progress(
         self,
         session: SessionState,
@@ -212,6 +215,9 @@ class AIRadioRuntimeMixin:
         active_queue = self.mass.player_queues.get_active_queue(player_id)
         if active_queue is not None:
             queue_id = str(active_queue.queue_id)
+        # a queue runs one host at a time; the show is now that host, so any sticky
+        # DJ assignment on the queue is cleared before the show takes it over
+        await self.set_queue_dj(queue_id, None)
         self.mass.player_queues.clear(queue_id)
         session.queue_id = queue_id
 
