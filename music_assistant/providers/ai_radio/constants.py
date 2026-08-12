@@ -9,6 +9,8 @@ CONF_TTS_ENGINE = "tts_engine"
 CONF_TIMEZONE = "timezone"
 CONF_WEATHER_CITY = "weather_city"
 CONF_WEATHER_COUNTRY = "weather_country"
+CONF_WEATHER_PROVIDER = "weather_provider"
+CONF_WEATHER_TIMEOUT = "weather_timeout_seconds"
 
 # providers load concurrently, so the plugin supplying the engines may still be
 # loading when AI Radio initializes: wait this long for it before giving up
@@ -43,6 +45,12 @@ TTS_PRONUNCIATION_INSTRUCTIONS = (
     "mispronounced by the TTS engine, rewrite it into the clearest natural spoken form "
     "without explaining the change."
 )
+MERGE_SECTION_PROMPT = (
+    "Merge the drafts below into one coherent radio break. "
+    "Preserve factual content, remove duplication, and make the "
+    "final segment sound like one host speaking naturally.\n"
+    "<section_drafts>"
+)
 DEFAULT_WEATHER_PROVIDER = "open_meteo"
 DEFAULT_WEATHER_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_CONCURRENT_RUNS = 1
@@ -73,6 +81,9 @@ ATTR_PROMPT = "ai_radio_prompt"
 ATTR_MAX_CHARS = "ai_radio_max_chars"
 ATTR_WEB_SEARCH_MODE = "ai_radio_web_search_mode"
 ATTR_RENDERED_TEXT = "ai_radio_rendered_text"
+ATTR_HOST_ID = "ai_radio_host_id"
+ATTR_QUEUE_DJ = "ai_radio_queue_dj"
+ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays
@@ -80,3 +91,6 @@ DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_
 
 # HA drops a tts_proxy token 60s after its last use at the lowest configurable time_memory
 CLIP_STREAMDETAILS_EXPIRATION = 60
+
+# a cached clip with less life than this left is not worth handing out, so it is re-minted
+MIN_CLIP_MEDIA_LIFETIME = 5
