@@ -296,6 +296,9 @@ async def test_select_method_pin_gesture_submit_success() -> None:
         PAIR_METHOD_PIN,
         PAIR_METHOD_TOKEN,
     }
+    # the method is rendered as an expanded (radio) list with nothing preselected
+    assert step.entries[0].expanded_options is True
+    assert step.entries[0].default_value is None
     session.handle_submit({CONF_PAIRING_METHOD: PAIR_METHOD_PIN})
 
     await _wait_step(session, step_type=FlowStepType.PROGRESS, step_id="awaiting_gesture")

@@ -20,7 +20,10 @@ from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -47,6 +50,7 @@ from .constants import (
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 
@@ -120,6 +124,10 @@ class SonosPlayer(Player):
         await asyncio.to_thread(_read_speaker_state)
         await self.subscribe()
         await self.mass.players.register_or_update(self)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all provider-specific configuration entries for the player."""
+        return [CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED]
 
     async def offline(self) -> None:
         """Handle removal of speaker when unavailable."""

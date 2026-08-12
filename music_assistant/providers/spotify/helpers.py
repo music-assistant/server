@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import tempfile
 import time
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ from music_assistant.helpers.process import AsyncProcess, check_output
 from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
 
 LOGGER = logging.getLogger(__name__)
+PAIRING_LOG_TIMESTAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^ ]+ ")
 
 LOOPBACK_RESPONSE_HTML = """
 <html>
@@ -201,8 +203,11 @@ async def get_spotify_token(
 
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:
     """Log the pairing daemon's output so a failure to advertise is diagnosable."""
+    reported_warnings: set[str] = set()
     async for line in librespot_proc.iter_stderr():
-        if "ERROR" in line or "WARN" in line:
+        warning_key = PAIRING_LOG_TIMESTAMP.sub("[", line, count=1)
+        if ("ERROR" in line or "WARN" in line) and warning_key not in reported_warnings:
+            reported_warnings.add(warning_key)
             LOGGER.warning("[librespot-pairing] %s", line)
         else:
             LOGGER.debug("[librespot-pairing] %s", line)
