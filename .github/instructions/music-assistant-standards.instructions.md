@@ -101,3 +101,13 @@ Python/asyncio backend. The heaviest-mined repo; most of the Overall and MA rule
 - **MUST** not depend on Python set ordering — sort explicitly for serialization/snapshot tests, and give listing/pagination queries a deterministic sort with a stable default. ([server#1485](https://github.com/music-assistant/server/pull/1485#issuecomment-2218106483): "the order will be random and the test will simply fail sometimes"; [server#4806](https://github.com/music-assistant/server/pull/4806#discussion_r3634349239): "leaves the union completely unordered, which also makes limit/offset pagination non-deterministic") [mined · 2 PRs · 👍]
 - **MUST** manage background asyncio tasks: keep a reference to `create_task`, track and cancel them on unload, run teardown in a `finally`, and give them a done-callback so failures surface. ([server#3492](https://github.com/music-assistant/server/pull/3492#discussion_r3051739796): "any exceptions raised by that task are silently lost with no way to know"; [server#4879](https://github.com/music-assistant/server/pull/4879#discussion_r3622539210): "teardown now runs in `finally`, so a failed STOP write can") [mined · 4 PRs]
 - **MUST** explicitly clean up related/child rows on delete — the DB has no cascade delete enabled. ([server#3327](https://github.com/music-assistant/server/pull/3327#discussion_r2905335902): "We don't have cascade delete enabled for the DB so you'd need to cleanup") [mined · 1 PR]
+
+---
+
+## Avoid these false positives
+
+Patterns that look like bugs but are correct here — do not raise them:
+
+- **A walrus-bound name is not unbound.** A name assigned with `:=` inside a condition is bound as soon as that expression evaluates, even when the condition is False (it simply holds the value, e.g. `None`). Do not report `UnboundLocalError` / "used before assignment" for it — strict mypy's possibly-undefined check already catches the genuine cases.
+- **A quoted type in `cast()` does not make its import unused.** `cast("SomeType", x)` with the type as a string is ruff's `TC006` form; ruff and mypy resolve names inside quoted casts, so the import is used. Do not flag it as an unused import.
+- **No `await`, no race.** Do not report a TOCTOU / check-then-act race unless there is a real suspension point (`await`) between the check and the mutation. Single-threaded asyncio runs code with no `await` between them atomically, so nothing can interleave.
