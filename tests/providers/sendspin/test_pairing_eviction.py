@@ -83,6 +83,7 @@ def _make_provider(
     provider.logger = logging.getLogger("test.sendspin.eviction")
     provider._unloading = False
     provider._pending_pairing_evictions = set()
+    provider._running_pairing_evictions = set()
     refreshed: list[str] = []
 
     async def _record_refresh(client_id: str) -> None:
@@ -236,4 +237,55 @@ async def test_revoking_skips_a_pairing_that_changed_hands(
 
     assert await api.pairing_store.record_by_client_id("c1") == restamped
     assert api.unpaired == []
+    assert refreshed == []
+
+
+async def test_an_in_flight_eviction_is_tracked_for_unload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unload can only await store writes it knows of, so a running eviction stays tracked."""
+    api = _EvictionServerApi()
+    await api.pairing_store.store_record(_record("c1", owner="guest-g1"))
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    removing = asyncio.Event()
+    release = asyncio.Event()
+    original_remove = api.pairing_store.remove_record
+
+    async def _slow_remove(client_id: str) -> None:
+        removing.set()
+        await release.wait()
+        await original_remove(client_id)
+
+    monkeypatch.setattr(api.pairing_store, "remove_record", _slow_remove)
+    provider._on_user_access_revoked(
+        User(user_id="g1", username="party_guest", role=UserRole.GUEST)
+    )
+    await removing.wait()
+    assert provider._running_pairing_evictions
+
+    release.set()
+    await asyncio.gather(*provider._running_pairing_evictions)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert await api.pairing_store.record_by_client_id("c1") is None
+    assert not provider._running_pairing_evictions  # and nothing left behind
+
+
+async def test_an_eviction_scheduled_during_unload_does_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A revocation arriving while unloading leaves the store to the next provider."""
+    api = _EvictionServerApi()
+    record = _record("c1", owner="guest-g1")
+    await api.pairing_store.store_record(record)
+    provider, refreshed = _make_provider(api, monkeypatch)
+    provider._unloading = True
+
+    provider._on_user_access_revoked(
+        User(user_id="g1", username="party_guest", role=UserRole.GUEST)
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert await api.pairing_store.record_by_client_id("c1") == record
     assert refreshed == []

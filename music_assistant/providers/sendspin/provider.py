@@ -381,6 +381,7 @@ class SendspinProvider(PlayerProvider):
         self._virtual_players = {}
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
+        self._running_pairing_evictions: set[asyncio.Task[None]] = set()
         self._management_sessions: dict[str, ManagementSession] = {}
         self._pairing_config_snapshots: dict[
             str, tuple[SendspinConnection, ManagementResultData]
@@ -1096,6 +1097,8 @@ class SendspinProvider(PlayerProvider):
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
+        if self._running_pairing_evictions:
+            await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]
         # Stop the Sendspin server
         await self.server_api.close()
@@ -1460,10 +1463,14 @@ class SendspinProvider(PlayerProvider):
         """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
         # Both owner forms, so the match cannot depend on the user's role at mint time.
         for owner in credential_owners_for_user_id(user.user_id):
-            self.mass.create_task(self._evict_pairings_for_owner(owner))
+            task = self.mass.create_task(self._evict_pairings_for_owner(owner))
+            self._running_pairing_evictions.add(task)
+            task.add_done_callback(self._running_pairing_evictions.discard)
 
     async def _evict_pairings_for_owner(self, owner: str) -> None:
         """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
+        if self._unloading:
+            return
         pairing_store = self.server_api.pairing_store
         for record in await pairing_store.records_by_owner(owner):
             # records_by_owner was read once: only withdraw what this owner still holds.
