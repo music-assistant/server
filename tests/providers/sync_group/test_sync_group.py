@@ -88,6 +88,11 @@ def _make_mock_player(
     player.linked_output_protocols = protocols
 
     # State mock
+    # real lists, so a test that needs members has to say so instead of silently
+    # getting an empty auto-attribute
+    player.group_members = []
+    player.live_session_members = []
+
     player.state = MagicMock()
     player.state.available = available
     player.state.playback_state = playback_state
@@ -424,13 +429,13 @@ class TestDynamicLeaderSwitch:
         ap_only.linked_output_protocols[0].output_protocol_id = "ap_only_proto"
         # ap_only's airplay protocol player needs to exist for the protocol-id resolution
         ap_only_proto = _make_mock_player("ap_only_proto", provider_domain="airplay")
+        ap_new.protocol_parent_id = "new_leader"
+        ap_only_proto.protocol_parent_id = "ap_only"
 
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
-        # Set up the live session with new_leader's protocol player in sync_clients
-        mock_session = MagicMock()
-        mock_session.sync_clients = [ap_protocol, ap_new, ap_only]
-        ap_protocol.stream = MagicMock()
-        ap_protocol.stream.session = mock_session
+        # the live session holds new_leader's protocol player, so it can take over
+        ap_protocol.group_members = ["ap_old", "ap_new", "ap_only_proto"]
+        ap_protocol.live_session_members = ["ap_old", "ap_new", "ap_only_proto"]
 
         mass.players.get_player = _player_lookup(
             {
@@ -485,12 +490,8 @@ class TestDynamicLeaderSwitch:
         fresh_player = _make_mock_player(
             "fresh_player", provider_domain="sonos", protocol_domains=["airplay"]
         )
+        # the old leader was streaming on its own, so its session holds nobody else
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
-        # Session does NOT contain fresh_player's protocol player
-        mock_session = MagicMock()
-        mock_session.sync_clients = [ap_protocol]
-        ap_protocol.stream = MagicMock()
-        ap_protocol.stream.session = mock_session
 
         mass.players.get_player = _player_lookup(
             {
@@ -528,12 +529,11 @@ class TestDynamicLeaderSwitch:
         old_leader = _make_mock_player("old_leader", provider_domain="sendspin")
         living_room = _make_mock_player("living_room", provider_domain="sendspin")
         bathroom = _make_mock_player("bathroom", provider_domain="sendspin")
-        # no stream/session object (Sendspin, Snapcast) -> handoff is assumed safe
-        old_leader.stream = None
         # the live session hands over to bathroom, our own order says living_room.
         # state.group_members is deliberately left unordered: only the raw attribute
         # carries the provider's member order.
         old_leader.group_members = ["old_leader", "bathroom", "living_room"]
+        old_leader.live_session_members = ["old_leader", "bathroom", "living_room"]
         old_leader.state.group_members = ["old_leader", "living_room", "bathroom"]
 
         mass.players.get_player = _player_lookup(
@@ -592,10 +592,10 @@ class TestDynamicLeaderSwitch:
         ap_old = _make_mock_player("ap_old", provider_domain="airplay")
         ap_kitchen = _make_mock_player("ap_kitchen", provider_domain="airplay")
         ap_bathroom = _make_mock_player("ap_bathroom", provider_domain="airplay")
-        mock_session = MagicMock()
-        mock_session.sync_clients = [ap_old, ap_kitchen, ap_bathroom]
-        ap_old.stream = MagicMock()
-        ap_old.stream.session = mock_session
+        ap_kitchen.protocol_parent_id = "kitchen"
+        ap_bathroom.protocol_parent_id = "bathroom"
+        ap_old.group_members = ["ap_old", "ap_kitchen", "ap_bathroom"]
+        ap_old.live_session_members = ["ap_old", "ap_kitchen", "ap_bathroom"]
 
         mass.players.get_player = _player_lookup(
             {
@@ -644,10 +644,8 @@ class TestDynamicLeaderSwitch:
         spare = _make_mock_player("spare", provider_domain="sonos")
 
         ap_old = _make_mock_player("ap_old", provider_domain="airplay")
-        mock_session = MagicMock()
-        mock_session.sync_clients = [ap_old, apple_tv]
-        ap_old.stream = MagicMock()
-        ap_old.stream.session = mock_session
+        ap_old.group_members = ["ap_old", "apple_tv"]
+        ap_old.live_session_members = ["ap_old", "apple_tv"]
 
         mass.players.get_player = _player_lookup(
             {
@@ -668,6 +666,48 @@ class TestDynamicLeaderSwitch:
         # picking the native-only spare would have cost a dissolve + reform
         assert sgp.sync_leader == apple_tv
         ap_old.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider_domain", "live_members"),
+        [
+            # a solo Sendspin leader still lists itself as its group's only client
+            ("sendspin", ["old_leader"]),
+            # Snapcast reports no members at all while it leads nobody
+            ("snapcast", []),
+        ],
+    )
+    async def test_dynamic_leader_switch_dissolves_when_member_never_joined_session(
+        self, provider_domain: str, live_members: list[str]
+    ) -> None:
+        """A member that never joined the live session cannot inherit it, whatever the provider."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("old_leader", provider_domain=provider_domain)
+        old_leader.group_members = live_members
+        old_leader.live_session_members = live_members
+        # added to the group in the same call that removed the leader, so it was
+        # never synced at the protocol level
+        fresh_player = _make_mock_player("fresh_player", provider_domain=provider_domain)
+
+        mass.players.get_player = _player_lookup(
+            {"old_leader": old_leader, "fresh_player": fresh_player}
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "fresh_player"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        # no protocol-level handoff was attempted; the group stopped and dissolved
+        # with a re-form scheduled so playback resumes on the new member
+        old_leader.set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_awaited_with("old_leader")
+        assert sgp._attr_group_members == ["fresh_player"]
+        assert sgp._reform_task is not None
+        assert sgp.sync_leader is None
 
     def test_align_members_translates_protocol_ids_and_keeps_outsiders_last(self) -> None:
         """A protocol session player's order maps onto the parent members that we track."""

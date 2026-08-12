@@ -631,6 +631,19 @@ class Player(ABC):
         return self._attr_group_members
 
     @property
+    def live_session_members(self) -> list[str]:
+        """
+        Return the id's of the players that take part in this player's live playback session.
+
+        Defaults to :attr:`group_members`, which is the right answer where grouping and
+        the playback session are the same thing. Providers where the two drift apart
+        (a member the session dropped, one that never managed to join it, or no session
+        at all) should override this and answer from the session itself, so callers can
+        tell actual playback partners from tracked group membership.
+        """
+        return self.group_members
+
+    @property
     def can_group_with(self) -> set[str]:
         """
         Return the id's of players this player can group with.

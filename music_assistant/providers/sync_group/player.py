@@ -967,7 +967,9 @@ class SyncGroupPlayer(Player):
         if session_player is None:
             return
         # the provider's own group_members, not state.group_members: the latter is
-        # set-derived for non-protocol players and loses the member order
+        # set-derived for non-protocol players and loses the member order. Not
+        # live_session_members either: that answers who is in the session, not in
+        # which order, and a provider may derive it without preserving any.
         session_order = [
             x
             for x in self._translate_to_parent_ids(session_player.group_members)
@@ -1057,38 +1059,21 @@ class SyncGroupPlayer(Player):
 
     def _is_player_in_session(self, player: Player, session_player: Player | None) -> bool:
         """
-        Return True if ``player`` is already a sync_client of the live session.
+        Return True if ``player`` already takes part in the live session.
 
-        A seamless leader handoff only works when the candidate's resolved
-        protocol player is already in the active ``AirPlayStreamSession`` (or
-        equivalent). If not (e.g. a freshly-added player that has never played
+        A seamless leader handoff only works when the candidate is already a member
+        of the session. If not (e.g. a freshly-added player that has never played
         anything), we must fall back to dissolve + reform.
 
         :param player: The candidate new leader.
-        :param session_player: The protocol player that owns the live session
-            (snapshot taken before the old leader was cleared via
-            ``_active_session_player()``).
+        :param session_player: The player that owns the live session (snapshot taken
+            before the old leader was cleared via ``_active_session_player()``).
         """
         if session_player is None:
             return False
-        session = getattr(getattr(session_player, "stream", None), "session", None)
-        if session is None:
-            # No session object (e.g. Snapcast, Sendspin) — assume handoff is
-            # safe if the provider declared support for it.
-            return True
-        sync_clients = getattr(session, "sync_clients", None)
-        if sync_clients is None:
-            # Session exists but doesn't expose sync_clients — same assumption.
-            return True
-        # Resolve player to the protocol player that would own the session
-        target: Player = player
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (p := self.mass.players.get_player(player.active_output_protocol))
-        ):
-            target = p
-        return target in sync_clients
+        return player.player_id in self._translate_to_parent_ids(
+            session_player.live_session_members
+        )
 
     async def _dissolve_and_reform(
         self,
