@@ -26,13 +26,14 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from .constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
     AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS,
     AIRPLAY_ANNOUNCE_DUCK_DB,
+    AIRPLAY_ANNOUNCE_DUCK_TAIL_S,
     AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS,
     AIRPLAY_ANNOUNCE_SESSION_DRAIN_S,
     AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS,
@@ -287,18 +288,27 @@ async def _announce_over_live_session(
                 if (ack := started.get(member.player_id)) is None:
                     continue
                 ack_at_unix_ms, ack_duration_ms = ack
+                # The binary-reported duration includes the ducked silence
+                # tail appended to the clip file; the restore must land INSIDE
+                # that cushion, so it is timed on the content length alone.
+                content_seconds = (
+                    max(0.0, ack_duration_ms / 1000 - AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
+                    if ack_duration_ms
+                    else duration
+                )
                 if schedule := _schedule_member_volume(
                     member,
                     volume_level,
                     ack_at_unix_ms or at_unix_ms,
-                    ack_duration_ms / 1000 if ack_duration_ms else duration,
+                    content_seconds,
                 ):
                     volume_schedules.append(schedule)
+        padded_duration = duration + AIRPLAY_ANNOUNCE_DUCK_TAIL_S
         done_results = await asyncio.gather(
             *[
                 streams[member_id].wait_announce_done(
                     max(0.0, (ack_at or at_unix_ms) / 1000 - time.time())
-                    + (ack_duration / 1000 if ack_duration else duration)
+                    + (ack_duration / 1000 if ack_duration else padded_duration)
                     + AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS / 1000
                 )
                 for member_id, (ack_at, ack_duration) in started.items()
@@ -323,7 +333,7 @@ async def _announce_over_live_session(
         # announcement) over the audible tail, so hold the return until the
         # latest audible end across the started members.
         latest_end_unix_ms = max(
-            (ack_at or at_unix_ms) + (ack_duration or int(duration * 1000))
+            (ack_at or at_unix_ms) + (ack_duration or int(padded_duration * 1000))
             for ack_at, ack_duration in started.values()
         )
         await asyncio.sleep(
@@ -545,6 +555,10 @@ async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat)
     """
     Render the announcement clip into a temp file of raw PCM in the given format.
 
+    A ducked-silence tail is appended: the binary holds the music duck for the
+    whole file, so the music stays ducked briefly past the announcement and the
+    volume restore has a safe window to land in.
+
     The caller owns the file and removes it once every member is done with it.
 
     :param render: The (finished) announcement render to read.
@@ -553,6 +567,16 @@ async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat)
     clip = bytearray()
     async for chunk in render.get_stream(pcm_format):
         clip.extend(chunk)
+    # Wire sizes come from the content type: at 24-bit the stdin carrier is
+    # s32le while bit_depth stays 24, so bit_depth-derived sizes are wrong.
+    bytes_per_sample = {
+        ContentType.PCM_S16LE: 2,
+        ContentType.PCM_S24LE: 3,
+        ContentType.PCM_S32LE: 4,
+        ContentType.PCM_F32LE: 4,
+    }.get(pcm_format.content_type, pcm_format.bit_depth // 8)
+    trail_frames = int(pcm_format.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
+    clip.extend(bytes(trail_frames * bytes_per_sample * pcm_format.channels))
     return await asyncio.to_thread(_write_clip_file, clip)
 
 
