@@ -56,6 +56,7 @@ from music_assistant.controllers.music.constants import BASE_SORT_FIELD_SQL, LEG
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.music.sorting import (
     SortOptionInfo,
+    get_default_direction,
     get_sort_options_for_media_type,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -1810,8 +1811,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param default: Default order_by string if none specified.
         :return: Resolved order_by string in 'field:direction' format.
         """
-        from music_assistant.controllers.music.sorting import get_default_direction
-
         if sort_field is not None:
             # Use per-field default direction if not specified
             direction = sort_direction if sort_direction else get_default_direction(sort_field)
