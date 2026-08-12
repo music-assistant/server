@@ -1256,42 +1256,6 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                     continue
                 await self.evaluate_bridge(player)
 
-    @staticmethod
-    def _labeled_display_name(device: dict[str, Any]) -> str:
-        """
-        Return a device's display name with connector-type and hardware-card labels applied.
-
-        Applies hdmi/analog/usb labeling (see remap_topology.connector_label)
-        so a raw master sink registering as its own player — a 2ch-or-fewer
-        card, or a multichannel card not yet covered by remap-sink topology —
-        doesn't rely solely on PulseAudio's own per-profile description,
-        which gives no distinguishing signal when two identical cards
-        (same alsa_card_name, same profile) produce identical descriptions.
-
-        Skips adding the connector label if PA's own description already
-        mentions it (case-insensitive) — e.g. an HDMI port's description is
-        often already "... Digital Stereo (HDMI 2)" — to avoid a redundant
-        "(HDMI) (HDMI 2)"-style display name.
-
-        Also appends a short hardware tag (see short_hardware_tag): derived
-        from master_device for remap-sink zones, so every zone belonging to
-        the same physical card (front_stereo, rear_stereo,
-        multichannel_stereo, ...) visibly shares one tag, distinct from
-        other cards' tags at a glance. For a raw master sink with no
-        master_device pointing to itself, falls back to the device's own PA
-        sink name — PulseAudio always assigns unique sink names, typically
-        differentiated by a serial or bus-path suffix, even for two
-        otherwise-identical products (e.g. two of the same model USB DAC)
-        whose PA *description* could otherwise read identically with no
-        visible way to tell them apart in the player list.
-        """
-        raw_name: str = device.get("description", device["name"])
-        label = connector_label(device.get("device_bus"), device["name"])
-        if label and label.lower() not in raw_name.lower():
-            raw_name = f"{raw_name} ({label.upper()})"
-        tag_source: str = device.get("master_device") or device["name"]
-        return f"{raw_name} [{short_hardware_tag(tag_source)}]"
-
     async def evaluate_bridge(self, player: Player) -> None:
         """
         Reconcile the Sendspin bridge for a player and update the player's availability.
@@ -1331,6 +1295,42 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             with suppress(OSError):
                 await self.mass.loop.run_in_executor(None, self._volume_controller.close)
             self._volume_controller = None
+
+    @staticmethod
+    def _labeled_display_name(device: dict[str, Any]) -> str:
+        """
+        Return a device's display name with connector-type and hardware-card labels applied.
+
+        Applies hdmi/analog/usb labeling (see remap_topology.connector_label)
+        so a raw master sink registering as its own player — a 2ch-or-fewer
+        card, or a multichannel card not yet covered by remap-sink topology —
+        doesn't rely solely on PulseAudio's own per-profile description,
+        which gives no distinguishing signal when two identical cards
+        (same alsa_card_name, same profile) produce identical descriptions.
+
+        Skips adding the connector label if PA's own description already
+        mentions it (case-insensitive) — e.g. an HDMI port's description is
+        often already "... Digital Stereo (HDMI 2)" — to avoid a redundant
+        "(HDMI) (HDMI 2)"-style display name.
+
+        Also appends a short hardware tag (see short_hardware_tag): derived
+        from master_device for remap-sink zones, so every zone belonging to
+        the same physical card (front_stereo, rear_stereo,
+        multichannel_stereo, ...) visibly shares one tag, distinct from
+        other cards' tags at a glance. For a raw master sink with no
+        master_device pointing to itself, falls back to the device's own PA
+        sink name — PulseAudio always assigns unique sink names, typically
+        differentiated by a serial or bus-path suffix, even for two
+        otherwise-identical products (e.g. two of the same model USB DAC)
+        whose PA *description* could otherwise read identically with no
+        visible way to tell them apart in the player list.
+        """
+        raw_name: str = device.get("description", device["name"])
+        label = connector_label(device.get("device_bus"), device["name"])
+        if label and label.lower() not in raw_name.lower():
+            raw_name = f"{raw_name} ({label.upper()})"
+        tag_source: str = device.get("master_device") or device["name"]
+        return f"{raw_name} [{short_hardware_tag(tag_source)}]"
 
     async def _ensure_volume_controller(self, resolved_backend: str) -> None:
         """
