@@ -148,12 +148,10 @@ def identity_seed(device_name: str, device_info: dict[str, Any]) -> str:
 
 def short_hardware_tag(bus_identity: str, length: int = 4) -> str:
     """
-    Derive a short, stable hex tag from a physical identity string for display purposes.
-
-    Derived from a physical identity string (e.g. master_device), for
-    display/grouping purposes only — e.g. hinting that several players
-    (front_stereo, rear_stereo, multichannel_stereo, ...) all originate
-    from the same physical card, without needing the full
+    Short, stable hex tag derived from a physical identity string (e.g.
+    master_device) for display/grouping purposes only — e.g. hinting that
+    several players (front_stereo, rear_stereo, multichannel_stereo, ...)
+    all originate from the same physical card, without needing the full
     card_name/label string repeated in each one.
 
     NOT a replacement for get_device_uuid()'s player identity — that stays
@@ -1256,6 +1254,43 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                     continue
                 await self.evaluate_bridge(player)
 
+    @staticmethod
+    def _labeled_display_name(device: dict[str, Any]) -> str:
+        """
+        Return a device's display name with connector-type and hardware-card labels applied.
+
+        Applies hdmi/analog/usb labeling (see remap_topology.connector_label)
+        so a raw master sink registering as its own player — a 2ch-or-fewer
+        card, or a multichannel card not yet covered by remap-sink topology —
+        doesn't rely solely on PulseAudio's own per-profile description,
+        which gives no distinguishing signal when two identical cards
+        (same alsa_card_name, same profile) produce identical descriptions.
+
+        Skips adding the connector label if PA's own description already
+        mentions it (case-insensitive) — e.g. an HDMI port's description is
+        often already "... Digital Stereo (HDMI 2)" — to avoid a redundant
+        "(HDMI) (HDMI 2)"-style display name.
+
+        Also appends a short hardware tag (see short_hardware_tag): derived
+        from master_device for remap-sink zones, so every zone belonging to
+        the same physical card (front_stereo, rear_stereo,
+        multichannel_stereo, ...) visibly shares one tag, distinct from
+        other cards' tags at a glance. For a raw master sink with no
+        master_device pointing to itself, falls back to the device's own PA
+        sink name — PulseAudio always assigns unique sink names, typically
+        differentiated by a serial or bus-path suffix, even for two
+        otherwise-identical products (e.g. two of the same model USB DAC)
+        whose PA *description* could otherwise read identically with no
+        visible way to tell them apart in the player list.
+        """
+        raw_name: str = device.get("description", device["name"])
+        label = connector_label(device.get("device_bus"), device["name"])
+        if label and label.lower() not in raw_name.lower():
+            raw_name = f"{raw_name} ({label.upper()})"
+        tag_source: str = device.get("master_device") or device["name"]
+        raw_name = f"{raw_name} [{short_hardware_tag(tag_source)}]"
+        return raw_name
+
     async def evaluate_bridge(self, player: Player) -> None:
         """
         Reconcile the Sendspin bridge for a player and update the player's availability.
@@ -1295,42 +1330,6 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             with suppress(OSError):
                 await self.mass.loop.run_in_executor(None, self._volume_controller.close)
             self._volume_controller = None
-
-    @staticmethod
-    def _labeled_display_name(device: dict[str, Any]) -> str:
-        """
-        Return a device's display name with connector-type and hardware-card labels applied.
-
-        Applies hdmi/analog/usb labeling (see remap_topology.connector_label)
-        so a raw master sink registering as its own player — a 2ch-or-fewer
-        card, or a multichannel card not yet covered by remap-sink topology —
-        doesn't rely solely on PulseAudio's own per-profile description,
-        which gives no distinguishing signal when two identical cards
-        (same alsa_card_name, same profile) produce identical descriptions.
-
-        Skips adding the connector label if PA's own description already
-        mentions it (case-insensitive) — e.g. an HDMI port's description is
-        often already "... Digital Stereo (HDMI 2)" — to avoid a redundant
-        "(HDMI) (HDMI 2)"-style display name.
-
-        Also appends a short hardware tag (see short_hardware_tag): derived
-        from master_device for remap-sink zones, so every zone belonging to
-        the same physical card (front_stereo, rear_stereo,
-        multichannel_stereo, ...) visibly shares one tag, distinct from
-        other cards' tags at a glance. For a raw master sink with no
-        master_device pointing to itself, falls back to the device's own PA
-        sink name — PulseAudio always assigns unique sink names, typically
-        differentiated by a serial or bus-path suffix, even for two
-        otherwise-identical products (e.g. two of the same model USB DAC)
-        whose PA *description* could otherwise read identically with no
-        visible way to tell them apart in the player list.
-        """
-        raw_name: str = device.get("description", device["name"])
-        label = connector_label(device.get("device_bus"), device["name"])
-        if label and label.lower() not in raw_name.lower():
-            raw_name = f"{raw_name} ({label.upper()})"
-        tag_source: str = device.get("master_device") or device["name"]
-        return f"{raw_name} [{short_hardware_tag(tag_source)}]"
 
     async def _ensure_volume_controller(self, resolved_backend: str) -> None:
         """
@@ -1432,33 +1431,25 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             # Label the connector type (hdmi/analog/usb) so an HDMI output
             # and an analog output on the same physical chip — which share
             # an identical alsa_card_name and would otherwise differ only
-            # by an opaque card index — are distinguishable at a glance.
-            # Applied unconditionally (unlike the card index below) since
-            # it's informative on its own, not just a collision workaround.
+            # by an opaque hardware tag — are distinguishable at a glance.
+            # Applied unconditionally since it's informative on its own,
+            # not just a collision workaround.
             label = connector_label(device.get("device_bus"), master_sink_name)
 
-            # When two candidates would produce the *same labeled name* —
-            # not just the same alsa_card_name — their normalized names
-            # would collide, causing the second card's remap sinks to be
-            # silently skipped as "already exists". Checking the labeled
-            # key (name+label) rather than raw alsa_card_name means a card
-            # index is only added when it's actually needed: two identical
-            # X-Fi cards both label "analog" and still collide, so still
-            # get "_card0"/"_card3" — but an HDMI output and an analog
-            # output sharing "HD-Audio Generic" already differ by label
-            # alone ("hdmi" vs "analog") and no longer need one.
-            def _labeled_key(d: dict[str, Any]) -> str:
-                name = d.get("alsa_card_name") or ""
-                lbl = connector_label(d.get("device_bus"), d.get("name", ""))
-                return f"{name}::{lbl}" if lbl else name
-
-            labeled_key = _labeled_key(device)
-            all_labeled_keys = [_labeled_key(d) for d in devices if not d.get("is_remap")]
-            is_duplicate_labeled_name = all_labeled_keys.count(labeled_key) > 1
-            alsa_card_index: str | None = (
-                device.get("alsa_card_index") if is_duplicate_labeled_name else None
-            )
-            card_name = normalize_card_name(alsa_card_name, alsa_card_index, label)
+            # Hardware tag disambiguates identical cards (see
+            # short_hardware_tag()'s docstring) — derived from this card's
+            # own master sink name, which PulseAudio generates from the
+            # physical bus path, so it stays the same across reboots
+            # regardless of ALSA card-index enumeration order. Applied
+            # unconditionally, not just when a collision is detected: a
+            # card's sink-name prefix must never change later purely
+            # because a second identical card was added — that would be a
+            # silent rename of every remap sink (and, before this change,
+            # historically risked drifting the PA sink name out of step
+            # with the stable player identity computed in identity_seed(),
+            # which does NOT depend on this prefix).
+            hardware_tag = short_hardware_tag(master_sink_name)
+            card_name = normalize_card_name(alsa_card_name, hardware_tag, label)
             for spec in compute_remap_topology(card_name, channel_map, channels):
                 if spec.sink_name in existing_names:
                     continue
