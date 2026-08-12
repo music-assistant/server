@@ -1207,9 +1207,9 @@ class SyncGroupPlayer(Player):
         # `preferred_domain` once the group is due to downshift to native, and
         # a seamless handoff must stay on the protocol carrying the stream.
         session_domain = session_player.provider.domain if session_player else None
-        # The members the session feeds right now: only one of those can take it over
-        # without a restart. Tracked membership is not enough — a member can be dropped
-        # from the session (or never make it in) while still being listed as a member.
+        # The members the session feeds right now: only a member from this set can take
+        # it over without a restart. Tracked membership is not enough — a member can be
+        # dropped from the session (or never make it in) while still being listed.
         live_member_ids = (
             self._translate_to_parent_ids(session_player.live_session_members)
             if session_player
