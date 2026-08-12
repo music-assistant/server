@@ -148,10 +148,12 @@ def identity_seed(device_name: str, device_info: dict[str, Any]) -> str:
 
 def short_hardware_tag(bus_identity: str, length: int = 4) -> str:
     """
-    Short, stable hex tag derived from a physical identity string (e.g.
-    master_device) for display/grouping purposes only — e.g. hinting that
-    several players (front_stereo, rear_stereo, multichannel_stereo, ...)
-    all originate from the same physical card, without needing the full
+    Derive a short, stable hex tag from a physical identity string for display purposes.
+
+    Derived from a physical identity string (e.g. master_device), for
+    display/grouping purposes only — e.g. hinting that several players
+    (front_stereo, rear_stereo, multichannel_stereo, ...) all originate
+    from the same physical card, without needing the full
     card_name/label string repeated in each one.
 
     NOT a replacement for get_device_uuid()'s player identity — that stays
@@ -1328,8 +1330,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
         if label and label.lower() not in raw_name.lower():
             raw_name = f"{raw_name} ({label.upper()})"
         tag_source: str = device.get("master_device") or device["name"]
-        raw_name = f"{raw_name} [{short_hardware_tag(tag_source)}]"
-        return raw_name
+        return f"{raw_name} [{short_hardware_tag(tag_source)}]"
 
     async def _ensure_volume_controller(self, resolved_backend: str) -> None:
         """
