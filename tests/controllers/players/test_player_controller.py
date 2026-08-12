@@ -48,6 +48,7 @@ from music_assistant.constants import (
     ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
@@ -3121,7 +3122,7 @@ class TestPlayAnnouncementMessage:
 
     ANNOUNCE_MODULE = "music_assistant.controllers.players.announcements"
 
-    def _make_engine(self, path: str = "http://tts/spoken.mp3") -> MagicMock:
+    def _make_engine(self, path: str = "http://speech/spoken.mp3") -> MagicMock:
         """Create a TTS engine that renders every message to the given path."""
         engine = MagicMock()
         engine.uid = "tts_plugin/voice"
@@ -3155,7 +3156,7 @@ class TestPlayAnnouncementMessage:
             "dinner is ready", language=None, engine_id="voice"
         )
         registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
-        assert registered["announcement_url"] == "http://tts/spoken.mp3"
+        assert registered["announcement_url"] == "http://speech/spoken.mp3"
         announce.assert_awaited_once()
 
     async def test_an_explicit_engine_is_used(self, mock_mass: MagicMock) -> None:
@@ -3176,6 +3177,51 @@ class TestPlayAnnouncementMessage:
 
         resolve.assert_awaited_once_with(mock_mass, "tts_plugin/voice")
         select.assert_not_awaited()
+
+    async def test_pre_announce_follows_the_player_config(self, mock_mass: MagicMock) -> None:
+        """A spoken message uses the player's pre-announce setting without sniffing the url."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                True if key == CONF_ENTRY_TTS_PRE_ANNOUNCE.key else default
+            )
+        )
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement("player_1", message="dinner is ready")
+
+        registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
+        assert registered["pre_announce"] is True
+
+    async def test_an_engine_without_a_message_is_rejected(self, mock_mass: MagicMock) -> None:
+        """Naming an engine for a url announcement is rejected instead of silently ignored."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with pytest.raises(PlayerCommandFailed, match="only be used to speak a message"):
+            await controller.play_announcement(
+                "player_1", url="http://test/clip.mp3", tts_engine="tts_plugin/voice"
+            )
+
+    async def test_a_failing_engine_surfaces_its_error(self, mock_mass: MagicMock) -> None:
+        """An engine that fails to speak the message fails the announcement."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        engine.provider.get_tts_message = AsyncMock(side_effect=RuntimeError("engine down"))
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            pytest.raises(PlayerCommandFailed),
+        ):
+            await controller.play_announcement("player_1", message="hello")
+
+        announce.assert_not_awaited()
+        mock_mass.streams.announcement_renderer.register.assert_not_called()
 
     async def test_a_url_or_a_message_is_required(self, mock_mass: MagicMock) -> None:
         """An announcement with neither a url nor a message is rejected."""
@@ -3255,7 +3301,7 @@ class TestPlayAnnouncementMessage:
             for call_args in mock_mass.streams.announcement_renderer.register.call_args_list
             if call_args.args[0] == "player_1"
         )
-        assert member_call.args[1]["announcement_url"] == "http://tts/spoken.mp3"
+        assert member_call.args[1]["announcement_url"] == "http://speech/spoken.mp3"
 
 
 class TestNativeAnnouncementRouting:

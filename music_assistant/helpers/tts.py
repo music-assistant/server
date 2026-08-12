@@ -23,7 +23,10 @@ REMOTE_STREAM_SCHEMES = ("http://", "https://", "rtsp://", "rtmp://")
 
 
 async def query_tts_engine(
-    engine: TTSEngine, message: str, language: str | None = None
+    engine: TTSEngine,
+    message: str,
+    language: str | None = None,
+    timeout: float | None = None,
 ) -> StreamDetails:
     """
     Render a message through a TTS engine.
@@ -31,9 +34,13 @@ async def query_tts_engine(
     :param engine: The TTS engine to speak the message.
     :param message: The text to speak.
     :param language: Optional language code, omit to use the engine's own default voice.
+    :param timeout: Seconds to wait for the engine, defaults to TTS_QUERY_TIMEOUT_SECONDS.
+        Lower it for a caller that is holding something up while it waits.
     """
+    if timeout is None:
+        timeout = TTS_QUERY_TIMEOUT_SECONDS
     try:
-        async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
+        async with asyncio.timeout(timeout) as query_timeout:
             return await engine.provider.get_tts_message(
                 message, language=language, engine_id=engine.id
             )
@@ -42,7 +49,7 @@ async def query_tts_engine(
         if not query_timeout.expired():
             raise
         raise MusicAssistantError(
-            f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
+            f"TTS engine '{engine.uid}' did not respond within {timeout}s"
         ) from err
 
 

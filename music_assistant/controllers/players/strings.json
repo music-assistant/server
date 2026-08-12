@@ -7,9 +7,6 @@
     "announce_tts_engine": {
       "label": "Announcement text-to-speech engine",
       "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link."
-    },
-    "announce_tts_engine_unavailable": {
-      "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     }
   },
   "manifest": {

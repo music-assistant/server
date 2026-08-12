@@ -49,6 +49,16 @@ async def get_tts_engines(mass: MusicAssistant) -> list[TTSEngine]:
     )
 
 
+def engine_display_name(engine: PluginEngine) -> str:
+    """
+    Return the name to show for an engine, naming the plugin it comes from.
+
+    :param engine: The engine to name. Engine names alone are ambiguous, since the same
+        name can be exposed by more than one plugin.
+    """
+    return f"{engine.provider.name} | {engine.name}"
+
+
 async def resolve_ai_engine(mass: MusicAssistant, selected: str | None) -> AIEngine | None:
     """
     Return the AI engine for a configured selection.
@@ -150,7 +160,7 @@ async def create_ai_engine_config_entries(
     :param category: The settings category to show the entries under.
     """
     return _create_engine_config_entries(
-        await get_ai_engines(mass), key, depends_on, required, category
+        await get_ai_engines(mass), key, depends_on, required, category, "ai_engine_unavailable"
     )
 
 
@@ -174,7 +184,7 @@ async def create_tts_engine_config_entries(
     :param category: The settings category to show the entries under.
     """
     return _create_engine_config_entries(
-        await get_tts_engines(mass), key, depends_on, required, category
+        await get_tts_engines(mass), key, depends_on, required, category, "tts_engine_unavailable"
     )
 
 
@@ -251,6 +261,7 @@ def _create_engine_config_entries(
     depends_on: str | None,
     required: bool = False,
     category: str = "features",
+    unavailable_translation_key: str | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Build the picker (and unavailable alert) config entries for the given engines."""
     entry = ConfigEntry(
@@ -260,11 +271,8 @@ def _create_engine_config_entries(
         # a concrete default would make the seeded selection equal to it and therefore
         # not persisted (to_raw only stores values differing from the default)
         default_value=None,
-        # the picker aggregates engines from every plugin, so each option names the
-        # plugin it came from - engine names alone are ambiguous across providers
         options=[
-            ConfigValueOption(engine.uid, title=f"{engine.provider.name} | {engine.name}")
-            for engine in engines
+            ConfigValueOption(engine.uid, title=engine_display_name(engine)) for engine in engines
         ],
         depends_on=depends_on,
         category=category,
@@ -279,5 +287,8 @@ def _create_engine_config_entries(
             type=ConfigEntryType.ALERT,
             depends_on=depends_on,
             category=category,
+            # the alert text does not depend on what the picker is used for, so every
+            # caller shares one source string instead of authoring its own copy
+            translation_key=unavailable_translation_key,
         ),
     )

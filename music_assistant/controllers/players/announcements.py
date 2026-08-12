@@ -43,6 +43,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.announcements import MAX_CLIP_SECONDS
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.plugin_engines import (
+    engine_display_name,
     get_tts_engines,
     resolve_tts_engine,
     select_core_tts_engine,
@@ -58,6 +59,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant import MusicAssistant
+
+# the caller waits for this command and it holds the player's playback lock while it runs,
+# so a wedged engine must give up well before the generic (background) engine timeout
+ANNOUNCEMENT_TTS_TIMEOUT = 30
 
 
 class AnnouncementsMixin:
@@ -178,6 +183,8 @@ class AnnouncementsMixin:
             raise PlayerCommandFailed("Either a url or a message is required.")
         if url and message:
             raise PlayerCommandFailed("Provide either a url or a message, not both.")
+        if tts_engine and not message:
+            raise PlayerCommandFailed("A tts_engine can only be used to speak a message.")
         if url and not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         if (
@@ -290,7 +297,7 @@ class AnnouncementsMixin:
     async def get_announcement_tts_engines(self) -> list[dict[str, str]]:
         """Return the TTS engines that can speak an announcement."""
         return [
-            {"uid": engine.uid, "name": f"{engine.provider.name} | {engine.name}"}
+            {"uid": engine.uid, "name": engine_display_name(engine)}
             for engine in await get_tts_engines(self.mass)
         ]
 
@@ -401,11 +408,11 @@ class AnnouncementsMixin:
             engine = await select_core_tts_engine(self.mass, self.domain, CONF_ANNOUNCE_TTS_ENGINE)
             if engine is None:
                 raise PlayerCommandFailed("No text-to-speech engine is available.")
-        stream_details = await query_tts_engine(engine, message)
+        stream_details = await query_tts_engine(engine, message, timeout=ANNOUNCEMENT_TTS_TIMEOUT)
         path, _ = await resolve_tts_stream_path(engine, stream_details)
         if not path.startswith("http"):
-            # an announcement is always fetched by url, also when it is forwarded to each
-            # member of a group, so a clip the engine only rendered to disk cannot be used
+            # a group announcement is forwarded to each member through this same command,
+            # whose url guard only accepts http - so a clip rendered to disk never gets past it
             raise PlayerCommandFailed(
                 f"TTS engine '{engine.uid}' rendered the message to a local file. "
                 "Announcements need an engine that serves its audio over http."
