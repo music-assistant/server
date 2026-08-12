@@ -797,9 +797,7 @@ def _get_asound_lib() -> ctypes.CDLL:
 
 def unmute_playback_switches(alsa_card_index: str) -> str:
     """
-    Detect-then-correct: unmute only the channel-enable elements this
-    provider's remap topology actually feeds, and only the ones currently
-    off.
+    Detect-then-correct: unmute known-muted channel-enable elements this card's topology feeds.
 
     On some multi-instance sound cards, certain playback-enable mixer
     elements (e.g. for surround/center/side channels) don't default to
