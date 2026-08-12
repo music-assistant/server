@@ -7,6 +7,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature
 from wiim import PlayingStatus
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 
+from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.wiim.constants import SOURCE_NETWORK
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
 
@@ -340,3 +341,157 @@ class TestErrorHandling:
         await player.pause()
         assert player._attr_available is True
         player.update_state.assert_called()
+
+
+class TestStalePositionOnNewStream:
+    """A new stream handed to the device must not inherit the previous position."""
+
+    def _make_player(self, provider: MagicMock, device: MagicMock) -> WiimPlayer:
+        player = WiimPlayer(provider=provider, player_id="uuid:test", device=device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        return player
+
+    @pytest.mark.asyncio
+    async def test_play_media_resets_elapsed_time(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """play_media() must clear the stale elapsed_time anchor from prior content."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_elapsed_time = 273
+        player._attr_elapsed_time_last_updated = 1000.0
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="Some Track"))
+
+        assert player._attr_elapsed_time == 0
+        assert player._attr_elapsed_time_last_updated is not None
+        assert player._attr_elapsed_time_last_updated > 1000.0
+
+    @pytest.mark.asyncio
+    async def test_play_media_then_sync_position_end_to_end(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """
+        The device still reports the previous AirPlay content after play_media.
+
+        Its metadata makes MA rebuild _attr_current_media from the device's own
+        uri, so the position guard must not key off _attr_current_media.
+        """
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+
+        device_media = MagicMock()
+        device_media.uri = "wiimu_airplay"
+        device_media.title = "Previous Song"
+        device_media.artist = "Previous Artist"
+        device_media.album = "Previous Album"
+        device_media.position = 273
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = device_media
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_elapsed_time = 273
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="New Track"))
+        assert player._attr_elapsed_time == 0
+
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+    @pytest.mark.asyncio
+    async def test_sync_position_ignores_position_reported_without_uri(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The device clears its uri mid-handover while still reporting the old position."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+
+        device_media = MagicMock()
+        device_media.uri = None
+        device_media.title = None
+        device_media.artist = None
+        device_media.album = None
+        device_media.position = 273
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = device_media
+
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="New Track"))
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+    @pytest.mark.asyncio
+    async def test_sync_position_ignores_foreign_uri(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The device's position is rejected while it hasn't loaded MA's stream uri."""
+        stream_uri = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._ma_stream_uri = stream_uri
+        player._attr_elapsed_time = 0
+        player._attr_elapsed_time_last_updated = 1000.0
+
+        device_media = MagicMock()
+        device_media.uri = "wiimu_airplay"
+        device_media.position = 273
+        mock_wiim_device.current_media = device_media
+
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+        assert player._attr_elapsed_time_last_updated == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_sync_position_accepts_matching_uri_and_clears_guard(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Once the device reports MA's own uri, its position is trusted and the guard lifts."""
+        stream_uri = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_uri)
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        device_media = MagicMock()
+        device_media.uri = stream_uri
+        device_media.position = 12
+        mock_wiim_device.current_media = device_media
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="New Track"))
+        player._attr_elapsed_time_last_updated = 1000.0
+
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 12
+        assert player._attr_elapsed_time_last_updated > 1000.0
+        assert player._ma_stream_uri is None
+
+        # A later switch to an external source must not be blocked by a stale guard.
+        device_media.uri = "wiimu_airplay"
+        device_media.position = 55
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 55
+
+    @pytest.mark.asyncio
+    async def test_sync_position_accepts_device_when_ma_not_driving_playback(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """With no stream handed over by MA (external source), the device's position is authoritative."""
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._ma_stream_uri = None
+        player._attr_elapsed_time = 0
+        player._attr_elapsed_time_last_updated = 1000.0
+
+        device_media = MagicMock()
+        device_media.uri = "wiimu_airplay"
+        device_media.position = 42
+        mock_wiim_device.current_media = device_media
+
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 42
+        assert player._attr_elapsed_time_last_updated > 1000.0
