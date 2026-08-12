@@ -8,6 +8,11 @@ member of the live session at one shared audible instant and tracks the per-memb
 outcome. Whenever there is no live playback to mix into (idle or parked player), the
 announcement runs as a dedicated stream session instead, leaving the player idle.
 
+Targeting semantics: the leader of an (ad-hoc) sync group represents the whole
+group - announcing to it plays on every member, exactly like playing media to it
+does. A synced member addressed individually announces alone, over its own ducked
+copy of the group's music, while the other rooms play on untouched.
+
 A group announcement is forwarded by the player controller to every member
 concurrently; the session leader's call runs one orchestration for the whole session
 and the members' calls coalesce onto it (see the provider's announce-task registry).
@@ -57,8 +62,10 @@ if TYPE_CHECKING:
     from .stream import AirPlayStream
 
 # Scheduled announcement-volume changes of one member: the previous level and
-# the timers that apply/restore the announcement volume around the clip.
-_VolumeSchedule = tuple["AirPlayPlayer", int, list[asyncio.TimerHandle]]
+# the timer task ids that apply/restore the announcement volume around the
+# clip (mass.call_later tracks its timers by task id, and only cancel_timer
+# releases a tracked entry that never fired).
+_VolumeSchedule = tuple["AirPlayPlayer", int, list[str]]
 
 # How a synced member's call looks for the leader task of a group announcement.
 # The controller forwards a group announcement to every member in one batch, so
@@ -345,9 +352,9 @@ async def _announce_over_live_session(
         # The scheduled volume changes belong to an announcement that is no
         # longer being tracked: cancel them and restore the previous levels
         # right away (a restore of an unchanged level is a harmless re-send).
-        for member, prev_volume, handles in volume_schedules:
-            for handle in handles:
-                handle.cancel()
+        for member, prev_volume, task_ids in volume_schedules:
+            for task_id in task_ids:
+                member.mass.cancel_timer(task_id)
             player.mass.create_task(member.volume_set(prev_volume))
         raise
     finally:
@@ -540,15 +547,21 @@ def _schedule_member_volume(
     # still sounding. The duck ramp (and the pre-announce chime) masks the
     # late bump; short clips cap the bias at their midpoint.
     bump_delay = delay + min(AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS / 1000, clip_seconds / 2)
-    handles = [
-        member.mass.call_later(bump_delay, member.volume_set, volume_level),
-        member.mass.call_later(
-            delay + clip_seconds + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000,
-            member.volume_set,
-            prev_volume,
-        ),
+    # Deterministic task ids: cancel_timer is the only way to release a tracked
+    # timer that never fires, and reusing the ids also cancels stale timers of
+    # a replaced announcement on the same member.
+    task_ids = [
+        f"airplay_announce_volume_bump_{member.player_id}",
+        f"airplay_announce_volume_restore_{member.player_id}",
     ]
-    return (member, prev_volume, handles)
+    member.mass.call_later(bump_delay, member.volume_set, volume_level, task_id=task_ids[0])
+    member.mass.call_later(
+        delay + clip_seconds + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000,
+        member.volume_set,
+        prev_volume,
+        task_id=task_ids[1],
+    )
+    return (member, prev_volume, task_ids)
 
 
 async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat) -> str:
@@ -595,4 +608,7 @@ async def _no_announce_ack() -> tuple[int, int] | None:
 
 def _format_key(pcm_format: AudioFormat) -> str:
     """Return the identity of a raw PCM stdin format for clip-file sharing."""
-    return f"{pcm_format.content_type.value}_{pcm_format.sample_rate}_{pcm_format.bit_depth}"
+    return (
+        f"{pcm_format.content_type.value}_{pcm_format.sample_rate}"
+        f"_{pcm_format.bit_depth}_{pcm_format.channels}"
+    )
