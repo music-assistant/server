@@ -52,7 +52,7 @@ class RemapSinkSpec:
 
 
 def normalize_card_name(
-    alsa_card_name: str, card_index: str | None = None, label: str | None = None
+    alsa_card_name: str, hardware_tag: str | None = None, label: str | None = None
 ) -> str:
     """
     Normalize an alsa.card_name property into a sink-name prefix.
@@ -60,24 +60,31 @@ def normalize_card_name(
     Mirrors `tr ' -' '_' | tr -cd '[:alnum:]_'`, e.g. "Creative X-Fi" ->
     "Creative_X_Fi", "HD-Audio Generic" -> "HD_Audio_Generic".
 
-    :param card_index: Optional ALSA card index (from alsa.card property).
-        When provided, appended as ``_card{N}`` suffix to disambiguate
-        identical cards (e.g. two X-Fi cards become ``Creative_X_Fi_card0``
-        and ``Creative_X_Fi_card3``).
+    :param hardware_tag: Optional short stable hash tag (see
+        sendspin_bridge.short_hardware_tag(), derived from the master
+        sink's own PA name — bus-path-derived, so it stays the same
+        across reboots regardless of ALSA card-index enumeration order,
+        unlike the ALSA card index itself). Appended to disambiguate
+        identical cards (e.g. two X-Fi cards become
+        ``Creative_X_Fi_a3f9`` and ``Creative_X_Fi_7c21``). Applied
+        unconditionally, not just on detected collision, so a card's
+        sink-name prefix never changes later purely because a second
+        identical card was added — see short_hardware_tag()'s docstring
+        for the same rationale applied to player display names.
     :param label: Optional connector-type label (see connector_label()),
-        e.g. "hdmi", inserted before the card-index suffix so an HDMI
+        e.g. "hdmi", inserted before the hardware-tag suffix so an HDMI
         output and an analog output sharing an identical alsa.card_name
         (two functions on the same physical chip, e.g. "HD-Audio Generic")
         are distinguishable at a glance rather than differing only by an
-        opaque card index: "HD_Audio_Generic_hdmi_card2" vs
-        "HD_Audio_Generic_card4".
+        opaque tag: "HD_Audio_Generic_hdmi_a3f9" vs
+        "HD_Audio_Generic_7c21".
     """
     name = re.sub(r"[ -]", "_", alsa_card_name)
     name = re.sub(r"[^A-Za-z0-9_]", "", name)
     if label:
         name = f"{name}_{label}"
-    if card_index is not None:
-        name = f"{name}_card{card_index}"
+    if hardware_tag:
+        name = f"{name}_{hardware_tag}"
     return name
 
 
