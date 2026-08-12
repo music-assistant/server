@@ -1361,6 +1361,26 @@ async def test_set_members_adds_the_child_to_the_running_session() -> None:
     assert leader.group_members == ["leader", "child"]
 
 
+def test_live_session_members_reports_who_the_session_actually_feeds() -> None:
+    """Group membership outlives the session, so only the session itself can answer."""
+    leader = _make_playing_leader()
+    leader._attr_group_members = ["leader", "child"]
+    # the session dropped the child (e.g. its receiver never answered our clock)
+    _attach_running_session(leader, [leader])
+
+    assert leader.live_session_members == ["leader"]
+
+    # no session means nobody is being rendered with, whatever the group says
+    stream = cast("MagicMock", leader.stream)
+    stream.running = False
+    assert leader.live_session_members == []
+    stream.running = True
+    stream.session = None
+    assert leader.live_session_members == []
+    leader.stream = None
+    assert leader.live_session_members == []
+
+
 @pytest.mark.asyncio
 async def test_set_members_warns_when_the_leader_has_no_session(
     caplog: pytest.LogCaptureFixture,
