@@ -184,8 +184,8 @@ def _auto_candidates(card: CardSnapshot) -> list[tuple[int, bool, int, CardProfi
 
     :returns: Sort keys and profiles, best first: (output channels,
         has-input, PA priority). Profiles with no sinks, unavailable
-        profiles, "off", and unparseable names are excluded — an
-        unparseable profile can't be ranked, so automatic selection never
+        profiles, "off", and unparsable names are excluded — an
+        unparsable profile can't be ranked, so automatic selection never
         switches *to* it (an explicit override still can).
     """
     ranked: list[tuple[int, bool, int, CardProfile]] = []

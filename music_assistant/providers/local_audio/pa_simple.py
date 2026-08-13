@@ -5,9 +5,12 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from typing import Any, ClassVar, Final, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Self
 
 from .constants import volume_pct_to_amplitude
+
+if TYPE_CHECKING:
+    from .card_profiles import CardSnapshot
 
 PA_STREAM_PLAYBACK: Final = 1
 
