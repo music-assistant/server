@@ -30,12 +30,16 @@ steady 48 kHz / 16-bit / stereo stream.
   (soxr).
 - **Silence-hold.** A real line-in goes silent when unplugged, it does not
   stop. This provider mirrors that: when source audio stops flowing (stream
-  end, disconnect, client unavailable) the stream keeps playing silence and
-  recovers automatically if the source returns, including re-sending the
-  start command after a reconnect. After 30 seconds without source audio the
-  stream ends and the queue stops. This intentionally differs from providers
-  like Spotify Connect, which end the stream immediately on pause: those have
-  an upstream transport state to mirror, a line-in does not.
+  end, disconnect, client unavailable) the stream keeps playing silence rather
+  than ending, and after 30 seconds without source audio it ends and the queue
+  stops. This intentionally differs from providers like Spotify Connect, which
+  end the stream immediately on pause: those have an upstream transport state
+  to mirror, a line-in does not.
+- **Reconnect recovery.** A reconnect clears the client's start request, so the
+  provider re-sends it and the stream picks up where it left off. Recovery is
+  scoped to reconnects: a client that reports itself unavailable also has its
+  start request cleared, but announces nothing when it returns, so that stream
+  runs out the 30-second timeout instead.
 - **Cold start still fails.** The silence-hold only applies once audio has
   flowed. A client that never answers the start command is a failed
   acquisition rather than a quiet input, so the stream raises after 5 seconds

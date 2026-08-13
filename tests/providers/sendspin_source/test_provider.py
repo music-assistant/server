@@ -385,3 +385,15 @@ async def test_signal_loss_stops_a_running_source(fake_client: _FakeClient) -> N
     await _settle()
     # Stopping the queue, not the player, also clears its pending preload timers.
     assert get_queues(provider).stopped == ["queue-1"]
+
+
+@pytest.mark.usefixtures("fast_autostart")
+async def test_a_reconnect_does_not_defuse_a_pending_autostop(fake_client: _FakeClient) -> None:
+    """A same-queue reconnect re-claims the source and must not cancel the pending stop."""
+    provider = await make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    fake_client.emit(_signal(SignalState.PRESENT))
+    fake_client.emit(_signal(SignalState.ABSENT))
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    await _settle()
+    assert get_queues(provider).stopped == ["queue-1"]

@@ -126,7 +126,10 @@ class SendspinSourceProvider(PluginProvider):
         self._sessions: dict[str, _SourceSession] = {}
         self._watchers: dict[str, Callable[[], None]] = {}
         self._signals: dict[str, SignalState] = {}
+        # Kept apart: a re-selection drops a pending start but must leave a pending
+        # stop counting down, or a same-queue reconnect defuses it for good.
         self._pending_autostart: dict[str, asyncio.Task[None]] = {}
+        self._pending_autostop: dict[str, asyncio.Task[None]] = {}
         self._server_unsubscribe: Callable[[], None] | None = None
 
     async def loaded_in_mass(self) -> None:
@@ -146,9 +149,10 @@ class SendspinSourceProvider(PluginProvider):
         for unwatch in self._watchers.values():
             unwatch()
         self._watchers.clear()
-        for task in self._pending_autostart.values():
-            task.cancel()
-        self._pending_autostart.clear()
+        for pending in (self._pending_autostart, self._pending_autostop):
+            for task in pending.values():
+                task.cancel()
+            pending.clear()
         for source_id in list(self._sessions):
             await self._teardown_session(source_id)
 
@@ -328,6 +332,7 @@ class SendspinSourceProvider(PluginProvider):
                 self.mass.create_task(self._on_client_connected(client_id), eager_start=False)
             case ClientRemovedEvent(client_id) | ClientDisconnectedEvent(client_id):
                 self._cancel_pending_autostart(client_id)
+                self._cancel_pending_autostop(client_id)
                 self._signals.pop(client_id, None)
                 if (unwatch := self._watchers.pop(client_id, None)) is not None:
                     unwatch()
@@ -390,19 +395,29 @@ class SendspinSourceProvider(PluginProvider):
             return
         self.logger.debug("Sendspin source %s signal %s", client_id, signal.value)
         self._cancel_pending_autostart(client_id)
-        self._pending_autostart[client_id] = self.mass.create_task(
-            self._autostart_after_debounce(client_id)
-            if signal == SignalState.PRESENT
-            else self._autostop_after_hold(client_id)
-        )
+        self._cancel_pending_autostop(client_id)
+        if signal == SignalState.PRESENT:
+            self._pending_autostart[client_id] = self.mass.create_task(
+                self._autostart_after_debounce(client_id)
+            )
+        else:
+            self._pending_autostop[client_id] = self.mass.create_task(
+                self._autostop_after_hold(client_id)
+            )
 
     def _cancel_pending_autostart(self, client_id: str) -> None:
         if (task := self._pending_autostart.pop(client_id, None)) is not None:
             task.cancel()
 
+    def _cancel_pending_autostop(self, client_id: str) -> None:
+        if (task := self._pending_autostop.pop(client_id, None)) is not None:
+            task.cancel()
+
     async def _autostart_after_debounce(self, client_id: str) -> None:
         """Start playing a source whose signal has stayed present."""
         await asyncio.sleep(AUTOSTART_SIGNAL_DEBOUNCE_S)
+        # Untrack before starting, not in a finally: play_media claims the source, and
+        # that claim cancels whatever this dict holds for the client.
         self._pending_autostart.pop(client_id, None)
         if client_id in self._sessions:
             # Already streaming, wherever the user put it.
@@ -416,7 +431,7 @@ class SendspinSourceProvider(PluginProvider):
     async def _autostop_after_hold(self, client_id: str) -> None:
         """Stop a source whose signal has stayed absent, e.g. a record that ended."""
         await asyncio.sleep(AUTOSTART_SIGNAL_ABSENT_HOLD_S)
-        self._pending_autostart.pop(client_id, None)
+        self._pending_autostop.pop(client_id, None)
         if (session := self._sessions.get(client_id)) is None:
             return
         self.logger.info("Line-in signal gone on %s, stopping playback", client_id)
@@ -452,8 +467,8 @@ class SendspinSourceProvider(PluginProvider):
             self.logger.debug("Autostart target %s has no queue", target_player_id)
             return None
         if (
-            not self.mass.config.get_raw_player_config_value(
-                client_id, CONF_SOURCE_AUTOSTART_INTERRUPT, True
+            not await self.mass.config.get_player_config_value(
+                client_id, CONF_SOURCE_AUTOSTART_INTERRUPT, default=True
             )
             and queue.state == PlaybackState.PLAYING
         ):

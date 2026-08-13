@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -170,6 +169,8 @@ class _FakeConfigController:
 class _FakeMass:
     """MusicAssistant stand-in providing loop, task creation and provider lookup."""
 
+    cache = None
+
     def __init__(self, sendspin_provider: Any) -> None:
         self.loop = asyncio.get_running_loop()
         self.players = _FakePlayers()
@@ -194,24 +195,20 @@ class _FakeConfig:
     instance_id = "sendspin_source"
 
     def get_value(self, key: str) -> Any:
-        assert key == CONF_TARGET_LATENCY
-        return DEFAULT_TARGET_LATENCY_MS
+        return DEFAULT_TARGET_LATENCY_MS if key == CONF_TARGET_LATENCY else None
 
 
 async def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
     """Build a provider wired to fake mass/server_api around the given clients."""
-    provider = SendspinSourceProvider.__new__(SendspinSourceProvider)
     server_api = _FakeServerApi(clients)
     sendspin_provider = type("FakeSendspinProvider", (), {"server_api": server_api})()
-    provider.mass = cast("MusicAssistant", _FakeMass(sendspin_provider))
-    provider.config = cast("Any", _FakeConfig())
-    provider.manifest = cast("Any", type("Manifest", (), {"domain": "sendspin_source"})())
-    provider.logger = logging.getLogger("test.sendspin_source")
-    provider._sessions = {}
-    provider._watchers = {}
-    provider._signals = {}
-    provider._pending_autostart = {}
-    provider._server_unsubscribe = None
+    # Constructed rather than hand-populated, so a new instance attribute cannot go
+    # missing here and take the fake out of step with the provider.
+    provider = SendspinSourceProvider(
+        cast("MusicAssistant", _FakeMass(sendspin_provider)),
+        cast("Any", type("Manifest", (), {"domain": "sendspin_source"})()),
+        cast("Any", _FakeConfig()),
+    )
     for client in clients:
         get_players(provider).players[client.client_id] = _FakePlayer(client.client_id)
     await provider.loaded_in_mass()

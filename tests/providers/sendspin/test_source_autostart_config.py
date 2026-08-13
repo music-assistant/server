@@ -88,6 +88,18 @@ def test_capture_only_source_defaults_to_off() -> None:
     assert entry.default_value == SOURCE_AUTOSTART_OFF
 
 
+def test_a_source_that_is_also_a_player_defaults_to_itself() -> None:
+    """A turntable that can play defaults to playing its own line-in, with nothing saved."""
+    player = _player(
+        negotiated_role_ids=["source@v1", "player@v1"],
+        line_sense=True,
+        known_players=["turntable", "speaker"],
+    )
+    entry = _target_entry(player)
+    assert entry is not None
+    assert entry.default_value == "turntable"
+
+
 def test_an_unavailable_player_stays_selectable() -> None:
     """A target that is merely asleep must stay offered, not vanish from the list."""
     player = _player(
