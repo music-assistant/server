@@ -32,10 +32,12 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 from orjson import dumps
 
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
     is_request_from_ingress,
+    set_current_user,
 )
 from music_assistant.helpers.audio import create_streaming_wave_header
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
@@ -63,10 +65,16 @@ MAX_SAMPLE_RATE = 96000
 MAX_CHANNELS = 2
 
 # A client that stops sending without saying so holds the player's playback lock for as
-# long as it stays connected, so silence ends the clip on its own.
+# long as it stays connected, so silence ends the clip on its own. The idle timeout only
+# measures the gap between frames, so a clip is bounded in wall clock time as well -
+# otherwise a trickle of frames could hold the player forever.
 IDLE_TIMEOUT = 10
+MAX_SESSION_SECONDS = MAX_ANNOUNCEMENT_SECONDS
 # Maximum time to wait for the handshake messages that precede the audio.
 HANDSHAKE_TIMEOUT = 10
+# Live announcements are spoken one at a time by a person, so a handful of sessions is
+# already generous; the cap bounds the audio that can be buffered at once.
+MAX_CONCURRENT_SESSIONS = 4
 
 
 class LiveAnnouncementStart(NamedTuple):
@@ -209,6 +217,9 @@ class LiveAnnouncementManager:
                 return ws
             if (start := await self._read_start_message(request, ws)) is None:
                 return ws
+            if len(self._sessions) >= MAX_CONCURRENT_SESSIONS:
+                await self._reject(request, ws, "Too many live announcements in progress")
+                return ws
             await self._run_session(ws, start)
         finally:
             self._connections.discard(ws)
@@ -251,6 +262,20 @@ class LiveAnnouncementManager:
         self, ws: web.WebSocketResponse, session: LiveAnnouncementSession
     ) -> None:
         """Buffer the audio frames the client sends until it stops speaking."""
+        try:
+            async with asyncio.timeout(MAX_SESSION_SECONDS):
+                await self._read_frames(ws, session)
+        except TimeoutError:
+            self.logger.warning(
+                "Live announcement %s ended: it ran for the maximum of %s seconds",
+                session.session_id,
+                MAX_SESSION_SECONDS,
+            )
+
+    async def _read_frames(
+        self, ws: web.WebSocketResponse, session: LiveAnnouncementSession
+    ) -> None:
+        """Read audio frames until the client stops speaking or falls silent."""
         while True:
             try:
                 async with asyncio.timeout(IDLE_TIMEOUT):
@@ -266,6 +291,9 @@ class LiveAnnouncementManager:
                 # any text frame is the client saying it is done; anything else is the
                 # connection going away, which means the same thing
                 return
+            if not msg.data:
+                # carries no audio, so it must not grow the clip that is held in memory
+                continue
             await session.write(msg.data)
             if session.duration >= MAX_ANNOUNCEMENT_SECONDS:
                 self.logger.warning(
@@ -314,7 +342,8 @@ class LiveAnnouncementManager:
         :param ws: The prepared WebSocket response.
         :return: True when the client may announce.
         """
-        if is_request_from_ingress(request):
+        is_ingress = is_request_from_ingress(request)
+        if is_ingress:
             user = await get_authenticated_user(request)
         elif (message := await self._read_message(request, ws, "auth")) is None:
             return False
@@ -324,8 +353,17 @@ class LiveAnnouncementManager:
             user = await self.mass.webserver.auth.authenticate_with_token(str(token))
         if user is None:
             return await self._reject(request, ws, "Authentication failed")
+        if not is_ingress and user.username == HOMEASSISTANT_SYSTEM_USER:
+            # the token of the Home Assistant system user is only meant to travel over
+            # the ingress connection, mirroring the policy of the websocket api
+            return await self._reject(
+                request, ws, "Home Assistant system user not allowed on regular webserver"
+            )
         if not has_scope(user, Scope.PLAYERS_CONTROL):
             return await self._reject(request, ws, "Not allowed to control players")
+        # the announcement is dispatched as a task, which inherits this context, so the
+        # player command it runs sees the user and applies their player restrictions
+        set_current_user(user)
         return True
 
     async def _read_start_message(
@@ -335,8 +373,11 @@ class LiveAnnouncementManager:
         if (message := await self._read_message(request, ws, "start")) is None:
             return None
         player_id = message.get("player_id")
-        if not isinstance(player_id, str) or self.mass.players.get_player(player_id) is None:
-            await self._reject(request, ws, f"Unknown player: {player_id}")
+        player = self.mass.players.get_player(player_id) if isinstance(player_id, str) else None
+        # an unavailable player silently drops the command downstream, which would
+        # otherwise be reported to the client as an announcement that played
+        if not isinstance(player_id, str) or player is None or not player.available:
+            await self._reject(request, ws, f"Unknown or unavailable player: {player_id}")
             return None
         sample_rate = message.get("sample_rate")
         if (

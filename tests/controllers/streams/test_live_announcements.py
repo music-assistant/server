@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 from contextlib import aclosing
+from types import MethodType
 from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,12 +17,16 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.controllers.players.controller import PlayerController
+from music_assistant.controllers.players.helpers import handle_player_command
 from music_assistant.controllers.streams import live_announcements
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_ROUTE,
     LiveAnnouncementManager,
     LiveAnnouncementSession,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.audio import create_streaming_wave_header
 from tests.common import use_real_create_task
 
@@ -52,6 +57,7 @@ class Harness(NamedTuple):
     manager: LiveAnnouncementManager
     mass: MagicMock
     client: TestClient[web.Request, web.Application]
+    player: MagicMock
 
 
 @pytest.fixture(name="harness")
@@ -62,8 +68,9 @@ async def harness_fixture() -> AsyncGenerator[Harness]:
     mass.webserver.auth.authenticate_with_token = AsyncMock(
         return_value=User(user_id="user_1", username="listener", role=UserRole.USER)
     )
+    player = _player()
     mass.players.get_player = MagicMock(
-        side_effect=lambda player_id: MagicMock() if player_id == PLAYER_ID else None
+        side_effect=lambda player_id: player if player_id == PLAYER_ID else None
     )
     mass.players.play_announcement = AsyncMock()
     # the announcement is dispatched as a task, which must actually run
@@ -74,7 +81,7 @@ async def harness_fixture() -> AsyncGenerator[Harness]:
     client: TestClient[web.Request, web.Application] = TestClient(TestServer(app))
     await client.start_server()
     try:
-        yield Harness(manager, mass, client)
+        yield Harness(manager, mass, client, player)
     finally:
         await client.close()
 
@@ -231,6 +238,51 @@ async def test_the_announcement_outlives_a_client_that_drops(harness: Harness) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("player_filter", [[], [PLAYER_ID]], ids=["no filter", "player allowed"])
+async def test_the_announcement_runs_as_the_user_that_spoke_it(
+    harness: Harness, player_filter: list[str]
+) -> None:
+    """
+    The user of the connection reaches the task the announcement is dispatched on.
+
+    Player commands apply the user's restrictions from that context, so without it
+    every live announcement would run unrestricted.
+    """
+    user = User(
+        user_id="user_4", username="speaker", role=UserRole.USER, player_filter=player_filter
+    )
+    harness.mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=user)
+    announced = _announce_through_player_commands(harness)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+    assert await _reply(ws) == "finished"
+
+    assert announced == [(PLAYER_ID, user)]
+
+
+@pytest.mark.asyncio
+async def test_a_user_without_access_to_the_player_is_refused(harness: Harness) -> None:
+    """A player outside the user's filter is refused, as it is for any other command."""
+    harness.mass.webserver.auth.authenticate_with_token = AsyncMock(
+        return_value=User(
+            user_id="user_5", username="guest", role=UserRole.USER, player_filter=["other_player"]
+        )
+    )
+    announced = _announce_through_player_commands(harness)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+    assert await _reply(ws) == "error"
+
+    assert announced == []
+
+
+@pytest.mark.asyncio
 async def test_a_client_that_goes_silent_ends_its_own_clip(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -241,6 +293,72 @@ async def test_a_client_that_goes_silent_ends_its_own_clip(
     assert await _reply(ws) == "started"
     await ws.send_bytes(b"\x01\x02")
 
+    assert await _reply(ws) == "finished"
+
+
+@pytest.mark.asyncio
+async def test_a_clip_that_keeps_going_is_cut_off(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that keeps sending cannot hold on to the player indefinitely."""
+    # with the idle timeout out of reach, only the wall clock bound can end this clip
+    monkeypatch.setattr(live_announcements, "MAX_SESSION_SECONDS", 0.1)
+    monkeypatch.setattr(live_announcements, "IDLE_TIMEOUT", 30)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+
+    assert await _reply(ws) == "finished"
+
+
+@pytest.mark.asyncio
+async def test_only_so_many_clips_can_be_in_progress_at_once(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audio buffered at the same time is bounded by a cap on the sessions."""
+    monkeypatch.setattr(live_announcements, "MAX_CONCURRENT_SESSIONS", 1)
+    playing = asyncio.Event()
+
+    async def _play(*_args: Any, **_kwargs: Any) -> None:
+        await playing.wait()
+
+    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
+
+    speaking = await _start_speaking(harness.client)
+    assert await _reply(speaking) == "started"
+    rejected = await _start_speaking(harness.client)
+    assert await _close_code(rejected) == REJECTED
+
+    playing.set()
+    await speaking.send_str('{"type": "stop"}')
+    assert await _reply(speaking) == "finished"
+    assert harness.mass.players.play_announcement.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_frames_are_not_part_of_the_clip(harness: Harness) -> None:
+    """A frame without audio must not grow the clip that is held in memory."""
+    playing = asyncio.Event()
+
+    async def _play(*_args: Any, **_kwargs: Any) -> None:
+        await playing.wait()
+
+    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"")
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_bytes(b"")
+    await ws.send_str('{"type": "stop"}')
+
+    session_id = _session_id(harness.mass.players.play_announcement.call_args.kwargs["url"])
+    request, writer = _stream_request(session_id)
+    await harness.manager.serve_stream(request)
+    assert _frames_written(writer) == [b"\x01\x02"]
+
+    playing.set()
     assert await _reply(ws) == "finished"
 
 
@@ -260,6 +378,38 @@ async def test_an_ingress_client_announces_without_an_auth_message(harness: Harn
 
     harness.mass.webserver.auth.authenticate_with_token.assert_not_called()
     harness.mass.players.play_announcement.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_home_assistant_system_user_announces_over_ingress(harness: Harness) -> None:
+    """Home Assistant announces as its own system user, which ingress is the home of."""
+    user = User(user_id="user_6", username=HOMEASSISTANT_SYSTEM_USER, role=UserRole.SERVICE)
+    with (
+        patch.object(live_announcements, "is_request_from_ingress", return_value=True),
+        patch.object(live_announcements, "get_authenticated_user", AsyncMock(return_value=user)),
+    ):
+        ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)
+        await ws.send_json({"type": "start", "player_id": PLAYER_ID, "sample_rate": SAMPLE_RATE})
+        assert await _reply(ws) == "started"
+        await ws.send_str('{"type": "stop"}')
+        assert await _reply(ws) == "finished"
+
+    harness.mass.players.play_announcement.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_home_assistant_system_user_is_rejected_off_ingress(harness: Harness) -> None:
+    """The Home Assistant system token is not accepted on the regular webserver."""
+    harness.mass.webserver.auth.authenticate_with_token = AsyncMock(
+        return_value=User(
+            user_id="user_7", username=HOMEASSISTANT_SYSTEM_USER, role=UserRole.SERVICE
+        )
+    )
+    ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)
+    await ws.send_json({"type": "auth", "token": VALID_TOKEN})
+
+    assert await _close_code(ws) == REJECTED
+    harness.mass.players.play_announcement.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -298,6 +448,22 @@ async def test_a_user_that_may_not_control_players_is_rejected(harness: Harness)
 
 
 @pytest.mark.asyncio
+async def test_an_unavailable_player_is_rejected(harness: Harness) -> None:
+    """
+    A player that is offline is refused up front.
+
+    The command for such a player is silently dropped downstream, which would leave
+    the client believing its announcement played.
+    """
+    harness.player.available = False
+
+    ws = await _start_speaking(harness.client)
+
+    assert await _close_code(ws) == REJECTED
+    harness.mass.players.play_announcement.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "start_message",
     [
@@ -324,6 +490,35 @@ def _session(session_id: str = "session1") -> LiveAnnouncementSession:
     return LiveAnnouncementSession(
         session_id, f"{BASE_URL}/live_announcement/{session_id}.wav", LIVE_FORMAT
     )
+
+
+def _player() -> MagicMock:
+    """Return the player the tests announce on."""
+    player = MagicMock()
+    player.player_id = PLAYER_ID
+    player.display_name = "Kitchen"
+    player.available = True
+    player.protocol_parent_id = None
+    return player
+
+
+def _announce_through_player_commands(harness: Harness) -> list[tuple[str, User | None]]:
+    """
+    Announce through the guards every player command passes, instead of a bare mock.
+
+    :param harness: The harness whose announcements should run through the guards.
+    :return: The player and the user of every announcement that got through.
+    """
+    controller = PlayerController.__new__(PlayerController)
+    controller._players = {PLAYER_ID: harness.player}
+    controller.logger = logging.getLogger("test.streams.live_announcements.players")
+    announced: list[tuple[str, User | None]] = []
+
+    async def _play(_self: PlayerController, player_id: str, **_kwargs: Any) -> None:
+        announced.append((player_id, get_current_user()))
+
+    harness.mass.players.play_announcement = MethodType(handle_player_command(_play), controller)
+    return announced
 
 
 async def _start_speaking(
@@ -375,6 +570,11 @@ def _stream_request(session_id: str) -> tuple[web.Request, MagicMock]:
 def _written(writer: MagicMock) -> bytes:
     """Return the body that was written to a served stream."""
     return b"".join(call.args[0] for call in writer.write.call_args_list)
+
+
+def _frames_written(writer: MagicMock) -> list[bytes]:
+    """Return the audio chunks written to a served stream, without the wave header."""
+    return [call.args[0] for call in writer.write.call_args_list[1:]]
 
 
 def _session_id(url: str) -> str:
