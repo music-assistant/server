@@ -68,6 +68,75 @@ def _controller(
     return ctrl, queue_data, fill_mock, stop_mock
 
 
+def _controller_with_dead_head(
+    *, dead: int, pre_marked: bool
+) -> tuple[PlayerQueuesController, PlayerQueueData, AsyncMock]:
+    """Build a controller whose queue starts with `dead` unplayable items."""
+    ctrl, queue_data, fill_mock, _stop_mock = _controller(is_dynamic=True)
+    queue_data.items = [
+        QueueItem(queue_id=QUEUE_ID, queue_item_id=f"dead{i}", name=f"dead{i}", duration=180)
+        for i in range(dead)
+    ]
+    if pre_marked:
+        for item in queue_data.items:
+            item.available = False
+    queue_data.queue.current_index = 0
+    queue_data.queue.current_item = queue_data.items[0]
+
+    async def _fill(_queue_id: str) -> None:
+        """Append one playable item, as a real dynamic refill would."""
+        queue_data.items.append(
+            QueueItem(queue_id=QUEUE_ID, queue_item_id="live", name="live", duration=180)
+        )
+
+    fill_mock.side_effect = _fill
+
+    async def _load(item: QueueItem, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        """Fail for every dead item, succeed for the refilled one."""
+        if item.queue_item_id.startswith("dead"):
+            raise MediaNotFoundError(item.queue_item_id)
+
+    ctrl._load_item.side_effect = _load  # type: ignore[attr-defined]
+    return ctrl, queue_data, fill_mock
+
+
+async def test_refilled_track_is_reached_past_a_full_budget_of_dead_items() -> None:
+    """Five dead items must not consume the budget the refilled track needs."""
+    ctrl, queue_data, fill_mock = _controller_with_dead_head(dead=5, pre_marked=False)
+    await ctrl.play_index(QUEUE_ID, 0)
+    fill_mock.assert_awaited()
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.queue_item_id == "live"
+
+
+async def test_known_dead_items_do_not_spend_the_retry_budget() -> None:
+    """A second press must skip already-dead items for free and reach the live one."""
+    ctrl, queue_data, _fill = _controller_with_dead_head(dead=5, pre_marked=True)
+    queue_data.items.append(
+        QueueItem(queue_id=QUEUE_ID, queue_item_id="live", name="live", duration=180)
+    )
+    await ctrl.play_index(QUEUE_ID, 0)
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.queue_item_id == "live"
+
+
+async def test_a_refill_that_yields_nothing_still_fails() -> None:
+    """The fix must not turn an genuinely exhausted queue into an infinite loop."""
+    ctrl, _queue_data, fill_mock = _controller_with_dead_head(dead=5, pre_marked=False)
+    fill_mock.side_effect = None  # a refill that adds nothing
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_index(QUEUE_ID, 0)
+
+
+async def test_a_non_dynamic_queue_is_unchanged() -> None:
+    """Without a dynamic source there is no refill, and the queue still fails as before."""
+    ctrl, queue_data, fill_mock = _controller_with_dead_head(dead=5, pre_marked=False)
+    queue_data.queue.is_dynamic = False
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_index(QUEUE_ID, 0)
+    fill_mock.assert_not_awaited()
+
+
 async def test_dynamic_queue_refills_instead_of_reporting_exhaustion() -> None:
     """
     An unplayable last item must trigger a top-up, not "no more tracks available".
