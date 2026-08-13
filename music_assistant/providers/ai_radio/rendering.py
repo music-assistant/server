@@ -128,7 +128,7 @@ class AIRadioRenderMixin:
         # the caller holds the per-clip render lock, so of the several uncoordinated paths
         # that resolve the same clip only the first one mints; the rest hit the cache above
         path, stream_type, audio_format, duration = await self._mint_clip_media(
-            queue_item, text, clip_id, self._tts_language()
+            queue_item, text, clip_id
         )
         media = _CachedClipMedia(path, stream_type, audio_format, duration, now)
         # clips are minted per queue item, so without pruning the cache grows for as long as
@@ -147,9 +147,13 @@ class AIRadioRenderMixin:
         elapsed = asyncio.get_running_loop().time() - media.minted_at
         return max(MIN_CLIP_MEDIA_LIFETIME, round(CLIP_STREAMDETAILS_EXPIRATION - elapsed))
 
-    def _tts_language(self) -> str | None:
-        """Return the configured locale as a hyphenated language code, or None when unset."""
-        locale = self.mass.metadata.locale
+    def _tts_language(self, host_language: str | None = None) -> str | None:
+        """
+        Return the host's language, or the server locale, as a hyphenated language code.
+
+        :param host_language: The host's configured language override, if any.
+        """
+        locale = (host_language or "").strip() or self.mass.metadata.locale
         return locale.replace("_", "-") if locale else None
 
     def _find_clip_item(self, clip_id: str) -> QueueItem | None:
@@ -198,13 +202,17 @@ class AIRadioRenderMixin:
             resolved = resolved.replace(key, value)
         host = self._hosts.get(str(attributes.get(ATTR_HOST_ID) or "")) or {}
         instructions = str(host.get("instructions") or "")
+        language = str(host.get("language") or "")
         max_chars = int(attributes.get(ATTR_MAX_CHARS) or 0)
         web_mode = str(attributes.get(ATTR_WEB_SEARCH_MODE) or "disabled")
         try:
             text = cast(
                 "str",
                 await self._generate_text(
-                    instructions=instructions, prompt=resolved, web_mode=web_mode
+                    instructions=instructions,
+                    prompt=resolved,
+                    web_mode=web_mode,
+                    language=language,
                 ),
             )
         except Exception as err:
@@ -232,11 +240,12 @@ class AIRadioRenderMixin:
         return values
 
     async def _mint_clip_media(
-        self, queue_item: QueueItem, text: str, clip_id: str, language: str | None = None
+        self, queue_item: QueueItem, text: str, clip_id: str
     ) -> tuple[str, StreamType, AudioFormat, int | None]:
         """Convert the script to playable audio via the configured TTS engine."""
         host = self._hosts.get(str(queue_item.extra_attributes.get(ATTR_HOST_ID) or "")) or {}
         engine_uid = str(host.get("tts_engine") or "") or None
+        language = self._tts_language(str(host.get("language") or ""))
         try:
             path, stream_type, audio_format = await self._render_tts_media(
                 text, engine_uid, language
