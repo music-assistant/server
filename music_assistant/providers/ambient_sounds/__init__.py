@@ -17,7 +17,7 @@ import asyncio
 import os
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Final, NotRequired, TypedDict, cast
 
 from aiofiles.os import makedirs, remove, replace
 from aiofiles.os import path as aiopath
@@ -27,7 +27,6 @@ from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.models.music_provider import MusicProvider
@@ -35,7 +34,7 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -181,7 +180,7 @@ class AmbientSoundsProvider(MusicProvider):
             stored_item["content_type"] = media_info.format
         stored_items = [x for x in self._stored_sounds() if x["item_id"] != url]
         stored_items.append(stored_item)
-        self.mass.config.set(self._custom_sounds_conf_key, stored_items)
+        self._update_setup_data(CONF_KEY_CUSTOM_SOUNDS, cast("ConfigValueType", stored_items))
         return self._build_custom_sound_effect(stored_item)
 
     async def remove_sound(self, url: str) -> None:
@@ -191,7 +190,7 @@ class AmbientSoundsProvider(MusicProvider):
         :param url: Stream URL of the ambient sound to remove.
         """
         stored_items = [x for x in self._stored_sounds() if x["item_id"] != url]
-        self.mass.config.set(self._custom_sounds_conf_key, stored_items)
+        self._update_setup_data(CONF_KEY_CUSTOM_SOUNDS, cast("ConfigValueType", stored_items))
         await self.mass.cache.delete(
             url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
@@ -250,17 +249,11 @@ class AmbientSoundsProvider(MusicProvider):
             can_seek=seekable,
         )
 
-    @property
-    def _custom_sounds_conf_key(self) -> str:
-        """Return the config storage path for the user-added custom sounds."""
-        # stored within the provider's own config (setup_data) so the data is
-        # removed together with the provider config when the provider is removed
-        return f"{CONF_PROVIDERS}/{self.instance_id}/setup_data/{CONF_KEY_CUSTOM_SOUNDS}"
-
     def _stored_sounds(self) -> list[StoredSound]:
         """Return all user-added custom sounds from persistent storage."""
-        stored_items: list[StoredSound] = self.mass.config.get(self._custom_sounds_conf_key, [])
-        return stored_items
+        # stored in the provider's own setup_data so the data is removed together
+        # with the provider config when the provider is removed
+        return cast("list[StoredSound]", self.get_setup_value(CONF_KEY_CUSTOM_SOUNDS) or [])
 
     def _get_stored_sound(self, url: str) -> StoredSound | None:
         """Return the stored custom sound for the given url, if present."""

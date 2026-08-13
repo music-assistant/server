@@ -6,10 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 
 from music_assistant.providers import ambient_sounds
-from music_assistant.providers.ambient_sounds import PRESETS, AmbientSoundsProvider
+from music_assistant.providers.ambient_sounds import (
+    CONF_KEY_CUSTOM_SOUNDS,
+    PRESETS,
+    AmbientSoundsProvider,
+)
 
 
 def _create_provider(cache_path: str) -> AmbientSoundsProvider:
@@ -23,15 +27,38 @@ def _create_provider(cache_path: str) -> AmbientSoundsProvider:
 
     provider.config = MagicMock()
     provider.config.instance_id = "ambient_sounds"
+    provider.config.setup_data = {}
+    # no declared config entries: get_setup_value's fallback resolves to the default
+    provider.config.values = {}
+    provider.config.get_value = lambda _key, default=None: default
     provider.manifest = MagicMock()
     provider.manifest.domain = "ambient_sounds"
     provider.mass = MagicMock()
     provider.mass.cache_path = cache_path
     provider.logger = MagicMock()
-    # in-memory stand-in for persistent config storage of custom sounds
-    stored: dict[str, Any] = {}
-    provider.mass.config.get = lambda key, default=None: stored.get(key, default)
-    provider.mass.config.set = lambda key, value: stored.__setitem__(key, value)
+    # in-memory, path-aware stand-in for persistent config storage: the provider
+    # stores its custom sounds in its own setup_data via the base class helpers
+    config_store: dict[str, Any] = {"providers": {"ambient_sounds": {"setup_data": {}}}}
+
+    def _config_get(key: str, default: Any = None) -> Any:
+        parent: Any = config_store
+        for part in key.split("/"):
+            if not isinstance(parent, dict) or part not in parent:
+                return default
+            parent = parent[part]
+        return parent
+
+    def _config_set(key: str, value: Any, immediate: bool = False) -> None:  # noqa: ARG001
+        parts = key.split("/")
+        parent = config_store
+        for part in parts[:-1]:
+            parent = parent.setdefault(part, {})
+        parent[parts[-1]] = value
+
+    provider.mass.config.get = _config_get
+    provider.mass.config.set = _config_set
+    provider.mass.config.encrypt_string = lambda value: value
+    provider.mass.config.decrypt_string = lambda value: value
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.set = AsyncMock()
     provider.mass.cache.delete = AsyncMock()
@@ -140,7 +167,7 @@ async def test_add_custom_sound(tmp_path: pathlib.Path, monkeypatch: pytest.Monk
 
     # adding the same url again replaces the stored entry instead of duplicating it
     await provider.add_sound(url, "Rain 2")
-    stored = provider.mass.config.get(provider._custom_sounds_conf_key)
+    stored = provider._stored_sounds()
     assert len(stored) == 1
     assert stored[0]["name"] == "Rain 2"
 
@@ -149,13 +176,15 @@ async def test_add_custom_sound_invalid_url(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An url that fails to probe is rejected and not stored."""
+    # async_parse_tags raises InvalidDataError (not AudioError) on ffprobe failures;
+    # the frontend relies on that exact error code to show its friendly message
     monkeypatch.setattr(
-        ambient_sounds, "async_parse_tags", AsyncMock(side_effect=AudioError("not audio"))
+        ambient_sounds, "async_parse_tags", AsyncMock(side_effect=InvalidDataError("not audio"))
     )
     provider = _create_provider(str(tmp_path))
-    with pytest.raises(AudioError):
+    with pytest.raises(InvalidDataError):
         await provider.add_sound("https://example.com/not_audio", "Broken")
-    assert not provider.mass.config.get(provider._custom_sounds_conf_key)
+    assert not provider.get_setup_value(CONF_KEY_CUSTOM_SOUNDS)
 
 
 async def test_remove_custom_sound(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
