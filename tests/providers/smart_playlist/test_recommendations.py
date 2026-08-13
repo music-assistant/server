@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import ItemMapping, Playlist
 
 from music_assistant.providers.smart_playlist import SmartPlaylistProvider
 from music_assistant.providers.smart_playlist.helpers import SmartPlaylistRules
@@ -64,7 +64,6 @@ async def test_get_recommendation_items_builds_playlists() -> None:
     assert [item.item_id for item in result] == ["abc", "def"]
     assert all(isinstance(item, Playlist) for item in result)
     assert [item.name for item in result] == ["Playlist A", "Playlist B"]
-    # the per-playlist artwork lookup ran for each built playlist
     assert mass.music.playlists.get_library_item_by_prov_id.await_count == 2
 
 
@@ -77,3 +76,28 @@ async def test_get_recommendation_items_unknown_id_returns_empty() -> None:
 
     assert list(result) == []
     mass.music.playlists.get_library_item_by_prov_id.assert_not_awaited()
+
+
+async def test_get_recommendation_items_returns_item_mapping_for_library_playlists() -> None:
+    """Library-backed playlists are returned as ItemMapping with library DB ID."""
+    plugin, mass = _make_plugin()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=10)
+    plugin._names_store["abc"] = "Playlist A"
+
+    library_playlist = Playlist(
+        item_id="42",
+        provider="library",
+        name="Playlist A (Library)",
+        owner="Smart Playlist",
+        provider_mappings=set(),
+    )
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=library_playlist)
+
+    result = await plugin.get_recommendation_items("smart_playlists")
+
+    assert len(result) == 1
+    item = result[0]
+    assert isinstance(item, ItemMapping)
+    assert item.item_id == "42"
+    assert item.provider == "library"
+    assert item.name == "Playlist A (Library)"
