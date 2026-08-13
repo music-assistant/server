@@ -84,7 +84,6 @@ class PandoraProvider(MusicProvider):
     """Pandora Music Provider."""
 
     _auth_token: str | None = None
-    _user_id: str | None = None
     _csrf_token: str | None = None
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
@@ -333,8 +332,6 @@ class PandoraProvider(MusicProvider):
                 if not self._auth_token:
                     await self.close()
                     raise LoginFailed("No auth token received from Pandora")
-
-                self._user_id = response_data.get("listenerId")
 
                 # What this account is entitled to. Pandora sends config and flags as null
                 # on some accounts, so read through them rather than guarding after the fact.
