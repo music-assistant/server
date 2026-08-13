@@ -398,7 +398,9 @@ def test_compare_strings_case_insensitive_fuzzy() -> None:
 def test_compare_radio() -> None:
     """Test the radio compare helper."""
 
-    def _radio(item_id: str, provider: str, name: str, *, is_dynamic: bool = False):
+    def _radio(
+        item_id: str, provider: str, name: str, *, is_dynamic: bool = False
+    ) -> media_items.Radio:
         return media_items.Radio(
             item_id=item_id,
             provider=provider,
