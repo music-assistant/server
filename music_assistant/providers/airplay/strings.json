@@ -18,14 +18,17 @@
     },
     "buffer_depth": {
       "label": "Audio buffer depth",
-      "description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips. Automatic picks a default suited to the device.",
+      "description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips and pauses. Automatic picks a default suited to the device.",
       "options": {
         "0": "Automatic",
         "500": "500 ms",
         "750": "750 ms",
         "1000": "1000 ms",
         "1500": "1500 ms",
-        "1750": "1750 ms"
+        "1750": "1750 ms",
+        "2000": "2000 ms",
+        "2500": "2500 ms",
+        "3000": "3000 ms"
       }
     },
     "sync_adjust": {

@@ -1699,6 +1699,18 @@ class Player(ABC):
         result.sort(key=lambda o: o.priority)
         return result
 
+    @cached_property
+    @final
+    def playback_domains(self) -> set[str]:
+        """
+        Return the protocol domains this player can be reached on right now.
+
+        Only outputs that are available at this moment are included, so a protocol
+        whose player went offline is left out. A wrapper player (UniversalPlayer)
+        contributes its linked protocols but never its own domain.
+        """
+        return {output.protocol_domain for output in self.output_protocols if output.available}
+
     @property
     @final
     def linked_output_protocols(self) -> list[OutputProtocol]:
