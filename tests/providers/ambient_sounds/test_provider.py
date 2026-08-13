@@ -128,13 +128,11 @@ async def test_add_custom_sound(tmp_path: pathlib.Path, monkeypatch: pytest.Monk
     provider = _create_provider(str(tmp_path))
     url = "https://example.com/sounds/rain.mp3"
 
-    item = await provider.add_sound(url, "Rain", image_url="https://example.com/rain.jpg")
+    item = await provider.add_sound(url, "Rain")
     assert item.item_id == url
     assert item.name == "Rain"
     assert item.duration == 3600
     assert item.media_type == MediaType.SOUND_EFFECT
-    assert item.metadata.images
-    assert item.metadata.images[0].path == "https://example.com/rain.jpg"
 
     items = [x async for x in provider.get_sound_effects()]
     assert len(items) == len(PRESETS) + 1

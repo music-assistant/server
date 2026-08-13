@@ -22,21 +22,9 @@ from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
 from aiofiles.os import makedirs, remove, replace
 from aiofiles.os import path as aiopath
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import (
-    ContentType,
-    ImageType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError
-from music_assistant_models.media_items import (
-    AudioFormat,
-    MediaItemImage,
-    ProviderMapping,
-    SoundEffect,
-    UniqueList,
-)
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PROVIDERS
@@ -121,7 +109,6 @@ class StoredSound(TypedDict):
 
     item_id: str  # the stream url
     name: str
-    image_url: NotRequired[str]
     duration: NotRequired[int]
     content_type: NotRequired[str]
 
@@ -178,19 +165,16 @@ class AmbientSoundsProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return False
 
-    async def add_sound(self, url: str, name: str, image_url: str | None = None) -> SoundEffect:
+    async def add_sound(self, url: str, name: str) -> SoundEffect:
         """
         Add a custom ambient sound by stream URL.
 
         :param url: Stream URL of the ambient sound.
         :param name: Display name.
-        :param image_url: Image URL.
         """
         # probe the url upfront so an invalid/unreachable url is rejected at add time
         media_info = await self._get_media_info(url, force_refresh=True)
         stored_item = StoredSound(item_id=url, name=name)
-        if image_url:
-            stored_item["image_url"] = image_url
         if media_info.duration:
             stored_item["duration"] = int(media_info.duration)
         if media_info.format:
@@ -285,7 +269,7 @@ class AmbientSoundsProvider(MusicProvider):
     def _build_custom_sound_effect(self, stored_item: StoredSound) -> SoundEffect:
         """Create a SoundEffect item for the given user-added custom sound."""
         url = stored_item["item_id"]
-        sound_effect = SoundEffect(
+        return SoundEffect(
             item_id=url,
             provider=self.instance_id,
             name=stored_item["name"],
@@ -301,18 +285,6 @@ class AmbientSoundsProvider(MusicProvider):
                 )
             },
         )
-        if image_url := stored_item.get("image_url"):
-            sound_effect.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider="url",
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        return sound_effect
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve (cached) mediainfo for the given custom sound url."""
