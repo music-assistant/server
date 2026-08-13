@@ -378,6 +378,26 @@ async def test_a_clip_without_audio_is_not_announced(harness: Harness, frames: l
 
 
 @pytest.mark.asyncio
+async def test_a_reloaded_manager_still_announces(harness: Harness) -> None:
+    """
+    A reload leaves the manager able to announce again.
+
+    A core controller reload closes and sets the manager up again, so a shutdown
+    that is never undone would silence every clip until the server restarts.
+    """
+    await harness.manager.close()
+    harness.manager.setup()
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+
+    assert await _reply(ws) == "finished"
+    harness.mass.players.play_announcement.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_an_ingress_client_announces_without_an_auth_message(harness: Harness) -> None:
     """Home Assistant authenticates its own users, so ingress skips the auth message."""
     user = User(user_id="user_2", username="ha_user", role=UserRole.USER)

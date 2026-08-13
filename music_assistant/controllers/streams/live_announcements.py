@@ -180,6 +180,9 @@ class LiveAnnouncementManager:
 
     def setup(self) -> None:
         """Register the inbound audio route on the MA webserver."""
+        # a reload closes and sets this manager up again, so the shutdown flag is
+        # cleared here - it would otherwise silence every clip until a restart
+        self._closing = False
         # this route rides on the webserver instead of the stream server because it is
         # the only one of the two that is authenticated (and reachable over https).
         self._unregister = self.mass.webserver.register_dynamic_route(
