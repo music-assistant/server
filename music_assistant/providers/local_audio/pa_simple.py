@@ -891,3 +891,104 @@ def unmute_playback_switches(alsa_card_index: str) -> str:
         return result
     finally:
         lib.snd_mixer_close(mixer)
+
+
+def enumerate_pa_cards() -> list[CardSnapshot]:
+    """
+    Enumerate PulseAudio/PipeWire cards with their profiles via pactl.
+
+    Same invocation idiom as enumerate_pa_sinks() — pactl JSON output over
+    the addon-aware PULSE_SERVER socket — but for cards, which carry the
+    profile set that decides which of a card's sinks/sources exist at all
+    (see the card_profiles module for the selection policy built on this).
+
+    :raises FileNotFoundError: if pactl is not installed.
+    :raises RuntimeError: if pactl fails or returns unexpected output.
+    :returns: One CardSnapshot per card.
+    """
+    import json  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    from .card_profiles import CardProfile, CardSnapshot  # noqa: PLC0415
+
+    if not (path := shutil.which("pactl")):
+        raise FileNotFoundError("pactl not found — please install pulseaudio-utils")
+
+    env = {**os.environ}
+    if pulse_server := _get_pulse_server():
+        env["PULSE_SERVER"] = pulse_server
+
+    result = subprocess.run(  # noqa: S603
+        [path, "--format=json", "list", "cards"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"pactl exited {result.returncode}: {result.stderr.strip()}")
+    try:
+        raw_cards = json.loads(result.stdout)
+    except json.JSONDecodeError as err:
+        raise RuntimeError(f"pactl list cards returned invalid JSON: {err}") from err
+
+    cards: list[CardSnapshot] = []
+    for raw in raw_cards:
+        properties: dict[str, Any] = raw.get("properties", {})
+        profiles = tuple(
+            CardProfile(
+                name=name,
+                description=str(info.get("description", name)),
+                n_sinks=int(info.get("sinks", 0)),
+                n_sources=int(info.get("sources", 0)),
+                priority=int(info.get("priority", 0)),
+                available=bool(info.get("available", True)),
+            )
+            for name, info in raw.get("profiles", {}).items()
+        )
+        cards.append(
+            CardSnapshot(
+                name=str(raw.get("name", "")),
+                index=int(raw.get("index", -1)),
+                active_profile=str(raw.get("active_profile", "")),
+                profiles=profiles,
+                alsa_card_name=properties.get("alsa.card_name"),
+                alsa_card_index=properties.get("alsa.card"),
+            )
+        )
+    return cards
+
+
+def set_card_profile(card_name: str, profile_name: str) -> bool:
+    """
+    Activate a profile on a card.
+
+    :param card_name: The card's PA name (CardSnapshot.name).
+    :param profile_name: The profile's machine name.
+    :returns: True on success, False on failure or timeout.
+    :raises FileNotFoundError: if pactl is not installed.
+    """
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    if not (path := shutil.which("pactl")):
+        raise FileNotFoundError("pactl not found — please install pulseaudio-utils")
+
+    env = {**os.environ}
+    if pulse_server := _get_pulse_server():
+        env["PULSE_SERVER"] = pulse_server
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            [path, "set-card-profile", card_name, profile_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0

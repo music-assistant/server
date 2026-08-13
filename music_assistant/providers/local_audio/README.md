@@ -1,4 +1,3 @@
-
 # Local Audio Out Provider
 
 ## Overview
@@ -12,6 +11,7 @@ The Local Audio Out provider exposes locally attached soundcards as players in M
 - **Native Format Negotiation** *(Linux PulseAudio)*: Each PA sink advertises its native sample rate and bit depth (16, 24, or 32-bit) so Music Assistant transcodes to the correct format — no unnecessary resampling
 - **Sendspin Integration**: Each device is registered as a regular, visible MA player whose (single) output protocol is provided by a Sendspin bridge client, enabling synchronized multi-room playback. Disabling the player tears the bridge down; enabling it re-registers the player and rebuilds the bridge
 - **Self-Managed Remap-Sink Topology** *(Linux PulseAudio)*: For multi-channel sound cards (5.1, 7.1), the provider creates and owns its own `module-remap-sink` topology on startup — one stereo "zone" sink per channel pair (front, rear, side, center/LFE) plus a full-channel "multichannel stereo" passthrough sink. No external addon or pre-configuration is required; the topology is created idempotently on every startup and torn down on provider stop
+- **Automatic Sound Card Profile Selection** *(Linux PulseAudio)*: A card's active profile decides which of its sinks exist at all — a surround card left on PulseAudio's default stereo profile has no multi-channel sink to build zones on. On startup the provider activates the best output profile for every card it uses (most output channels, preferring duplex profiles that keep the card's input alive for capture providers), so 5.1/7.1 cards come up at full width with zero configuration. Per-card override dropdowns are available in the provider's advanced settings. Already-correct cards are never touched (see Sound Card Profile Selection below)
 - **Hardware Volume Control** *(Linux PulseAudio)*: Per-player volume and mute are applied as native PulseAudio sink volume via `libpulse`, using an exponential "audio taper" curve mapped from the MA 0-100 slider so slider position corresponds to a constant dB change per step (see Volume Control below). Each remap sink has an independent hardware volume that doesn't affect its master sink or sibling sinks. Falls back to software volume (PCM scaling) if hardware volume control is unavailable
 - **Stable Player IDs**: Uses UUIDv5 derived from device name + host API index so players persist across restarts
 - **Volume State Persistence**: Volume level is cached and restored on restart. Mute state is intentionally *not* restored on restart — a player never starts up silently muted
@@ -139,10 +139,11 @@ The ALSA direct backend always uses 16-bit int PCM (PortAudio `int16` dtype) reg
 | File/Folder | Description |
 |-------------|-------------|
 | `__init__.py` | Provider entry point, config entries (backend selector on Linux), and setup |
-| `provider.py` | `LocalAudioProvider` class |
-| `sendspin_bridge.py` | Bridge manager and per-device bridge (PA on Linux PulseAudio, sounddevice on Linux ALSA and macOS); also owns remap-sink topology lifecycle |
-| `pa_simple.py` | ctypes wrapper around `libpulse-simple`/`libpulse` for direct PCM output, PA sink/module hardware volume control, and module load/unload; PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio; `suspend_resume_sink()` workaround in case a sound card stalls *(Linux only)* |
+| `provider.py` | `LocalAudioProvider` class and the per-card sound-card-profile dropdown config entries (generated live from PA card introspection) |
+| `sendspin_bridge.py` | Bridge manager and per-device bridge (PA on Linux PulseAudio, sounddevice on Linux ALSA and macOS); also owns remap-sink topology lifecycle and applies card-profile decisions at startup |
+| `pa_simple.py` | ctypes wrapper around `libpulse-simple`/`libpulse` for direct PCM output, PA sink/module hardware volume control, and module load/unload; PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio; `suspend_resume_sink()` workaround in case a sound card stalls; PA card/profile enumeration and profile activation via `pactl` *(Linux only)* |
 | `remap_topology.py` | Computes the per-zone and full-channel passthrough `module-remap-sink` topology for multi-channel cards *(Linux PulseAudio only)* |
+| `card_profiles.py` | Pure card-profile selection logic: profile-name capability parsing, the "most output channels, duplex-preferred" auto policy, per-card override resolution, and in-use-card scoping *(Linux PulseAudio only)* |
 | `constants.py` | Shared constants (UUID namespace, buffer sizes, backend selector values) and the `volume_pct_to_amplitude` audio taper used by both the hardware and software volume paths; taper range is configurable via `_TAPER_A` (default 40dB, suited for receiver/outdoor setups) |
 | `manifest.json` | Provider metadata and dependencies |
 | `strings.json` | Localized config entry labels/descriptions (audio backend selector and its options) |
@@ -156,6 +157,32 @@ The ALSA direct backend always uses 16-bit int PCM (PortAudio `int16` dtype) reg
 - **pactl** *(Linux PulseAudio backend)*: Used for PA sink enumeration via `--format=json`. Requires `pulseaudio-utils` to be installed
 - **sounddevice** *(Linux ALSA backend and macOS)*: Python bindings for PortAudio, used for audio output and device enumeration
 - **numpy**: Used for PCM volume scaling and 24-bit format conversion
+
+## Sound Card Profile Selection (Linux PulseAudio)
+
+A PulseAudio card exposes a set of *profiles* (the dropdown pavucontrol shows): `output:analog-stereo`, `output:analog-surround-71+input:analog-stereo`, `output:hdmi-surround71-extra1`, and so on. The active profile decides which sinks — and sources — the card has. PulseAudio's default profile is usually plain stereo, which means a surround card provides no multi-channel master sink for the remap topology to build on. Previously the only fixes were host-level tools (pavucontrol, `ha audio`, a hand-written `custom.pa`); the provider now manages this itself.
+
+### Automatic selection
+
+At startup, before building the remap-sink topology, the provider resolves the best profile for every card it manages and activates it when it differs from the active one:
+
+- **Policy**: the output-capable profile with the **most output channels**, and among ties, one that **also keeps an input side alive** ("duplex-preferred") — so a companion capture provider on the same card is served by the same choice rather than fighting over it. Channel counts are recovered from PulseAudio's own profile-name vocabulary (`analog-surround-71` → 8ch, `hdmi-surround` → 5.1, etc.)
+- **Scoping**: only cards that back a currently-enumerated output sink are managed. A bystander card — e.g. a capture-only USB microphone used by another addon — is never touched. An explicit per-card override pulls that card into the managed set (that is exactly the situation the override exists to fix)
+- **Conservative rules**: profiles marked unavailable by PulseAudio (e.g. HDMI surround with no EDID support) are never auto-selected; a functional profile whose name can't be ranked (UCM `HiFi`, `pro-audio`) is never switched away from automatically; a card whose profile is `off` is never auto-woken — PulseAudio's own `module-switch-on-port-available` handles HDMI hotplug wake, and the explicit override covers the rest
+- **Convergence**: selection is set-only-if-different, and any provider running the same resolver computes the same answer from the same card — so after the first successful startup, every subsequent start is a no-op that logs a `keeping profile` line per card. `module-card-restore` persists the applied profile across PulseAudio restarts
+
+Every decision — switch or keep — is logged with the card, the profiles involved, and the reason.
+
+### Per-card overrides
+
+The provider's **advanced settings** contain one profile dropdown per card that offers a real choice (cards with a single output profile are skipped). The list is generated live from PulseAudio's card introspection — machine profile names as values, PA's human descriptions as labels, unavailable profiles marked — with **Auto** as the default. An override naming a profile the card no longer offers is left alone (logged, never guessed at).
+
+### Effects of a profile switch
+
+Switching a card's profile tears down the card's old sinks and creates the new profile's sinks. The provider re-enumerates after any switch so the remap topology builds on the new masters. Two consequences worth knowing:
+
+- Active playback and capture streams **on that card** are briefly interrupted (switches only happen at provider start or on config save)
+- When the switch changes the master sink's *name* (e.g. HDMI `hdmi-surround-extra1` → `hdmi-surround71-extra1`), the card's players are re-registered under new stable IDs — a one-time migration; the old players go unavailable and can be removed. A duplex switch that keeps the sink name (e.g. adding the input side at the same output width) does not re-key players
 
 ## Multi-Channel Sound Cards: Self-Managed Remap-Sink Topology
 
@@ -185,7 +212,8 @@ After creating the remap-sink topology for a master sink, the provider:
 - Virtual sinks created by `module-remap-sink` (zone sinks and the multichannel-stereo passthrough) are fully supported on the PulseAudio backend and are the recommended way to expose individual speaker pairs as independent MA players.
 - On Linux, `pactl --format=json` is used for PA sink enumeration because it always reports the sink's native sample rate and format, unlike libpulse which reports the currently negotiated stream format when streams are active.
 - PA sink enumeration requires `pactl` from `pulseaudio-utils` to be installed on the host.
-- Sample rate and bit depth on the PulseAudio backend are determined by the PA daemon configuration (`/etc/pulse/daemon.conf`) and the sink's native hardware capabilities — they are not configurable per-player in MA.
+- Sample rate and bit depth on the PulseAudio backend are determined by the PA daemon configuration (`/etc/pulse/daemon.conf`) and the sink's native hardware capabilities — they are not configurable per-player in MA. The active card *profile* — which outputs the card exposes at all (stereo vs 5.1/7.1, analog vs HDMI vs S/PDIF) — *is* managed by the provider; see Sound Card Profile Selection above.
+- Changing a card's profile (first-time automatic selection, or a saved override) briefly interrupts any active streams on that card, and re-registers the card's players under new IDs when the switch changes the master sink's name — a one-time migration per switch.
 - On the ALSA direct backend, PortAudio enumerates only real hardware `hw:` nodes. Virtual PCM plugins (`sysdefault`, `front`, `dmix`, `surround*`, etc.) are excluded. If a device cannot be opened exclusively (e.g. another process holds it), it is silently skipped during enumeration.
 - On the ALSA direct backend, hardware ALSA mixer levels are not managed by MA. Set all relevant controls (Master, PCM) to 100% using `alsamixer -c <card>` and persist them with `sudo alsactl store <card>`.
 - Plugging or unplugging a USB audio device on Linux triggers a full provider reload (an upstream MA behavior, not specific to this provider). All active playback on all local audio players stops abruptly during the reload, which typically completes within a second; the new/removed device is reflected automatically and players resume normally on the next playback request. The remap-sink topology is recreated idempotently as part of this reload.
