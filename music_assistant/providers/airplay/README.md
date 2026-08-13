@@ -291,6 +291,8 @@ When adding a player to an already-playing session (`add_client()` in [stream_se
 3. **Anchor first, then prime**: The joiner's START is sent before the buffered chunks; pre-START the binary only buffers its bounded ring and sends nothing, so anchoring first lets it drain the prime as it streams in
 4. **Content mapped onto the acked instant**: The stream position due at that instant is primed from the ring tail (when it is at or behind the write head) or skipped off the head of the live feed (when it is ahead). There is no catch-up: the binary makes the first post-START stdin byte audible exactly at the acked instant and freezes the anchor there
 
+**Note**: The projection can only push a joiner's anchor later, never earlier — `AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS` is the floor, and the one the anchor rests on when no projection arrives. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START, and only for an anchor that clears the receiver queue depth plus 500 ms. The deeper defaults in `AIRPLAY_BUFFER_DEPTH_DEFAULTS` ([constants.py](constants.py)) reach past ~2 s of effective depth, where a joiner's anchor no longer clears that — by design: the queue starts releasing frames one depth *before* the anchor, and a line with audio on the wire cannot move.
+
 ## DACP (Digital Audio Control Protocol)
 
 ### Purpose
@@ -538,7 +540,8 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again
 - **`ignore_volume`**: Ignore device volume reports (default: false)
-- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead is handled automatically by the binary.
+- **`buffer_depth`**: Advanced per-player override of how much audio the receiver keeps queued ahead of playback, in milliseconds. Defaults to the depth the device's family needs, or Automatic when no family matches; Automatic resolves through that same table at stream time, so it never downgrades an affected device. Receivers whose internal pipeline starves at the shallow default render nothing behind an otherwise healthy session, and deepening their queue is what makes them play. Applies to the AirPlay 2 route only - a player forced to RAOP keeps the binary's own depth. The cost is the delay under Known Issues below
 
 ### Pairing
 - **`raop_credentials`**: Stored RAOP pairing credentials (hidden)
@@ -555,13 +558,22 @@ keeps their exposed player id stable and their Universal Player merging intact.
 
 1. **DACP remote control**: Only active while streaming; controlled devices use
    Companion/MRP for idle and external playback control
-2. **Pause while synced**: Not supported; uses stop instead
+2. **Pause while synced**: Parks the whole session instead of pausing members
+   individually, so they can resume sample-aligned; a member that has lost its
+   connection falls back to stop
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
 4. **Apple TV artwork for non-public images**: Cover art only reachable through
    the imageproxy (e.g. filesystem-provider images with no public URL) does not
    currently render on the Apple TV's now-playing screen, while externally-hosted
    art does
+5. **Warm boundaries wait for the queued audio**: Pause, seek and track changes
+   leave the audio the receiver already holds in place, so it renders that
+   first and `buffer_depth` is also the delay before the boundary is heard.
+   Dropping the queue instead produced audible noise bursts on Apple receivers,
+   so keeping it is an accepted trade-off. It is most noticeable on pause, where
+   playback is expected to stop at once. On a receiver that needs a deep queue
+   to render at all, the delay cannot be tuned away without silencing it
 
 ## Development Notes
 

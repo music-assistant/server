@@ -613,8 +613,8 @@ class AirPlayStreamSession:
             # the session lock, stall the whole group's feed. Anchored, the
             # binary drains the prime as it streams in. The START does not
             # re-anchor the session timeline (the group keeps playing). Its ack
-            # is awaited WITHOUT the session lock: the binary holds that ack
-            # until the receiver's clock readiness resolves, which would
+            # is awaited WITHOUT the session lock: the binary can hold that ack
+            # until its receiver clock verification resolves, which would
             # otherwise starve every other member's feed for that whole wait.
             actual = await stream.start(start_unix_ms + adjust_ms, position_ms, join=True)
         except asyncio.CancelledError:
