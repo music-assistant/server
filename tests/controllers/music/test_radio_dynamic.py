@@ -9,6 +9,7 @@ the existing dynamic-playlist wiring on PlaylistController/media_resolver).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -37,6 +38,7 @@ class FakeDynamicRadioProvider(MusicProvider):
 
     # controls the is_dynamic value get_library_radios reports for TOGGLE_STATION_ID
     toggle_station_is_dynamic: bool = False
+    toggle_station_date_added: datetime | None = None
 
     async def sync_library(self, media_type: MediaType) -> None:
         """No-op sync implementation for tests."""
@@ -48,6 +50,7 @@ class FakeDynamicRadioProvider(MusicProvider):
             provider=self.instance_id,
             name="Toggle Station",
             is_dynamic=self.toggle_station_is_dynamic,
+            date_added=self.toggle_station_date_added,
             provider_mappings={
                 ProviderMapping(
                     item_id=TOGGLE_STATION_ID,
@@ -252,6 +255,69 @@ class TestSyncLibraryRadiosDynamicFlag:
         library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
         assert library_item is not None
         assert library_item.is_dynamic is True
+
+    async def test_switching_to_dynamic_drops_name_matched_mappings(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """Only the owning provider is left to serve a station's tracks once it becomes dynamic."""
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        provider.toggle_station_is_dynamic = False
+        await provider._sync_library_radios()
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        # a same-named station on another provider, as cross-provider matching would have added
+        await radio_ctrl.add_provider_mappings(
+            library_item.item_id,
+            [
+                ProviderMapping(
+                    item_id="unrelated-stream",
+                    provider_domain="some_radio_directory",
+                    provider_instance="some_radio_directory--instance",
+                )
+            ],
+        )
+
+        provider.toggle_station_is_dynamic = True
+        await provider._sync_library_radios()
+
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        assert {mapping.provider_domain for mapping in library_item.provider_mappings} == {
+            FAKE_DOMAIN
+        }
+
+    async def test_dynamic_switch_wins_over_a_coinciding_generic_update(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """A station going dynamic is overwritten even when the same sync has a generic update."""
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        provider.toggle_station_is_dynamic = False
+        provider.toggle_station_date_added = datetime(2026, 1, 1, tzinfo=UTC)
+        await provider._sync_library_radios()
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        await radio_ctrl.add_provider_mappings(
+            library_item.item_id,
+            [
+                ProviderMapping(
+                    item_id="unrelated-stream",
+                    provider_domain="some_radio_directory",
+                    provider_instance="some_radio_directory--instance",
+                )
+            ],
+        )
+
+        # a changed date_added makes _library_item_needs_update true alongside the dynamic switch
+        provider.toggle_station_is_dynamic = True
+        provider.toggle_station_date_added = datetime(2026, 6, 1, tzinfo=UTC)
+        await provider._sync_library_radios()
+
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        assert library_item.is_dynamic is True
+        assert {mapping.provider_domain for mapping in library_item.provider_mappings} == {
+            FAKE_DOMAIN
+        }
 
     async def test_switching_to_non_dynamic_updates_library_item(
         self, radio_mass: MusicAssistant, radio_ctrl: RadioController

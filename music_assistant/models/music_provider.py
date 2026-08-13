@@ -1482,20 +1482,20 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif (
-                        self._library_item_needs_update(library_item, prov_item)
-                        or prov_item.is_dynamic != library_item.is_dynamic
-                    ):
-                        library_item = await self.mass.music.radio.update_item_in_library(
-                            library_item.item_id, prov_item
+                    elif prov_item.is_dynamic != library_item.is_dynamic or (
+                        prov_item.is_dynamic
+                        and (
+                            prov_item.name != library_item.name
+                            or prov_item.metadata.images != library_item.metadata.images
                         )
-                    elif prov_item.is_dynamic and (
-                        prov_item.name != library_item.name
-                        or prov_item.metadata.images != library_item.metadata.images
                     ):
-                        # overwrite is safe: a station carries no local customization to lose
+                        # overwrite drops name-matched mappings that would serve the wrong tracks
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
+                        )
+                    elif self._library_item_needs_update(library_item, prov_item):
+                        library_item = await self.mass.music.radio.update_item_in_library(
+                            library_item.item_id, prov_item
                         )
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
