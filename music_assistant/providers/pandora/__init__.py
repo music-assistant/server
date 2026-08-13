@@ -15,11 +15,11 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-# Supported Features - stations are exposed as dynamic playlists
+# Supported Features - stations are exposed as dynamic radio stations
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_RADIOS,
 }
 
 

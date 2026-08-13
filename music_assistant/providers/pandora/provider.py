@@ -33,8 +33,8 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemType,
-    Playlist,
     ProviderMapping,
+    Radio,
     SearchResults,
     Track,
 )
@@ -174,43 +174,39 @@ class PandoraProvider(MusicProvider):
         """Search the user's stations by name."""
         # search is limited to the user's own stations: the API's catalogue search
         # requires the legacy endpoints this provider does not speak
-        if MediaType.PLAYLIST not in media_types:
+        if MediaType.RADIO not in media_types:
             return SearchResults()
         # substring rather than compare_strings: that helper answers "are these the same
         # entity", and its fuzzy mode rejects a length difference over four characters, so a
         # short query like "rock" could never reach a station called "Classic Rock Radio"
         query = search_query.lower()
-        results: list[Playlist] = []
+        results: list[Radio] = []
         async for station in self._get_stations():
             if query in station.name.lower():
                 results.append(station)
                 if len(results) >= limit:
                     break
-        return SearchResults(playlists=results)
+        return SearchResults(radio=results)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
-        """Retrieve the user's stations as dynamic playlists."""
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Retrieve the user's stations as dynamic radio stations."""
         async for station in self._get_stations():
             yield station
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+    async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full station details by id."""
         async for station in self._get_stations():
-            if station.item_id == prov_playlist_id:
+            if station.item_id == prov_radio_id:
                 return station
-        raise MediaNotFoundError(f"Station {prov_playlist_id} not found")
+        raise MediaNotFoundError(f"Station {prov_radio_id} not found")
 
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
         """
         Get the currently playable tracks for the given station.
 
-        :param prov_playlist_id: The Pandora station id.
-        :param page: Paging index; a station serves a single batch, so anything beyond the
-            first page terminates the caller's paging loop.
+        :param prov_radio_id: The Pandora station id.
         """
-        if page > 0:
-            return []
-        session = self._get_or_create_session(prov_playlist_id)
+        session = self._get_or_create_session(prov_radio_id)
         fragment = session.current
         if fragment is None or should_fetch_fragment(fragment, time.time()):
             fragment = await self._fetch_fragment(session)
@@ -498,7 +494,7 @@ class PandoraProvider(MusicProvider):
             )
         return session.add_fragment(tracks, time.time())
 
-    async def _get_stations(self) -> AsyncGenerator[Playlist]:
+    async def _get_stations(self) -> AsyncGenerator[Radio]:
         """Retrieve the user's stations from the provider."""
         response = await self._api_request("POST", STATIONS_ENDPOINT, data={"pageSize": 250})
         for station in response.get("stations", []):
@@ -536,9 +532,9 @@ class PandoraProvider(MusicProvider):
         freshest = max(holders, key=lambda holder: holder[0].fetched_at, default=None)
         return freshest[1] if freshest is not None else None
 
-    def _parse_station(self, station: dict[str, Any]) -> Playlist:
-        """Parse a station object into a dynamic playlist."""
-        playlist = Playlist(
+    def _parse_station(self, station: dict[str, Any]) -> Radio:
+        """Parse a station object into a dynamic radio station."""
+        radio = Radio(
             item_id=station["stationId"],
             provider=self.instance_id,
             name=station["name"],
@@ -556,7 +552,7 @@ class PandoraProvider(MusicProvider):
                 (item.get("url") for item in art if item.get("size") == 500), art[-1].get("url")
             )
             if art_url:
-                playlist.metadata.add_image(
+                radio.metadata.add_image(
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=art_url,
@@ -564,7 +560,7 @@ class PandoraProvider(MusicProvider):
                         remotely_accessible=True,
                     )
                 )
-        return playlist
+        return radio
 
     def _parse_track(self, obj: dict[str, Any]) -> Track:
         """Parse a raw fragment track into a Track."""
