@@ -40,3 +40,25 @@ async def test_unrelated_key_error_still_propagates() -> None:
     """A KeyError unrelated to a signed-out session must propagate as-is."""
     with _patch_get_home(KeyError("some_other_key")), pytest.raises(KeyError):
         await helpers.get_home(headers={})
+
+
+async def test_get_artist_does_not_hide_signed_out_behind_its_fallback() -> None:
+    """get_artist's channel fallback must not turn a signed-out session into an artist."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.side_effect = SIGNED_OUT_PAYLOAD_ERROR
+    mock_ytm.get_user.side_effect = SIGNED_OUT_PAYLOAD_ERROR
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(LoginFailed),
+    ):
+        await helpers.get_artist(prov_artist_id="UC123", headers={})
+
+
+async def test_get_artist_fallback_still_returns_unknown() -> None:
+    """An artist that is neither a channel nor a user still falls back to Unknown."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.side_effect = KeyError("header")
+    mock_ytm.get_user.side_effect = KeyError("name")
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        artist = await helpers.get_artist(prov_artist_id="UC123", headers={})
+    assert artist == {"channelId": "UC123", "name": "Unknown"}

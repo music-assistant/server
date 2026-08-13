@@ -35,11 +35,13 @@ async def get_artist(
             artist = ytm.get_artist(channelId=prov_artist_id)
             # ChannelId can sometimes be different and original ID is not part of the response
             artist["channelId"] = prov_artist_id
-        except KeyError:
+        except KeyError as err:
+            _raise_if_signed_out(err)
             try:
                 user = ytm.get_user(channelId=prov_artist_id)
                 artist = {"channelId": prov_artist_id, "name": user["name"]}
-            except KeyError:
+            except KeyError as err:
+                _raise_if_signed_out(err)
                 artist = {"channelId": prov_artist_id, "name": "Unknown"}
         return artist
 
@@ -424,11 +426,17 @@ async def _run_ytmusic[T](func: Callable[[], T]) -> T:
     try:
         return await asyncio.to_thread(func)
     except (KeyError, IndexError) as err:
-        # An invalid cookie makes YouTube answer with its signed-out page instead of an auth
-        # error, so nav() fails on the unexpected payload and embeds it in the message.
-        if "signInEndpoint" not in str(err):
-            raise
-        raise LoginFailed(
-            "Your YouTube Music session is no longer valid. "
-            "Please reconfigure this provider with a fresh cookie."
-        ) from err
+        _raise_if_signed_out(err)
+        raise
+
+
+def _raise_if_signed_out(err: Exception) -> None:
+    """Raise LoginFailed if the error carries YouTube's signed-out page."""
+    # An invalid cookie makes YouTube answer with its signed-out page instead of an auth
+    # error, so nav() fails on the unexpected payload and embeds it in the message.
+    if "signInEndpoint" not in str(err):
+        return
+    raise LoginFailed(
+        "Your YouTube Music session is no longer valid. "
+        "Please reconfigure this provider with a fresh cookie."
+    ) from err
