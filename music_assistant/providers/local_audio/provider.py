@@ -5,10 +5,10 @@ from __future__ import annotations
 import ctypes
 import sys
 
-from music_assistant.models.player_provider import PlayerProvider
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
+from music_assistant.models.player_provider import PlayerProvider
 
 from .card_profiles import (
     PROFILE_AUTO,
