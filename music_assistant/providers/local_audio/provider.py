@@ -10,6 +10,12 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
+from .card_profiles import (
+    PROFILE_AUTO,
+    PROFILE_OFF,
+    card_config_label,
+    conf_card_profile_key,
+)
 from .constants import (
     AUDIO_BACKEND_ALSA,
     AUDIO_BACKEND_AUTO,
@@ -17,6 +23,7 @@ from .constants import (
     CONF_AUDIO_BACKEND,
     CONF_PREWARM_STREAMS,
 )
+from .pa_simple import enumerate_pa_cards
 from .sendspin_bridge import LocalAudioBridgeManager
 
 
@@ -106,22 +113,6 @@ class LocalAudioProvider(PlayerProvider):
         profile selection then just isn't offered.
         """
         try:
-            from .card_profiles import (
-                PROFILE_AUTO,
-                PROFILE_OFF,
-                card_config_label,
-                conf_card_profile_key,
-            )
-            from .pa_simple import enumerate_pa_cards
-        except ImportError as err:
-            self.logger.warning(
-                "Card profile config entries unavailable — module out of date "
-                "(deploy matching card_profiles.py/pa_simple.py): %s",
-                err,
-            )
-            return []
-
-        try:
             cards = await self.mass.loop.run_in_executor(None, enumerate_pa_cards)
         except (FileNotFoundError, RuntimeError, OSError) as err:
             self.logger.debug("Card profile config entries skipped: %s", err)
@@ -149,7 +140,7 @@ class LocalAudioProvider(PlayerProvider):
                     key=conf_card_profile_key(card.name),
                     type=ConfigEntryType.STRING,
                     translation_key="card_profile",
-                    translation_params={"card": card_config_label(card)},
+                    translation_params=[card_config_label(card)],
                     options=options,
                     default_value=PROFILE_AUTO,
                     advanced=True,
