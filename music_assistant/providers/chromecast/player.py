@@ -32,6 +32,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .constants import (
     APP_LAUNCH_TIMEOUT,
     APP_MEDIA_RECEIVER,
+    APP_QUIT_DELAY,
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
@@ -84,6 +85,7 @@ class ChromecastPlayer(Player):
         self.last_poll = 0.0
         self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
+        self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -150,8 +152,24 @@ class ChromecastPlayer(Player):
         """Send STOP command to given player."""
         if self.type == PlayerType.GROUP:
             await asyncio.to_thread(self.cc.media_controller.stop)
-        else:
+            return
+        if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
+            # another app is casting to the device, release it right away
             await asyncio.to_thread(self.cc.quit_app)
+            return
+        if self.cc.media_controller.status.media_session_id is not None:
+            # a stop is refused by the cast library when nothing was ever loaded
+            await asyncio.to_thread(self.cc.media_controller.stop)
+        # The device is released a bit later so a follow-up command (such as an
+        # announcement, which stops playback first) can reuse the Cast session.
+        # Starting a new session makes the device play its 'cast connected' chime.
+        self.mass.call_later(
+            APP_QUIT_DELAY, self._quit_app_when_unused, task_id=self._app_quit_task_id
+        )
+
+    def cancel_pending_app_quit(self) -> None:
+        """Cancel a pending release of the receiver app, to keep the device claimed."""
+        self.mass.cancel_timer(self._app_quit_task_id)
 
     async def play(self) -> None:
         """Send PLAY command to given player."""
@@ -260,6 +278,10 @@ class ChromecastPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        # a quit that already fired runs as a task under the same id,
+        # which only cancel_task reaches
+        self.cancel_pending_app_quit()
+        self.mass.cancel_task(self._app_quit_task_id)
         self.mz_controller = None
         if self.status_listener is not None:
             self.status_listener.invalidate()
@@ -398,6 +420,7 @@ class ChromecastPlayer(Player):
 
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
+        self.cancel_pending_app_quit()
         if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # already active with a compatible media receiver app
 
@@ -478,6 +501,16 @@ class ChromecastPlayer(Player):
             reason,
             suggestion,
         )
+
+    async def _quit_app_when_unused(self) -> None:
+        """Release the Cast device, unless the receiver app got used again."""
+        if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
+            return  # another app took over the device
+        status = self.cc.media_controller.status
+        if status.player_is_playing or status.player_is_paused:
+            # something is loaded again, e.g. the keepalive media of a dashboard
+            return
+        await asyncio.to_thread(self.cc.quit_app)
 
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
