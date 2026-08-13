@@ -270,12 +270,12 @@ async def test_sync_does_not_overwrite_editable_playlist_on_name_change() -> Non
     playlists_ctrl.update_item_in_library.assert_not_called()
 
 
-async def test_sync_does_not_overwrite_noneditable_static_playlist_on_name_change() -> None:
+async def test_sync_updates_name_for_noneditable_static_playlist_on_name_change() -> None:
     """
-    Non-editable, non-dynamic playlists (e.g. a provider's "Favorites") are spared.
+    A non-editable, non-dynamic playlist (e.g. a followed YT Music playlist) adopts a rename.
 
-    Only non-editable *dynamic* playlists are treated as provider-owned; a static
-    non-editable playlist keeps its locally-enriched metadata/images.
+    Unlike the dynamic case, this goes through the normal (overwrite=False) update path,
+    which only lets the name follow the provider and leaves images/metadata untouched.
     """
     provider, playlists_ctrl, prov_item = _build_sync_fixture(
         library_is_editable=False,
@@ -288,7 +288,7 @@ async def test_sync_does_not_overwrite_noneditable_static_playlist_on_name_chang
 
     await _run_sync(provider, prov_item)
 
-    playlists_ctrl.update_item_in_library.assert_not_called()
+    playlists_ctrl.update_item_in_library.assert_called_once_with("1", prov_item)
 
 
 async def test_sync_skips_update_when_noneditable_playlist_unchanged() -> None:
@@ -299,6 +299,22 @@ async def test_sync_skips_update_when_noneditable_playlist_unchanged() -> None:
         prov_name="Same Name",
         library_images=["same.jpg"],
         prov_images=["same.jpg"],
+    )
+
+    await _run_sync(provider, prov_item)
+
+    playlists_ctrl.update_item_in_library.assert_not_called()
+
+
+async def test_sync_skips_update_for_noneditable_static_playlist_image_only_change() -> None:
+    """An image-only divergence is out of scope for static playlists; only a rename triggers."""
+    provider, playlists_ctrl, prov_item = _build_sync_fixture(
+        library_is_editable=False,
+        library_name="Same Name",
+        prov_name="Same Name",
+        library_images=["old.jpg"],
+        prov_images=["new.jpg"],
+        is_dynamic=False,
     )
 
     await _run_sync(provider, prov_item)

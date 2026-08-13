@@ -439,8 +439,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self._verify_update_allowed(cur_item, update)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        # a non-editable playlist can't be renamed locally, so the provider owns its name
+        adopt_name = overwrite or not cur_item.is_editable
+        name = update.name if adopt_name else cur_item.name
+        sort_name = update.sort_name if adopt_name else cur_item.sort_name or update.sort_name
         # adopt the synced item's translation_key + params (as a unit) when it supplies a key, so
         # the localized name follows the provider, existing rows backfill, and a stale param (e.g.
         # a renamed Spotify account) self-heals; otherwise keep what we have (unless overwriting).
@@ -454,7 +456,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             self.db_table,
             {"item_id": db_id},
             {
-                # always prefer name/owner from updated item here
+                # always prefer owner from the updated item here
                 "name": name,
                 "sort_name": sort_name,
                 "translation_key": translation_key,

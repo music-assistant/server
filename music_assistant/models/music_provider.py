@@ -1248,6 +1248,13 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
+                    elif not library_item.is_editable and prov_item.name != library_item.name:
+                        # a non-editable playlist can't be renamed locally, so the provider
+                        # is the sole source of truth for its name. The normal update path
+                        # leaves its locally-enriched metadata and images alone.
+                        library_item = await self.mass.music.playlists.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.playlists.set_favorite(library_item.item_id, True)
