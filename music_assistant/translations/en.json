@@ -1345,7 +1345,6 @@
   "provider.gpodder.config_entries.method.label": "Connection method",
   "provider.gpodder.config_entries.method.options.gpodder": "gpodder / opodsync server",
   "provider.gpodder.config_entries.method.options.nextcloud": "Nextcloud (nextcloud-gpodder)",
-  "provider.gpodder.config_entries.nc_approve.label": "Open the link, log in to Nextcloud and grant access to Music Assistant, then continue. This page waits for your approval.",
   "provider.gpodder.config_entries.password.description": "Password for gPodder instance.",
   "provider.gpodder.config_entries.url.description": "URL of gPodder instance.",
   "provider.gpodder.config_entries.url.label": "gPodder Service URL",
