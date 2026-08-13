@@ -103,10 +103,21 @@ class RadioController(MediaControllerBase[Radio]):
             item id belongs to ("library" for a library item).
         """
         radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        return await self.dynamic_tracks(radio)
+
+    async def dynamic_tracks(self, radio: Radio) -> list[Track]:
+        """
+        Return a fresh batch of tracks for an already resolved dynamic radio station.
+
+        :param radio: The dynamic station to fetch the next batch for.
+        """
         if not radio.is_dynamic:
             raise UnsupportedFeaturedException(f"{radio.name} is not a dynamic radio station")
-        if provider_instance_id_or_domain == "library":
-            provider_instance_id_or_domain, item_id = self._select_provider_id(radio)
+        provider_instance_id_or_domain, item_id = (
+            self._select_provider_id(radio)
+            if radio.provider == "library"
+            else (radio.provider, radio.item_id)
+        )
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         return await cast("MusicProvider", provider).get_dynamic_radio_tracks(item_id)

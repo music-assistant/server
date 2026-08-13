@@ -25,6 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
+    find_dynamic_source,
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
@@ -88,6 +89,17 @@ def _queue() -> PlayerQueue:
     return PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
 
 
+def _queue_data(
+    *,
+    source_items: list[MediaItemType] | None = None,
+    enqueued_media_items: list[MediaItemType] | None = None,
+) -> PlayerQueueData:
+    queue_data = PlayerQueueData(queue=_queue())
+    queue_data.source_items = source_items or []
+    queue_data.enqueued_media_items = enqueued_media_items or []
+    return queue_data
+
+
 class TestHasDynamicSource:
     """Tests for has_dynamic_source."""
 
@@ -143,6 +155,42 @@ class TestIsDynamicSource:
     def test_track(self) -> None:
         """A track is never a dynamic source."""
         assert is_dynamic_source(_track("Song")) is False
+
+
+class TestFindDynamicSource:
+    """Tests for find_dynamic_source."""
+
+    def test_dynamic_radio_source(self) -> None:
+        """A dynamic radio station is found, so an idle queue can refill from it."""
+        station = _radio(is_dynamic=True)
+        queue_data = _queue_data(source_items=[station])
+        assert find_dynamic_source(queue_data) is station
+
+    def test_dynamic_playlist_source(self) -> None:
+        """A dynamic playlist is found the same way."""
+        playlist = _playlist(is_dynamic=True)
+        queue_data = _queue_data(source_items=[playlist])
+        assert find_dynamic_source(queue_data) is playlist
+
+    def test_prefers_the_last_added_source(self) -> None:
+        """The most recently added dynamic source wins."""
+        first = _playlist(is_dynamic=True, name="A")
+        last = _radio(is_dynamic=True, name="B")
+        queue_data = _queue_data(source_items=[first, _track("Song"), last])
+        assert find_dynamic_source(queue_data) is last
+
+    def test_falls_back_to_enqueued_items(self) -> None:
+        """A queue without dynamic sources falls back to what was enqueued on it."""
+        station = _radio(is_dynamic=True)
+        queue_data = _queue_data(source_items=[_track("Song")], enqueued_media_items=[station])
+        assert find_dynamic_source(queue_data) is station
+
+    def test_no_dynamic_source(self) -> None:
+        """A queue of finite items has nothing to refill from."""
+        queue_data = _queue_data(
+            source_items=[_playlist(is_dynamic=False)], enqueued_media_items=[_track("Song")]
+        )
+        assert find_dynamic_source(queue_data) is None
 
 
 class TestGetCurrentPlaybackSpeed:

@@ -118,6 +118,21 @@ def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist 
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 
 
+def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
+    """
+    Return the queue's most recently added dynamic source, if it has one.
+
+    Prefers the queue's sources and falls back to what was enqueued on it.
+
+    :param queue_data: The queue to inspect.
+    """
+    for items in (queue_data.source_items, queue_data.enqueued_media_items):
+        for item in reversed(items):
+            if is_dynamic_source(item):
+                return item
+    return None
+
+
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     """Return True if any source supplies its own on-demand track feed (the queue is dynamic)."""
     return any(is_dynamic_source(item) for item in source_items)
