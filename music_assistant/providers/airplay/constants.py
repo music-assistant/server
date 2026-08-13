@@ -76,8 +76,8 @@ MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Lower bound for a late joiner's anchor, and the whole anchor whenever the
-# binary reports no readiness projection ([STATUS] clock_ready). A joiner cannot
+# Floor for a late joiner's anchor, and the one it rests on whenever the binary
+# reports no readiness projection ([STATUS] clock_ready). A joiner cannot
 # honour an instant in the past, and that second case has no device evidence at
 # all, so this carries it the whole way: the command's trip to the binary, the
 # binary's own 250 ms floor, and the receiver seating the anchor. The value is
