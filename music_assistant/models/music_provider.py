@@ -1486,6 +1486,12 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )
+                    elif prov_item.is_dynamic != library_item.is_dynamic:
+                        # the station switched between a live stream and a dynamic feed, which
+                        # decides how the queue plays it
+                        library_item = await self.mass.music.radio.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
                     elif prov_item.is_dynamic and (
                         prov_item.name != library_item.name
                         or prov_item.metadata.images != library_item.metadata.images
