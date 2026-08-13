@@ -44,7 +44,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 # instead of piling up local requests and the response bodies they buffer (see #4889).
 HTTP_PROXY_CONCURRENCY = 6
 
-# Chunk messages larger than this; libdatachannel caps data-channel messages at 256 KiB.
+# Chunk messages larger than this; each piece becomes a base64 frame roughly a third larger.
 DATA_CHANNEL_CHUNK_SIZE = 64 * 1024
 
 # Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,
@@ -626,7 +626,8 @@ class WebRTCGateway:
         )
         # The body frames carry no request id, so an interleaved response would be
         # indistinguishable from this one's body: hold the channel for header plus body.
-        # Concurrent fetches are unaffected, and the channel sends one message at a time anyway.
+        # Responses therefore queue whole rather than frame by frame, which costs nothing on
+        # a channel that already sends one message at a time.
         async with send_lock:
             await self._send_on_channel(channel, header)
             if channel is None or not channel.is_open:
@@ -643,9 +644,8 @@ class WebRTCGateway:
             await self._send_on_channel(channel, text)
             return
 
-        # libdatachannel enforces the 256 KiB message limit, so oversized messages are split
-        # into base64 frames the client reassembles by group id (base64 keeps each frame's size
-        # predictable regardless of JSON escaping / unicode).
+        # Oversized messages are split into base64 frames the client reassembles by group id
+        # (base64 keeps each frame's size predictable regardless of JSON escaping / unicode).
         self._chunk_group_seq += 1
         group_id = self._chunk_group_seq
         count = (len(data) + DATA_CHANNEL_CHUNK_SIZE - 1) // DATA_CHANNEL_CHUNK_SIZE

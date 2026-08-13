@@ -1308,6 +1308,11 @@ def _proxy_request(request_id: str, path: str) -> str:
     )
 
 
+def _body_delivered(sent: list[str | bytes], size: int) -> bool:
+    """Return whether the binary frames sent so far add up to a whole body of ``size``."""
+    return sum(len(m) for m in sent if isinstance(m, bytes)) >= size
+
+
 def _read_proxy_response(sent: list[str | bytes]) -> tuple[dict[str, Any], bytes]:
     """
     Read the binary-framed response a client would reassemble from the proxy channel.
@@ -1424,7 +1429,9 @@ async def test_http_proxy_channel_splits_a_large_body_into_binary_frames(
         await _wait_for(lambda: "http_proxy" in session.channels)
 
         proxy_channel.feed(_proxy_request("img-5", "/imageproxy/large"))
-        await _wait_for(lambda: len(proxy_channel.sent) >= 4)
+        await _wait_for(
+            lambda: _body_delivered(proxy_channel.sent, len(http_session.response_body))
+        )
 
         response, body = _read_proxy_response(proxy_channel.sent)
         assert response["size"] == len(http_session.response_body)
@@ -1452,7 +1459,9 @@ async def test_http_proxy_channel_honours_the_negotiated_message_limit(
         await _wait_for(lambda: "http_proxy" in session.channels)
 
         proxy_channel.feed(_proxy_request("img-6", "/imageproxy/small-frames"))
-        await _wait_for(lambda: len(proxy_channel.sent) >= 5)
+        await _wait_for(
+            lambda: _body_delivered(proxy_channel.sent, len(http_session.response_body))
+        )
 
         _, body = _read_proxy_response(proxy_channel.sent)
         assert body == http_session.response_body
