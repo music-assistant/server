@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from aiohttp import WSMsgType, web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ContentType
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 from orjson import dumps
 
@@ -171,6 +171,7 @@ class LiveAnnouncementManager:
         self._sessions: dict[str, LiveAnnouncementSession] = {}
         self._connections: set[web.WebSocketResponse] = set()
         self._unregister: Callable[[], None] | None = None
+        self._closing = False
 
     @property
     def active_sessions(self) -> int:
@@ -187,6 +188,9 @@ class LiveAnnouncementManager:
 
     async def close(self) -> None:
         """Unregister the route and disconnect any client that is still speaking."""
+        # closing a connection reads as a client that stopped speaking, so without this
+        # a recording in progress would announce itself on a server that is going down
+        self._closing = True
         if self._unregister is not None:
             self._unregister()
             self._unregister = None
@@ -245,9 +249,10 @@ class LiveAnnouncementManager:
             await self._receive_audio(ws, session)
         finally:
             await session.finish()
-        if not session.duration:
+        if not session.duration or self._closing:
             # nothing was spoken (a mis-tap, or a client that never sent audio): announcing
-            # it would interrupt whatever the player is doing to play silence
+            # it would interrupt whatever the player is doing to play silence. the same
+            # applies while shutting down, where the clip was cut short by us.
             self._sessions.pop(session.session_id, None)
             await self._send(ws, {"type": "finished"})
             return
@@ -270,9 +275,16 @@ class LiveAnnouncementManager:
             return
         try:
             await announcement
-        except Exception as err:
+        except MusicAssistantError as err:
+            # a typed error carries a message meant for the person who spoke
             self.logger.warning("Live announcement to player %s failed: %s", start.player_id, err)
             await self._send(ws, {"type": "error", "message": str(err)})
+            return
+        except Exception:
+            # anything else is a defect rather than a failed announcement, so it is logged
+            # with its traceback and reported without leaking its internals
+            self.logger.exception("Live announcement to player %s failed", start.player_id)
+            await self._send(ws, {"type": "error", "message": "The announcement failed."})
             return
         await self._send(ws, {"type": "finished"})
 
