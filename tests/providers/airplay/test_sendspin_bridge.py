@@ -724,7 +724,7 @@ def _commanded_instant(stream: MagicMock) -> int:
 
 async def test_anchor_floors_at_the_join_headroom() -> None:
     """
-    A Sendspin lead shorter than the binary needs is raised to the join floor.
+    A Sendspin lead shorter than the join floor is raised to it.
 
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS is the closest a joiner's anchor may be
     commanded, so a shorter lead is floored rather than honoured.
