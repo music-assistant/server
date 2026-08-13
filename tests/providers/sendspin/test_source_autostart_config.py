@@ -130,6 +130,23 @@ def test_players_that_cannot_render_audio_are_not_offered() -> None:
     assert {option.value for option in entry.options or []} == {SOURCE_AUTOSTART_OFF, "speaker"}
 
 
+def test_the_devices_own_player_leads_the_target_list() -> None:
+    """Off stays first, then the default, so it is not buried among every other player."""
+    player = _player(
+        negotiated_role_ids=["source@v1", "player@v1"],
+        line_sense=True,
+        known_players=["amp", "turntable", "zone"],
+    )
+    entry = _target_entry(player)
+    assert entry is not None
+    assert [option.value for option in entry.options or []] == [
+        SOURCE_AUTOSTART_OFF,
+        "turntable",
+        "amp",
+        "zone",
+    ]
+
+
 def test_groups_and_stereo_pairs_are_offered() -> None:
     """A line-in must be routable to a group, not just to a single speaker."""
     player = _player(

@@ -477,6 +477,9 @@ class SendspinBasePlayer(Player):
         """Return the line-in autostart entries, for source clients that can sense a signal."""
         if not self._supports_line_sense():
             return []
+        # A source that is also a player defaults to playing on itself, which for a
+        # protocol player means the visible player it belongs to.
+        own_target = self.protocol_parent_id or self.player_id
         options = [
             ConfigValueOption(SOURCE_AUTOSTART_OFF, title=SOURCE_AUTOSTART_OFF),
             *(
@@ -485,7 +488,12 @@ class SendspinBasePlayer(Player):
                     # Include unavailable players: a target that is merely asleep must
                     # stay selected rather than being reset to off on the next render.
                     self.mass.players.all_players(True, False),
-                    key=lambda player: player.display_name.lower(),
+                    # Lead with the device's own player, so the default sits at the top
+                    # of the list rather than alphabetically among every other player.
+                    key=lambda player: (
+                        player.player_id != own_target,
+                        player.display_name.lower(),
+                    ),
                 )
                 # Only players that render audio, so lights, displays and other
                 # capture-only clients are not offered as somewhere to play a line-in.
@@ -493,9 +501,6 @@ class SendspinBasePlayer(Player):
             ),
         ]
         valid = {option.value for option in options}
-        # A source that is also a player defaults to playing on itself, which for a
-        # protocol player means the visible player it belongs to.
-        own_target = self.protocol_parent_id or self.player_id
         default = (
             own_target if "player" in self._negotiated_families() and own_target in valid else None
         )
