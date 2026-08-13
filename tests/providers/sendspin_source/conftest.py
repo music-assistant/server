@@ -8,10 +8,6 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.providers.sendspin_source.constants import (
-    CONF_TARGET_LATENCY,
-    DEFAULT_TARGET_LATENCY_MS,
-)
 from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
 if TYPE_CHECKING:
@@ -190,15 +186,25 @@ class _FakeMass:
 
 
 class _FakeConfig:
-    """Provider config stand-in with a fixed target latency."""
+    """
+    Provider config stand-in.
+
+    Values default to unset, as they are at load time: a provider's own entries are
+    only resolved once its instance is loaded, so nothing has been parsed yet.
+    """
 
     instance_id = "sendspin_source"
 
-    def get_value(self, key: str) -> Any:
-        return DEFAULT_TARGET_LATENCY_MS if key == CONF_TARGET_LATENCY else None
+    def __init__(self, values: dict[str, Any] | None = None) -> None:
+        self.values = values or {}
+
+    def get_value(self, key: str, default: Any = None) -> Any:
+        return self.values.get(key, default)
 
 
-async def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
+async def make_provider(
+    clients: list[_FakeClient], config_values: dict[str, Any] | None = None
+) -> SendspinSourceProvider:
     """Build a provider wired to fake mass/server_api around the given clients."""
     server_api = _FakeServerApi(clients)
     sendspin_provider = type("FakeSendspinProvider", (), {"server_api": server_api})()
@@ -207,7 +213,7 @@ async def make_provider(clients: list[_FakeClient]) -> SendspinSourceProvider:
     provider = SendspinSourceProvider(
         cast("MusicAssistant", _FakeMass(sendspin_provider)),
         cast("Any", type("Manifest", (), {"domain": "sendspin_source"})()),
-        cast("Any", _FakeConfig()),
+        cast("Any", _FakeConfig(config_values)),
     )
     for client in clients:
         get_players(provider).players[client.client_id] = _FakePlayer(client.client_id)

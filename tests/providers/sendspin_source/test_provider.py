@@ -22,6 +22,10 @@ from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_INTERRUPT,
     CONF_SOURCE_AUTOSTART_TARGET,
 )
+from music_assistant.providers.sendspin_source.constants import (
+    CONF_TARGET_LATENCY,
+    DEFAULT_TARGET_LATENCY_MS,
+)
 from music_assistant.providers.sendspin_source.provider import OUTPUT_FORMAT
 
 from .conftest import (
@@ -152,6 +156,41 @@ async def _start_streaming(
     client.emit(SourceStreamStartedEvent(audio_format=NATIVE_FORMAT, handle=handle))
     await _settle()
     return bridge
+
+
+async def _latency_passed_to_bridge(
+    provider: Any, client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> list[int]:
+    """Select the source and return the target latencies the bridge was built with."""
+    latencies: list[int] = []
+
+    def _create(_audio_format: Any, target_latency_ms: int) -> _StubBridge:
+        latencies.append(target_latency_ms)
+        return _StubBridge()
+
+    monkeypatch.setattr(provider, "_create_bridge", _create)
+    await provider.on_source_selected(client.client_id, "player-1", "queue-1", "session-1")
+    client.emit(SourceStreamStartedEvent(audio_format=NATIVE_FORMAT, handle=_fake_handle([])))
+    await _settle()
+    return latencies
+
+
+async def test_bridge_falls_back_to_the_default_latency(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider starts up before its own options are resolved, so the value is unset."""
+    provider = await make_provider([fake_client])
+    assert await _latency_passed_to_bridge(provider, fake_client, monkeypatch) == [
+        DEFAULT_TARGET_LATENCY_MS
+    ]
+
+
+async def test_a_configured_latency_reaches_the_bridge(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the user sets a latency it must win over the fallback."""
+    provider = await make_provider([fake_client], {CONF_TARGET_LATENCY: 1200})
+    assert await _latency_passed_to_bridge(provider, fake_client, monkeypatch) == [1200]
 
 
 async def test_stream_fails_when_the_source_never_starts(

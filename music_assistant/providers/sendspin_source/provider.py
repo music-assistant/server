@@ -56,6 +56,7 @@ from .constants import (
     CHUNK_DURATION_MS,
     COLD_START_TIMEOUT_S,
     CONF_TARGET_LATENCY,
+    DEFAULT_TARGET_LATENCY_MS,
     OUTPUT_BIT_DEPTH,
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
@@ -486,7 +487,12 @@ class SendspinSourceProvider(PluginProvider):
             return
         if session.ingest_task is not None:
             session.ingest_task.cancel()
-        target_latency = cast("int", self.config.get_value(CONF_TARGET_LATENCY))
+        # Fall back to the entry's own default: a provider's options are only resolved
+        # once its instance is loaded, so the config it starts up with has no value yet.
+        target_latency = (
+            cast("int | None", self.config.get_value(CONF_TARGET_LATENCY))
+            or DEFAULT_TARGET_LATENCY_MS
+        )
         session.bridge = self._create_bridge(event.audio_format, target_latency)
         session.last_pcm_monotonic = time.monotonic()
         session.ingest_task = self.mass.create_task(self._ingest(session, event.handle))

@@ -51,7 +51,7 @@ steady 48 kHz / 16-bit / stereo stream.
 ## Evaluating audio continuity
 
 The clock bridge logs the corrections it applies at DEBUG under the
-`aiosendspin.audio.bridge` logger. Enabling it surfaces discrete events
+`aiosendspin.audio.source_bridge` logger. Enabling it surfaces discrete events
 (silence inserted for capture gaps, dropped out-of-order or overflow audio,
 underruns, buffer resets) and a periodic occupancy heartbeat that reports the
 buffered latency against the target, plus the applied resample ratio and the
