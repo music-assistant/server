@@ -122,9 +122,7 @@ class LocalAudioProvider(PlayerProvider):
         entries: list[ConfigEntry] = []
         for card in cards:
             options = [
-                ConfigValueOption(
-                    PROFILE_AUTO, "Auto (most output channels, duplex preferred)"
-                )
+                ConfigValueOption(PROFILE_AUTO, "Auto (most output channels, duplex preferred)")
             ]
             for profile in card.profiles:
                 if profile.name == PROFILE_OFF or profile.n_sinks <= 0:

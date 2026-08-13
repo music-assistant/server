@@ -280,9 +280,7 @@ def resolve_profile(card: CardSnapshot, override: str | None = None) -> ProfileD
     return keep("active profile already offers the widest output")
 
 
-def cards_in_use(
-    cards: list[CardSnapshot], devices: list[dict[str, Any]]
-) -> list[CardSnapshot]:
+def cards_in_use(cards: list[CardSnapshot], devices: list[dict[str, Any]]) -> list[CardSnapshot]:
     """
     Filter cards down to those backing a currently-enumerated output sink.
 
@@ -345,9 +343,8 @@ def plan_profile_changes(
         configured = overrides.get(card.name)
         if configured and configured != PROFILE_AUTO:
             managed.setdefault(card.name, card)
-    return [
-        resolve_profile(card, overrides.get(card.name)) for card in managed.values()
-    ]
+    return [resolve_profile(card, overrides.get(card.name)) for card in managed.values()]
+
 
 # ---------------------------------------------------------------------------
 # Config-entry plumbing for the per-card override dropdowns.

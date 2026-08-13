@@ -1708,9 +1708,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
         try:
             new_devices = await self.mass.loop.run_in_executor(None, enumerate_pa_sinks)
         except (FileNotFoundError, RuntimeError) as err:
-            self.logger.warning(
-                "Failed to re-enumerate after switching card profiles: %s", err
-            )
+            self.logger.warning("Failed to re-enumerate after switching card profiles: %s", err)
             return devices
         self.logger.info(
             "Found %d local audio output device(s) after switching card profiles",
