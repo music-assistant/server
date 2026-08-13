@@ -265,6 +265,37 @@ Remote access enables users to connect to their Music Assistant instance from an
    - Responses and events sent back through data channel
    - Authentication and authorization work identically to local WebSocket
 
+### Data Channels
+
+A single remote session multiplexes several WebRTC data channels over one peer connection.
+The gateway routes each incoming channel by its label through a label -> handler table, with
+two kinds of handlers:
+
+- **Bridged**: the channel is pumped both ways to a local WebSocket
+  - `sendspin`: the built-in Sendspin server (web player)
+  - `live_announcement`: the live announcement route on the local webserver
+- **Served in-process**: handled by the gateway itself, without a local WebSocket
+  - `http_proxy`: proxied HTTP requests (album art and other assets)
+
+When a bridged channel or its local WebSocket closes, only that bridge is torn down and the
+session stays up.
+
+The client's own API channel has no fixed label: the **first** channel with a label the server
+does not recognise becomes the API channel (the frontend labels it `ma-api`) and is bridged to
+`/ws`. Any **later** unrecognised label is refused, since taking it for a second API channel
+would replace the live bridge and break the session.
+
+Proxied HTTP requests are answered on the channel they arrived on. That is what keeps older
+clients working: they send `http-proxy-request` over `ma-api` and get the response back there,
+so the gateway needs no version negotiation of its own.
+
+**Adding a new label** is not backwards compatible by itself: servers from before the routing
+table mistake an unknown label for the API channel, which breaks the entire remote session
+instead of just the new feature. Clients therefore feature-detect on `schema_version` from
+`server_info` before opening one, so `http_proxy` requires `API_SCHEMA_VERSION >= 49`. Bump
+`API_SCHEMA_VERSION` ([constants.py](../../constants.py)) when adding a label and gate the
+client on the new value.
+
 ### ICE Servers (STUN/TURN)
 
 NAT traversal is critical for WebRTC connections. Music Assistant uses:
