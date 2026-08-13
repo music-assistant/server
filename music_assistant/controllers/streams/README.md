@@ -6,6 +6,7 @@ This document provides an overview of the Music Assistant Streams Controller arc
 
 - [Overview](#overview)
 - [Network Architecture](#network-architecture)
+- [Inbound Audio](#inbound-audio)
 - [Core Components](#core-components)
 - [AudioBuffer](#audiobuffer)
 - [StreamsAudio](#streamsaudio)
@@ -35,6 +36,17 @@ The streams controller runs its own dedicated HTTP-only webserver on a separate 
 - **No SSL/TLS**: Many audio players (especially embedded devices) have limited resources and struggle with SSL handshakes. Since the stream server only runs on the internal network, encryption is unnecessary.
 - **No authentication**: Players need to access streams without credentials. Instead, stream URLs include a **session ID** that is validated on each request to prevent stale or invalid stream attempts.
 - **Separate port**: Keeps audio streaming isolated from the API, allowing independent scaling and configuration.
+
+## Inbound Audio
+
+Live announcements (`live_announcements.py`) are the one path where audio travels *into* the stream server rather than out of it: a client pushes raw PCM while a user speaks, and it is played on a player as an ordinary announcement.
+
+This splits across both webservers, because neither can do the job alone:
+
+- The **inbound** half is a WebSocket on the main webserver. Audio from a client is a privileged action, so it needs the authentication and the SSL support that the stream server deliberately does not have. Browsers additionally require a secure context to reach a microphone at all, which only the main webserver can offer.
+- The **outbound** half is an ordinary stream server route serving an open-ended WAV. The announcement renderer only ever pulls its audio from a URL, so exposing the buffered speech as one keeps live announcements on exactly the same path as every other announcement, and playback can start while the user is still talking.
+
+A session is identified by an unguessable id that appears only in the stream URL, and it is dropped as soon as the announcement has been played.
 
 ## Core Components
 
