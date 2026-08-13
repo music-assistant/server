@@ -3134,13 +3134,12 @@ class TestPlayAnnouncementMessage:
         return engine
 
     def _make_player(
-        self, mock_mass: MagicMock, announcements: dict[str, object], locale: str = "en_US"
+        self, mock_mass: MagicMock, announcements: dict[str, object]
     ) -> tuple[PlayerController, AsyncMock]:
-        """Create a controller and a player with native announcement support, at given locale."""
+        """Create a controller and a player with native announcement support."""
         controller, player, _render = TestPlayAnnouncementCleanup()._make_player(
             mock_mass, announcements
         )
-        mock_mass.metadata.locale = locale
         announce = AsyncMock()
         player.play_announcement = announce  # type: ignore[method-assign]
         return controller, announce
@@ -3156,15 +3155,16 @@ class TestPlayAnnouncementMessage:
         ):
             await controller.play_announcement("player_1", message="dinner is ready")
 
+        # no language is sent, so the engine speaks in the language it is configured for
         engine.provider.get_tts_message.assert_awaited_once_with(
-            "dinner is ready", language="en-US", engine_id="voice"
+            "dinner is ready", language=None, engine_id="voice"
         )
         registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
         assert registered["announcement_url"] == "http://speech/spoken.mp3"
         announce.assert_awaited_once()
 
     async def test_an_explicit_language_reaches_the_engine(self, mock_mass: MagicMock) -> None:
-        """A message names the language to speak it in, overriding the configured locale."""
+        """A message can name the language to speak it in."""
         announcements: dict[str, object] = {}
         controller, _announce = self._make_player(mock_mass, announcements)
         engine = self._make_engine()
@@ -3178,23 +3178,6 @@ class TestPlayAnnouncementMessage:
 
         engine.provider.get_tts_message.assert_awaited_once_with(
             "het eten is klaar", language="nl-NL", engine_id="voice"
-        )
-
-    async def test_no_configured_locale_leaves_the_engine_on_its_own_voice(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """Without a configured language the engine picks its own default voice."""
-        announcements: dict[str, object] = {}
-        controller, _announce = self._make_player(mock_mass, announcements, locale="")
-        engine = self._make_engine()
-
-        with patch(
-            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
-        ):
-            await controller.play_announcement("player_1", message="dinner is ready")
-
-        engine.provider.get_tts_message.assert_awaited_once_with(
-            "dinner is ready", language=None, engine_id="voice"
         )
 
     async def test_a_rejected_language_is_retried_without_it(self, mock_mass: MagicMock) -> None:
@@ -3212,7 +3195,9 @@ class TestPlayAnnouncementMessage:
         with patch(
             f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
         ):
-            await controller.play_announcement("player_1", message="dinner is ready")
+            await controller.play_announcement(
+                "player_1", message="dinner is ready", language="en-US"
+            )
 
         first_call, second_call = engine.provider.get_tts_message.await_args_list
         assert first_call.kwargs["language"] == "en-US"

@@ -50,7 +50,6 @@ from music_assistant.helpers.plugin_engines import (
 )
 from music_assistant.helpers.tts import (
     query_tts_engine_with_language_fallback,
-    resolve_tts_language,
     resolve_tts_stream_path,
 )
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
@@ -182,7 +181,7 @@ class AnnouncementsMixin:
         :param tts_engine: Optional uid of the TTS engine to speak the message,
             defaults to the engine configured on the player controller.
         :param language: Optional language code to speak the message in (e.g. 'nl-NL'),
-            defaults to the language configured for Music Assistant.
+            omit to let the engine speak in the language it is configured for.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
@@ -410,8 +409,8 @@ class AnnouncementsMixin:
 
         :param message: The text to speak.
         :param tts_engine: Optional uid of the engine to use, defaults to the configured one.
-        :param language: Optional language to speak the message in, defaults to the
-            language configured for Music Assistant.
+        :param language: Optional language to speak the message in, omit to let the
+            engine speak in the language it is configured for.
         """
         if tts_engine:
             engine = await resolve_tts_engine(self.mass, tts_engine)
@@ -424,7 +423,7 @@ class AnnouncementsMixin:
         stream_details = await query_tts_engine_with_language_fallback(
             engine,
             message,
-            language or resolve_tts_language(self.mass),
+            language,
             timeout=ANNOUNCEMENT_TTS_TIMEOUT,
             logger=self.logger,
         )
