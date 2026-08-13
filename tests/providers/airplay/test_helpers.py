@@ -250,6 +250,6 @@ def test_default_buffer_depth_family_table() -> None:
         == 1750
     )
     # Older platform: OEM brand, the platform only marked in fv.
-    assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 1750
+    assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 2500
     assert default_buffer_depth("Sonos", "Era 100", "p20.96.0-79160") == 0
     assert default_buffer_depth("Apple Inc.", "AppleTV11,1", None) == 0

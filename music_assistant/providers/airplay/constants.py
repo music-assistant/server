@@ -109,15 +109,22 @@ AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # model wildcard, firmware wildcard) -> depth in ms, matched case-insensitively
 # in order, first match wins; unmatched devices stay on Automatic (the binary's
 # stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
-# behind a perfectly healthy session - and need the full 1750 ms once the
-# device is also master of a native multiroom group, at the cost of slower
-# warm seeks. Extend the table as field reports identify more starving devices.
+# behind a perfectly healthy session - so their queue is deepened, at the cost
+# of slower warm seeks (the depth IS the audible latency of a seek or skip).
+# Extend the table as field reports identify more starving devices.
 AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
     # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
+    # 1750 ms is what a WiiM needs once it is also master of a native multiroom
+    # group.
     ("linkplay*", "*", "*", 1750),
     # The older LinkPlay platform ships under OEM brands (Edifier, ...) but
-    # marks the platform in its firmware string.
-    ("*", "*", "p20.linkplay.*", 1750),
+    # marks the platform in its firmware string. It starves far deeper: an
+    # Edifier MS50A stays silent at 2250 ms and renders from 2500 ms, which is
+    # the 2250 ms pipeline the same device declares as its RAOP latency plus the
+    # binary's delivery margin. Every shallower value - including the 1750 ms
+    # this row used to inherit from the row above - is below what the device
+    # itself asks for.
+    ("*", "*", "p20.linkplay.*", 2500),
 )
 # Per-player override of the splice receiver-queue depth in ms (0 = automatic).
 CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
@@ -206,6 +213,57 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # Staged retries can be reintroduced by adding entries to the tuple.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 
+# Shared audible instant for a native announcement over a live stream: now +
+# the largest member span + this margin. A member can only mix the clip into
+# audio it has not delivered yet, and its span (warm_lead_ms on the Apple
+# splice timeline, the reported lead_ms otherwise) is how far its delivery
+# head runs ahead of the audible position - so the earliest instant EVERY
+# member can honor lies one max-span out. The margin covers fanning the
+# command out over the pipes and the per-member arm processing, so one shared
+# instant stays feasible for all members.
+AIRPLAY_ANNOUNCE_AT_MARGIN_MS: Final[int] = 300
+# Span assumed for a member whose binary reported neither a warm lead nor a
+# device lead (both read 0 = unreported): the binary's own default playback
+# lead, which bounds how far its delivery head can run ahead.
+AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS: Final[int] = 2000
+# Music gain (dB) under the clip while it plays; the binary ramps the duck in
+# and out itself. <= -60 mutes the music entirely. -18 dB puts the music
+# clearly in the background under speech (-12 was field-judged too shallow).
+AIRPLAY_ANNOUNCE_DUCK_DB: Final[int] = -18
+# Silence appended to every announcement clip file. The binary holds the duck
+# for the whole file, so this keeps the music ducked past the announcement -
+# the volume restore lands inside this cushion instead of racing the duck's
+# 200 ms tail ramp (a restore that lands after the ramp plays a moment of
+# full-level music at the still-bumped device volume).
+AIRPLAY_ANNOUNCE_DUCK_TAIL_S: Final[float] = 1.0
+# On top of the lead to the commanded instant: how long to wait for a member's
+# announce_started before treating that member as not announcing. An outdated
+# binary silently ignores the unknown command, so this bounded wait is also
+# what detects that and routes the announcement to the fallback path.
+AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS: Final[int] = 3000
+# On top of the clip's audible end: how long to wait for announce_done. The
+# wait stays bounded because a queue that ends mid-clip emits its eof, which
+# ends the status stream while the clip still plays out over the drain.
+AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS: Final[int] = 5000
+# Pad after the clip's audible end before the pre-announcement volume is
+# restored: covers the jitter between the acked instant and true audibility.
+AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS: Final[int] = 500
+# Delay of the announcement-volume bump past the clip's audible start: a bump
+# that lands early (a receiver playing out later than the reported instant)
+# raises the still-playing music, so it is biased into the clip where the duck
+# ramp masks it - the pre-announce chime covers the first moments anyway.
+AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 300
+# The AirPlay volume parameter is linear dB: 0..100 maps onto -30..0 dB on
+# every flow (libraop raopcl_float_volume, reused verbatim by the native AP2
+# SET_PARAMETER path), so one volume point is exactly 0.3 dB of output. This
+# makes the announcement volume bump's effect on the music bed computable, and
+# the duck is deepened by the same amount to keep the music's perceived level
+# at the configured duck depth.
+AIRPLAY_VOLUME_DB_PER_POINT: Final[float] = 0.3
+# Drain margin for a dedicated announcement session: covers the receiver
+# playing out its buffered audio after the clip's last byte was fed.
+AIRPLAY_ANNOUNCE_SESSION_DRAIN_S: Final[float] = 2.0
+
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
@@ -258,6 +316,7 @@ AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.VOLUME_SET,

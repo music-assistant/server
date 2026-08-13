@@ -33,7 +33,6 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
-    Playlist,
     PodcastEpisode,
     Track,
     UniqueList,
@@ -56,6 +55,7 @@ from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
     handle_play_action,
     has_dynamic_source,
+    is_dynamic_source,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -755,16 +755,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # their successor from the queue's last item instead).
                 # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
-                if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
-                    MediaType.TRACK,
-                    MediaType.ALBUM,
-                    MediaType.PLAYLIST,
-                    MediaType.ARTIST,
+                if not isinstance(media_item, BrowseFolder) and (
+                    is_dynamic_source(media_item)
+                    or media_item.media_type
+                    in (MediaType.TRACK, MediaType.ALBUM, MediaType.PLAYLIST, MediaType.ARTIST)
                 ):
                     queue_data.enqueued_media_items.append(media_item)
                     if len(queue_data.enqueued_media_items) > 10:
                         queue_data.enqueued_media_items.pop(0)
-                    if isinstance(media_item, Playlist) and media_item.is_dynamic:
+                    if is_dynamic_source(media_item):
                         # a dynamic playlist/station is always a self-managing dynamic source
                         source_items.append(media_item)
 
@@ -783,7 +782,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         self.clear(queue_id, skip_stop=True)
 
                 # collect media_items to play
-                if isinstance(media_item, Playlist) and media_item.is_dynamic:
+                if is_dynamic_source(media_item):
                     # a dynamic playlist/station supplies its own tracks on demand; just mark it
                     # played. The queue goes dynamic below and the bounded pool seeds its batch from
                     # all sources, so there is no need to fetch a batch here.

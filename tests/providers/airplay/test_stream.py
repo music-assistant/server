@@ -316,10 +316,10 @@ async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     """
     LinkPlay-family devices get the deep receiver queue from the family table.
 
-    Their pipeline starves at the stock depth - fully once the device is also
-    master of a native multiroom group - so the table maps them to 1750 ms.
-    Both platform generations must match: the newer names Linkplay as
-    manufacturer, the older only marks the platform in fv under OEM brands.
+    Both platform generations must match - the newer names Linkplay as
+    manufacturer, the older only marks the platform in fv under OEM brands -
+    and they starve at different depths, so each generation carries its own
+    value rather than the older one inheriting the newer one's.
     """
     player = _make_player()
     player.device_info.manufacturer = "Linkplay Technology Inc."
@@ -327,12 +327,13 @@ async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     assert _arg_value(args, "--latency") == "1750"
     assert "--ptp-shared" in args
 
-    # Old platform: OEM brand, the Linkplay token only in fv.
+    # Old platform: OEM brand, the Linkplay token only in fv. Starves far
+    # deeper than the newer platform above.
     player = _make_player()
     player.device_info.manufacturer = "Edifier Inc"
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "1750"
+    assert _arg_value(args, "--latency") == "2500"
 
     # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()
@@ -1716,6 +1717,191 @@ async def test_flush_clears_the_pending_stdin_depth() -> None:
         assert await flush_task is True
 
     assert stream.audio_pending_ms == 0
+
+
+def test_announce_started_status_records_instant_and_duration() -> None:
+    """The started report carries the ACTUAL audible instant and the clip duration."""
+    stream = AirPlayStream(_make_player())
+    assert not stream._announce_started.is_set()
+
+    assert (
+        stream._handle_status_line(
+            f"[STATUS] announce_started at_unix_ms={START_UNIX_MS} duration_ms=1800"
+        )
+        is False
+    )
+
+    assert stream._announce_started.is_set()
+    assert stream._announce_ack == (START_UNIX_MS, 1800)
+
+
+def test_announce_started_status_with_unusable_values_reports_zeroes() -> None:
+    """Unusable fields land on 0 (unreported) instead of failing the whole answer."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line("[STATUS] announce_started at_unix_ms=nonsense")
+
+    assert stream._announce_started.is_set()
+    assert stream._announce_ack == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("line", "cancelled"),
+    [
+        ("[STATUS] announce_done", False),
+        ("[STATUS] announce_done cancelled=1", True),
+    ],
+    ids=["completed", "cancelled"],
+)
+def test_announce_done_status_sets_done_and_cancelled(line: str, cancelled: bool) -> None:
+    """The done report releases the done wait, carrying whether the clip was cut short."""
+    stream = AirPlayStream(_make_player())
+    assert not stream._announce_done.is_set()
+
+    assert stream._handle_status_line(line) is False
+
+    assert stream._announce_done.is_set()
+    assert stream._announce_done_cancelled is cancelled
+
+
+def test_announce_failed_is_routed_to_the_announce_waiter() -> None:
+    """A rejected arm answers both announce waits at once and stays off the connect error."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line('[STATUS] error code=announce_failed http=0 detail="not playing"')
+
+    assert stream._announce_started.is_set()
+    assert stream._announce_done.is_set()
+    assert stream._announce_error is not None
+    assert stream._announce_error.detail == "not playing"
+    # a command failure must not poison how a NEW connection is reported
+    assert stream._connect_error is None
+
+
+@pytest.mark.asyncio
+async def test_announce_sends_the_arm_command() -> None:
+    """ANNOUNCE is delivered as the four-line arm the binary expects."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+
+    with patch.object(
+        stream, "_write_cli_command", new_callable=AsyncMock, return_value=True
+    ) as write_command:
+        assert await stream.announce("/fake/clip.pcm", START_UNIX_MS, -12) is True
+
+    write_command.assert_awaited_once_with(
+        f"ANNOUNCE_FILE=/fake/clip.pcm\nANNOUNCE_AT_UNIX_MS={START_UNIX_MS}\n"
+        "ANNOUNCE_DUCK_DB=-12\nACTION=ANNOUNCE"
+    )
+
+
+@pytest.mark.asyncio
+async def test_announce_resets_the_previous_answer() -> None:
+    """Arming clears every slot so only this arm's answer is read."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._handle_status_line("[STATUS] announce_started at_unix_ms=5 duration_ms=6")
+    stream._handle_status_line("[STATUS] announce_done cancelled=1")
+    stream._handle_status_line("[STATUS] error code=announce_failed")
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        assert await stream.announce("/fake/clip.pcm", 0, -12) is True
+
+    assert not stream._announce_started.is_set()
+    assert not stream._announce_done.is_set()
+    assert stream._announce_ack is None
+    assert stream._announce_error is None
+    assert stream._announce_done_cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_announce_requires_a_running_connected_stream() -> None:
+    """An arm on a stream that is not up is refused without touching the pipe."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    # not connected
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        assert await stream.announce("/fake/clip.pcm", 0, -12) is False
+
+    write_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_returns_the_ack() -> None:
+    """The started wait hands back the acked instant and duration."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_started(1.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line(
+        f"[STATUS] announce_started at_unix_ms={START_UNIX_MS} duration_ms=900"
+    )
+
+    assert await wait_task == (START_UNIX_MS, 900)
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_resolves_on_done_without_started() -> None:
+    """A done (cancelled) without a start means the clip never played: None, right away."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_started(30.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line("[STATUS] announce_done cancelled=1")
+
+    assert await wait_task is None
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_times_out_on_a_silent_binary() -> None:
+    """An outdated binary ignores the arm entirely; the bounded wait returns None."""
+    stream = AirPlayStream(_make_player())
+
+    assert await stream.wait_announce_started(0) is None
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_returns_none_on_reported_failure() -> None:
+    """A reported announce failure answers the started wait as a failure, not a timeout."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_started(30.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line("[STATUS] error code=announce_failed")
+
+    assert await wait_task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("[STATUS] announce_done", True),
+        ("[STATUS] announce_done cancelled=1", False),
+        ("[STATUS] error code=announce_failed", False),
+    ],
+    ids=["completed", "cancelled", "failed"],
+)
+async def test_wait_announce_done_outcomes(line: str, expected: bool) -> None:
+    """Only a completed clip resolves the done wait as True."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_done(1.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line(line)
+
+    assert await wait_task is expected
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_done_times_out() -> None:
+    """The done wait stays bounded (eof can end the status stream mid-clip)."""
+    stream = AirPlayStream(_make_player())
+
+    assert await stream.wait_announce_done(0) is False
 
 
 @pytest.mark.asyncio

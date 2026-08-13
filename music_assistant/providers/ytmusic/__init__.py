@@ -274,6 +274,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         parsed_results.podcasts = podcasts
         return parsed_results
 
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        try:
+            await super().sync_library(media_type)
+        except LoginFailed as err:
+            # Every following sync fails the same way until the cookie is replaced,
+            # so hand the provider back to the user for re-authentication.
+            if self.available:
+                self.unload_with_error(err)
+            raise
+
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
         artists_obj = await get_library_artists(

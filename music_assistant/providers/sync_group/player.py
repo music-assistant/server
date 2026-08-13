@@ -33,7 +33,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Collection
 
     from music_assistant_models.player import PlayerSource
 
@@ -547,8 +547,8 @@ class SyncGroupPlayer(Player):
                 # protocol supports dynamic leader switching: try to remove
                 # only the departing leader and keep remaining members playing.
                 # _dynamic_leader_switch will fall back to dissolve+reform
-                # automatically if the chosen new leader isn't already part of
-                # the live session (e.g. a freshly-added player).
+                # automatically if no remaining member is part of the live
+                # session (e.g. only freshly-added players are left).
                 await self._dynamic_leader_switch(old_leader_id)
             else:
                 # protocol doesn't support dynamic leader switching or not playing
@@ -568,8 +568,8 @@ class SyncGroupPlayer(Player):
             # just a regular member(s) added/removed action,
             # we can simply update the syncgroup members on the sync leader.
             # `active_protocol_domain` is derived from live state, so the
-            # group will naturally downshift on the next leader selection if
-            # the last protocol-requiring member was removed.
+            # group will naturally downshift once it re-forms if every
+            # remaining member can play on the leader's native protocol.
             # use _handle_set_members directly to avoid the redirect loop
             # (cmd_set_members redirects sync-leader targets back to this syncgroup)
             async with self.mass.players.get_player_lock(
@@ -611,19 +611,23 @@ class SyncGroupPlayer(Player):
         Derive the active protocol domain for this sync group on the fly.
 
         Returns the domain of the protocol currently carrying the live stream
-        session, EXCEPT when no remaining member actually requires that
-        non-native protocol — in which case the group should downshift and
-        this returns the leader's native provider domain. Always computed
-        from live state so it cannot drift from reality.
+        session, EXCEPT when every remaining member can also play on the
+        leader's native domain — in which case the group should downshift and
+        this returns that native domain. Always computed from live state so it
+        cannot drift from reality.
+
+        Because of that downshift this is a hint for the next leader selection,
+        not an address for the live session: use ``_active_session_player()``
+        to reach the players that are carrying the stream right now.
         """
         session_player = self._active_session_player()
         if session_player is None or self.sync_leader is None:
             return None
         domain = session_player.provider.domain
         native_domain = self.sync_leader.provider.domain
-        # If a non-native protocol is in use, only keep it as "active" for
-        # leader-selection purposes when some member still requires it.
-        if domain != native_domain and not self._any_member_requires_protocol_domain(domain):
+        # Keep a non-native protocol "active" for leader-selection purposes unless
+        # the whole group can be reached on the leader's native domain.
+        if domain != native_domain and self._all_members_can_play_on_domain(native_domain):
             return native_domain
         return domain
 
@@ -795,53 +799,60 @@ class SyncGroupPlayer(Player):
         self,
         new_members: list[str] | None = None,
         preferred_protocol_domain: str | None = None,
+        preferred_member_ids: Collection[str] | None = None,
     ) -> Player | None:
         """
-        Select a (new) sync leader, preferring protocol continuity.
+        Select a (new) sync leader, preferring session and protocol continuity.
 
         :param new_members: Optional list of newly added member ids to consider
             when no current/static members are available.
         :param preferred_protocol_domain: If provided, prefer members that
-            support this protocol domain so the live session can keep playing
-            on the same protocol. Typically a snapshot of
-            :attr:`active_protocol_domain` taken before the old leader is
-            cleared.
+            support this protocol domain so playback keeps using the same
+            protocol.
+        :param preferred_member_ids: If provided, prefer members from this
+            collection (e.g. the ones a live session already feeds). Outranks
+            ``preferred_protocol_domain``.
         """
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
         group_members = self.static_group_members or self.group_members or new_members or []
-
-        # if a preferred protocol is given, prefer members that support it
-        if preferred_protocol_domain:
-            for member_id in group_members:
-                member_player = self.mass.players.get_player(member_id)
-                if (
-                    member_player
-                    and member_player.state.available
-                    and self._member_supports_protocol_domain(
-                        member_player, preferred_protocol_domain
-                    )
-                ):
-                    self.logger.debug(
-                        "Auto-selected %s as sync leader for group %s "
-                        "(supports active protocol %s)",
-                        member_player.display_name,
-                        self.display_name,
-                        preferred_protocol_domain,
-                    )
-                    return member_player
-
-        # fallback: pick any available member
-        for member_id in group_members:
-            member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
-                self.logger.debug(
-                    f"Auto-selected {member_player.display_name} as sync leader for "
-                    f"group {self.display_name}"
-                )
-                return member_player
+        candidates = [
+            member_player
+            for member_id in group_members
+            if (member_player := self.mass.players.get_player(member_id))
+            and member_player.state.available
+        ]
+        preferred_ids = set(preferred_member_ids or ())
+        # preference tiers, most specific first: a member that is already fed by the
+        # live session can take it over without restarting playback, and one that
+        # supports the active protocol at least keeps the session on that protocol
+        for reason, matches in (
+            (
+                "takes part in the live session",
+                [x for x in candidates if x.player_id in preferred_ids],
+            ),
+            (
+                f"supports active protocol {preferred_protocol_domain}",
+                [
+                    x
+                    for x in candidates
+                    if preferred_protocol_domain
+                    and self._member_supports_protocol_domain(x, preferred_protocol_domain)
+                ],
+            ),
+            ("first available member", candidates),
+        ):
+            if not matches:
+                continue
+            self.logger.debug(
+                "Auto-selected %s as sync leader for group %s (%s)",
+                matches[0].display_name,
+                self.display_name,
+                reason,
+            )
+            return matches[0]
         return None
 
     # -----------------------------------------------------------------------
@@ -856,8 +867,8 @@ class SyncGroupPlayer(Player):
     #     the right object
     #   - choose new leaders that keep protocol continuity
     #     (_member_supports_protocol_domain / _select_sync_leader)
-    #   - downshift to the native protocol when the last protocol-requiring
-    #     member is gone (_any_member_requires_protocol_domain)
+    #   - downshift to the native protocol once every remaining member can play
+    #     on it (_all_members_can_play_on_domain)
     #   - stay aligned with the protocol's own view of the group, both in member
     #     order (_align_members_with_session) and in who leads it
     #     (_protocol_group_leader)
@@ -887,49 +898,30 @@ class SyncGroupPlayer(Player):
 
     def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
         """
-        Check if a player supports the given protocol domain.
+        Check if a player can be reached on the given protocol domain right now.
 
         :param player: The player to check.
         :param domain: The protocol domain string (e.g. "airplay", "sonos").
         """
-        if player.provider.domain == domain:
-            return True
-        for protocol in player.linked_output_protocols:
-            if protocol.protocol_domain == domain and protocol.available:
-                return True
-        return False
+        return domain in player.playback_domains
 
-    def _any_member_requires_protocol_domain(self, domain: str) -> bool:
+    def _all_members_can_play_on_domain(self, domain: str) -> bool:
         """
-        Return True if any current member can only play via the given protocol domain.
+        Return True if every current member has a playback path on the given domain.
 
-        A member "requires" the protocol when all of its available playback
-        paths are on that domain — i.e. it has no native playback path outside
-        this domain AND no linked output protocol outside this domain. This
-        covers plain protocol-domain players (e.g. AirPlay) as well as
-        UniversalPlayer wrappers whose native ``provider.domain`` is
-        ``universal_player`` but which can still only play via a single
-        linked protocol.
+        Members that are unavailable or expose no playback path at all are
+        ignored, so they never hold the group on a protocol.
 
-        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        :param domain: The playback path domain to check (e.g. "airplay", "sonos").
         """
         for member_id in self._attr_group_members:
             member = self.mass.players.get_player(member_id)
             if member is None or not member.state.available:
                 continue
-            # Collect the set of available playback path domains for this member.
-            paths: set[str] = set()
-            if member.is_native_player:
-                paths.add(member.provider.domain)
-            for protocol in member.linked_output_protocols:
-                if protocol.available:
-                    paths.add(protocol.protocol_domain)
-            if not paths:
-                # nothing available at all, skip rather than force a protocol
-                continue
-            if paths == {domain}:
-                return True
-        return False
+            paths = member.playback_domains
+            if paths and domain not in paths:
+                return False
+        return True
 
     def _active_session_player(self) -> Player | None:
         """
@@ -965,7 +957,9 @@ class SyncGroupPlayer(Player):
         if session_player is None:
             return
         # the provider's own group_members, not state.group_members: the latter is
-        # set-derived for non-protocol players and loses the member order
+        # set-derived for non-protocol players and loses the member order. Not
+        # live_session_members either: that answers who is in the session, not in
+        # which order, and a provider may derive it without preserving any.
         session_order = [
             x
             for x in self._translate_to_parent_ids(session_player.group_members)
@@ -1052,41 +1046,6 @@ class SyncGroupPlayer(Player):
         elif new_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             # leader resumed playing, cancel any pending grace
             self._cancel_idle_grace_timer()
-
-    def _is_player_in_session(self, player: Player, session_player: Player | None) -> bool:
-        """
-        Return True if ``player`` is already a sync_client of the live session.
-
-        A seamless leader handoff only works when the candidate's resolved
-        protocol player is already in the active ``AirPlayStreamSession`` (or
-        equivalent). If not (e.g. a freshly-added player that has never played
-        anything), we must fall back to dissolve + reform.
-
-        :param player: The candidate new leader.
-        :param session_player: The protocol player that owns the live session
-            (snapshot taken before the old leader was cleared via
-            ``_active_session_player()``).
-        """
-        if session_player is None:
-            return False
-        session = getattr(getattr(session_player, "stream", None), "session", None)
-        if session is None:
-            # No session object (e.g. Snapcast, Sendspin) — assume handoff is
-            # safe if the provider declared support for it.
-            return True
-        sync_clients = getattr(session, "sync_clients", None)
-        if sync_clients is None:
-            # Session exists but doesn't expose sync_clients — same assumption.
-            return True
-        # Resolve player to the protocol player that would own the session
-        target: Player = player
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (p := self.mass.players.get_player(player.active_output_protocol))
-        ):
-            target = p
-        return target in sync_clients
 
     async def _dissolve_and_reform(
         self,
@@ -1208,9 +1167,9 @@ class SyncGroupPlayer(Player):
         Snapcast). The old leader is removed from the live session and the
         remaining members keep playing uninterrupted on a newly selected leader.
 
-        If the selected new leader is not already part of the live session (e.g.
-        a freshly-added player), a seamless handoff isn't possible. In that case
-        we fall back to dissolve + reform, accepting a brief audio gap.
+        If no remaining member takes part in the live session (e.g. only
+        freshly-added players are left), a seamless handoff isn't possible. In
+        that case we fall back to dissolve + reform, accepting a brief audio gap.
 
         :param old_leader_id: The player_id of the leader being removed.
         """
@@ -1228,6 +1187,18 @@ class SyncGroupPlayer(Player):
         # handoff-eligibility check.
         preferred_domain = self.active_protocol_domain
         session_player = self._active_session_player()
+        # The domain the live session actually runs on. It differs from
+        # `preferred_domain` once the group is due to downshift to native, and
+        # a seamless handoff must stay on the protocol carrying the stream.
+        session_domain = session_player.provider.domain if session_player else None
+        # The members the session feeds right now: only a member from this set can take
+        # it over without a restart. Tracked membership is not enough — a member can be
+        # dropped from the session (or never make it in) while still being listed.
+        live_member_ids = (
+            self._translate_to_parent_ids(session_player.live_session_members)
+            if session_player
+            else []
+        )
 
         # Remove the old leader from our group members list
         if old_leader_id in self._attr_group_members:
@@ -1238,10 +1209,13 @@ class SyncGroupPlayer(Player):
         # end up tracking a different leader than the one that inherits the session.
         self._align_members_with_session(session_player)
 
-        # Pick a new leader preferring one that supports the currently active
-        # protocol so the session continuation is seamless.
+        # Pick a new leader, preferring one that is already fed by the live session
+        # so the session continuation is seamless.
         self.sync_leader = None
-        new_leader = self._select_sync_leader(preferred_protocol_domain=preferred_domain)
+        new_leader = self._select_sync_leader(
+            preferred_protocol_domain=session_domain,
+            preferred_member_ids=live_member_ids,
+        )
 
         if not new_leader:
             # No remaining members to take over — stop the old leader's
@@ -1258,10 +1232,10 @@ class SyncGroupPlayer(Player):
             await self._dissolve_syncgroup()
             return
 
-        # A seamless handoff requires the new leader to already be a
-        # sync_client of the live session. If it's a freshly-added player
-        # with no existing stream, fall back to dissolve + reform.
-        if not self._is_player_in_session(new_leader, session_player):
+        # A seamless handoff requires the new leader to already be a sync_client of
+        # the live session. Selection prefers such a member, so reaching this means
+        # no remaining member has a stream to inherit: fall back to dissolve + reform.
+        if new_leader.player_id not in live_member_ids:
             self.logger.info(
                 "New leader %s is not in the live session; dissolving and re-forming syncgroup %s",
                 new_leader.display_name,
@@ -1292,17 +1266,17 @@ class SyncGroupPlayer(Player):
 
         # Hand off at the protocol level. We already know:
         # - the old session player (the protocol player that owns the live session)
-        # - the active protocol domain
+        # - the domain that session runs on
         # - the new leader (a parent player whose protocol player is in the session)
         # So we can talk to the protocol players directly and skip the controller's
         # protocol-translation overhead in cmd_set_members.
-        new_target = self._resolve_session_target(new_leader, preferred_domain)
+        new_target = self._resolve_session_target(new_leader, session_domain)
         remaining_protocol_ids: list[str] = []
         for member_id in self._attr_group_members:
             if member_id == new_leader.player_id:
                 continue
             if member := self.mass.players.get_player(member_id):
-                if target := self._resolve_session_target(member, preferred_domain):
+                if target := self._resolve_session_target(member, session_domain):
                     remaining_protocol_ids.append(target.player_id)
 
         # 1. Old leader's session protocol player steps out of the session.

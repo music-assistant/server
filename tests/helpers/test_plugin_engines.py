@@ -19,6 +19,7 @@ from music_assistant.helpers.plugin_engines import (
     resolve_ai_engine,
     resolve_tts_engine,
     select_ai_engine,
+    select_core_tts_engine,
     select_tts_engine,
 )
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
@@ -294,3 +295,66 @@ async def test_create_config_entries_alert_follows_picker_visibility() -> None:
     )
     assert picker.depends_on == "ai_descriptions"
     assert alert.depends_on == "ai_descriptions"
+
+
+async def test_alert_reuses_the_shared_source_string() -> None:
+    """However the picker is keyed, its alert resolves to the one shared alert string."""
+    mass = _create_mass()
+    _picker, alert = await create_tts_engine_config_entries(mass, "announce_tts_engine")
+    assert alert.key == "announce_tts_engine_unavailable"
+    assert alert.translation_key == "tts_engine_unavailable"
+
+
+async def test_select_core_stores_the_first_engine(mass_minimal: MusicAssistant) -> None:
+    """A core controller without a stored selection adopts the first engine as a concrete uid."""
+    plugin = _create_plugin("plugin_a")
+    plugin.get_tts_engines.return_value = [
+        TTSEngine(id="alpha", name="Alpha", provider=plugin),
+        TTSEngine(id="bravo", name="Bravo", provider=plugin),
+    ]
+    mass_minimal.get_providers_supporting_feature = MagicMock(  # type: ignore[method-assign]
+        return_value=[plugin]
+    )
+
+    engine = await select_core_tts_engine(mass_minimal, "players", "announce_tts_engine")
+
+    assert engine is not None
+    assert engine.uid == "plugin_a/alpha"
+    assert (
+        mass_minimal.config.get_raw_core_config_value("players", "announce_tts_engine")
+        == "plugin_a/alpha"
+    )
+
+
+async def test_select_core_honours_a_stored_selection(mass_minimal: MusicAssistant) -> None:
+    """A core controller keeps the engine it was given instead of adopting the first one."""
+    plugin = _create_plugin("plugin_a")
+    plugin.get_tts_engines.return_value = [
+        TTSEngine(id="alpha", name="Alpha", provider=plugin),
+        TTSEngine(id="bravo", name="Bravo", provider=plugin),
+    ]
+    mass_minimal.get_providers_supporting_feature = MagicMock(  # type: ignore[method-assign]
+        return_value=[plugin]
+    )
+    mass_minimal.config.set_raw_core_config_value(
+        "players", "announce_tts_engine", "plugin_a/bravo"
+    )
+
+    engine = await select_core_tts_engine(mass_minimal, "players", "announce_tts_engine")
+
+    assert engine is not None
+    assert engine.uid == "plugin_a/bravo"
+
+
+async def test_select_core_selection_that_vanished_does_not_fall_back(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A stored engine that no longer exists reports missing instead of silently switching."""
+    plugin = _create_plugin("plugin_a")
+    plugin.get_tts_engines.return_value = [TTSEngine(id="alpha", name="Alpha", provider=plugin)]
+    mass_minimal.get_providers_supporting_feature = MagicMock(  # type: ignore[method-assign]
+        return_value=[plugin]
+    )
+    mass_minimal.config.set_raw_core_config_value("players", "announce_tts_engine", "plugin_a/gone")
+
+    assert await select_core_tts_engine(mass_minimal, "players", "announce_tts_engine") is None

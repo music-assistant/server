@@ -115,8 +115,10 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
-    "artist_name": "artists.search_name ASC, year DESC",
-    "artist_name_desc": "artists.search_name DESC, year DESC",
+    "album_artist_name": "artists.search_name ASC, year DESC",
+    "album_artist_name_desc": "artists.search_name DESC, year DESC",
+    "track_artist_name": "artists.search_name ASC, search_name ASC",
+    "track_artist_name_desc": "artists.search_name DESC, search_name ASC",
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }
@@ -1536,7 +1538,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     def _summary_base_columns(self) -> str:
         """Return the SELECT columns shared by every summary query."""
-        # the search/sort/statistics columns are selected so ORDER BY (see SORT_KEYS)
+        # the search/sort/statistics columns are selected so ORDER BY (see sort_keys)
         # resolves them from the result set, like the full query's SELECT * does
         return f"""
             {self.db_table}.item_id,

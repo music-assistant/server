@@ -68,6 +68,7 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
+    is_dynamic_source,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
@@ -1597,6 +1598,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
 
+    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic source (a dynamic playlist or radio station).
+
+        :param item: The dynamic playlist or radio station to fetch the next batch for.
+        """
+        return await self._media_resolver.get_dynamic_source_tracks(item)
+
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
         return self._smart_shuffle.windows()
@@ -1684,13 +1693,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._queue_data[queue.queue_id].source_items = items
         # keep every occurrence server-side (a source added more than once weights it up in the
         # managed pool), but expose only the distinct container sources on the wire for clients to
-        # show. Individual items (tracks, radio streams, podcast episodes, ...) are omitted; see
+        # show. Individual items (tracks, live radio streams, podcast episodes, ...) are omitted; see
         # `_WIRE_SOURCE_MEDIA_TYPES`. Autoplay/pool refill reads the full `source_items` above, not
         # this projected list, so it is unaffected.
         seen: set[str] = set()
         sources: list[ItemMapping] = []
         for item in items:
-            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES:
+            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES and not is_dynamic_source(item):
                 continue
             mapping = ItemMapping.from_item(item)
             if mapping.uri and mapping.uri in seen:

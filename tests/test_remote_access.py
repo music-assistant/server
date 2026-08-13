@@ -844,6 +844,10 @@ class _FakeLocalWS:
         """Queue a text message as if the local server sent it."""
         self._incoming.put_nowait(SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=data))
 
+    def feed_bytes(self, data: bytes) -> None:
+        """Queue a binary message as if the local server sent it."""
+        self._incoming.put_nowait(SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=data))
+
     def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
         return self
 
@@ -898,14 +902,39 @@ class _FakeBidiChannel:
         return message
 
 
+class _FakeHttpSession:
+    """ClientSession stand-in handing out one fake WebSocket per dialed url."""
+
+    def __init__(self) -> None:
+        self.dialed: list[str] = []
+        self.dial_kwargs: list[dict[str, Any]] = []
+        self.websockets: dict[str, _FakeLocalWS] = {}
+
+    async def ws_connect(self, url: str, **kwargs: Any) -> _FakeLocalWS:
+        self.dialed.append(url)
+        self.dial_kwargs.append(kwargs)
+        local_ws = _FakeLocalWS()
+        self.websockets[url] = local_ws
+        return local_ws
+
+
 class _FakePeerConnection:
     """PeerConnection stand-in that runs gateway-spawned pumps as asyncio tasks."""
 
     def __init__(self) -> None:
         self._tasks: list[asyncio.Task[None]] = []
+        self._incoming: asyncio.Queue[_FakeBidiChannel] = asyncio.Queue()
 
     def spawn_task(self, coro: Coroutine[Any, Any, None]) -> None:
         self._tasks.append(asyncio.ensure_future(coro))
+
+    def offer_channel(self, channel: _FakeBidiChannel) -> None:
+        """Offer a data channel as if the browser had opened it."""
+        self._incoming.put_nowait(channel)
+
+    async def incoming_data_channels(self) -> AsyncIterator[DataChannel]:
+        while True:
+            yield cast("DataChannel", await self._incoming.get())
 
     async def aclose(self) -> None:
         for task in self._tasks:
@@ -925,6 +954,17 @@ def _register_bridge_session(
     )
     gateway.sessions[session_id] = session
     return session
+
+
+def _register_routed_session(
+    gateway: WebRTCGateway, session_id: str
+) -> tuple[WebRTCSession, _FakePeerConnection]:
+    """Register a session that routes the data channels offered to its PeerConnection."""
+    pc = _FakePeerConnection()
+    session = WebRTCSession(session_id=session_id, pc=cast("PeerConnection", pc))
+    gateway.sessions[session_id] = session
+    pc.spawn_task(gateway._accept_channels(session))
+    return session, pc
 
 
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 15.0) -> None:
@@ -1066,6 +1106,183 @@ async def test_session_closes_when_ma_api_channel_closes(cert_pems: tuple[str, s
     await _wait_for(lambda: "channel-close-session" not in gateway.sessions)
     assert "channel-close-session" not in gateway.sessions
     await asyncio.wait_for(bridge, timeout=5)
+
+
+# ---- channel routing -------------------------------------------------------
+
+LOCAL_WS_URL = "ws://127.0.0.1:8095/ws"
+SENDSPIN_URL = "ws://127.0.0.1:8927/sendspin"
+
+
+def _routing_gateway(
+    cert_pems: tuple[str, str],
+    http_session: _FakeHttpSession,
+    local_ws_url: str = LOCAL_WS_URL,
+    set_sendspin_player_callback: Callable[[str, str], None] | None = None,
+) -> WebRTCGateway:
+    """Create a gateway whose local WebSockets are all served by the fake HTTP session."""
+    cert_pem, key_pem = cert_pems
+    return WebRTCGateway(
+        http_session=cast("aiohttp.ClientSession", http_session),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url=local_ws_url,
+        sendspin_url=SENDSPIN_URL,
+        set_sendspin_player_callback=set_sendspin_player_callback,
+    )
+
+
+async def test_sendspin_channel_bridges_to_the_sendspin_server(cert_pems: tuple[str, str]) -> None:
+    """A sendspin channel reaches the internal sendspin server, web player id and all."""
+    http_session = _FakeHttpSession()
+    announced_players: list[tuple[str, str]] = []
+    gateway = _routing_gateway(
+        cert_pems,
+        http_session,
+        set_sendspin_player_callback=lambda session_id, player_id: announced_players.append(
+            (session_id, player_id)
+        ),
+    )
+    session, pc = _register_routed_session(gateway, "sendspin-session")
+    channel = _FakeBidiChannel(label="sendspin")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: SENDSPIN_URL in http_session.websockets)
+        local_ws = http_session.websockets[SENDSPIN_URL]
+
+        # the first message announces the web player, and is forwarded verbatim
+        auth = json.dumps({"type": "auth", "token": "t", "client_id": "web-player-1"})
+        channel.feed(auth)
+        await _wait_for(lambda: local_ws.sent == [auth])
+        assert announced_players == [("sendspin-session", "web-player-1")]
+        assert session.sendspin_player_id == "web-player-1"
+
+        # audio keeps flowing in both directions, text and binary alike
+        channel.feed(b"\x01\x02")
+        await _wait_for(lambda: local_ws.sent == [auth, b"\x01\x02"])
+        local_ws.feed_text('{"type":"hello"}')
+        local_ws.feed_bytes(b"\x03\x04")
+        await _wait_for(lambda: channel.sent == ['{"type":"hello"}', b"\x03\x04"])
+    finally:
+        await gateway._close_session("sendspin-session")
+
+
+@pytest.mark.parametrize(
+    ("local_ws_url", "expected_url"),
+    [
+        ("ws://127.0.0.1:8095/ws", "ws://127.0.0.1:8095/live_announcement"),
+        # an https webserver is still dialed on its bind address, which no cert covers
+        ("wss://127.0.0.1:8095/ws", "wss://127.0.0.1:8095/live_announcement"),
+    ],
+)
+async def test_live_announcement_channel_bridges_to_the_webserver(
+    cert_pems: tuple[str, str], local_ws_url: str, expected_url: str
+) -> None:
+    """A live announcement channel reaches the webserver route that takes the audio."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session, local_ws_url=local_ws_url)
+    session, pc = _register_routed_session(gateway, "announce-session")
+    channel = _FakeBidiChannel(label="live_announcement")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: expected_url in http_session.websockets)
+        local_ws = http_session.websockets[expected_url]
+        assert http_session.dial_kwargs == [{"ssl": False}]
+
+        # the client authenticates on the route itself, so its handshake passes through
+        handshake = [
+            json.dumps({"type": "auth", "token": "t"}),
+            json.dumps({"type": "start", "player_id": "player1", "sample_rate": 16000}),
+        ]
+        for message in handshake:
+            channel.feed(message)
+        await _wait_for(lambda: local_ws.sent == handshake)
+        # the sendspin snoop belongs to the sendspin bridge only
+        assert session.sendspin_player_id is None
+
+        # spoken audio goes up, the route's replies come back
+        channel.feed(b"\x00\x01")
+        await _wait_for(lambda: local_ws.sent == [*handshake, b"\x00\x01"])
+        local_ws.feed_text('{"type":"started"}')
+        await _wait_for(lambda: channel.sent == ['{"type":"started"}'])
+    finally:
+        await gateway._close_session("announce-session")
+
+
+@pytest.mark.parametrize("closed_by", ["browser", "local"])
+async def test_closing_a_bridged_channel_leaves_the_api_session_up(
+    cert_pems: tuple[str, str], closed_by: str
+) -> None:
+    """Losing a bridged WebSocket tears down that bridge only, never the API session."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "mixed-session")
+    api_channel = _FakeBidiChannel()
+    sendspin_channel = _FakeBidiChannel(label="sendspin")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(sendspin_channel)
+    try:
+        await _wait_for(
+            lambda: session.local_ws is not None and SENDSPIN_URL in http_session.dialed
+        )
+        sendspin_ws = http_session.websockets[SENDSPIN_URL]
+
+        if closed_by == "browser":
+            sendspin_channel.close()
+        else:
+            await sendspin_ws.close()
+        await _wait_for(lambda: not session.ws_bridges)
+
+        assert sendspin_ws.closed is True
+        assert sendspin_channel.closed is True
+        # the API session is untouched: still registered, still bridged, channel still open
+        assert "mixed-session" in gateway.sessions
+        assert session.local_ws is not None
+        assert cast("_FakeLocalWS", session.local_ws).closed is False
+        assert api_channel.closed is False
+    finally:
+        await gateway._close_session("mixed-session")
+
+
+async def test_the_first_channel_is_the_api_channel_whatever_its_label(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Clients may label their API channel freely, so the first channel bridges to the API."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "labelled-session")
+    channel = _FakeBidiChannel(label="ma-api-v2")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+        assert session.data_channel is cast("DataChannel", channel)
+        assert http_session.dialed == [f"{LOCAL_WS_URL}?webrtc_session_id=labelled-session"]
+    finally:
+        await gateway._close_session("labelled-session")
+
+
+async def test_unknown_channel_label_cannot_replace_the_api_channel(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A channel this server has no route for is refused instead of hijacking the session."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "unknown-session")
+    api_channel = _FakeBidiChannel()
+    unknown_channel = _FakeBidiChannel(label="channel-from-the-future")
+    pc.offer_channel(api_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+        pc.offer_channel(unknown_channel)
+        await _wait_for(lambda: unknown_channel.closed)
+
+        assert session.data_channel is cast("DataChannel", api_channel)
+        assert "unknown-session" in gateway.sessions
+        # only the API channel was ever bridged
+        assert http_session.dialed == [f"{LOCAL_WS_URL}?webrtc_session_id=unknown-session"]
+    finally:
+        await gateway._close_session("unknown-session")
 
 
 class _FakeDataChannel:
