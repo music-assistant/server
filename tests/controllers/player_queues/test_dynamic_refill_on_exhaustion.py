@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -96,7 +97,7 @@ def _controller_with_dead_head(
         if item.queue_item_id.startswith("dead"):
             raise MediaNotFoundError(item.queue_item_id)
 
-    ctrl._load_item.side_effect = _load  # type: ignore[attr-defined]
+    cast("AsyncMock", ctrl._load_item).side_effect = _load
     return ctrl, queue_data, fill_mock
 
 
@@ -135,6 +136,43 @@ async def test_a_non_dynamic_queue_is_unchanged() -> None:
     with pytest.raises(MediaNotFoundError):
         await ctrl.play_index(QUEUE_ID, 0)
     fill_mock.assert_not_awaited()
+
+
+async def test_a_seek_position_does_not_leak_onto_a_refilled_track() -> None:
+    """
+    A resume position belongs to the item the caller asked for, not to a substitute.
+
+    resume() passes the saved position to play_index. If every queued item is dead, the track a
+    refill supplies is a different track entirely and must start at its beginning.
+    """
+    ctrl, queue_data, _fill = _controller_with_dead_head(dead=5, pre_marked=False)
+
+    await ctrl.play_index(QUEUE_ID, 0, seek_position=45, fade_in=True)
+
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.queue_item_id == "live"
+    started = cast("AsyncMock", ctrl._load_item).await_args_list[-1]
+    assert started.args[0].queue_item_id == "live"
+    assert started.kwargs["seek_position"] == 0
+    assert started.kwargs["fade_in"] is False
+    assert queue_data.queue.elapsed_time == 0
+
+
+async def test_the_requested_item_still_gets_its_seek_position_and_fade_in() -> None:
+    """The item the caller asked for keeps the resume position when it loads straight away."""
+    ctrl, queue_data, _fill = _controller_with_dead_head(dead=1, pre_marked=False)
+    queue_data.items[0] = QueueItem(
+        queue_id=QUEUE_ID, queue_item_id="live0", name="live0", duration=180
+    )
+    queue_data.queue.current_item = queue_data.items[0]
+
+    await ctrl.play_index(QUEUE_ID, 0, seek_position=45, fade_in=True)
+
+    started = cast("AsyncMock", ctrl._load_item).await_args_list[-1]
+    assert started.args[0].queue_item_id == "live0"
+    assert started.kwargs["seek_position"] == 45
+    assert started.kwargs["fade_in"] is True
+    assert queue_data.queue.elapsed_time == 45
 
 
 async def test_dynamic_queue_refills_instead_of_reporting_exhaustion() -> None:

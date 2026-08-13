@@ -1010,6 +1010,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             attempts = 0
             refill_used = False
             started = False
+            # the seek position and fade-in belong to the item the caller asked for, so they are
+            # keyed on its index and not on the attempt counter, which resets on a refill
+            requested_index = index
 
             async def _next_index_or_refill(from_index: int) -> tuple[int | None, bool]:
                 """
@@ -1053,8 +1056,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         queue_item,
                         self._get_next_index(queue_id, index),
                         is_start=True,
-                        seek_position=seek_position if attempts == 0 else 0,
-                        fade_in=fade_in if attempts == 0 else False,
+                        seek_position=seek_position if index == requested_index else 0,
+                        fade_in=fade_in if index == requested_index else False,
                     )
                     # if we reach this point, loading the item succeeded
                     queue.current_index = index
@@ -1064,7 +1067,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     # reset the elapsed clock together with the item switch (like
                     # next/previous do), so queue updates signaled before the player
                     # reports position don't carry the previous item's elapsed_time
-                    queue.elapsed_time = seek_position if attempts == 0 else 0
+                    queue.elapsed_time = seek_position if index == requested_index else 0
                     queue.elapsed_time_last_updated = time.time()
                     started = True
                     break
