@@ -18,7 +18,11 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.tts import query_tts_engine, resolve_tts_stream_path
+from music_assistant.helpers.tts import (
+    query_tts_engine_with_language_fallback,
+    resolve_tts_language,
+    resolve_tts_stream_path,
+)
 
 from .constants import (
     ATTR_HOST_ID,
@@ -153,8 +157,9 @@ class AIRadioRenderMixin:
 
         :param host_language: The host's configured language override, if any.
         """
-        locale = (host_language or "").strip() or self.mass.metadata.locale
-        return locale.replace("_", "-") if locale else None
+        if override := (host_language or "").strip():
+            return override.replace("_", "-")
+        return resolve_tts_language(self.mass)
 
     def _find_clip_item(self, clip_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, or None when no queue holds it."""
@@ -263,25 +268,9 @@ class AIRadioRenderMixin:
     ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
         engine = await self._get_tts_engine(engine_uid)
-        try:
-            stream_details = await query_tts_engine(engine, text, language)
-        except TimeoutError, MusicAssistantError:
-            # a timeout or our own structured failure is not a language rejection, so a
-            # language-less retry would not help and would only double the wait
-            raise
-        except Exception as err:
-            if language is None:
-                raise
-            # some engines reject a language they don't support; fall back to the engine's
-            # own default voice rather than losing the clip entirely
-            self.logger.warning(
-                "AI Radio TTS engine '%s' rejected language '%s' (%s), retrying with its "
-                "default voice",
-                engine.uid,
-                language,
-                err,
-            )
-            stream_details = await query_tts_engine(engine, text, None)
+        stream_details = await query_tts_engine_with_language_fallback(
+            engine, text, language, logger=self.logger
+        )
         path, stream_type = await resolve_tts_stream_path(engine, stream_details)
         audio_format = stream_details.audio_format
         if audio_format.content_type == ContentType.UNKNOWN:
