@@ -86,8 +86,8 @@ class WebRTCSession:
 
 
 # Serves one incoming data channel for a session until that channel goes away.
-_ChannelHandler = Callable[
-    [WebRTCSession, _ServedChannel, "DataChannel"], Coroutine[Any, Any, None]
+type _ChannelHandler = Callable[
+    [WebRTCSession, _ServedChannel, DataChannel], Coroutine[Any, Any, None]
 ]
 
 
@@ -731,9 +731,9 @@ class WebRTCGateway:
                             isinstance(msg_data, dict)
                             and msg_data.get("type") == "http-proxy-request"
                         ):
-                            # clients from before the http proxy channel existed still
-                            # proxy over this one; handle off the receive loop so a slow
-                            # fetch never blocks API messages or the next image (see #4889)
+                            # clients without a dedicated http proxy channel proxy over
+                            # this one; handle off the receive loop so a slow fetch never
+                            # blocks API messages or the next image (see #4889)
                             session.pc.spawn_task(
                                 self._handle_http_proxy_request(channel, msg_data)
                             )
@@ -780,7 +780,11 @@ class WebRTCGateway:
         *,
         target: _BridgeTarget,
     ) -> None:
-        """Bridge a data channel to the local WebSocket its label is routed to."""
+        """
+        Bridge a data channel to the local WebSocket its label is routed to.
+
+        :param target: The local WebSocket this channel's label is routed to.
+        """
         try:
             # TLS verification would fail on the bind address and adds nothing to a dial
             # that never leaves this host (a no-op for the plain ws:// targets)

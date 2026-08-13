@@ -1360,6 +1360,65 @@ async def test_http_proxy_request_on_the_api_channel_is_still_answered(
         await gateway._close_session("legacy-session")
 
 
+async def test_http_proxy_channel_reports_a_failed_fetch_on_its_own_channel(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A fetch that raises still answers the client, on the channel it asked over."""
+    http_session = _FakeHttpSession()
+    http_session.request = Mock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-error-session")
+    api_channel = _FakeBidiChannel()
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        proxy_channel.feed(_proxy_request("img-3", "/imageproxy/boom"))
+        await _wait_for(lambda: bool(proxy_channel.sent))
+
+        response = json.loads(cast("str", proxy_channel.sent[0]))
+        assert response["id"] == "img-3"
+        assert response["status"] == 500
+        assert api_channel.sent == []
+    finally:
+        await gateway._close_session("proxy-error-session")
+
+
+@pytest.mark.parametrize(
+    "junk",
+    [
+        "not json at all",
+        json.dumps(["not", "a", "dict"]),
+        json.dumps({"type": "something-else"}),
+        b"\x00\x01binary",
+    ],
+)
+async def test_http_proxy_channel_survives_junk(
+    cert_pems: tuple[str, str], junk: str | bytes
+) -> None:
+    """Anything that is not a proxy request is ignored without killing the channel."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"still-here"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-junk-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(junk)
+        proxy_channel.feed(_proxy_request("img-4", "/imageproxy/ok"))
+        await _wait_for(lambda: bool(proxy_channel.sent))
+
+        response = json.loads(cast("str", proxy_channel.sent[0]))
+        assert response["id"] == "img-4"
+        assert bytes.fromhex(response["body"]) == b"still-here"
+    finally:
+        await gateway._close_session("proxy-junk-session")
+
+
 async def test_closing_the_http_proxy_channel_leaves_the_api_session_up(
     cert_pems: tuple[str, str],
 ) -> None:
