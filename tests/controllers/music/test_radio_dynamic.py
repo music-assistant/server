@@ -29,13 +29,33 @@ FAKE_DOMAIN = "fake_dynamic_radio"
 FAKE_INSTANCE = "fake_dynamic_radio--instance"
 DYNAMIC_STATION_ID = "dynamic-1"
 STATIC_STATION_ID = "static-1"
+TOGGLE_STATION_ID = "toggle-1"
 
 
 class FakeDynamicRadioProvider(MusicProvider):
     """Streaming-style provider owning one dynamic and one static radio station."""
 
+    # controls the is_dynamic value get_library_radios reports for TOGGLE_STATION_ID
+    toggle_station_is_dynamic: bool = False
+
     async def sync_library(self, media_type: MediaType) -> None:
         """No-op sync implementation for tests."""
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Yield the single toggle station, honoring the current is_dynamic flag."""
+        yield Radio(
+            item_id=TOGGLE_STATION_ID,
+            provider=self.instance_id,
+            name="Toggle Station",
+            is_dynamic=self.toggle_station_is_dynamic,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=TOGGLE_STATION_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Return the requested fake station."""
@@ -203,3 +223,49 @@ class TestMatchProvidersDynamicGuard:
         monkeypatch.setattr(type(radio_mass.music), "providers", property(_track_access))
         await radio_ctrl.match_providers(static_radio)
         assert accessed is True
+
+
+class TestSyncLibraryRadiosDynamicFlag:
+    """Tests for the is_dynamic branch of MusicProvider._sync_library_radios."""
+
+    @staticmethod
+    def _toggle_mapping() -> ProviderMapping:
+        return ProviderMapping(
+            item_id=TOGGLE_STATION_ID,
+            provider_domain=FAKE_DOMAIN,
+            provider_instance=FAKE_INSTANCE,
+        )
+
+    async def test_switching_to_dynamic_updates_library_item(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """A provider reporting the same station as dynamic updates the stored flag."""
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        provider.toggle_station_is_dynamic = False
+        await provider._sync_library_radios()
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        assert library_item.is_dynamic is False
+
+        provider.toggle_station_is_dynamic = True
+        await provider._sync_library_radios()
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        assert library_item.is_dynamic is True
+
+    async def test_switching_to_non_dynamic_updates_library_item(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """A provider reporting the same station as no longer dynamic updates the stored flag."""
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        provider.toggle_station_is_dynamic = True
+        await provider._sync_library_radios()
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        assert library_item.is_dynamic is True
+
+        provider.toggle_station_is_dynamic = False
+        await provider._sync_library_radios()
+        library_item = await radio_ctrl.get_library_item_by_prov_mappings([self._toggle_mapping()])
+        assert library_item is not None
+        assert library_item.is_dynamic is False
