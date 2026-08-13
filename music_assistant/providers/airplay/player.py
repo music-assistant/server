@@ -28,6 +28,7 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
 
+from . import announce
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
@@ -258,7 +259,23 @@ class AirPlayPlayer(Player):
         # could fall through to a linked native player's pause (e.g. a Sonos acting as
         # an AirPlay receiver), which only pauses the sync leader while the other
         # members keep playing.
-        return {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
+        features = {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
+        # A player with a Sendspin bridge CONFIGURED still announces natively
+        # whenever there is a stream to mix into: its own (session-backed)
+        # AirPlay stream, or the bridge's stream while Sendspin plays through
+        # it. Only a bridged player with neither hides the feature - a
+        # dedicated announcement session on it would race the bridge for the
+        # device, so those announcements keep their existing routing (the
+        # generic flow via the Sendspin parent).
+        prov = cast("AirPlayProvider", self.provider)
+        bridge = prov.bridge_manager.get_bridge(self.player_id)
+        if (
+            bridge is not None
+            and not bridge.owns_airplay_stream
+            and not (self.stream is not None and self.stream.running and self.stream.session)
+        ):
+            features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+        return features
 
     @property
     def can_group_with(self) -> set[str]:
@@ -276,6 +293,17 @@ class AirPlayPlayer(Player):
     def native_grouping_requires_own_stream(self) -> bool:
         """Return True: members are attached to this player's own stream session."""
         return True
+
+    @property
+    def live_session_members(self) -> list[str]:
+        """Return the id's of the players the running stream session feeds."""
+        # group membership is bookkeeping that outlives the session: a member can be
+        # dropped from the session (write failures) or never make it in (a refused
+        # late join) while still being listed as part of the group, and without a
+        # session there is nobody to render with at all
+        if self.stream and self.stream.running and self.stream.session:
+            return [x.player_id for x in self.stream.session.sync_clients]
+        return []
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -332,11 +360,13 @@ class AirPlayPlayer(Player):
                 category="protocol_generic",
                 advanced=True,
             ),
-            # Receiver-queue depth presets, capped at 1750 - the receiver's
-            # standard 2 s buffer minus the delivery margin; deeper would
-            # overflow it. The default comes from the device-family table, and
-            # Automatic resolves through that same table at stream time, so
-            # selecting it never downgrades an affected device.
+            # Receiver-queue depth presets. The range reaches past the standard
+            # 2 s receiver buffer because that figure is only what the binary
+            # assumes for a device that reports no window of its own, and the
+            # deepest starving devices ask for more than the assumption. The
+            # default comes from the device-family table, and Automatic resolves
+            # through that same table at stream time, so selecting it never
+            # downgrades an affected device.
             ConfigEntry(
                 key=CONF_BUFFER_DEPTH,
                 type=ConfigEntryType.INTEGER,
@@ -347,6 +377,9 @@ class AirPlayPlayer(Player):
                     ConfigValueOption(1000),
                     ConfigValueOption(1500),
                     ConfigValueOption(1750),
+                    ConfigValueOption(2000),
+                    ConfigValueOption(2500),
+                    ConfigValueOption(3000),
                 ],
                 default_value=default_buffer_depth(
                     self.device_info.manufacturer or "",
@@ -507,6 +540,20 @@ class AirPlayPlayer(Player):
             )
             await stream_session.start(audio_source)
             self._transitioning = False
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """
+        Play an announcement natively: mixed over live playback, or as its own session.
+
+        :param announcement: Details of the announcement that needs to be played.
+        :param volume_level: Optional volume level for the announcement.
+        """
+        # The lock windows live inside the orchestration: the dispatch decision
+        # and session mutations hold self._lock like play_media does, while the
+        # multi-second clip waits run outside it (see announce.py).
+        await announce.play_announcement(self, announcement, volume_level)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

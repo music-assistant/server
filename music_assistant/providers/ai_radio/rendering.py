@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ContentType, StreamType
@@ -18,17 +18,18 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.tts import query_tts_engine, resolve_tts_stream_path
 
 from .constants import (
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
-    ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     DEFERRED_PLACEHOLDERS,
-    TTS_QUERY_TIMEOUT_SECONDS,
+    MIN_CLIP_MEDIA_LIFETIME,
     TTS_SERVER_ERROR_MARKERS,
 )
 from .helpers import soft_limit_text
@@ -42,16 +43,28 @@ if TYPE_CHECKING:
     from .models import SessionState
 
 
+@dataclass(slots=True)
+class _CachedClipMedia:
+    """Media previously minted for a clip, kept until it expires."""
+
+    path: str
+    stream_type: StreamType
+    audio_format: AudioFormat
+    duration: int | None
+    minted_at: float
+
+
 class AIRadioRenderMixin:
     """Renders an AI Radio clip at the moment MA needs its audio."""
 
     if TYPE_CHECKING:
         mass: MusicAssistant
         logger: logging.Logger
-        _stations: dict[str, dict[str, Any]]
+        _hosts: dict[str, dict[str, Any]]
         _sessions: dict[str, SessionState]
 
     _render_locks: dict[str, asyncio.Lock]
+    _media_cache: dict[str, _CachedClipMedia]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -75,23 +88,23 @@ class AIRadioRenderMixin:
                 queue_item.extra_attributes[ATTR_RENDERED_TEXT] = text
                 # the signal is what marks the items cache dirty and schedules the persist
                 self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
-            path, stream_type, audio_format, duration = await self._mint_clip_media(
-                queue_item, text, item_id
-            )
+            media = await self._cached_clip_media(queue_item, text, item_id)
 
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=audio_format,
+            audio_format=media.audio_format,
             media_type=media_type,
-            stream_type=stream_type,
-            path=path,
-            duration=duration,
+            stream_type=media.stream_type,
+            path=media.path,
+            duration=media.duration,
             # a talk clip has nothing worth seeking to, and a seek is the one path that
             # would re-fetch a possibly-expired HA url mid-playback
             can_seek=False,
             allow_seek=False,
-            expiration=CLIP_STREAMDETAILS_EXPIRATION,
+            # a cache hit serves a url that was minted earlier, so it may only claim the life
+            # that url has left or the stream outlives the token behind it
+            expiration=self._remaining_media_lifetime(media),
         )
 
     def _lock_for(self, clip_id: str) -> asyncio.Lock:
@@ -101,6 +114,43 @@ class AIRadioRenderMixin:
         if clip_id not in self._render_locks:
             self._render_locks[clip_id] = asyncio.Lock()
         return self._render_locks[clip_id]
+
+    async def _cached_clip_media(
+        self, queue_item: QueueItem, text: str, clip_id: str
+    ) -> _CachedClipMedia:
+        """Return the clip's minted media, re-minting only once the cache entry has expired."""
+        if not hasattr(self, "_media_cache"):
+            self._media_cache = {}
+        now = asyncio.get_running_loop().time()
+        cached = self._media_cache.get(clip_id)
+        if cached is not None and self._remaining_media_lifetime(cached) > MIN_CLIP_MEDIA_LIFETIME:
+            return cached
+        # the caller holds the per-clip render lock, so of the several uncoordinated paths
+        # that resolve the same clip only the first one mints; the rest hit the cache above
+        path, stream_type, audio_format, duration = await self._mint_clip_media(
+            queue_item, text, clip_id, self._tts_language()
+        )
+        media = _CachedClipMedia(path, stream_type, audio_format, duration, now)
+        # clips are minted per queue item, so without pruning the cache grows for as long as
+        # the server runs. an entry past its window can never be served again anyway
+        for expired_id in [
+            key
+            for key, entry in self._media_cache.items()
+            if now - entry.minted_at >= CLIP_STREAMDETAILS_EXPIRATION
+        ]:
+            del self._media_cache[expired_id]
+        self._media_cache[clip_id] = media
+        return media
+
+    def _remaining_media_lifetime(self, media: _CachedClipMedia) -> int:
+        """Return the seconds the given minted media is still usable for."""
+        elapsed = asyncio.get_running_loop().time() - media.minted_at
+        return max(MIN_CLIP_MEDIA_LIFETIME, round(CLIP_STREAMDETAILS_EXPIRATION - elapsed))
+
+    def _tts_language(self) -> str | None:
+        """Return the configured locale as a hyphenated language code, or None when unset."""
+        locale = self.mass.metadata.locale
+        return locale.replace("_", "-") if locale else None
 
     def _find_clip_item(self, clip_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, or None when no queue holds it."""
@@ -142,17 +192,20 @@ class AIRadioRenderMixin:
     async def _generate_script(self, queue_item: QueueItem, prompt: str, clip_id: str) -> str:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
-        station = self._stations.get(str(attributes.get(ATTR_STATION_ID) or "")) or {}
-        deferred = await self._resolve_deferred_placeholders(station)
+        deferred = await self._resolve_deferred_placeholders(prompt)
         resolved = prompt
         for key, value in deferred.items():
             resolved = resolved.replace(key, value)
+        host = self._hosts.get(str(attributes.get(ATTR_HOST_ID) or "")) or {}
+        instructions = str(host.get("instructions") or "")
         max_chars = int(attributes.get(ATTR_MAX_CHARS) or 0)
         web_mode = str(attributes.get(ATTR_WEB_SEARCH_MODE) or "disabled")
         try:
             text = cast(
                 "str",
-                await self._generate_text(station=station, prompt=resolved, web_mode=web_mode),
+                await self._generate_text(
+                    instructions=instructions, prompt=resolved, web_mode=web_mode
+                ),
             )
         except Exception as err:
             self.logger.warning(
@@ -167,19 +220,27 @@ class AIRadioRenderMixin:
         )
         return text
 
-    async def _resolve_deferred_placeholders(self, station: dict[str, Any]) -> dict[str, str]:
+    async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
-        values.update(await self._prepare_runtime_tokens(station))
+        # weather is the only deferred placeholder that costs a network round-trip, so it is
+        # only fetched when the prompt actually references it
+        weather_tokens = ("<weather_hourly>", "<weather_daily>")
+        if any(token in prompt for token in weather_tokens):
+            values.update(await self._prepare_weather_tokens())
         return values
 
     async def _mint_clip_media(
-        self, queue_item: QueueItem, text: str, clip_id: str
+        self, queue_item: QueueItem, text: str, clip_id: str, language: str | None = None
     ) -> tuple[str, StreamType, AudioFormat, int | None]:
         """Convert the script to playable audio via the configured TTS engine."""
+        host = self._hosts.get(str(queue_item.extra_attributes.get(ATTR_HOST_ID) or "")) or {}
+        engine_uid = str(host.get("tts_engine") or "") or None
         try:
-            path, stream_type, audio_format = await self._render_tts_media(text)
+            path, stream_type, audio_format = await self._render_tts_media(
+                text, engine_uid, language
+            )
             # the probe is the first fetch, so a failed render surfaces here and not in playback
             duration = await self._probe_duration(path)
             return path, stream_type, audio_format, duration
@@ -188,30 +249,31 @@ class AIRadioRenderMixin:
             self._record_skip(queue_item, f"TTS failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
 
-    async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+    async def _render_tts_media(
+        self, text: str, engine_uid: str | None = None, language: str | None = None
+    ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
-        engine = await self._get_tts_engine()
+        engine = await self._get_tts_engine(engine_uid)
         try:
-            async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
-                stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
-        except TimeoutError as err:
-            # expired() tells our own cap apart from a timeout raised inside the engine
-            if not query_timeout.expired():
+            stream_details = await query_tts_engine(engine, text, language)
+        except TimeoutError, MusicAssistantError:
+            # a timeout or our own structured failure is not a language rejection, so a
+            # language-less retry would not help and would only double the wait
+            raise
+        except Exception as err:
+            if language is None:
                 raise
-            raise MusicAssistantError(
-                f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
-            ) from err
-        path = str(getattr(stream_details, "path", "") or "").strip()
-        if path.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-            stream_type = StreamType.HTTP
-        elif path and Path(path).is_absolute() and await asyncio.to_thread(Path(path).is_file):
-            stream_type = StreamType.LOCAL_FILE
-        else:
-            raise InvalidDataError(
-                f"TTS engine '{engine.uid}' returned an unusable stream path: "
-                f"{path or '<empty>'}. StreamDetails.path must be a fetchable "
-                "http(s)/rtsp/rtmp URL or the absolute path of an existing local file."
+            # some engines reject a language they don't support; fall back to the engine's
+            # own default voice rather than losing the clip entirely
+            self.logger.warning(
+                "AI Radio TTS engine '%s' rejected language '%s' (%s), retrying with its "
+                "default voice",
+                engine.uid,
+                language,
+                err,
             )
+            stream_details = await query_tts_engine(engine, text, None)
+        path, stream_type = await resolve_tts_stream_path(engine, stream_details)
         audio_format = stream_details.audio_format
         if audio_format.content_type == ContentType.UNKNOWN:
             audio_format = AudioFormat(content_type=ContentType.MP3)
