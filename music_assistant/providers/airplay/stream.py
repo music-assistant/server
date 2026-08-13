@@ -604,8 +604,8 @@ class AirPlayStream:
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
             late joiner): the binary holds its ack until its receiver clock
-            verification resolves whenever that armed, so the returned instant
-            is the one the caller must map the joiner's content onto. Group/solo
+            verification resolves whenever it arms, so the returned instant is
+            the one the caller must map the joiner's content onto. Group/solo
             origin starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the

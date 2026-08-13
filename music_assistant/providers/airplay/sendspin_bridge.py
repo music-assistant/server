@@ -863,7 +863,7 @@ class SendspinAirPlayBridge:
         # Always a join: the Sendspin timeline is the group's, never the bridge's
         # to set, so the binary reports the instant it really scheduled - holding
         # its ack until the receiver clock verification resolves whenever that
-        # verification armed.
+        # verification is armed.
         acked_adjusted = await stream.start(commanded_ms, join=True)
 
         # The ack can be held for seconds, so re-check ownership before touching

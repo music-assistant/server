@@ -726,8 +726,8 @@ async def test_anchor_floors_at_the_join_headroom() -> None:
     """
     A Sendspin lead shorter than the join floor is raised to it.
 
-    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS is the closest a joiner's anchor may be
-    commanded, so a shorter lead is floored rather than honoured.
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS is the least the anchor may sit ahead of
+    now, so a shorter lead is floored rather than honoured.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     stream = _make_anchor_stream()
