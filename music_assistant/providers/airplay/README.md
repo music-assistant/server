@@ -291,6 +291,8 @@ When adding a player to an already-playing session (`add_client()` in [stream_se
 3. **Anchor first, then prime**: The joiner's START is sent before the buffered chunks; pre-START the binary only buffers its bounded ring and sends nothing, so anchoring first lets it drain the prime as it streams in
 4. **Content mapped onto the acked instant**: The stream position due at that instant is primed from the ring tail (when it is at or behind the write head) or skipped off the head of the live feed (when it is ahead). There is no catch-up: the binary makes the first post-START stdin byte audible exactly at the acked instant and freezes the anchor there
 
+**Note**: the readiness projection above is what places the anchor. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START — so on this path, only once the projection wait has timed out — and it can only move an anchor while the player's configured buffer depth stays under ~2 s. On a deep-buffer device (see `AIRPLAY_BUFFER_DEPTH_DEFAULTS` in [constants.py](constants.py)) it never fires, by design: the buffer starts releasing frames one depth ahead of the anchor, and a line with audio on the wire cannot move.
+
 ## DACP (Digital Audio Control Protocol)
 
 ### Purpose

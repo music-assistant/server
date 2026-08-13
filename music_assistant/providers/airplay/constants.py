@@ -77,13 +77,15 @@ RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
 # Lower bound for a late joiner's anchor, and the whole anchor whenever the
-# binary reports no readiness projection ([STATUS] clock_ready). It has to keep
-# the binary's own clock verification viable without any device evidence: that
-# verification gives up 850 ms before the anchor, and a cold receiver was
-# measured taking 1078 ms after connect to send its first clock probe, so an
-# anchor below 1078 + 850 = ~1.93 s can close the window before a single probe
-# arrives - the joiner then seats on a cold clock and lands audibly behind.
-# 2500 ms clears that by ~570 ms, the margin the field-proven value carried.
+# binary reports no readiness projection ([STATUS] clock_ready). A joiner cannot
+# honour an instant in the past, so this has to clear the command's trip to the
+# binary, the binary's own 250 ms floor and the receiver's re-anchor - on a
+# device that has told us nothing about its clock. Field-proven at this value.
+# It is NOT sized for the binary's post-commit clock verification: that only
+# arms while the receiver has still not probed when it reads the START (here,
+# only once the wait below has timed out) and can only pull an anchor forward
+# while the configured buffer depth stays under ~2 s, so on a deep-buffer device
+# it never fires. The readiness wait below is what places the anchor.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
 # How long a group start, a join or the Sendspin bridge waits for the binary's
 # first receiver-clock projection ([STATUS] clock_ready with state=probing|
@@ -110,7 +112,9 @@ AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # in order, first match wins; unmatched devices stay on Automatic (the binary's
 # stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
 # behind a perfectly healthy session - so their queue is deepened, at the cost
-# of slower warm seeks (the depth IS the audible latency of a seek or skip).
+# of slower warm seeks (the depth IS the audible latency of a seek or skip) and
+# of the binary's post-commit clock verification, which can no longer correct an
+# anchor once the depth passes ~2 s.
 # Extend the table as field reports identify more starving devices.
 AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
     # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
