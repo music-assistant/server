@@ -36,6 +36,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    MusicAssistantError,
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
@@ -3154,12 +3155,77 @@ class TestPlayAnnouncementMessage:
         ):
             await controller.play_announcement("player_1", message="dinner is ready")
 
+        # no language is sent, so the engine speaks in the language it is configured for
         engine.provider.get_tts_message.assert_awaited_once_with(
-            "dinner is ready", language=None, engine_id="voice"
+            "dinner is ready", language=None, engine_id="voice", options=None
         )
         registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
         assert registered["announcement_url"] == "http://speech/spoken.mp3"
         announce.assert_awaited_once()
+
+    async def test_an_explicit_language_reaches_the_engine(self, mock_mass: MagicMock) -> None:
+        """A message can name the language to speak it in."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement(
+                "player_1", message="het eten is klaar", language="nl-NL"
+            )
+
+        engine.provider.get_tts_message.assert_awaited_once_with(
+            "het eten is klaar", language="nl-NL", engine_id="voice", options=None
+        )
+
+    async def test_a_rejected_language_is_retried_without_it(self, mock_mass: MagicMock) -> None:
+        """An engine that rejects the language speaks the message in its default voice."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        engine.provider.get_tts_message = AsyncMock(
+            side_effect=[
+                RuntimeError("unsupported language"),
+                SimpleNamespace(path="http://speech/spoken.mp3"),
+            ]
+        )
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement(
+                "player_1", message="dinner is ready", language="en-US"
+            )
+
+        first_call, second_call = engine.provider.get_tts_message.await_args_list
+        assert first_call.kwargs["language"] == "en-US"
+        assert second_call.kwargs["language"] is None
+        registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
+        assert registered["announcement_url"] == "http://speech/spoken.mp3"
+        announce.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "error", [TimeoutError(), MusicAssistantError("engine did not respond within 30s")]
+    )
+    async def test_a_failure_that_is_not_a_language_rejection_is_not_retried(
+        self, mock_mass: MagicMock, error: Exception
+    ) -> None:
+        """A timeout or a structured failure is no language rejection, so it is not retried."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        engine.provider.get_tts_message = AsyncMock(side_effect=error)
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            pytest.raises(MusicAssistantError),
+        ):
+            await controller.play_announcement("player_1", message="dinner is ready")
+
+        engine.provider.get_tts_message.assert_awaited_once()
+        announce.assert_not_awaited()
 
     async def test_an_explicit_engine_is_used(self, mock_mass: MagicMock) -> None:
         """A message names the engine to speak it, overriding the configured default."""
@@ -3210,7 +3276,7 @@ class TestPlayAnnouncementMessage:
 
         with (
             patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
-            patch(f"{self.ANNOUNCE_MODULE}.query_tts_engine", query),
+            patch(f"{self.ANNOUNCE_MODULE}.query_tts_engine_with_language_fallback", query),
         ):
             await controller.play_announcement("player_1", message="hello")
 
@@ -3225,6 +3291,16 @@ class TestPlayAnnouncementMessage:
         with pytest.raises(PlayerCommandFailed, match="only be used to speak a message"):
             await controller.play_announcement(
                 "player_1", url="http://test/clip.mp3", tts_engine="tts_plugin/voice"
+            )
+
+    async def test_a_language_without_a_message_is_rejected(self, mock_mass: MagicMock) -> None:
+        """Naming a language for a url announcement is rejected instead of silently ignored."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with pytest.raises(PlayerCommandFailed, match="A language can only be used"):
+            await controller.play_announcement(
+                "player_1", url="http://test/clip.mp3", language="nl-NL"
             )
 
     async def test_a_failing_engine_surfaces_its_error(self, mock_mass: MagicMock) -> None:

@@ -333,6 +333,13 @@ class AIRadioHostsMixin:
 
         instructions = str(host.get("instructions") or "").strip() or DEFAULT_LLM_INSTRUCTIONS
         tts_engine = str(host.get("tts_engine") or "").strip()
+        language = str(host.get("language") or "").strip()
+        options_raw = host.get("options")
+        options = (
+            {str(key): value for key, value in options_raw.items()}
+            if isinstance(options_raw, dict)
+            else {}
+        )
 
         section_ids: list[str] = []
         seen: set[str] = set()
@@ -370,6 +377,8 @@ class AIRadioHostsMixin:
             "name": name,
             "instructions": instructions,
             "tts_engine": tts_engine,
+            "language": language,
+            "options": options,
             "section_ids": section_ids,
             "section_order": deepcopy(raw_section_order),
             "merge_section_id": merge_section_id,
@@ -384,6 +393,8 @@ class AIRadioHostsMixin:
             "name": "Default Host",
             "instructions": DEFAULT_LLM_INSTRUCTIONS,
             "tts_engine": "",
+            "language": "",
+            "options": {},
             "section_ids": default_section_ids,
             "section_order": [
                 {"when": "start_of_playlist", "flow": [{"MUST": "Song_Introduction_Start"}]},
@@ -552,6 +563,8 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
         "name": preset.name,
         "instructions": preset.instructions,
         "tts_engine": "",
+        "language": "",
+        "options": {},
         "section_ids": [section["id"] for section in sections],
         "section_order": section_order,
         "merge_section_id": merge_section_id,

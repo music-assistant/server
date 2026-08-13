@@ -349,6 +349,34 @@ async def test_host_crud_roundtrip(provider: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_host_presets_returns_every_preset_with_sections(provider: Any) -> None:
+    """The presets command returns each bundled preset paired with its sections."""
+    expected = provider._default_preset_hosts()
+
+    presets = await provider.list_host_presets()
+
+    assert len(presets) == len(expected)
+    assert {entry["host"]["id"] for entry in presets} == {host["id"] for host, _ in expected}
+    for entry in presets:
+        assert set(entry) == {"host", "sections"}
+        assert entry["sections"]
+
+
+@pytest.mark.asyncio
+async def test_list_host_presets_does_not_mutate_stored_state(provider: Any) -> None:
+    """Presets are templates: fetching them must not touch stored hosts or sections."""
+    presets = await provider.list_host_presets()
+
+    presets[0]["host"]["name"] = "mutated"
+    presets[0]["sections"][0]["name"] = "mutated"
+
+    assert provider._hosts == {}
+    fresh = await provider.list_host_presets()
+    assert fresh[0]["host"]["name"] != "mutated"
+    assert fresh[0]["sections"][0]["name"] != "mutated"
+
+
+@pytest.mark.asyncio
 async def test_save_section_leaves_the_stations_file_alone(provider: Any, tmp_path: Path) -> None:
     """Sections no longer live inside stations, so saving one must not rewrite them."""
     provider._sections_file = tmp_path / "sections.json"

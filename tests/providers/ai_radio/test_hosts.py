@@ -76,6 +76,79 @@ def test_normalize_host_requires_name() -> None:
         dummy._normalize_host(payload)
 
 
+def test_normalize_host_persists_language() -> None:
+    """Persist a host's language override through normalization."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["language"] = "nl_NL"
+    normalized = dummy._normalize_host(payload)
+    assert normalized["language"] == "nl_NL"
+
+
+def test_normalize_host_defaults_missing_language_to_empty() -> None:
+    """Normalize a host with no 'language' key at all, for backwards compatibility."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    assert "language" not in payload
+    normalized = dummy._normalize_host(payload)
+    assert normalized["language"] == ""
+
+
+def test_normalize_host_strips_whitespace_only_language_to_empty() -> None:
+    """Treat a whitespace-only language as 'follow the server locale'."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["language"] = "   "
+    normalized = dummy._normalize_host(payload)
+    assert normalized["language"] == ""
+
+
+def test_normalize_host_persists_options() -> None:
+    """Persist a host's TTS options through normalization."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["options"] = {"voice": "en_US-lessac-medium", "length_scale": 1.2}
+    normalized = dummy._normalize_host(payload)
+    assert normalized["options"] == {"voice": "en_US-lessac-medium", "length_scale": 1.2}
+
+
+def test_normalize_host_defaults_missing_options_to_empty_dict() -> None:
+    """Normalize a host with no 'options' key at all, for backwards compatibility."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    assert "options" not in payload
+    normalized = dummy._normalize_host(payload)
+    assert normalized["options"] == {}
+
+
+def test_normalize_host_ignores_non_dict_options() -> None:
+    """Fall back to an empty dict when 'options' is not a mapping."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["options"] = "not-a-dict"
+    normalized = dummy._normalize_host(payload)
+    assert normalized["options"] == {}
+
+
+def test_normalize_host_keeps_option_value_types() -> None:
+    """Keep option values as they came in, e.g. a float stays a float."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["options"] = {"length_scale": 1.2, "speed": 3}
+    normalized = dummy._normalize_host(payload)
+    assert normalized["options"]["length_scale"] == 1.2
+    assert isinstance(normalized["options"]["length_scale"], float)
+    assert normalized["options"]["speed"] == 3
+    assert isinstance(normalized["options"]["speed"], int)
+
+
 def test_normalize_host_rejects_unknown_section_reference() -> None:
     """Reject hosts that reference shared sections that do not exist."""
     dummy = DummyHosts()
