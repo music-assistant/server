@@ -28,6 +28,7 @@ from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
+    is_dynamic_source,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -44,6 +45,16 @@ _PROVIDER_MAPPINGS = {
 
 def _playlist(*, is_dynamic: bool, name: str = "PL") -> Playlist:
     return Playlist(
+        item_id=name.lower(),
+        provider="test",
+        name=name,
+        provider_mappings=_PROVIDER_MAPPINGS,
+        is_dynamic=is_dynamic,
+    )
+
+
+def _radio(*, is_dynamic: bool, name: str = "R") -> Radio:
+    return Radio(
         item_id=name.lower(),
         provider="test",
         name=name,
@@ -108,6 +119,30 @@ class TestHasDynamicSource:
     def test_non_playlist_item(self) -> None:
         """A non-playlist media item is not a dynamic source."""
         assert has_dynamic_source([_track("Song")]) is False
+
+
+class TestIsDynamicSource:
+    """Tests for is_dynamic_source."""
+
+    def test_dynamic_playlist(self) -> None:
+        """A dynamic playlist supplies its own on-demand feed."""
+        assert is_dynamic_source(_playlist(is_dynamic=True)) is True
+
+    def test_non_dynamic_playlist(self) -> None:
+        """A non-dynamic playlist is not a dynamic source."""
+        assert is_dynamic_source(_playlist(is_dynamic=False)) is False
+
+    def test_dynamic_radio(self) -> None:
+        """A dynamic radio station supplies its own on-demand feed."""
+        assert is_dynamic_source(_radio(is_dynamic=True)) is True
+
+    def test_non_dynamic_radio(self) -> None:
+        """A non-dynamic (live-stream) radio is not a dynamic source."""
+        assert is_dynamic_source(_radio(is_dynamic=False)) is False
+
+    def test_track(self) -> None:
+        """A track is never a dynamic source."""
+        assert is_dynamic_source(_track("Song")) is False
 
 
 class TestGetCurrentPlaybackSpeed:

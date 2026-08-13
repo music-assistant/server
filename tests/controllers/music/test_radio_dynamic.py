@@ -1,0 +1,205 @@
+"""
+Integration tests for dynamic radio stations on the RadioController.
+
+Uses a fully booted MusicAssistant instance (mirrors test_radio_export_import.py) with a
+small fake music provider that owns one dynamic and one non-dynamic radio station, to
+verify the guards and track-feed wiring introduced for dynamic radio stations (mirrors
+the existing dynamic-playlist wiring on PlaylistController/media_resolver).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
+
+import pytest
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.media_items import ProviderMapping, Radio, SearchResults, Track
+from music_assistant_models.provider import ProviderManifest
+
+from music_assistant.controllers.music.media.radio import RadioController
+from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+FAKE_DOMAIN = "fake_dynamic_radio"
+FAKE_INSTANCE = "fake_dynamic_radio--instance"
+DYNAMIC_STATION_ID = "dynamic-1"
+STATIC_STATION_ID = "static-1"
+
+
+class FakeDynamicRadioProvider(MusicProvider):
+    """Streaming-style provider owning one dynamic and one static radio station."""
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """No-op sync implementation for tests."""
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Return the requested fake station."""
+        is_dynamic = prov_radio_id == DYNAMIC_STATION_ID
+        return Radio(
+            item_id=prov_radio_id,
+            provider=self.instance_id,
+            name="Dynamic Station" if is_dynamic else "Static Station",
+            is_dynamic=is_dynamic,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_radio_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """Return a fixed batch of fake tracks for the dynamic station."""
+        return [
+            Track(
+                item_id=f"{prov_radio_id}-t{i}",
+                provider=self.instance_id,
+                name=f"Track {i}",
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f"{prov_radio_id}-t{i}",
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
+            for i in range(3)
+        ]
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
+    ) -> SearchResults:
+        """Return no results; matching is not exercised through this provider."""
+        return SearchResults()
+
+
+@pytest.fixture(name="radio_mass")
+async def radio_mass_fixture(mass: MusicAssistant) -> AsyncGenerator[MusicAssistant]:
+    """Return a booted instance with the fake dynamic-radio provider registered."""
+    config = ProviderConfig(
+        values={},
+        type=ProviderType.MUSIC,
+        domain=FAKE_DOMAIN,
+        instance_id=FAKE_INSTANCE,
+        name="Fake Dynamic Radio",
+    )
+    provider = FakeDynamicRadioProvider(
+        mass,
+        manifest=ProviderManifest(
+            type=ProviderType.MUSIC,
+            domain=FAKE_DOMAIN,
+            name="Fake Dynamic Radio",
+            description="Fake dynamic radio provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=config,
+        supported_features={ProviderFeature.LIBRARY_RADIOS, ProviderFeature.SEARCH},
+    )
+    provider.available = True
+    mass._providers[FAKE_INSTANCE] = provider
+    try:
+        yield mass
+    finally:
+        mass._providers.pop(FAKE_INSTANCE, None)
+
+
+@pytest.fixture(name="radio_ctrl")
+def radio_ctrl_fixture(radio_mass: MusicAssistant) -> RadioController:
+    """Get the radio controller from the booted Music Assistant instance."""
+    return radio_mass.music.radio
+
+
+class TestRadioTracks:
+    """Tests for RadioController.radio_tracks."""
+
+    async def test_raises_for_non_dynamic_station(self, radio_ctrl: RadioController) -> None:
+        """A non-dynamic (live-stream) station has no track feed."""
+        with pytest.raises(UnsupportedFeaturedException):
+            await radio_ctrl.radio_tracks(STATIC_STATION_ID, FAKE_INSTANCE)
+
+    async def test_returns_provider_tracks_for_provider_item(
+        self, radio_ctrl: RadioController
+    ) -> None:
+        """A dynamic station's tracks are fetched straight from its provider."""
+        tracks = await radio_ctrl.radio_tracks(DYNAMIC_STATION_ID, FAKE_INSTANCE)
+        assert [track.name for track in tracks] == ["Track 0", "Track 1", "Track 2"]
+
+    async def test_returns_provider_tracks_for_library_item(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """A library-resolved dynamic station still fetches its tracks from its own provider."""
+        provider = cast("MusicProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        station = await provider.get_radio(DYNAMIC_STATION_ID)
+        library_item = await radio_ctrl.add_item_to_library(station)
+        tracks = await radio_ctrl.radio_tracks(str(library_item.item_id), "library")
+        assert len(tracks) == 3
+
+
+class TestMatchProvidersDynamicGuard:
+    """Tests for the dynamic-station guard on RadioController.match_providers."""
+
+    async def test_dynamic_station_returns_before_searching(
+        self,
+        radio_mass: MusicAssistant,
+        radio_ctrl: RadioController,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dynamic station returns immediately, without inspecting any other provider."""
+        dynamic_radio = Radio(
+            item_id="1",
+            provider="library",
+            name="Dynamic",
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=DYNAMIC_STATION_ID,
+                    provider_domain=FAKE_DOMAIN,
+                    provider_instance=FAKE_INSTANCE,
+                )
+            },
+        )
+
+        def _boom(_self: object) -> list[MusicProvider]:
+            raise AssertionError("must not access other providers for a dynamic station")
+
+        monkeypatch.setattr(type(radio_mass.music), "providers", property(_boom))
+        # must not raise: the guard returns before the (patched-to-explode) providers property
+        await radio_ctrl.match_providers(dynamic_radio)
+
+    async def test_non_dynamic_station_still_searches(
+        self,
+        radio_mass: MusicAssistant,
+        radio_ctrl: RadioController,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-dynamic station is unaffected by the guard and still triggers matching."""
+        static_radio = Radio(
+            item_id="2",
+            provider="library",
+            name="Static",
+            is_dynamic=False,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=STATIC_STATION_ID,
+                    provider_domain=FAKE_DOMAIN,
+                    provider_instance=FAKE_INSTANCE,
+                )
+            },
+        )
+        accessed = False
+        real_providers = list(radio_mass.music.providers)
+
+        def _track_access(_self: object) -> list[MusicProvider]:
+            nonlocal accessed
+            accessed = True
+            return real_providers
+
+        monkeypatch.setattr(type(radio_mass.music), "providers", property(_track_access))
+        await radio_ctrl.match_providers(static_radio)
+        assert accessed is True

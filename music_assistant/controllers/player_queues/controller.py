@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
     PlayableMediaItemType,
     Playlist,
     PodcastEpisode,
+    Radio,
     SoundEffect,
     Track,
 )
@@ -1596,6 +1597,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_by: Optional sort key for the returned tracks.
         """
         return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
+
+    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic source (a dynamic playlist or radio station).
+
+        :param item: The dynamic playlist or radio station to fetch the next batch for.
+        """
+        if isinstance(item, Radio):
+            return await self.mass.music.radio.radio_tracks(item.item_id, item.provider)
+        if isinstance(item, Playlist):
+            tracks = await self.get_playlist_tracks(item, start_item=None)
+            return [track for track in tracks if isinstance(track, Track)]
+        return []
 
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""

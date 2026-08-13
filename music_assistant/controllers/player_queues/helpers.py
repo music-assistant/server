@@ -5,9 +5,9 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
 
-from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radio, Track
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
@@ -15,7 +15,11 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        MediaItemType,
+        PlayableMediaItemType,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -109,9 +113,14 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     return wrapper
 
 
+def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
+    """Return True if the item supplies its own on-demand track feed."""
+    return isinstance(item, Playlist | Radio) and item.is_dynamic
+
+
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
-    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
-    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+    """Return True if any source supplies its own on-demand track feed (the queue is dynamic)."""
+    return any(is_dynamic_source(item) for item in source_items)
 
 
 def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:

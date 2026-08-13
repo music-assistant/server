@@ -265,6 +265,17 @@ class MusicProvider(Provider):
         """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station.
+
+        Only called for a Radio with `is_dynamic` set. Every call returns a new batch;
+        there is no stable listing and no pagination.
+
+        :param prov_radio_id: The provider's ID of the radio station.
+        """
+        raise NotImplementedError
+
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
@@ -1474,6 +1485,17 @@ class MusicProvider(Provider):
                     elif self._library_item_needs_update(library_item, prov_item):
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
+                        )
+                    elif prov_item.is_dynamic and (
+                        prov_item.name != library_item.name
+                        or prov_item.metadata.images != library_item.metadata.images
+                    ):
+                        # the provider is the sole source of truth for a dynamic station's name
+                        # and artwork (e.g. a renamed/re-arted Pandora station): overwrite=True
+                        # replaces the full stored record, which is fine here since there's no
+                        # local customization on a station to lose.
+                        library_item = await self.mass.music.radio.update_item_in_library(
+                            library_item.item_id, prov_item, overwrite=True
                         )
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
