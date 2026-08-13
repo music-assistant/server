@@ -92,7 +92,7 @@ async def _run_gpodder(session: SetupSession) -> None:
                 ConfigEntry(
                     key=CONF_DEVICE_ID,
                     type=ConfigEntryType.STRING,
-                    required=False,
+                    required=True,
                     value=str(prefill.get(CONF_DEVICE_ID) or "") or None,
                 ),
                 ConfigEntry(
