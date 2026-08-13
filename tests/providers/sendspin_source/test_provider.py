@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
@@ -290,11 +290,42 @@ async def test_handoff_stops_the_player_it_was_taken_from(fake_client: _FakeClie
     assert fake_client.source_role.stop_requests == 1
 
 
-async def test_reclaim_by_the_same_player_keeps_it_playing(fake_client: _FakeClient) -> None:
-    """A reconnect re-claims the same queue with a fresh session and must not stop it."""
+async def test_reclaim_by_the_same_queue_keeps_the_client_streaming(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A renderer opening the stream url twice must not cost a stop/start of the source."""
+    provider = await make_provider([fake_client])
+    bridge = await _start_streaming(provider, fake_client, monkeypatch)
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    assert fake_client.source_role is not None
+    assert fake_client.source_role.stop_requests == 0
+    assert fake_client.source_role.start_requests == 1
+    assert get_players(provider).stopped == []
+    # The primed bridge carries over, so the replacement request never re-buffers.
+    assert cast("object", provider._sessions["client-1"].bridge) is bridge
+
+
+async def test_reclaim_by_the_same_queue_retires_the_previous_generator(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only one generator may read the bridge, or the two requests split the audio."""
+    provider = await make_provider([fake_client])
+    await _start_streaming(provider, fake_client, monkeypatch)
+    stream = provider.get_audio_stream(_stream_details())
+    assert await anext(stream) is not None
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    assert [chunk async for chunk in stream] == []
+
+
+async def test_reclaim_by_the_same_player_on_another_queue_still_hands_off(
+    fake_client: _FakeClient,
+) -> None:
+    """A different queue is a real re-target, so the previous claim is torn down."""
     provider = await make_provider([fake_client])
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
-    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    await provider.on_source_selected("client-1", "player-1", "queue-2", "session-2")
+    assert fake_client.source_role is not None
+    assert fake_client.source_role.stop_requests == 1
     assert get_players(provider).stopped == []
 
 

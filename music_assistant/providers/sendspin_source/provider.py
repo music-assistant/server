@@ -103,6 +103,9 @@ class _SourceSession:
     player_id: str
     queue_id: str
     stream_session_id: str
+    # Bumped when the same queue re-claims its own stream, to retire the generator
+    # that was serving the previous request while the session itself lives on.
+    generation: int = 0
     bridge: SourceBridge | None = None
     ingest_task: asyncio.Task[None] | None = None
     # Selection time counts toward the timeout so a client that never starts
@@ -219,6 +222,17 @@ class SendspinSourceProvider(PluginProvider):
         role = self._get_source_role(client) if client else None
         if client is None or role is None:
             raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
+        # A queue re-claiming its own stream keeps the running bridge: renderers that
+        # open the stream url twice, and same-queue reconnects, would otherwise cost a
+        # stop/start of the client and a gap in the audio they are already playing.
+        if (live := self._sessions.get(source_id)) is not None and (
+            live.player_id,
+            live.queue_id,
+        ) == (player_id, queue_id):
+            live.stream_session_id = stream_session_id
+            live.generation += 1
+            self._cancel_pending_autostart(source_id)
+            return
         # Exclusive per source: supersede only this source's prior session
         # (its generator notices and exits). Other sources keep streaming.
         await self._teardown_session(source_id, superseded_by_player_id=player_id)
@@ -260,6 +274,7 @@ class SendspinSourceProvider(PluginProvider):
         if session is None:
             raise AudioError(f"Sendspin source is not selected: {streamdetails.item_id}")
         await self._await_first_audio(session)
+        generation = session.generation
         if self._sessions.get(session.client_id) is not session:
             return
         frames_per_chunk = OUTPUT_SAMPLE_RATE * CHUNK_DURATION_MS // 1000
@@ -267,8 +282,12 @@ class SendspinSourceProvider(PluginProvider):
         loop = self.mass.loop
         next_deadline = loop.time()
         while True:
-            # Superseded by a newer selection (cross-queue handoff or reconnect).
-            if self._sessions.get(session.client_id) is not session:
+            # Superseded by a newer selection (cross-queue handoff), or replaced by a
+            # newer request for this same queue.
+            if (
+                self._sessions.get(session.client_id) is not session
+                or session.generation != generation
+            ):
                 break
             if time.monotonic() - session.last_pcm_monotonic > SOURCE_TIMEOUT_S:
                 self.logger.info(
