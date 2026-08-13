@@ -138,6 +138,7 @@ class AIRadioRuntimeMixin:
             "instructions": str(host.get("instructions", "")),
             "tts_engine": str(host.get("tts_engine", "")),
             "language": str(host.get("language", "")),
+            "options": deepcopy(host.get("options", {})),
             "sections": sections,
             "section_order": deepcopy(host.get("section_order", [])),
             "merge_section_id": str(host.get("merge_section_id", "")),

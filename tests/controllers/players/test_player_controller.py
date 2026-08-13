@@ -3157,7 +3157,7 @@ class TestPlayAnnouncementMessage:
 
         # no language is sent, so the engine speaks in the language it is configured for
         engine.provider.get_tts_message.assert_awaited_once_with(
-            "dinner is ready", language=None, engine_id="voice"
+            "dinner is ready", language=None, engine_id="voice", options=None
         )
         registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
         assert registered["announcement_url"] == "http://speech/spoken.mp3"
@@ -3177,7 +3177,7 @@ class TestPlayAnnouncementMessage:
             )
 
         engine.provider.get_tts_message.assert_awaited_once_with(
-            "het eten is klaar", language="nl-NL", engine_id="voice"
+            "het eten is klaar", language="nl-NL", engine_id="voice", options=None
         )
 
     async def test_a_rejected_language_is_retried_without_it(self, mock_mass: MagicMock) -> None:

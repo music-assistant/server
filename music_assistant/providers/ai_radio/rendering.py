@@ -251,9 +251,10 @@ class AIRadioRenderMixin:
         host = self._hosts.get(str(queue_item.extra_attributes.get(ATTR_HOST_ID) or "")) or {}
         engine_uid = str(host.get("tts_engine") or "") or None
         language = self._tts_language(str(host.get("language") or ""))
+        options = host.get("options") or {}
         try:
             path, stream_type, audio_format = await self._render_tts_media(
-                text, engine_uid, language
+                text, engine_uid, language, options
             )
             # the probe is the first fetch, so a failed render surfaces here and not in playback
             duration = await self._probe_duration(path)
@@ -264,12 +265,16 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
 
     async def _render_tts_media(
-        self, text: str, engine_uid: str | None = None, language: str | None = None
+        self,
+        text: str,
+        engine_uid: str | None = None,
+        language: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
         engine = await self._get_tts_engine(engine_uid)
         stream_details = await query_tts_engine_with_language_fallback(
-            engine, text, language, logger=self.logger
+            engine, text, language, logger=self.logger, options=options
         )
         path, stream_type = await resolve_tts_stream_path(engine, stream_details)
         audio_format = stream_details.audio_format

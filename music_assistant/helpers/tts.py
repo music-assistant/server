@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import StreamType
 from music_assistant_models.errors import InvalidDataError, MusicAssistantError
@@ -33,6 +33,7 @@ async def query_tts_engine(
     message: str,
     language: str | None = None,
     timeout: float | None = None,
+    options: dict[str, Any] | None = None,
 ) -> StreamDetails:
     """
     Render a message through a TTS engine.
@@ -42,13 +43,15 @@ async def query_tts_engine(
     :param language: Optional language code, omit to use the engine's own default voice.
     :param timeout: Seconds to wait for the engine, defaults to TTS_QUERY_TIMEOUT_SECONDS.
         Lower it for a caller that is holding something up while it waits.
+    :param options: Optional integration-specific TTS options, passed through to the
+        engine as-is. Ignored by engines that have none.
     """
     if timeout is None:
         timeout = TTS_QUERY_TIMEOUT_SECONDS
     try:
         async with asyncio.timeout(timeout) as query_timeout:
             return await engine.provider.get_tts_message(
-                message, language=language, engine_id=engine.id
+                message, language=language, engine_id=engine.id, options=options
             )
     except TimeoutError as err:
         # expired() tells our own cap apart from a timeout raised inside the engine
@@ -65,6 +68,7 @@ async def query_tts_engine_with_language_fallback(
     language: str | None = None,
     timeout: float | None = None,
     logger: logging.Logger | None = None,
+    options: dict[str, Any] | None = None,
 ) -> StreamDetails:
     """
     Render a message through a TTS engine, retrying without the language if it is rejected.
@@ -75,9 +79,11 @@ async def query_tts_engine_with_language_fallback(
     :param timeout: Seconds to wait for the engine, defaults to TTS_QUERY_TIMEOUT_SECONDS.
         Lower it for a caller that is holding something up while it waits.
     :param logger: Optional logger to report a rejected language on.
+    :param options: Optional integration-specific TTS options, passed through to the
+        engine as-is. Ignored by engines that have none.
     """
     try:
-        return await query_tts_engine(engine, message, language, timeout)
+        return await query_tts_engine(engine, message, language, timeout, options)
     except TimeoutError, MusicAssistantError:
         # a timeout or our own structured failure is not a language rejection, so a
         # language-less retry would not help and would only double the wait
@@ -93,7 +99,7 @@ async def query_tts_engine_with_language_fallback(
             language,
             err,
         )
-        return await query_tts_engine(engine, message, None, timeout)
+        return await query_tts_engine(engine, message, None, timeout, options)
 
 
 def resolve_tts_language(mass: MusicAssistant) -> str | None:
