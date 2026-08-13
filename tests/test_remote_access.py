@@ -24,7 +24,7 @@ from music_assistant.controllers.webserver.remote_access import (
     RemoteAccessManager,
 )
 from music_assistant.controllers.webserver.remote_access.gateway import (
-    MA_API_CHUNK_SIZE,
+    DATA_CHANNEL_CHUNK_SIZE,
     WebRTCGateway,
     WebRTCSession,
     _is_usable_ice_url,
@@ -699,10 +699,9 @@ async def test_http_proxy_request_cannot_change_host(
         key_pem=key_pem,
         local_ws_url="ws://localhost:8095/ws",
     )
-    session = WebRTCSession(session_id="s1", pc=Mock())
 
     await gateway._handle_http_proxy_request(
-        session, {"id": "1", "method": "GET", "path": malicious_path}
+        None, {"id": "1", "method": "GET", "path": malicious_path}
     )
 
     parsed = urlparse(captured_url["url"])
@@ -740,9 +739,8 @@ async def test_http_proxy_request_keeps_the_unverified_dial_on_this_host(
         key_pem=key_pem,
         local_ws_url="wss://127.0.0.1:8095/ws",
     )
-    session = WebRTCSession(session_id="s1", pc=Mock())
 
-    await gateway._handle_http_proxy_request(session, {"id": "1", "method": "GET", "path": "/info"})
+    await gateway._handle_http_proxy_request(None, {"id": "1", "method": "GET", "path": "/info"})
 
     assert captured_kwargs["ssl"] is False
     assert captured_kwargs["allow_redirects"] is False
@@ -909,6 +907,8 @@ class _FakeHttpSession:
         self.dialed: list[str] = []
         self.dial_kwargs: list[dict[str, Any]] = []
         self.websockets: dict[str, _FakeLocalWS] = {}
+        self.requested: list[str] = []
+        self.response_body = b""
 
     async def ws_connect(self, url: str, **kwargs: Any) -> _FakeLocalWS:
         self.dialed.append(url)
@@ -916,6 +916,18 @@ class _FakeHttpSession:
         local_ws = _FakeLocalWS()
         self.websockets[url] = local_ws
         return local_ws
+
+    def request(self, _method: str, url: str, **_kwargs: Any) -> AsyncMock:
+        """Serve ``response_body`` for a proxied HTTP request."""
+        self.requested.append(url)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {"Content-Type": "image/jpeg"}
+        response.read = AsyncMock(return_value=self.response_body)
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
 
 
 class _FakePeerConnection:
@@ -1232,7 +1244,7 @@ async def test_closing_a_bridged_channel_leaves_the_api_session_up(
             sendspin_channel.close()
         else:
             await sendspin_ws.close()
-        await _wait_for(lambda: not session.ws_bridges)
+        await _wait_for(lambda: not session.channels)
 
         assert sendspin_ws.closed is True
         assert sendspin_channel.closed is True
@@ -1285,6 +1297,112 @@ async def test_unknown_channel_label_cannot_replace_the_api_channel(
         await gateway._close_session("unknown-session")
 
 
+def _proxy_request(request_id: str, path: str) -> str:
+    """Build the http-proxy-request message a client sends for a proxied path."""
+    return json.dumps(
+        {"type": "http-proxy-request", "id": request_id, "method": "GET", "path": path}
+    )
+
+
+async def test_http_proxy_channel_answers_on_its_own_channel(cert_pems: tuple[str, str]) -> None:
+    """A proxied request on the http proxy channel is answered there, not on the API channel."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"\xff\xd8jpeg-bytes"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-session")
+    api_channel = _FakeBidiChannel()
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        proxy_channel.feed(_proxy_request("img-1", "/imageproxy/abc"))
+        await _wait_for(lambda: bool(proxy_channel.sent))
+
+        assert http_session.requested == ["http://127.0.0.1:8095/imageproxy/abc"]
+        response = json.loads(cast("str", proxy_channel.sent[0]))
+        assert response["type"] == "http-proxy-response"
+        assert response["id"] == "img-1"
+        assert response["status"] == 200
+        assert bytes.fromhex(response["body"]) == b"\xff\xd8jpeg-bytes"
+        # the image never touches the API channel, nor the local API WebSocket
+        assert api_channel.sent == []
+        assert cast("_FakeLocalWS", session.local_ws).sent == []
+    finally:
+        await gateway._close_session("proxy-session")
+
+
+async def test_http_proxy_request_on_the_api_channel_is_still_answered(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Clients that predate the http proxy channel keep proxying over the API channel."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"legacy-body"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "legacy-session")
+    api_channel = _FakeBidiChannel()
+    pc.offer_channel(api_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        api_channel.feed(_proxy_request("img-2", "/imageproxy/def"))
+        await _wait_for(lambda: bool(api_channel.sent))
+
+        assert http_session.requested == ["http://127.0.0.1:8095/imageproxy/def"]
+        response = json.loads(cast("str", api_channel.sent[0]))
+        assert response["type"] == "http-proxy-response"
+        assert response["id"] == "img-2"
+        assert bytes.fromhex(response["body"]) == b"legacy-body"
+        # the proxy request is served here, never forwarded to the local API WebSocket
+        assert cast("_FakeLocalWS", session.local_ws).sent == []
+    finally:
+        await gateway._close_session("legacy-session")
+
+
+async def test_closing_the_http_proxy_channel_leaves_the_api_session_up(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Losing the http proxy channel tears down that channel only, never the API session."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-close-session")
+    api_channel = _FakeBidiChannel()
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.close()
+        await _wait_for(lambda: not session.channels)
+
+        assert "proxy-close-session" in gateway.sessions
+        assert session.local_ws is not None
+        assert api_channel.closed is False
+    finally:
+        await gateway._close_session("proxy-close-session")
+
+
+async def test_a_second_http_proxy_channel_is_refused(cert_pems: tuple[str, str]) -> None:
+    """A duplicate label is refused so the running handler is never left untracked."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "duplicate-session")
+    first = _FakeBidiChannel(label="http_proxy")
+    second = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(first)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+        pc.offer_channel(second)
+        await _wait_for(lambda: second.closed)
+
+        assert first.closed is False
+        assert session.channels["http_proxy"].channel is cast("DataChannel", first)
+    finally:
+        await gateway._close_session("duplicate-session")
+
+
 class _FakeDataChannel:
     """Data channel stand-in that captures outbound messages for proxy tests."""
 
@@ -1321,13 +1439,14 @@ def _reassemble_chunks(frames: list[str]) -> str:
 async def test_http_proxy_response_small_body_single_message(
     cert_pems: tuple[str, str],
 ) -> None:
-    """A body within the chunk size is sent as one legacy http-proxy-response message."""
+    """A body within the chunk size is sent as one http-proxy-response message."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
     body = b"\x00\x01\x02small-body"
 
-    await gateway._send_http_proxy_response(session, "req-small", 200, {"X-Test": "y"}, body)
+    await gateway._send_http_proxy_response(
+        cast("DataChannel", channel), "req-small", 200, {"X-Test": "y"}, body
+    )
 
     assert len(channel.sent) == 1
     msg = json.loads(channel.sent[0])
@@ -1342,10 +1461,10 @@ async def test_http_proxy_response_large_body_chunked(cert_pems: tuple[str, str]
     """A large HTTP-proxy response is split into base64 chunk frames the client reassembles."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
-    body = bytes(range(256)) * ((MA_API_CHUNK_SIZE * 5) // 512)  # big body -> big JSON message
+    # big body -> big JSON message
+    body = bytes(range(256)) * ((DATA_CHANNEL_CHUNK_SIZE * 5) // 512)
 
-    await gateway._send_http_proxy_response(session, "req-big", 200, {}, body)
+    await gateway._send_http_proxy_response(cast("DataChannel", channel), "req-big", 200, {}, body)
 
     assert len(channel.sent) > 1
     assert all(json.loads(m)["type"] == "__chunk__" for m in channel.sent)
@@ -1359,22 +1478,22 @@ async def test_http_proxy_response_large_body_chunked(cert_pems: tuple[str, str]
     assert bytes.fromhex(reassembled["body"]) == body
 
 
-async def test_send_ma_api_small_message_passthrough(cert_pems: tuple[str, str]) -> None:
-    """A ma-api message within the limit is sent verbatim, not chunked."""
+async def test_send_chunked_small_message_passthrough(cert_pems: tuple[str, str]) -> None:
+    """A message within the limit is sent verbatim, not chunked."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    await gateway._send_ma_api(cast("DataChannel", channel), '{"event":"player_updated"}')
+    await gateway._send_chunked(cast("DataChannel", channel), '{"event":"player_updated"}')
     assert channel.sent == ['{"event":"player_updated"}']
 
 
-async def test_send_ma_api_large_message_chunked(cert_pems: tuple[str, str]) -> None:
-    """A large ma-api message is chunked and reassembles byte-identically (multibyte-safe)."""
+async def test_send_chunked_large_message_chunked(cert_pems: tuple[str, str]) -> None:
+    """A large message is chunked and reassembles byte-identically (multibyte-safe)."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
     # multibyte payload so chunk boundaries fall mid-character, exercising the byte-level split
-    text = '{"data":"' + "音楽" * MA_API_CHUNK_SIZE + '"}'
+    text = '{"data":"' + "音楽" * DATA_CHANNEL_CHUNK_SIZE + '"}'
 
-    await gateway._send_ma_api(cast("DataChannel", channel), text)
+    await gateway._send_chunked(cast("DataChannel", channel), text)
 
     assert len(channel.sent) > 1
     assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
