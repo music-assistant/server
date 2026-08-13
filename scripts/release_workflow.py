@@ -486,17 +486,7 @@ def update_addon_release(
     """
     if retain < 1:
         raise ReleaseWorkflowError("At least one changelog release must be retained")
-    config = config_path.read_text(encoding="utf-8")
-    config, replacements = re.subn(
-        r"^version: .+$",
-        f"version: {version}",
-        config,
-        count=1,
-        flags=re.MULTILINE,
-    )
-    if replacements != 1:
-        raise ReleaseWorkflowError(f"Expected one version field in {config_path}")
-    config_path.write_text(config, encoding="utf-8")
+    set_addon_version(config_path, version)
 
     existing = changelog_path.read_text(encoding="utf-8") if changelog_path.exists() else ""
     blocks = _changelog_blocks(existing)
@@ -510,6 +500,26 @@ def update_addon_release(
     new_block = f"# [{version}] - {release_date}\n\n{notes.strip()}"
     content = "\n\n\n".join([new_block, *previous_blocks[: retain - 1]]) + "\n"
     changelog_path.write_text(content, encoding="utf-8")
+
+
+def set_addon_version(config_path: Path, version: str) -> None:
+    """
+    Point an add-on at a release version, leaving the rest of its config untouched.
+
+    :param config_path: Add-on ``config.yaml`` path.
+    :param version: Server version and image tag.
+    """
+    config = config_path.read_text(encoding="utf-8")
+    # a duplicate key would leave the stale one in effect, so rewrite nothing unless it is unique
+    config, replacements = re.subn(
+        r"^version: .+$",
+        f"version: {version}",
+        config,
+        flags=re.MULTILINE,
+    )
+    if replacements != 1:
+        raise ReleaseWorkflowError(f"Expected one version field in {config_path}")
+    config_path.write_text(config, encoding="utf-8")
 
 
 def _next_stable(latest_stable: str | None) -> str:
@@ -688,6 +698,11 @@ def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-output", type=Path)
 
 
+def _configure_addon_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--version", required=True)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -744,12 +759,13 @@ def _build_parser() -> argparse.ArgumentParser:
     manifest_parser.add_argument("--github-output", type=Path)
 
     addon_parser = subparsers.add_parser("update-addon")
-    addon_parser.add_argument("--config", type=Path, required=True)
+    _configure_addon_parser(addon_parser)
     addon_parser.add_argument("--changelog", type=Path, required=True)
-    addon_parser.add_argument("--version", required=True)
     addon_parser.add_argument("--release-date", required=True)
     addon_parser.add_argument("--notes", type=Path, required=True)
     addon_parser.add_argument("--retain", type=int, default=3)
+
+    _configure_addon_parser(subparsers.add_parser("set-addon-version"))
     return parser
 
 
@@ -866,6 +882,8 @@ def main() -> int:
                 notes=args.notes.read_text(encoding="utf-8"),
                 retain=args.retain,
             )
+        elif args.command == "set-addon-version":
+            set_addon_version(args.config, args.version)
         return 0
     except (OSError, ReleaseWorkflowError, ValueError, json.JSONDecodeError) as err:
         print(f"ERROR: {err}", file=sys.stderr)
