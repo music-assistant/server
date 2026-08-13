@@ -12,6 +12,10 @@
     "prewarm_streams": {
       "label": "Pre-warm audio streams at startup",
       "description": "Opens an audio stream for every player when the provider starts, instead of at first play. This removes the per-player stream-open delay (roughly 50-200 ms) that would otherwise become a fixed timing offset between players in a sync group. Trade-off: held-open streams keep the sound device active the whole time the provider is running, preventing it from idle-suspending. This is harmless for PCI sound cards, but for USB audio devices - especially when Home Assistant runs in a virtual machine with USB passthrough - the constant idle traffic can waste CPU. Disable this on such setups if you don't need tight sync-group alignment; playback then starts with a small one-time delay instead."
+    },
+    "card_profile": {
+      "label": "Sound card profile: {card}",
+      "description": "Which of this card's profiles to activate. Auto picks the profile with the most output channels, preferring one that also keeps the card's input available (for capture providers). The profile decides which outputs of the card exist at all — changing it briefly interrupts any active streams on the card and rebuilds its players."
     }
   },
   "manifest": {
