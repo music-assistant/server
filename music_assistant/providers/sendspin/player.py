@@ -140,6 +140,13 @@ SUPPORTED_GROUP_COMMANDS = [
 CONF_PREFERRED_SENDSPIN_FORMAT = "preferred_sendspin_format"
 SENDSPIN_FORMAT_AUTOMATIC = "automatic"
 
+# Player types that can render a line-in, so groups and pairs stay selectable.
+SOURCE_AUTOSTART_TARGET_TYPES = {
+    PlayerType.PLAYER,
+    PlayerType.STEREO_PAIR,
+    PlayerType.GROUP,
+}
+
 
 def format_to_option_value(fmt: SupportedAudioFormat) -> str:
     """Convert SupportedAudioFormat to "codec:sample_rate:bit_depth:channels"."""
@@ -480,6 +487,9 @@ class SendspinBasePlayer(Player):
                     self.mass.players.all_players(True, False),
                     key=lambda player: player.display_name.lower(),
                 )
+                # Only players that render audio, so lights, displays and other
+                # capture-only clients are not offered as somewhere to play a line-in.
+                if player.type in SOURCE_AUTOSTART_TARGET_TYPES
             ),
         ]
         valid = {option.value for option in options}
@@ -489,18 +499,12 @@ class SendspinBasePlayer(Player):
         default = (
             own_target if "player" in self._negotiated_families() and own_target in valid else None
         )
-        target = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_SOURCE_AUTOSTART_TARGET
-        )
         return [
             ConfigEntry(
                 key=CONF_SOURCE_AUTOSTART_TARGET,
                 type=ConfigEntryType.STRING,
                 options=options,
                 default_value=default or SOURCE_AUTOSTART_OFF,
-                # A previously picked player can disappear; fall back rather than
-                # rendering a selector with no valid selection.
-                value=target if target in valid else None,
             ),
             ConfigEntry(
                 key=CONF_SOURCE_AUTOSTART_INTERRUPT,

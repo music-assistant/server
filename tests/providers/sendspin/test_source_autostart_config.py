@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.enums import PlayerType
+
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
     SOURCE_AUTOSTART_OFF,
@@ -25,7 +27,7 @@ def _player(
     line_sense: bool,
     known_players: list[str],
     unavailable_players: list[str] | None = None,
-    stored_target: str | None = None,
+    non_audio_players: dict[str, PlayerType] | None = None,
 ) -> SendspinBasePlayer:
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
     player._player_id = "turntable"
@@ -39,28 +41,22 @@ def _player(
             ),
         ),
     )
-    values = (
-        {("turntable", CONF_SOURCE_AUTOSTART_TARGET): stored_target}
-        if stored_target is not None
-        else {}
-    )
     player.mass = cast(
         "MusicAssistant",
         SimpleNamespace(
             players=SimpleNamespace(
                 all_players=lambda return_unavailable=True, *_args: [
-                    SimpleNamespace(player_id=pid, display_name=pid)
-                    for pid in (
-                        [*known_players, *(unavailable_players or [])]
-                        if return_unavailable
-                        else known_players
-                    )
+                    SimpleNamespace(player_id=pid, display_name=pid, type=player_type)
+                    for pid, player_type in [
+                        *((pid, PlayerType.PLAYER) for pid in known_players),
+                        *(
+                            (pid, PlayerType.PLAYER)
+                            for pid in (unavailable_players or [])
+                            if return_unavailable
+                        ),
+                        *(non_audio_players or {}).items(),
+                    ]
                 ]
-            ),
-            config=SimpleNamespace(
-                get_raw_player_config_value=lambda pid, key, default=None: values.get(
-                    (pid, key), default
-                )
             ),
         ),
     )
@@ -92,28 +88,44 @@ def test_capture_only_source_defaults_to_off() -> None:
     assert entry.default_value == SOURCE_AUTOSTART_OFF
 
 
-def test_stored_target_survives_an_unavailable_player() -> None:
-    """A target that is merely asleep must stay selected, not silently reset to off."""
+def test_an_unavailable_player_stays_selectable() -> None:
+    """A target that is merely asleep must stay offered, not vanish from the list."""
     player = _player(
         negotiated_role_ids=["source@v1"],
         line_sense=True,
         known_players=["other-speaker"],
         unavailable_players=["sleeping-speaker"],
-        stored_target="sleeping-speaker",
     )
     entry = _target_entry(player)
     assert entry is not None
-    assert entry.value == "sleeping-speaker"
+    assert "sleeping-speaker" in {option.value for option in entry.options or []}
 
 
-def test_target_pointing_at_a_deleted_player_falls_back() -> None:
-    """A target that no longer exists at all cannot stay selected."""
+def test_players_that_cannot_render_audio_are_not_offered() -> None:
+    """Lights, displays and other capture-only clients are nowhere to play a line-in."""
     player = _player(
         negotiated_role_ids=["source@v1"],
         line_sense=True,
         known_players=["speaker"],
-        stored_target="removed-speaker",
+        non_audio_players={
+            "lamp": PlayerType.LIGHT,
+            "screen": PlayerType.DISPLAY,
+            "other-turntable": PlayerType.UNKNOWN,
+        },
     )
     entry = _target_entry(player)
     assert entry is not None
-    assert entry.value is None
+    assert {option.value for option in entry.options or []} == {SOURCE_AUTOSTART_OFF, "speaker"}
+
+
+def test_groups_and_stereo_pairs_are_offered() -> None:
+    """A line-in must be routable to a group, not just to a single speaker."""
+    player = _player(
+        negotiated_role_ids=["source@v1"],
+        line_sense=True,
+        known_players=["speaker"],
+        non_audio_players={"kitchen-group": PlayerType.GROUP, "pair": PlayerType.STEREO_PAIR},
+    )
+    entry = _target_entry(player)
+    assert entry is not None
+    assert {"kitchen-group", "pair"} <= {option.value for option in entry.options or []}

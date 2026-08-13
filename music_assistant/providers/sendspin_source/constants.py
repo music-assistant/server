@@ -18,6 +18,10 @@ CHUNK_DURATION_MS = 25
 # started, disconnected, or reports unavailable).
 SOURCE_TIMEOUT_S = 30.0
 
+# Fail the stream if the client sends nothing at all after being asked to start.
+# A source that never arrives is a failed acquisition, not a silent line-in.
+COLD_START_TIMEOUT_S = 5.0
+
 # Hold a new line-in signal this long before starting. A preamp hovering around its
 # detection threshold reports present/absent repeatedly.
 AUTOSTART_SIGNAL_DEBOUNCE_S = 2.0

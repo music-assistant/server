@@ -52,6 +52,7 @@ class _FakeClient:
         if name is not None:
             self.info_or_none = type("Info", (), {"name": name})()
         self.is_connected = connected
+        self.negotiated_role_ids = ["source@v1"] if has_source_role else ["player@v1"]
         self.source_role = _FakeSourceRole() if has_source_role else None
         self.listeners: list[Callable[[Any, Any], None]] = []
 
@@ -59,6 +60,15 @@ class _FakeClient:
         if family == "source" and self.source_role is not None:
             return [self.source_role]
         return []
+
+    def detach_roles(self) -> _FakeSourceRole | None:
+        """Drop the role instances, as a cold reconnect does before re-attaching them."""
+        role, self.source_role = self.source_role, None
+        return role
+
+    def attach_roles(self, role: _FakeSourceRole | None) -> None:
+        """Re-attach role instances, which the server does after signalling connected."""
+        self.source_role = role
 
     def add_event_listener(self, callback: Callable[[Any, Any], None]) -> Callable[[], None]:
         self.listeners.append(callback)
@@ -140,13 +150,21 @@ class _FakePlayerQueues:
 
 
 class _FakeConfigController:
-    """Config controller stand-in serving raw player config values."""
+    """Config controller stand-in separating stored values from entry defaults."""
 
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], Any] = {}
+        self.defaults: dict[tuple[str, str], Any] = {}
 
     def get_raw_player_config_value(self, player_id: str, key: str, default: Any = None) -> Any:
         return self.values.get((player_id, key), default)
+
+    async def get_player_config_value(
+        self, player_id: str, key: str, *, default: Any = None
+    ) -> Any:
+        if (stored := self.values.get((player_id, key))) is not None:
+            return stored
+        return self.defaults.get((player_id, key), default)
 
 
 class _FakeMass:
@@ -164,8 +182,10 @@ class _FakeMass:
             return self._sendspin_provider
         return None
 
-    def create_task(self, coro: Any) -> asyncio.Task[Any]:
-        return self.loop.create_task(coro)
+    def create_task(self, coro: Any, *, eager_start: bool = True) -> asyncio.Task[Any]:
+        # Mirror the real controller's eager default, which decides whether a task
+        # body runs inside the event callback that created it.
+        return asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
 
 
 class _FakeConfig:

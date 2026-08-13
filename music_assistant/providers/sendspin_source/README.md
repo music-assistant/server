@@ -36,6 +36,10 @@ steady 48 kHz / 16-bit / stereo stream.
   stream ends and the queue stops. This intentionally differs from providers
   like Spotify Connect, which end the stream immediately on pause: those have
   an upstream transport state to mirror, a line-in does not.
+- **Cold start still fails.** The silence-hold only applies once audio has
+  flowed. A client that never answers the start command is a failed
+  acquisition rather than a quiet input, so the stream raises after 5 seconds
+  instead of playing silence into the 30-second timeout.
 - **Server-initiated streaming only.** Per the Sendspin spec, a source client
   must not stream until the server asks. Streaming starts on source selection
   and stops on unselection, so no bandwidth is spent while nobody listens.
@@ -57,9 +61,11 @@ correction cap and the stream is degrading to drops or silence padding.
 
 Clients that advertise the `line_sense` feature report whether a signal is
 present on their input. Per the spec the server decides what to do with that,
-and this provider turns it into playback: pick a target player under the
-device's own settings and the source starts there when a signal appears, and
-stops again after the signal has been gone for a minute.
+and this provider turns it into playback: pick a target under the device's own
+settings and the source starts there when a signal appears, and stops again
+after the signal has been gone for a minute. The target list covers everything
+that renders audio, groups and stereo pairs included, and a device that is a
+player itself defaults to playing its own line-in.
 
 Only transitions act, and the first report after a connect is recorded
 without acting, so a restart with the needle already down starts nothing. A

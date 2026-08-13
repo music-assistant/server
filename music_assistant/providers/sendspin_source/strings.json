@@ -7,5 +7,8 @@
   },
   "manifest": {
     "description": "Play live audio inputs (line-in, turntable, microphone) from Sendspin clients that support the source role."
+  },
+  "errors": {
+    "no_audio": "{0} did not start streaming its input."
   }
 }

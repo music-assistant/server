@@ -14,7 +14,7 @@ from aiosendspin.server import (
     SourceStreamStartedEvent,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.providers.sendspin_source.provider as provider_module
@@ -138,14 +138,31 @@ async def test_unselect_ignores_stale_session_id(fake_client: _FakeClient) -> No
     assert len(fake_client.listeners) == 1
 
 
-async def test_stream_yields_silence_until_source_starts(fake_client: _FakeClient) -> None:
-    """Before the client streams, the generator produces correctly sized silence."""
+async def _start_streaming(
+    provider: Any,
+    client: _FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[tuple[bytes, int]] | None = None,
+) -> _StubBridge:
+    """Select the source and let one chunk through, so the stream is past its cold start."""
+    bridge = _StubBridge()
+    monkeypatch.setattr(provider, "_create_bridge", lambda *_args: bridge)
+    await provider.on_source_selected(client.client_id, "player-1", "queue-1", "session-1")
+    handle = _fake_handle(chunks if chunks is not None else [(b"\x01\x02\x03\x04", 1_000_000)])
+    client.emit(SourceStreamStartedEvent(audio_format=NATIVE_FORMAT, handle=handle))
+    await _settle()
+    return bridge
+
+
+async def test_stream_fails_when_the_source_never_starts(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that never answers the start command is a failed acquisition, not silence."""
+    monkeypatch.setattr(provider_module, "COLD_START_TIMEOUT_S", 0.01)
     provider = await make_provider([fake_client])
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
-    chunks = await _take(provider.get_audio_stream(_stream_details()), 2)
-    expected_size = 48000 * 25 // 1000 * 4
-    assert all(chunk == bytes(expected_size) for chunk in chunks)
-    await provider.on_source_unselected("client-1", "queue-1", "session-1")
+    with pytest.raises(AudioError):
+        await _take(provider.get_audio_stream(_stream_details()), 1)
 
 
 async def test_stream_switches_to_bridge_audio_after_stream_start(
@@ -153,14 +170,10 @@ async def test_stream_switches_to_bridge_audio_after_stream_start(
 ) -> None:
     """A client_stream/start routes decoded chunks through the bridge into the stream."""
     provider = await make_provider([fake_client])
-    bridge = _StubBridge()
-    monkeypatch.setattr(provider, "_create_bridge", lambda *_args: bridge)
-    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
-    handle = _fake_handle([(b"\x01\x02\x03\x04", 1_000_000)])
-    fake_client.emit(SourceStreamStartedEvent(audio_format=NATIVE_FORMAT, handle=handle))
+    bridge = await _start_streaming(provider, fake_client, monkeypatch)
 
     chunks = await _take(provider.get_audio_stream(_stream_details()), 5)
-    assert any(chunk.startswith(MARKER_BYTE) for chunk in chunks)
+    assert all(chunk == MARKER_BYTE * (48000 * 25 // 1000 * 4) for chunk in chunks)
     assert bridge.fed == [(b"\x01\x02\x03\x04", 1_000_000)]
     await provider.on_source_unselected("client-1", "queue-1", "session-1")
 
@@ -169,9 +182,9 @@ async def test_stream_ends_after_source_timeout(
     fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The generator ends on its own once no source audio arrives for the timeout."""
-    monkeypatch.setattr(provider_module, "SOURCE_TIMEOUT_S", 0.05)
     provider = await make_provider([fake_client])
-    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    await _start_streaming(provider, fake_client, monkeypatch)
+    monkeypatch.setattr(provider_module, "SOURCE_TIMEOUT_S", 0.05)
     chunks = [chunk async for chunk in provider.get_audio_stream(_stream_details())]
     assert 1 <= len(chunks) <= 10
 
@@ -186,6 +199,32 @@ async def test_reconnect_re_requests_start(fake_client: _FakeClient) -> None:
     await asyncio.sleep(0)
     assert fake_client.source_role.start_requests == 2
     await provider.on_source_unselected("client-1", "queue-1", "session-1")
+
+
+async def test_cold_reconnect_re_requests_start_once_roles_are_back(
+    fake_client: _FakeClient,
+) -> None:
+    """Roles attach after the connected signal, so the re-request must not run inside it."""
+    provider = await make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    role = fake_client.detach_roles()
+    get_server_api(provider).emit(ClientConnectedEvent("client-1"))
+    fake_client.attach_roles(role)
+    await _settle()
+    assert role is not None
+    assert role.start_requests == 2
+
+
+async def test_signal_watcher_arms_before_roles_attach() -> None:
+    """Watching keys off negotiated roles, which are known before the instances attach."""
+    client = _FakeClient("client-1", name="Turntable", connected=False)
+    provider = await make_provider([client])
+    assert client.listeners == []
+    client.is_connected = True
+    client.detach_roles()
+    get_server_api(provider).emit(ClientConnectedEvent("client-1"))
+    await _settle()
+    assert len(client.listeners) == 1
 
 
 async def test_reconnect_leaves_an_open_stream_alone(fake_client: _FakeClient) -> None:
@@ -231,14 +270,14 @@ async def test_two_sources_stream_concurrently(fake_client: _FakeClient) -> None
     assert fake_client.source_role.stop_requests == 0
     assert other.source_role.start_requests == 1
     assert get_players(provider).stopped == []
-    chunks = await _take(provider.get_audio_stream(_stream_details("client-1")), 1)
-    assert len(chunks) == 1
 
 
-async def test_new_selection_supersedes_running_stream(fake_client: _FakeClient) -> None:
+async def test_new_selection_supersedes_running_stream(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Re-selecting the same source elsewhere makes the previous generator terminate."""
     provider = await make_provider([fake_client])
-    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    await _start_streaming(provider, fake_client, monkeypatch)
     stream = provider.get_audio_stream(_stream_details())
     assert await anext(stream) is not None
     await provider.on_source_selected("client-1", "player-2", "queue-2", "session-2")
@@ -267,6 +306,21 @@ async def test_signal_returning_autostarts_configured_target(fake_client: _FakeC
     """A signal appearing after being absent starts the source on the configured player."""
     provider = await make_provider([fake_client])
     get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await _settle()
+    assert get_queues(provider).played == [
+        ("client-1", "sendspin_source://audio_source/client-1", QueueOption.PLAY)
+    ]
+
+
+@pytest.mark.usefixtures("fast_autostart")
+async def test_autostart_uses_the_entry_default_when_nothing_was_saved(
+    fake_client: _FakeClient,
+) -> None:
+    """A device that plays its own line-in must work before the user ever saves the page."""
+    provider = await make_provider([fake_client])
+    get_config(provider).defaults[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
     fake_client.emit(_signal(SignalState.ABSENT))
     fake_client.emit(_signal(SignalState.PRESENT))
     await _settle()
