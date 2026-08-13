@@ -237,8 +237,7 @@ class RadioController(MediaControllerBase[Radio]):
         if db_radio.provider != "library":
             return  # Matching only supported for database items
         if db_radio.is_dynamic:
-            # a dynamic station (e.g. Pandora) has no equivalent on other providers; matching by
-            # name would cross-link it to an unrelated internet radio stream with a similar name
+            # matching a dynamic station by name would link an unrelated radio stream to it
             return
 
         # try to find match on all providers
