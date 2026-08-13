@@ -91,10 +91,10 @@ BRIDGE_COLD_CONNECT_BUDGET_MS: int = 2000
 
 # Lead (ms) reported to Sendspin so it schedules the first chunk that far ahead
 # of the instant it wants audible. It has to cover getting the transport ready
-# plus the binary's own clock-verification floor, which the anchor can never
-# undercut -- a shorter lead makes the anchor land past the first chunks and
-# their audio is dropped. A cold start adds its connect budget on top; a kept,
-# already-connected CLI pays no connect, leaving only the floor.
+# plus the join floor the anchor can never undercut -- a shorter lead makes the
+# anchor land past the first chunks and their audio is dropped. A cold start
+# adds its connect budget on top; a kept, already-connected CLI pays no connect,
+# leaving only the floor.
 BRIDGE_COLD_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS + BRIDGE_COLD_CONNECT_BUDGET_MS
 BRIDGE_WARM_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
 
@@ -861,8 +861,9 @@ class SendspinAirPlayBridge:
             )
 
         # Always a join: the Sendspin timeline is the group's, never the bridge's
-        # to set, so the binary must hold its ack until the receiver clock
-        # verification resolves and report the instant it really scheduled.
+        # to set, so the binary reports the instant it really scheduled - holding
+        # its ack until the receiver clock verification resolves whenever that
+        # verification armed.
         acked_adjusted = await stream.start(commanded_ms, join=True)
 
         # The ack can be held for seconds, so re-check ownership before touching

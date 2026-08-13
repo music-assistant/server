@@ -726,10 +726,8 @@ async def test_anchor_floors_at_the_join_headroom() -> None:
     """
     A Sendspin lead shorter than the binary needs is raised to the join floor.
 
-    The binary verifies the receiver's clock before it will seat an anchor and
-    gives up on that verification shortly before the commanded instant, so an
-    anchor inside AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS leaves the device seating on
-    an unverified clock and landing audibly behind the group.
+    An anchor inside AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS lands too close for the
+    receiver to seat it, so the joiner would start audibly behind the group.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     stream = _make_anchor_stream()

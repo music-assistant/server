@@ -603,10 +603,10 @@ class AirPlayStream:
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
-            late joiner): the binary then enforces receiver clock readiness and
-            holds its ack until that resolves, so the returned instant is the one
-            the caller must map the joiner's content onto. Group/solo origin
-            starts leave it False.
+            late joiner): the binary then enforces receiver clock readiness,
+            holding its ack until that resolves whenever it armed the check, so
+            the returned instant is the one the caller must map the joiner's
+            content onto. Group/solo origin starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise.
