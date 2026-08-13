@@ -64,7 +64,12 @@ from .constants import (
     RETRY_REASON_STREAM_VIOLATION,
     STATIONS_ENDPOINT,
 )
-from .fragments import PandoraFragment, PandoraStationSession, should_fetch_fragment
+from .fragments import (
+    MAX_ACTIVE_SESSIONS,
+    PandoraFragment,
+    PandoraStationSession,
+    should_fetch_fragment,
+)
 from .helpers import (
     create_auth_headers,
     get_csrf_token,
@@ -264,9 +269,9 @@ class PandoraProvider(MusicProvider):
                 raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
             raise MediaNotFoundError(f"Track {item_id} is no longer available from Pandora")
         # stations overlap, so the same song can sit in several sessions at once. Serve the
-        # freshest copy rather than whichever session was created first: an older station's
-        # expired fragment must not fail a playable track, and the fragment that is marked
-        # as having served the track has to be the one the audio URL came from.
+        # freshest copy, not the one from whichever session happens to be oldest: an older
+        # station's expired fragment must not fail a playable track, and the fragment that is
+        # marked as having served the track has to be the one the audio URL came from.
         fragment, track = max(playable, key=lambda holder: holder[0].fetched_at)
         fragment.mark_resolved(item_id, now)
         duration = int(track.get("trackLength") or 0)
@@ -499,8 +504,7 @@ class PandoraProvider(MusicProvider):
 
     def _get_or_create_session(self, station_id: str) -> PandoraStationSession:
         """Get or create a station session, with LRU eviction if needed."""
-        # Simple LRU: limit to 10 active sessions
-        if station_id not in self._sessions and len(self._sessions) >= 10:
+        if station_id not in self._sessions and len(self._sessions) >= MAX_ACTIVE_SESSIONS:
             oldest = min(self._sessions.values(), key=lambda session: session.last_accessed)
             self.logger.debug("Evicting session for station %s", oldest.station_id)
             del self._sessions[oldest.station_id]
@@ -514,8 +518,9 @@ class PandoraProvider(MusicProvider):
         """
         Return raw track data from the freshest retained fragment holding it, or None.
 
-        The id no longer names a station, so every retained session is searched. At most ten
-        sessions hold at most four fragments of about four tracks, so this stays small.
+        The id no longer names a station, so every retained session is searched. At most
+        `MAX_ACTIVE_SESSIONS` sessions hold at most `MAX_RETAINED_FRAGMENTS` fragments of about
+        four tracks each, so this stays small.
         Stations overlap, so the freshest fragment decides: it is the most recent answer
         Pandora gave for the track, and picking by dict order instead would let the same
         song resolve differently from one lookup to the next.

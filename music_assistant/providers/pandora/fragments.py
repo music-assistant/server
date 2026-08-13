@@ -28,6 +28,10 @@ FRAGMENT_URL_TTL_SECONDS = 2700
 # stay resolvable for queue history
 MAX_RETAINED_FRAGMENTS = 4
 
+# how many stations can hold a session at once; the LRU evicts the least recently accessed
+# one past this
+MAX_ACTIVE_SESSIONS = 10
+
 
 @dataclass
 class PandoraFragment:

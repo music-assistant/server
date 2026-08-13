@@ -350,6 +350,28 @@ async def test_track_with_a_sized_art_entry_missing_url_does_not_crash() -> None
     assert [track.item_id for track in result] == [f"TR:S{i}" for i in range(4)]
 
 
+async def test_station_art_lands_on_the_parsed_station() -> None:
+    """A station's art entry becomes an image on the parsed Radio's metadata."""
+    stations = _stations(["Station One"])
+    stations[0]["art"] = [{"size": 500, "url": "https://example.com/station.jpg"}]
+    provider = _provider(stations=stations)
+    station = await provider.get_radio("station-0")
+    assert [image.path for image in station.metadata.images or []] == [
+        "https://example.com/station.jpg"
+    ]
+
+
+async def test_track_art_lands_on_the_parsed_track() -> None:
+    """A track's albumArt entry becomes an image on the parsed Track's metadata."""
+    tracks = _tracks()
+    tracks[0]["albumArt"] = [{"size": 500, "url": "https://example.com/track.jpg"}]
+    provider = _provider([tracks])
+    result = await provider.get_dynamic_radio_tracks(STATION_ID)
+    assert [image.path for image in result[0].metadata.images or []] == [
+        "https://example.com/track.jpg"
+    ]
+
+
 async def test_refill_advances_once_the_last_track_is_resolved() -> None:
     """Resolving the final track opens the gate for the next fragment."""
     provider = _provider([_tracks(prefix="A"), _tracks(prefix="B")])
@@ -401,8 +423,8 @@ async def test_stream_details_after_an_ordinary_pause_still_serves() -> None:
     """
     A pause past the staleness window must still resume: those URLs have not expired.
 
-    Staleness decides whether a fragment is worth replacing on the next refill. Using it to
-    refuse playback threw away tracks that would have played perfectly well.
+    Staleness decides whether a fragment is worth replacing on the next refill; it is not a
+    reason to refuse playback of tracks that would otherwise play perfectly well.
     """
     provider = _provider()
     await provider.get_dynamic_radio_tracks(STATION_ID)
@@ -469,8 +491,8 @@ async def test_get_track_uses_the_freshest_fragment() -> None:
     """
     A song must not resolve differently depending on session insertion order.
 
-    Two stations holding the same song used to be decided by dict order; the freshest fetch
-    is Pandora's latest answer for it and decides it now.
+    The freshest fetch is Pandora's latest answer for the track, so it is what decides which
+    copy resolves - not the order sessions happen to sit in the dict.
     """
     stale_tracks = _tracks()
     stale_tracks[0] = {**stale_tracks[0], "songTitle": "Stale Song 0"}
@@ -488,10 +510,13 @@ async def test_freshest_fragment_wins_regardless_of_session_order() -> None:
     """
     Freshest-fragment selection must not coincide only with insertion order.
 
-    The tests above always make the first-inserted session, station-a, the degraded one,
-    so a regression to any insertion-order rule would still pass them. Here station-a is
-    inserted first but holds the freshest fragment - a station refetching after another
-    was opened - while station-b, inserted second, is the one that has gone stale.
+    `test_a_fresher_session_serves_a_track_another_holds_expired`,
+    `test_the_serving_session_is_the_one_marked_as_having_served`, and
+    `test_get_track_uses_the_freshest_fragment` always make the first-inserted session,
+    station-a, the degraded one, so a regression to any insertion-order rule would still pass
+    them. Here station-a is inserted first but holds the freshest fragment - a station
+    refetching after another was opened - while station-b, inserted second, is the one that
+    has gone stale.
     """
     stale_tracks = _tracks()
     stale_tracks[0] = {**stale_tracks[0], "songTitle": "Stale Song 0"}

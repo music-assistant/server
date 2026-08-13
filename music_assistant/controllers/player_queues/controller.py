@@ -1041,10 +1041,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 if not queue_item:
                     break
                 if not queue_item.available:
-                    # Already known unreachable: _load_item rejects an unavailable item outright,
-                    # so the attempt this used to spend bought nothing and only starved the live
-                    # tracks behind a dead head longer than the budget. Still logged, because a
-                    # silent skip leaves nothing to diagnose a stuck queue from.
+                    # Already known unreachable: _load_item rejects an unavailable item outright.
+                    # Skipping a known-dead item is free, so a live track behind a long dead head
+                    # is still reachable. Still logged, because a silent skip leaves nothing to
+                    # diagnose a stuck queue from.
                     self.logger.warning(
                         "Skipping unplayable item %s",
                         queue_item.name,
