@@ -277,13 +277,14 @@ two kinds of handlers:
 - **Served in-process**: handled by the gateway itself, without a local WebSocket
   - `http_proxy`: proxied HTTP requests (album art and other assets)
 
-When a bridged channel or its local WebSocket closes, only that bridge is torn down and the
-session stays up.
+When one of these channels or its local WebSocket closes, only that channel is torn down and
+the session stays up.
 
 The client's own API channel has no fixed label: the **first** channel with a label the server
 does not recognise becomes the API channel (the frontend labels it `ma-api`) and is bridged to
 `/ws`. Any **later** unrecognised label is refused, since taking it for a second API channel
-would replace the live bridge and break the session.
+would replace the live bridge and break the session. The API channel shares its lifetime with
+the session: when it or its local WebSocket closes, the whole session is torn down.
 
 Proxied HTTP requests are answered on the channel they arrived on. That is what keeps older
 clients working: they send `http-proxy-request` over `ma-api` and get the response back there,
@@ -291,8 +292,8 @@ so the gateway needs no version negotiation of its own.
 
 **Adding a new label** is not backwards compatible by itself: servers from before the routing
 table mistake an unknown label for the API channel, which breaks the entire remote session
-instead of just the new feature. Clients therefore feature-detect on `schema_version` from
-`server_info` before opening one, so `http_proxy` requires `API_SCHEMA_VERSION >= 49`. Bump
+instead of just the new feature. A client must therefore feature-detect on `schema_version`
+from `server_info` before opening one: `http_proxy` requires `API_SCHEMA_VERSION >= 49`. Bump
 `API_SCHEMA_VERSION` ([constants.py](../../constants.py)) when adding a label and gate the
 client on the new value.
 
