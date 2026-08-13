@@ -755,6 +755,17 @@ async def test_tts_invalid_option_raises_music_assistant_error() -> None:
             await provider.get_tts_message("Hello", options={"speaking_cadance": 1})
 
 
+async def test_tts_error_body_that_is_not_json_still_raises_the_generic_way() -> None:
+    """An unparsable error body leaves the status error to speak for itself."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        post = _mock_tts_error_response(provider, "Invalid options found: ['x']")
+        response = post.return_value.__aenter__.return_value
+        response.json.side_effect = ValueError("not json")
+
+        with pytest.raises(ClientResponseError):
+            await provider.get_tts_message("Hello", options={"x": 1})
+
+
 async def test_tts_unsupported_language_still_raises_the_generic_way() -> None:
     """An unsupported-language 400 keeps raising as before, so the caller's retry still fires."""
     async with _start_provider([_state("tts.first", "First")]) as (provider, _):

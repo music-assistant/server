@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import suppress
 from functools import partial
 from itertools import batched
 from sys import intern
@@ -960,13 +959,14 @@ class HomeAssistantProvider(PluginProvider):
         """Raise for a failed tts_get_url response without masking a language rejection."""
         if response.ok:
             return
-        error_message: str | None = None
-        with suppress(Exception):
-            body = await response.json()
-            if isinstance(body, dict) and isinstance(body.get("error"), str):
-                error_message = body["error"]
+        try:
+            # content_type=None so an error body served as text/plain still parses
+            body = await response.json(content_type=None)
+        except ValueError:
+            body = None
+        error_message = body.get("error") if isinstance(body, dict) else None
         # HA returns the same 400 for a rejected option and an unsupported language
-        if error_message and "Invalid options found" in error_message:
+        if isinstance(error_message, str) and "Invalid options found" in error_message:
             raise MusicAssistantError(error_message)
         response.raise_for_status()
 
