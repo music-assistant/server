@@ -649,6 +649,16 @@ class WebRTCGateway:
         """Accept incoming data channels and start their bridges."""
         async for channel in session.pc.incoming_data_channels():
             if (target := self._bridge_targets.get(channel.label)) is not None:
+                if channel.label in session.ws_bridges:
+                    # replacing the entry would leave the running bridge untracked, and
+                    # tearing either one down would then orphan the other's websocket
+                    self.logger.warning(
+                        "Refusing a second '%s' data channel for session %s",
+                        channel.label,
+                        session.session_id,
+                    )
+                    channel.close()
+                    continue
                 bridge = _ChannelBridge(label=channel.label, target=target, channel=channel)
                 session.ws_bridges[channel.label] = bridge
                 session.pc.spawn_task(self._bridge_websocket(session, bridge, channel))
@@ -764,7 +774,7 @@ class WebRTCGateway:
                 bridge.target.url,
                 session.session_id,
             )
-            channel.close()
+            await self._close_ws_bridge(session, bridge)
             return
 
         # from_local runs as its own PC-owned pump; this task drives channel -> local
@@ -820,7 +830,10 @@ class WebRTCGateway:
 
     async def _close_ws_bridge(self, session: WebRTCSession, bridge: _ChannelBridge) -> None:
         """Close one bridged data channel and its local WebSocket."""
-        session.ws_bridges.pop(bridge.label, None)
+        # only drop the entry while it still points at this bridge, so a teardown can
+        # never untrack a bridge that replaced it
+        if session.ws_bridges.get(bridge.label) is bridge:
+            del session.ws_bridges[bridge.label]
         local_ws = bridge.local_ws
         bridge.local_ws = None
         if local_ws is not None and not local_ws.closed:

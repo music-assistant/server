@@ -1,5 +1,5 @@
 """
-Live announcements: speech captured by a client and played on a player as it is spoken.
+Live announcements: speech captured by a client and played on a player once it is spoken.
 
 A client holds an authenticated WebSocket on the MA webserver and pushes raw PCM frames
 for as long as the user speaks. Those frames land in a LiveAnnouncementSession, which
@@ -330,6 +330,12 @@ class LiveAnnouncementManager:
     ) -> None:
         """Play the session audio as an announcement and drop the session afterwards."""
         try:
+            # the player was available when the handshake accepted it, but a whole clip
+            # has been spoken since; an unavailable player drops the command downstream
+            # without a word, which would be reported back as a clip that played
+            player = self.mass.players.get_player(player_id)
+            if player is None or not player.available:
+                raise PlayerCommandFailed(f"Player {player_id} is no longer available.")
             # a player that plays announcements natively hands off to its provider, which
             # has no deadline of its own - one that never returns would otherwise keep
             # this session (and its slot) alive for as long as the server runs
