@@ -290,6 +290,17 @@ Proxied HTTP requests are answered on the channel they arrived on. That is what 
 clients working: they send `http-proxy-request` over `ma-api` and get the response back there,
 so the gateway needs no version negotiation of its own.
 
+The reply is framed to suit that channel. On `ma-api` it is one JSON message with the body
+hex-encoded, which costs about 2.7x the image once the oversized-message chunking below is
+applied on top. `http_proxy` carries nothing else, so there the reply is a JSON header
+(`type`, `id`, `status`, `headers`, `size`) followed by the body as raw binary messages — the
+image costs its own size and no more. Those binary messages carry no request id, so the
+gateway holds the channel for a whole reply: replies go out one at a time rather than
+interleaving, which a channel that sends one message at a time would do anyway.
+Frames are capped at the channel's
+`max_message_size`, which is the lower of our own 256 KiB ceiling and what the peer
+advertises in its SDP — and libdatachannel assumes only 64 KiB when it advertises nothing.
+
 **Adding a new label** is not backwards compatible by itself: servers from before the routing
 table mistake an unknown label for the API channel, which breaks the entire remote session
 instead of just the new feature. A client must therefore feature-detect on `schema_version`
