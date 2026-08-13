@@ -724,12 +724,10 @@ def _commanded_instant(stream: MagicMock) -> int:
 
 async def test_anchor_floors_at_the_join_headroom() -> None:
     """
-    A Sendspin lead shorter than the binary needs is raised to the join floor.
+    A Sendspin lead shorter than the join floor is raised to it.
 
-    The binary verifies the receiver's clock before it will seat an anchor and
-    gives up on that verification shortly before the commanded instant, so an
-    anchor inside AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS leaves the device seating on
-    an unverified clock and landing audibly behind the group.
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS is the least the anchor may sit ahead of
+    now, so a shorter lead is floored rather than honoured.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     stream = _make_anchor_stream()

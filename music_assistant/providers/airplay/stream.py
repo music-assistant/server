@@ -603,10 +603,10 @@ class AirPlayStream:
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
-            late joiner): the binary then enforces receiver clock readiness and
-            holds its ack until that resolves, so the returned instant is the one
-            the caller must map the joiner's content onto. Group/solo origin
-            starts leave it False.
+            late joiner): the binary holds its ack until its receiver clock
+            verification resolves whenever it arms, so the returned instant is
+            the one the caller must map the joiner's content onto. Group/solo
+            origin starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise.
@@ -670,10 +670,10 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. A join's ack is held back until the receiver clock
-        # verification resolves and therefore gets a much wider window than a
-        # plain start, which acks within the command round-trip. A reported
-        # failure answers the wait immediately.
+        # re-align a group. A join's ack is held back whenever the receiver
+        # clock verification arms, so it gets a much wider window than a plain
+        # start, which acks within the command round-trip. A reported failure
+        # answers the wait immediately.
         ack_timeout = (
             AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
         ) / 1000
