@@ -538,7 +538,8 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again
 - **`ignore_volume`**: Ignore device volume reports (default: false)
-- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead is handled automatically by the binary.
+- **`buffer_depth`**: Advanced per-player override of how much audio the receiver keeps queued ahead of playback, in milliseconds. Defaults to the depth the device's family needs, or Automatic when no family matches; Automatic resolves through that same table at stream time, so it never downgrades an affected device. Receivers whose internal pipeline starves at the shallow default render nothing behind an otherwise healthy session, and deepening their queue is what makes them play. Applies to the AirPlay 2 route only - a player forced to RAOP keeps the binary's own depth. The cost is the delay under Known Issues below
 
 ### Pairing
 - **`raop_credentials`**: Stored RAOP pairing credentials (hidden)
@@ -555,13 +556,22 @@ keeps their exposed player id stable and their Universal Player merging intact.
 
 1. **DACP remote control**: Only active while streaming; controlled devices use
    Companion/MRP for idle and external playback control
-2. **Pause while synced**: Not supported; uses stop instead
+2. **Pause while synced**: Parks the whole session instead of pausing members
+   individually, so they can resume sample-aligned; a member that has lost its
+   connection falls back to stop
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
 4. **Apple TV artwork for non-public images**: Cover art only reachable through
    the imageproxy (e.g. filesystem-provider images with no public URL) does not
    currently render on the Apple TV's now-playing screen, while externally-hosted
    art does
+5. **Warm boundaries wait for the queued audio**: Pause, seek and track changes
+   leave the audio the receiver already holds in place, so it renders that
+   first and `buffer_depth` is also the delay before the boundary is heard.
+   Dropping the queue instead produced audible noise bursts on Apple receivers,
+   so keeping it is an accepted trade-off. It is most noticeable on pause, where
+   playback is expected to stop at once. On a receiver that needs a deep queue
+   to render at all, the delay cannot be tuned away without silencing it
 
 ## Development Notes
 

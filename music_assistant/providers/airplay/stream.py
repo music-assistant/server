@@ -999,8 +999,9 @@ class AirPlayStream:
             str(self.pcm_format.bit_depth),
         ]
 
-        # The binary owns the playback lead/buffer (2000 ms default, clamped to
-        # the device-reported window); there is no user override for it.
+        # The binary owns the playback lead (2000 ms default, clamped to the
+        # device-reported window) and there is no user override for it; the
+        # receiver queue depth is the one tunable, passed as --latency below.
 
         # The endpoint must follow the same capability decision as the binary:
         # legacy RAOP uses _raop, while native and RAOP-compatible AP2 use _airplay.

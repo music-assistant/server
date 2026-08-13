@@ -281,7 +281,7 @@ CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
 
 # AirPlay serves the shared sync-adjust control as a non-advanced (always visible)
-# setting: the binary handles lead/buffer automatically and does not apply
+# setting: the binary handles the playback lead automatically and does not apply
 # device-reported render latency, so sync_adjust is the primary way to compensate
 # a device wired to a TV / AV receiver / amplifier that adds its own audio delay.
 # The AirPlay-scoped strings spell out the sign; the shared entry stays advanced
