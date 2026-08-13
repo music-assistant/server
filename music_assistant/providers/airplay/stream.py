@@ -670,10 +670,10 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. A join's ack is held back until the receiver clock
-        # verification resolves and therefore gets a much wider window than a
-        # plain start, which acks within the command round-trip. A reported
-        # failure answers the wait immediately.
+        # re-align a group. A join's ack is held back whenever the receiver
+        # clock verification arms, so it gets a much wider window than a plain
+        # start, which acks within the command round-trip. A reported failure
+        # answers the wait immediately.
         ack_timeout = (
             AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
         ) / 1000
