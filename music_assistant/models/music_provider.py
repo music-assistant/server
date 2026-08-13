@@ -1482,18 +1482,21 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif prov_item.is_dynamic != library_item.is_dynamic or (
-                        prov_item.is_dynamic
-                        and (
-                            prov_item.name != library_item.name
-                            or prov_item.metadata.images != library_item.metadata.images
-                        )
+                    elif prov_item.is_dynamic and (
+                        not library_item.is_dynamic
+                        or prov_item.name != library_item.name
+                        or prov_item.metadata.images != library_item.metadata.images
                     ):
-                        # overwrite drops name-matched mappings that would serve the wrong tracks
+                        # must overwrite: merging keeps mappings that serve the wrong tracks
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True  # overwrite re-inserts the rows
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
-                    elif self._library_item_needs_update(library_item, prov_item):
+                    elif self._library_item_needs_update(library_item, prov_item) or (
+                        library_item.is_dynamic and not prov_item.is_dynamic
+                    ):
+                        # a station leaving dynamic mode is no longer provider-owned, so merge
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )

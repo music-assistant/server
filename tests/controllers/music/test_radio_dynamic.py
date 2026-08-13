@@ -321,6 +321,20 @@ class TestSyncLibraryRadiosDynamicFlag:
         assert library_item is not None
         assert library_item.is_dynamic is True
 
+    async def test_switching_to_dynamic_keeps_the_station_listed(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """A station that becomes dynamic stays in the library listing."""
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        provider.toggle_station_is_dynamic = False
+        await provider._sync_library_radios()
+        assert "Toggle Station" in [item.name for item in await radio_ctrl.library_items()]
+
+        provider.toggle_station_is_dynamic = True
+        await provider._sync_library_radios()
+
+        assert "Toggle Station" in [item.name for item in await radio_ctrl.library_items()]
+
     async def test_switching_to_dynamic_drops_name_matched_mappings(
         self, radio_mass: MusicAssistant, radio_ctrl: RadioController
     ) -> None:
