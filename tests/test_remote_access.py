@@ -865,10 +865,11 @@ class _FakeBidiChannel:
     what the gateway sent back on ``sent``.
     """
 
-    def __init__(self, label: str = "ma-api") -> None:
+    def __init__(self, label: str = "ma-api", max_message_size: int = 256 * 1024) -> None:
         self.label = label
         self.is_open = True
         self.closed = False
+        self.max_message_size = max_message_size
         self.sent: list[str | bytes] = []
         self._inbound: asyncio.Queue[str | bytes | None] = asyncio.Queue()
 
@@ -876,6 +877,8 @@ class _FakeBidiChannel:
         return
 
     async def send(self, data: str | bytes) -> None:
+        # a real send always suspends, which is what lets concurrent senders interleave
+        await asyncio.sleep(0)
         self.sent.append(data)
 
     def feed(self, message: str | bytes) -> None:
@@ -909,6 +912,7 @@ class _FakeHttpSession:
         self.websockets: dict[str, _FakeLocalWS] = {}
         self.requested: list[str] = []
         self.response_body = b""
+        self.bodies: dict[str, bytes] = {}
 
     async def ws_connect(self, url: str, **kwargs: Any) -> _FakeLocalWS:
         self.dialed.append(url)
@@ -918,12 +922,12 @@ class _FakeHttpSession:
         return local_ws
 
     def request(self, _method: str, url: str, **_kwargs: Any) -> AsyncMock:
-        """Serve ``response_body`` for a proxied HTTP request."""
+        """Serve this url's entry in ``bodies``, falling back to ``response_body``."""
         self.requested.append(url)
         response = AsyncMock()
         response.status = 200
         response.headers = {"Content-Type": "image/jpeg"}
-        response.read = AsyncMock(return_value=self.response_body)
+        response.read = AsyncMock(return_value=self.bodies.get(url, self.response_body))
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=response)
         ctx.__aexit__ = AsyncMock(return_value=False)
@@ -1304,6 +1308,23 @@ def _proxy_request(request_id: str, path: str) -> str:
     )
 
 
+def _read_proxy_response(sent: list[str | bytes]) -> tuple[dict[str, Any], bytes]:
+    """
+    Read the binary-framed response a client would reassemble from the proxy channel.
+
+    :param sent: Messages the gateway sent, starting at the response's JSON header.
+    """
+    header = json.loads(cast("str", sent[0]))
+    body = b""
+    for message in sent[1:]:
+        assert isinstance(message, bytes), f"expected a binary body frame, got {message!r}"
+        body += message
+        if len(body) >= header["size"]:
+            break
+    assert len(body) == header["size"]
+    return header, body
+
+
 async def test_http_proxy_channel_answers_on_its_own_channel(cert_pems: tuple[str, str]) -> None:
     """A proxied request on the http proxy channel is answered there, not on the API channel."""
     http_session = _FakeHttpSession()
@@ -1318,14 +1339,16 @@ async def test_http_proxy_channel_answers_on_its_own_channel(cert_pems: tuple[st
         await _wait_for(lambda: session.local_ws is not None)
 
         proxy_channel.feed(_proxy_request("img-1", "/imageproxy/abc"))
-        await _wait_for(lambda: bool(proxy_channel.sent))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
 
         assert http_session.requested == ["http://127.0.0.1:8095/imageproxy/abc"]
-        response = json.loads(cast("str", proxy_channel.sent[0]))
+        response, body = _read_proxy_response(proxy_channel.sent)
         assert response["type"] == "http-proxy-response"
         assert response["id"] == "img-1"
         assert response["status"] == 200
-        assert bytes.fromhex(response["body"]) == b"\xff\xd8jpeg-bytes"
+        # the body rides as raw binary, so it costs its own size on the wire and no more
+        assert body == b"\xff\xd8jpeg-bytes"
+        assert "body" not in response
         # the image never touches the API channel, nor the local API WebSocket
         assert api_channel.sent == []
         assert cast("_FakeLocalWS", session.local_ws).sent == []
@@ -1376,14 +1399,101 @@ async def test_http_proxy_channel_reports_a_failed_fetch_on_its_own_channel(
         await _wait_for(lambda: session.local_ws is not None)
 
         proxy_channel.feed(_proxy_request("img-3", "/imageproxy/boom"))
-        await _wait_for(lambda: bool(proxy_channel.sent))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
 
-        response = json.loads(cast("str", proxy_channel.sent[0]))
+        response, body = _read_proxy_response(proxy_channel.sent)
         assert response["id"] == "img-3"
         assert response["status"] == 500
+        assert b"boom" in body
         assert api_channel.sent == []
     finally:
         await gateway._close_session("proxy-error-session")
+
+
+async def test_http_proxy_channel_splits_a_large_body_into_binary_frames(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A body past the channel's message limit arrives as raw frames that concatenate back."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = bytes(range(256)) * 2048  # 512 KiB
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-large-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-5", "/imageproxy/large"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 4)
+
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["size"] == len(http_session.response_body)
+        assert body == http_session.response_body
+        frames = proxy_channel.sent[1:]
+        assert all(len(frame) <= proxy_channel.max_message_size for frame in frames)
+        # the wire cost is the body itself, not the ~2.7x a hex-in-base64 response took
+        assert sum(len(frame) for frame in frames) == len(http_session.response_body)
+    finally:
+        await gateway._close_session("proxy-large-session")
+
+
+async def test_http_proxy_channel_honours_the_negotiated_message_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A peer that advertises a small limit gets frames it can actually accept."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"x" * (200 * 1024)
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-small-frames-session")
+    # what a peer that advertises no a=max-message-size in its SDP is assumed to accept
+    proxy_channel = _FakeBidiChannel(label="http_proxy", max_message_size=64 * 1024)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-6", "/imageproxy/small-frames"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 5)
+
+        _, body = _read_proxy_response(proxy_channel.sent)
+        assert body == http_session.response_body
+        assert all(len(frame) <= 64 * 1024 for frame in proxy_channel.sent[1:])
+    finally:
+        await gateway._close_session("proxy-small-frames-session")
+
+
+async def test_http_proxy_channel_never_interleaves_two_responses(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Body frames carry no request id, so each response must reach the client in one run."""
+    http_session = _FakeHttpSession()
+    http_session.bodies = {
+        "http://127.0.0.1:8095/imageproxy/one": b"1" * (300 * 1024),
+        "http://127.0.0.1:8095/imageproxy/two": b"2" * (300 * 1024),
+    }
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-concurrent-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-one", "/imageproxy/one"))
+        proxy_channel.feed(_proxy_request("img-two", "/imageproxy/two"))
+        await _wait_for(lambda: sum(isinstance(m, str) for m in proxy_channel.sent) == 2)
+        await _wait_for(lambda: len(proxy_channel.sent) >= 6)
+
+        # split at the second header: each response owns an unbroken run of body frames
+        second = next(i for i, m in enumerate(proxy_channel.sent) if i and isinstance(m, str))
+        first_header, first_body = _read_proxy_response(proxy_channel.sent[:second])
+        second_header, second_body = _read_proxy_response(proxy_channel.sent[second:])
+        assert {first_header["id"], second_header["id"]} == {"img-one", "img-two"}
+        # each body is one repeated byte, so any interleaving shows up as a mixed run
+        filler = {"img-one": ord("1"), "img-two": ord("2")}
+        assert set(first_body) == {filler[first_header["id"]]}
+        assert set(second_body) == {filler[second_header["id"]]}
+        assert len(first_body) == len(second_body) == 300 * 1024
+    finally:
+        await gateway._close_session("proxy-concurrent-session")
 
 
 @pytest.mark.parametrize(
@@ -1410,11 +1520,11 @@ async def test_http_proxy_channel_survives_junk(
 
         proxy_channel.feed(junk)
         proxy_channel.feed(_proxy_request("img-4", "/imageproxy/ok"))
-        await _wait_for(lambda: bool(proxy_channel.sent))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
 
-        response = json.loads(cast("str", proxy_channel.sent[0]))
+        response, body = _read_proxy_response(proxy_channel.sent)
         assert response["id"] == "img-4"
-        assert bytes.fromhex(response["body"]) == b"still-here"
+        assert body == b"still-here"
     finally:
         await gateway._close_session("proxy-junk-session")
 
