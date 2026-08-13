@@ -55,7 +55,9 @@ class DummyRenderer(AIRadioRenderMixin):
     def _configured_now(self) -> Any:
         return __import__("datetime").datetime(2026, 7, 30, 18, 30)
 
-    async def _generate_text(self, instructions: str, prompt: str, web_mode: str) -> str:
+    async def _generate_text(
+        self, instructions: str, prompt: str, web_mode: str, language: str | None = None
+    ) -> str:
         # a real suspension point so concurrent callers actually interleave under
         # asyncio.gather, otherwise the lock in get_stream_details is never exercised
         await asyncio.sleep(0)
@@ -502,6 +504,7 @@ async def test_generate_script_uses_host_instructions() -> None:
         instructions: str,
         prompt: str,  # noqa: ARG001
         web_mode: str,  # noqa: ARG001
+        language: str | None = None,  # noqa: ARG001
     ) -> str:
         captured["instructions"] = instructions
         return "script"
@@ -525,6 +528,7 @@ async def test_generate_script_falls_back_to_default_instructions() -> None:
         instructions: str,
         prompt: str,  # noqa: ARG001
         web_mode: str,  # noqa: ARG001
+        language: str | None = None,  # noqa: ARG001
     ) -> str:
         # mirrors the empty-to-default fallback the real _generate_text applies (runtime.py)
         captured["instructions"] = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
@@ -536,6 +540,87 @@ async def test_generate_script_falls_back_to_default_instructions() -> None:
     await renderer._generate_script(item, "p", "clip_1")
 
     assert captured["instructions"] == DEFAULT_LLM_INSTRUCTIONS
+
+
+async def test_generate_script_forwards_the_hosts_language() -> None:
+    """The host's configured language reaches _generate_text, ready to override the locale."""
+    renderer = DummyRenderer()
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "instructions": "Persona text.",
+            "tts_engine": "",
+            "language": "fr_FR",
+        }
+    }
+    captured: dict[str, str | None] = {}
+
+    async def fake_generate_text(
+        instructions: str,  # noqa: ARG001
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,
+    ) -> str:
+        captured["language"] = language
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["language"] == "fr_FR"
+
+
+async def test_generate_script_forwards_empty_language_when_host_has_none() -> None:
+    """A host with no configured language forwards an empty string, not None."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "instructions": "Persona text.", "tts_engine": ""}}
+    captured: dict[str, str | None] = {}
+
+    async def fake_generate_text(
+        instructions: str,  # noqa: ARG001
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,
+    ) -> str:
+        captured["language"] = language
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["language"] == ""
+
+
+async def test_render_tts_media_prefers_the_hosts_language_over_the_locale() -> None:
+    """A host's configured language reaches the TTS engine, overriding the server locale."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "", "language": "fr_FR"}}
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="fr-FR", engine_id="tts.cloud"
+    )
+
+
+async def test_render_tts_media_falls_back_to_locale_when_host_language_is_empty() -> None:
+    """A host with no configured language falls back to the server locale for the TTS call."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": ""}}
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud"
+    )
 
 
 async def test_resolve_deferred_placeholders_skips_weather_without_token() -> None:
@@ -553,6 +638,7 @@ async def test_mint_clip_media_resolves_host_tts_engine() -> None:
     """A clip whose host declares a tts_engine reaches _get_tts_engine with that override."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
     renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
 
     await renderer._mint_clip_media(item, "hello world", "clip_1")

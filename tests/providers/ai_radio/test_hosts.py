@@ -76,6 +76,36 @@ def test_normalize_host_requires_name() -> None:
         dummy._normalize_host(payload)
 
 
+def test_normalize_host_persists_language() -> None:
+    """Persist a host's language override through normalization."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["language"] = "nl_NL"
+    normalized = dummy._normalize_host(payload)
+    assert normalized["language"] == "nl_NL"
+
+
+def test_normalize_host_defaults_missing_language_to_empty() -> None:
+    """Normalize a host with no 'language' key at all, for backwards compatibility."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    assert "language" not in payload
+    normalized = dummy._normalize_host(payload)
+    assert normalized["language"] == ""
+
+
+def test_normalize_host_strips_whitespace_only_language_to_empty() -> None:
+    """Treat a whitespace-only language as 'follow the server locale'."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    payload = _host(["Song_Transition"])
+    payload["language"] = "   "
+    normalized = dummy._normalize_host(payload)
+    assert normalized["language"] == ""
+
+
 def test_normalize_host_rejects_unknown_section_reference() -> None:
     """Reject hosts that reference shared sections that do not exist."""
     dummy = DummyHosts()

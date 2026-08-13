@@ -587,6 +587,51 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
     assert plugin.ai_query.await_args.kwargs == {"engine_id": "ai_task.default"}
 
 
+async def test_generate_text_prefers_the_hosts_language_over_the_system_locale() -> None:
+    """An explicit host language wins over the server locale in the AI query."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
+
+    await runtime._generate_text(
+        instructions="test",
+        prompt="test prompt",
+        web_mode="disabled",
+        language="fr_FR",
+    )
+
+    assert "fr_FR" in plugin.ai_query.await_args.args[0]
+    assert "nl_NL" not in plugin.ai_query.await_args.args[0]
+
+
+async def test_generate_text_falls_back_to_the_system_locale_when_language_is_empty() -> None:
+    """An unset host language keeps asking for the server locale, exactly as before."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
+
+    await runtime._generate_text(
+        instructions="test",
+        prompt="test prompt",
+        web_mode="disabled",
+        language="",
+    )
+
+    assert "nl_NL" in plugin.ai_query.await_args.args[0]
+
+
 @pytest.mark.parametrize("general", [{"instructions": "Host personality: minimal DJ."}, {}])
 async def test_generate_text_always_states_the_pronunciation_rules(
     general: dict[str, Any],
@@ -852,6 +897,7 @@ def test_build_program_merges_host_into_station() -> None:
         "name": "Rick",
         "instructions": "Persona.",
         "tts_engine": "engine-1",
+        "language": "fr_FR",
         "section_ids": ["Song_Transition"],
         "section_order": [{"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]}],
         "merge_section_id": "",
@@ -871,6 +917,7 @@ def test_build_program_merges_host_into_station() -> None:
 
     assert program["instructions"] == "Persona."
     assert program["tts_engine"] == "engine-1"
+    assert program["language"] == "fr_FR"
     assert [s["id"] for s in program["sections"]] == ["Song_Transition"]
     assert program["section_order"] == host["section_order"]
     assert program["source_playlist_id"] == "p1"
