@@ -1,0 +1,24 @@
+{
+  "cards": [
+    {
+      "cardId": {"value": "card-alpha"},
+      "card": {
+        "title": {"value": "Moshi Moon"},
+        "metadata": {
+          "description": {"value": "Calm bedtime stories"},
+          "author": {"value": "Dream Reader"},
+          "category": {"value": "sleep"},
+          "cover": {
+            "imageL": {"value": "fixture-artwork-card-alpha"},
+            "seriestitle": {"value": "Moshi"},
+            "seriesorder": {"value": 2}
+          }
+        }
+      }
+    },
+    {
+      "cardId": {"value": "card-beta"},
+      "card": {"title": {"value": "Rain Songs"}, "metadata": {}}
+    }
+  ]
+}

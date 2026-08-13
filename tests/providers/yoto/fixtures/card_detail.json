@@ -1,0 +1,24 @@
+{
+  "card": {
+    "content": {
+      "chapters": [
+        {
+          "key": "chapter-b",
+          "title": {"value": "Chapter Two"},
+          "display": {"icon16x16": {"value": "fixture-icon-two"}},
+          "tracks": [
+            {"key": "track-z", "title": {"value": "Second"}, "duration": {"value": 8}, "format": {"value": "aac"}, "channels": {"value": "mono"}, "type": {"value": "audio"}, "trackUrl": {"value": "fixture-signed-stream-never-store"}},
+            {"key": "track-a", "title": {"value": "Third"}, "duration": {"value": 7}, "format": {"value": "aac"}, "type": {"value": "audio"}}
+          ]
+        },
+        {
+          "key": "chapter-a",
+          "title": {"value": "Chapter One"},
+          "tracks": [
+            {"key": "track-first", "title": {"value": "First"}, "duration": {"value": 4}, "format": {"value": "mp3"}, "type": {"value": "audio"}}
+          ]
+        }
+      ]
+    }
+  }
+}

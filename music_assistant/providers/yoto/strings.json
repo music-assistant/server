@@ -1,0 +1,24 @@
+{
+  "media": {
+    "folder": {
+      "all_cards": {
+        "name": "All Yoto cards"
+      },
+      "library_groups": {
+        "name": "Yoto library groups"
+      }
+    }
+  },
+  "setup_flow": {
+    "step": {
+      "client": {
+        "title": "Yoto credentials",
+        "description": "Enter the OAuth client ID for your Yoto application."
+      },
+      "authorize": {
+        "title": "Authorize Yoto",
+        "description": "Open the authorization link, sign in, then paste the complete localhost callback URL. The callback page normally fails to load."
+      }
+    }
+  }
+}

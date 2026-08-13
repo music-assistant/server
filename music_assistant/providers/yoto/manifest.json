@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "yoto",
+  "stage": "experimental",
+  "name": "Yoto",
+  "description": "Browse and stream cards from a Yoto family library.",
+  "codeowners": ["@m4rkireland"],
+  "requirements": ["yoto-api==4.3.4"],
+  "documentation": "https://music-assistant.io/music-providers/yoto/",
+  "credits": ["[yoto-api](https://github.com/cdnninja/yoto_api)"],
+  "multi_instance": true
+}
