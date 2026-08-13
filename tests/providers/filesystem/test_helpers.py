@@ -474,13 +474,15 @@ def test_scan_errors_describe_names_examples() -> None:
     assert len(errors.failed_paths) == helpers.MAX_REPORTED_FAILED_PATHS
 
 
-def test_recursive_iter_reads_names_that_are_not_plain_ascii(tmp_path: Path) -> None:
+def test_recursive_iter_skips_names_that_are_not_valid_utf8(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """
-    Test that the scan reads both an emoji filename and one that is not valid UTF-8.
+    Test that a filename which is not valid UTF-8 is skipped, naming it escaped.
 
-    Emoji are valid UTF-8 and only trip up SMB mounts (kernel NLS limit). A raw
-    non-UTF-8 byte scans fine and reaches us as a lone surrogate, which is what
-    breaks json and the database further down (#6042).
+    Its path can be neither stored nor serialized, so letting it through only fails
+    deeper down, taking the events to the clients and the settings file with it
+    (#6042). Emoji are valid UTF-8 and must keep scanning.
     """
     (tmp_path / "track 🎧.mp3").write_bytes(b"x")
     # 0xDF is "ß" in Latin-1 and not valid UTF-8, so os returns it surrogate-escaped
@@ -489,13 +491,16 @@ def test_recursive_iter_reads_names_that_are_not_plain_ascii(tmp_path: Path) -> 
         _file.write(b"x")
 
     errors = helpers.ScanErrors()
-    items = list(
-        helpers.recursive_iter(
-            str(tmp_path), str(tmp_path), SUPPORTED, logging.getLogger("test"), errors
+    with caplog.at_level(logging.WARNING):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path), str(tmp_path), SUPPORTED, logging.getLogger("test"), errors
+            )
         )
-    )
 
-    assert sorted(item.relative_path for item in items) == ["Stra\udcdfe.mp3", "track 🎧.mp3"]
+    assert [item.relative_path for item in items] == ["track 🎧.mp3"]
+    assert "Stra\\xdfe.mp3" in caplog.text
+    # such a file can never have been indexed, so skipping it must not block deletions
     assert not errors.incomplete
 
 

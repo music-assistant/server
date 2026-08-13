@@ -119,15 +119,7 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
 
     # setup file handler
     log_filename = os.path.join(data_path, "musicassistant.log")
-    # errors=backslashreplace: a log line naming a path that is not valid UTF-8 must
-    # not fail inside the handler, which would drop the whole record
-    file_handler = RotatingFileHandler(
-        log_filename,
-        maxBytes=MAX_LOG_FILESIZE,
-        backupCount=1,
-        encoding="utf-8",
-        errors="backslashreplace",
-    )
+    file_handler = RotatingFileHandler(log_filename, maxBytes=MAX_LOG_FILESIZE, backupCount=1)
     # rotate log at each start
     with suppress(OSError):
         file_handler.doRollover()

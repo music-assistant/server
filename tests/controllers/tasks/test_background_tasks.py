@@ -48,7 +48,6 @@ from music_assistant.controllers.tasks import (
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import json_dumps
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -146,31 +145,6 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
     assert task.progress == 50
     assert task.progress_text == "Matching playlist items"
     assert any("completed with 1 issue" in line for line in task.logs)
-
-
-async def test_task_text_that_is_not_valid_utf8_is_escaped(
-    tasks_controller: TasksController,
-) -> None:
-    """
-    Task text built from an undecodable filesystem path must stay serializable.
-
-    Such a path arrives as a lone surrogate, which breaks both the event sent to the
-    clients and the persisted task state (#6042).
-    """
-    undecodable_path = "Musik/Stra\udcdfe/track.mp3"
-
-    async def handler() -> None:
-        update_current_task_progress(50, f"Processing {undecodable_path}")
-        report_current_task_failure(f"Failed to process {undecodable_path}")
-
-    task = tasks_controller.run_background_task(name="Sync", handler=handler)
-    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.PARTIAL_SUCCESS)
-
-    task = tasks_controller.get_task(task.id)
-    assert task.failure_messages == ["Failed to process Musik/Stra\\xdfe/track.mp3"]
-    assert task.progress_text == "Processing Musik/Stra\\xdfe/track.mp3"
-    # the point of the escaping: the task list is what gets sent out and persisted
-    json_dumps(tasks_controller.list_tasks_for_user(None)).encode()
 
 
 async def test_priority_task_runs_before_normal(tasks_controller: TasksController) -> None:
