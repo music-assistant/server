@@ -113,8 +113,8 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
 )
 
 # How many times play_index will try to LOAD an item before giving up. Skipping an item
-# already known unreachable is free and does not count, or a queue whose head holds more
-# dead items than this could never reach a live track behind them.
+# already known unreachable is free and does not count, otherwise a queue whose head holds
+# more dead items than this could never reach a live track behind them.
 _MAX_LOAD_ATTEMPTS: Final = 5
 
 
@@ -1041,12 +1041,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 if not queue_item:
                     break
                 if not queue_item.available:
-                    # Already known unreachable: skipping costs no work, so it must not spend
-                    # an attempt. Otherwise a head of dead items longer than the budget starves
-                    # every live track behind it, including one a refill just added.
+                    # Already known unreachable: _load_item rejects an unavailable item outright,
+                    # so the attempt this used to spend bought nothing and only starved the live
+                    # tracks behind a dead head longer than the budget. Still logged, because a
+                    # silent skip leaves nothing to diagnose a stuck queue from.
+                    self.logger.warning(
+                        "Skipping unplayable item %s",
+                        queue_item.name,
+                    )
                     next_index, refilled = await _next_index_or_refill(index)
                     if next_index is None:
-                        break
+                        # a queue that is dead to its end reports the item it gave up on
+                        msg = f"Playback failed for {queue_item.name} - no more tracks available"
+                        self.logger.error(msg)
+                        await self.stop(queue_id)
+                        raise MediaNotFoundError(msg)
                     if refilled:
                         attempts = 0
                     index = next_index
@@ -1073,7 +1082,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     attempts += 1
-                    item_name = queue_item.name if queue_item else "unknown"
+                    item_name = queue_item.name
                     # Only MediaNotFoundError (item unreachable) is persistent;
                     # keep AudioError items available so a retry can resurface
                     # the same actionable error.
@@ -1099,7 +1108,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     )
                     index = next_index
             if not started or queue_item is None:
-                # all attempts to find a playable item failed
+                # all attempts to find a playable item failed; the None check is unreachable
+                # when started is True, but it is what narrows queue_item for everything below
                 await self.stop(queue_id)
                 raise MediaNotFoundError("No playable item found to start playback")
 

@@ -11,6 +11,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.controller import _MAX_LOAD_ATTEMPTS
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "q1"
@@ -122,11 +123,34 @@ async def test_known_dead_items_do_not_spend_the_retry_budget() -> None:
 
 
 async def test_a_refill_that_yields_nothing_still_fails() -> None:
-    """The fix must not turn an genuinely exhausted queue into an infinite loop."""
+    """A genuinely exhausted queue must fail with a named error after exactly one refill."""
     ctrl, _queue_data, fill_mock = _controller_with_dead_head(dead=5, pre_marked=False)
     fill_mock.side_effect = None  # a refill that adds nothing
+    with pytest.raises(
+        MediaNotFoundError, match="Playback failed for dead4 - no more tracks available"
+    ):
+        await ctrl.play_index(QUEUE_ID, 0)
+    # one refill per call is what stops a station whose every track is dead from spinning
+    assert fill_mock.await_count == 1
+
+
+async def test_the_load_budget_is_not_spent_more_than_twice_over() -> None:
+    """A refill grants one fresh budget, so loads are capped at twice the maximum."""
+    ctrl, queue_data, fill_mock = _controller_with_dead_head(dead=5, pre_marked=False)
+
+    async def _fill_with_more_dead(_queue_id: str) -> None:
+        """A refill that supplies nothing but further dead items."""
+        queue_data.items.extend(
+            QueueItem(queue_id=QUEUE_ID, queue_item_id=f"dead{i}", name=f"dead{i}", duration=180)
+            for i in range(5, 10)
+        )
+
+    fill_mock.side_effect = _fill_with_more_dead
+
     with pytest.raises(MediaNotFoundError):
         await ctrl.play_index(QUEUE_ID, 0)
+
+    assert cast("AsyncMock", ctrl._load_item).await_count == 2 * _MAX_LOAD_ATTEMPTS
 
 
 async def test_a_non_dynamic_queue_is_unchanged() -> None:
@@ -136,6 +160,63 @@ async def test_a_non_dynamic_queue_is_unchanged() -> None:
     with pytest.raises(MediaNotFoundError):
         await ctrl.play_index(QUEUE_ID, 0)
     fill_mock.assert_not_awaited()
+
+
+async def test_a_non_dynamic_queue_reaches_a_live_track_behind_a_long_dead_head() -> None:
+    """
+    The free skip is not dynamic-only: any queue may sit behind more dead items than the budget.
+
+    This is the one behaviour change every user sees, dynamic source or not. Loading an item
+    already marked unavailable never reached the provider anyway (_load_item raises on it
+    straight away), so the old attempt bought nothing and only starved the live track behind it.
+    """
+    ctrl, queue_data, fill_mock = _controller_with_dead_head(
+        dead=_MAX_LOAD_ATTEMPTS + 1, pre_marked=True
+    )
+    queue_data.queue.is_dynamic = False
+    queue_data.items.append(
+        QueueItem(queue_id=QUEUE_ID, queue_item_id="live", name="live", duration=180)
+    )
+
+    await ctrl.play_index(QUEUE_ID, 0)
+
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.queue_item_id == "live"
+    fill_mock.assert_not_awaited()
+
+
+async def test_a_dead_tail_still_reports_which_item_it_died_on() -> None:
+    """A queue that is dead to its end names the item it gave up on, as it always did."""
+    ctrl, queue_data, _fill = _controller_with_dead_head(dead=5, pre_marked=True)
+    queue_data.queue.is_dynamic = False
+
+    with pytest.raises(
+        MediaNotFoundError, match="Playback failed for dead4 - no more tracks available"
+    ):
+        await ctrl.play_index(QUEUE_ID, 0)
+
+
+async def test_skipping_a_known_dead_item_is_logged() -> None:
+    """
+    Skipped items must stay in the log; this bug was diagnosed by counting those lines.
+
+    A silent skip would leave the next report of a related problem with no evidence of what was
+    passed over.
+    """
+    ctrl, queue_data, _fill = _controller_with_dead_head(dead=3, pre_marked=True)
+    queue_data.queue.is_dynamic = False
+    queue_data.items.append(
+        QueueItem(queue_id=QUEUE_ID, queue_item_id="live", name="live", duration=180)
+    )
+
+    await ctrl.play_index(QUEUE_ID, 0)
+
+    skipped = [
+        call.args[1]
+        for call in ctrl.logger.warning.call_args_list  # type: ignore[attr-defined]
+        if call.args and call.args[0] == "Skipping unplayable item %s"
+    ]
+    assert skipped == ["dead0", "dead1", "dead2"]
 
 
 async def test_a_seek_position_does_not_leak_onto_a_refilled_track() -> None:
