@@ -83,9 +83,9 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # binary's own 250 ms floor, and the receiver seating the anchor. The value is
 # field-proven, not derived from those.
 # It is NOT headroom for the binary's post-commit clock verification, which
-# arms only while the receiver has still not probed when it reads the START and
-# only for an anchor clearing the receiver queue depth plus 500 ms - past ~2 s
-# of effective depth, an anchor this close leaves no room for it.
+# arms only when the receiver has still not probed by the time it reads the
+# START, and only for an anchor that clears the receiver queue depth plus
+# 500 ms - past ~2 s of effective depth, an anchor this close leaves no room.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
 # How long a group start, a join or the Sendspin bridge waits for the binary's
 # first receiver-clock projection ([STATUS] clock_ready with state=probing|
@@ -135,10 +135,10 @@ CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
 # Nothing holds that ack back, so the window only has to cover the command's trip
 # down the pipe and the answer coming back - unlike a join's ack below, which is
-# withheld until the receiver clock verification resolves.
+# withheld whenever the receiver clock verification arms.
 AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 2000
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
-# held back until the clock verification above resolves, so the window must
+# held back whenever the clock verification above arms, so the window must
 # cover the verification arm window plus a poll round on top of the commanded
 # anchor (which bounds the verification), where a plain START acks within the
 # command round-trip. On timeout the server falls back to trusting the commanded
