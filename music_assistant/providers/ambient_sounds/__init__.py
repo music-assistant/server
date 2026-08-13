@@ -39,12 +39,13 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Callable
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -111,7 +112,7 @@ PRESETS: dict[str, AmbientPreset] = {
 }
 
 
-CONF_KEY_CUSTOM_SOUNDS = "stored_ambient_sounds"
+CONF_KEY_CUSTOM_SOUNDS = "custom_sounds"
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 
 
@@ -137,6 +138,7 @@ class AmbientSoundsProvider(MusicProvider):
 
     _render_dir: str
     _render_lock: asyncio.Lock
+    _unregister_handles: list[Callable[[], None]]
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider (none needed)."""
@@ -146,16 +148,30 @@ class AmbientSoundsProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self._render_dir = os.path.join(self.mass.cache_path, self.domain)
         self._render_lock = asyncio.Lock()
+        self._unregister_handles = []
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-        self.mass.register_api_command(
-            "ambient_sounds/add_sound", self.add_sound, required_scope=Scope.LIBRARY_WRITE
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "ambient_sounds/add_sound", self.add_sound, required_scope=Scope.LIBRARY_WRITE
+            )
         )
-        self.mass.register_api_command(
-            "ambient_sounds/remove_sound", self.remove_sound, required_scope=Scope.LIBRARY_WRITE
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "ambient_sounds/remove_sound",
+                self.remove_sound,
+                required_scope=Scope.LIBRARY_WRITE,
+            )
         )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        for unregister in self._unregister_handles:
+            unregister()
+        self._unregister_handles.clear()
+        await super().unload(is_removed)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -181,7 +197,7 @@ class AmbientSoundsProvider(MusicProvider):
             stored_item["content_type"] = media_info.format
         stored_items = [x for x in self._stored_sounds() if x["item_id"] != url]
         stored_items.append(stored_item)
-        self.mass.config.set(CONF_KEY_CUSTOM_SOUNDS, stored_items)
+        self.mass.config.set(self._custom_sounds_conf_key, stored_items)
         return self._build_custom_sound_effect(stored_item)
 
     async def remove_sound(self, url: str) -> None:
@@ -191,7 +207,10 @@ class AmbientSoundsProvider(MusicProvider):
         :param url: Stream URL of the ambient sound to remove.
         """
         stored_items = [x for x in self._stored_sounds() if x["item_id"] != url]
-        self.mass.config.set(CONF_KEY_CUSTOM_SOUNDS, stored_items)
+        self.mass.config.set(self._custom_sounds_conf_key, stored_items)
+        await self.mass.cache.delete(
+            url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
+        )
 
     async def get_sound_effect(self, prov_sound_effect_id: str) -> SoundEffect:
         """Get full sound effect details by id."""
@@ -228,6 +247,8 @@ class AmbientSoundsProvider(MusicProvider):
         if not self._get_stored_sound(item_id):
             raise MediaNotFoundError(f"Unknown sound effect: {item_id}")
         media_info = await self._get_media_info(item_id)
+        # endless (radio-style) streams have no duration and can not be seeked
+        seekable = bool(media_info.duration) and not media_info.get("icyname")
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -241,13 +262,20 @@ class AmbientSoundsProvider(MusicProvider):
             stream_type=StreamType.HTTP,
             duration=int(media_info.duration) if media_info.duration else None,
             path=item_id,
-            allow_seek=True,
-            can_seek=True,
+            allow_seek=seekable,
+            can_seek=seekable,
         )
+
+    @property
+    def _custom_sounds_conf_key(self) -> str:
+        """Return the config storage path for the user-added custom sounds."""
+        # stored within the provider's own config (setup_data) so the data is
+        # removed together with the provider config when the provider is removed
+        return f"{CONF_PROVIDERS}/{self.instance_id}/setup_data/{CONF_KEY_CUSTOM_SOUNDS}"
 
     def _stored_sounds(self) -> list[StoredSound]:
         """Return all user-added custom sounds from persistent storage."""
-        stored_items: list[StoredSound] = self.mass.config.get(CONF_KEY_CUSTOM_SOUNDS, [])
+        stored_items: list[StoredSound] = self.mass.config.get(self._custom_sounds_conf_key, [])
         return stored_items
 
     def _get_stored_sound(self, url: str) -> StoredSound | None:
