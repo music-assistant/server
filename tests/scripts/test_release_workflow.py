@@ -401,13 +401,26 @@ def test_addon_version_update_leaves_the_rest_of_the_config_alone(tmp_path: Path
     assert list(tmp_path.iterdir()) == [config]
 
 
-def test_addon_version_update_requires_a_version_field(tmp_path: Path) -> None:
-    """A config without a version field fails instead of silently changing nothing."""
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "name: Music Assistant DEV SERVER\n",
+        "name: Music Assistant DEV SERVER\nversion: 1.6.0\nslug: dev\nversion: 1.5.2\n",
+    ],
+    ids=["missing", "duplicate"],
+)
+def test_addon_version_update_requires_exactly_one_version_field(
+    tmp_path: Path,
+    config_text: str,
+) -> None:
+    """A missing or duplicated version field fails instead of writing a stale config."""
     config = tmp_path / "config.yaml"
-    config.write_text("name: Music Assistant DEV SERVER\n", encoding="utf-8")
+    config.write_text(config_text, encoding="utf-8")
 
     with pytest.raises(ReleaseWorkflowError):
         set_addon_version(config, "2.10.0.dev2026081303")
+
+    assert config.read_text(encoding="utf-8") == config_text
 
 
 def test_release_workflow_bumps_the_dev_addon_on_nightly_only() -> None:
@@ -426,11 +439,17 @@ def test_release_workflow_bumps_the_dev_addon_on_nightly_only() -> None:
 
     dev_step = _workflow_step(parsed_workflow, "update_addon", "Update dev add-on version")
     assert dev_step["if"] == "steps.channel.outputs.dev_folder != ''"
-    assert "release_workflow.py set-addon-version" in str(dev_step["run"])
+    dev_run = str(dev_step["run"])
+    assert "release_workflow.py set-addon-version" in dev_run
+    assert '--config "addon-repo/$DEV_FOLDER/config.yaml"' in dev_run
 
     commit_step = _workflow_step(parsed_workflow, "update_addon", "Commit add-on update")
     assert commit_step["env"]["DEV_FOLDER"] == "${{ steps.channel.outputs.dev_folder }}"
     assert 'git add "$DEV_FOLDER/config.yaml"' in str(commit_step["run"])
+
+    # the bump is only committed if it happens first
+    step_names = [step.get("name") for step in parsed_workflow["jobs"]["update_addon"]["steps"]]
+    assert step_names.index("Update dev add-on version") < step_names.index("Commit add-on update")
 
 
 def test_automation_drops_legacy_credentials() -> None:

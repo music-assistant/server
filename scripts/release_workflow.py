@@ -510,11 +510,11 @@ def set_addon_version(config_path: Path, version: str) -> None:
     :param version: Server version and image tag.
     """
     config = config_path.read_text(encoding="utf-8")
+    # a duplicate key would leave the stale one in effect, so rewrite nothing unless it is unique
     config, replacements = re.subn(
         r"^version: .+$",
         f"version: {version}",
         config,
-        count=1,
         flags=re.MULTILINE,
     )
     if replacements != 1:
