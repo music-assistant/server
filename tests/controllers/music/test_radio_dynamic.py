@@ -98,8 +98,23 @@ class FakeDynamicRadioProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Return no results; matching is not exercised through this provider."""
-        return SearchResults()
+        """Return a same-named station, so a name-only match would find something to report."""
+        return SearchResults(
+            radio=[
+                Radio(
+                    item_id="same-name-elsewhere",
+                    provider=self.instance_id,
+                    name=search_query,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id="same-name-elsewhere",
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
+            ]
+        )
 
 
 @pytest.fixture(name="radio_mass")
@@ -204,6 +219,14 @@ class TestAddToLibraryDynamicGuard:
         assert {mapping.provider_domain for mapping in dynamic_item.provider_mappings} == {
             FAKE_DOMAIN
         }
+
+
+class TestVersionsDynamicGuard:
+    """Tests for the dynamic-station guard on RadioController.versions."""
+
+    async def test_dynamic_station_has_no_other_versions(self, radio_ctrl: RadioController) -> None:
+        """A dynamic station reports no other versions, and searches nothing to find that out."""
+        assert await radio_ctrl.versions(DYNAMIC_STATION_ID, FAKE_INSTANCE) == []
 
 
 class TestMatchProvidersDynamicGuard:

@@ -171,6 +171,9 @@ class RadioController(MediaControllerBase[Radio]):
     ) -> list[Radio]:
         """Return all versions of a radio station we can find on all providers."""
         radio = await self.get(item_id, provider_instance_id_or_domain)
+        if radio.is_dynamic:
+            # a dynamic station is its provider's own, so a same-named station is a different one
+            return []
         # perform a search on all provider(types) to collect all versions/variants
         all_versions = {
             prov_item.item_id: prov_item
