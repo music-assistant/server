@@ -164,6 +164,48 @@ class TestRadioTracks:
         assert len(tracks) == 3
 
 
+class TestAddToLibraryDynamicGuard:
+    """Tests that adding a dynamic station never folds it into an existing station."""
+
+    async def test_same_named_live_station_is_left_alone(
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
+    ) -> None:
+        """A dynamic station gets its own library item instead of joining a same-named stream."""
+        live_station = Radio(
+            item_id="live-1",
+            provider="some_radio_directory--instance",
+            name="Chill Vibes",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="live-1",
+                    provider_domain="some_radio_directory",
+                    provider_instance="some_radio_directory--instance",
+                )
+            },
+        )
+        live_item = await radio_ctrl.add_item_to_library(live_station)
+        station = Radio(
+            item_id=DYNAMIC_STATION_ID,
+            provider=FAKE_INSTANCE,
+            name="Chill Vibes",
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=DYNAMIC_STATION_ID,
+                    provider_domain=FAKE_DOMAIN,
+                    provider_instance=FAKE_INSTANCE,
+                )
+            },
+        )
+
+        dynamic_item = await radio_ctrl.add_item_to_library(station)
+
+        assert dynamic_item.item_id != live_item.item_id
+        assert {mapping.provider_domain for mapping in dynamic_item.provider_mappings} == {
+            FAKE_DOMAIN
+        }
+
+
 class TestMatchProvidersDynamicGuard:
     """Tests for the dynamic-station guard on RadioController.match_providers."""
 
