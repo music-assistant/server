@@ -8,11 +8,13 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 """
 
 import asyncio
+from collections.abc import Callable
 from http.cookies import SimpleCookie
 from time import time
 from typing import Any, Literal
 
 import ytmusicapi
+from music_assistant_models.errors import LoginFailed
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicError
 
@@ -41,7 +43,7 @@ async def get_artist(
                 artist = {"channelId": prov_artist_id, "name": "Unknown"}
         return artist
 
-    return await asyncio.to_thread(_get_artist)
+    return await _run_ytmusic(_get_artist)
 
 
 async def get_album(
@@ -77,7 +79,7 @@ async def get_album(
                     album_track["likeStatus"] = playlist_track.get("likeStatus", "INDIFFERENT")
         return album
 
-    return await asyncio.to_thread(_get_album)
+    return await _run_ytmusic(_get_album)
 
 
 async def get_playlist(
@@ -97,7 +99,7 @@ async def get_playlist(
         playlist["id"] = prov_playlist_id if not playlist.get("id") else playlist["id"]
         return playlist
 
-    return await asyncio.to_thread(_get_playlist)
+    return await _run_ytmusic(_get_playlist)
 
 
 async def get_track(
@@ -129,7 +131,7 @@ async def get_track(
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
         return track
 
-    return await asyncio.to_thread(_get_song)
+    return await _run_ytmusic(_get_song)
 
 
 async def get_podcast(
@@ -144,7 +146,7 @@ async def get_podcast(
             podcast_obj["podcastId"] = prov_podcast_id
         return podcast_obj
 
-    return await asyncio.to_thread(_get_podcast)
+    return await _run_ytmusic(_get_podcast)
 
 
 async def get_podcast_episode(
@@ -159,7 +161,7 @@ async def get_podcast_episode(
             episode["videoId"] = prov_episode_id
         return episode
 
-    return await asyncio.to_thread(_get_podcast_episode)
+    return await _run_ytmusic(_get_podcast_episode)
 
 
 async def get_library_artists(
@@ -178,7 +180,7 @@ async def get_library_artists(
             del artist["artist"]
         return artists
 
-    return await asyncio.to_thread(_get_library_artists)
+    return await _run_ytmusic(_get_library_artists)
 
 
 async def get_library_albums(
@@ -190,7 +192,7 @@ async def get_library_albums(
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_library_albums(limit=9999)
 
-    return await asyncio.to_thread(_get_library_albums)
+    return await _run_ytmusic(_get_library_albums)
 
 
 async def get_library_playlists(
@@ -208,7 +210,7 @@ async def get_library_playlists(
             playlist["checksum"] = get_playlist_checksum(playlist)
         return playlists
 
-    return await asyncio.to_thread(_get_library_playlists)
+    return await _run_ytmusic(_get_library_playlists)
 
 
 async def get_library_tracks(
@@ -220,7 +222,7 @@ async def get_library_tracks(
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_library_songs(limit=9999)
 
-    return await asyncio.to_thread(_get_library_tracks)
+    return await _run_ytmusic(_get_library_tracks)
 
 
 async def get_library_podcasts(
@@ -232,7 +234,7 @@ async def get_library_podcasts(
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_library_podcasts(limit=9999)
 
-    return await asyncio.to_thread(_get_library_podcasts)
+    return await _run_ytmusic(_get_library_podcasts)
 
 
 async def library_add_remove_artist(
@@ -246,7 +248,7 @@ async def library_add_remove_artist(
             return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
         return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
 
-    return await asyncio.to_thread(_library_add_remove_artist)
+    return await _run_ytmusic(_library_add_remove_artist)
 
 
 async def library_add_remove_album(
@@ -262,7 +264,7 @@ async def library_add_remove_album(
             return ytm.rate_playlist(playlist_id, LikeStatus.LIKE)
         return ytm.rate_playlist(playlist_id, LikeStatus.INDIFFERENT)
 
-    return await asyncio.to_thread(_library_add_remove_album)
+    return await _run_ytmusic(_library_add_remove_album)
 
 
 async def library_add_remove_playlist(
@@ -276,7 +278,7 @@ async def library_add_remove_playlist(
             return "actions" in ytm.rate_playlist(prov_item_id, LikeStatus.LIKE)
         return "actions" in ytm.rate_playlist(prov_item_id, LikeStatus.INDIFFERENT)
 
-    return await asyncio.to_thread(_library_add_remove_playlist)
+    return await _run_ytmusic(_library_add_remove_playlist)
 
 
 async def add_remove_playlist_tracks(
@@ -294,7 +296,7 @@ async def add_remove_playlist_tracks(
             return ytm.add_playlist_items(playlistId=prov_playlist_id, videoIds=prov_track_ids)
         return ytm.remove_playlist_items(playlistId=prov_playlist_id, videos=prov_track_ids)
 
-    return await asyncio.to_thread(_add_playlist_tracks)
+    return await _run_ytmusic(_add_playlist_tracks)
 
 
 async def get_song_radio_tracks(
@@ -319,7 +321,7 @@ async def get_song_radio_tracks(
                     track["duration"] = get_sec(track["length"])
         return result
 
-    return await asyncio.to_thread(_get_song_radio_tracks)
+    return await _run_ytmusic(_get_song_radio_tracks)
 
 
 async def search(
@@ -351,7 +353,7 @@ async def search(
                     del result["browseId"]
         return results[:limit]
 
-    return await asyncio.to_thread(_search)
+    return await _run_ytmusic(_search)
 
 
 def get_playlist_checksum(playlist_obj: dict[str, Any]) -> str:
@@ -397,7 +399,7 @@ async def get_home(
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_home(limit=limit)
 
-    return await asyncio.to_thread(_get_home)
+    return await _run_ytmusic(_get_home)
 
 
 def determine_recommendation_icon(name: str) -> str:
@@ -415,3 +417,18 @@ def determine_recommendation_icon(name: str) -> str:
     if "recommended" in query:
         return YTMRecommendationIcons.RECOMMENDED
     return YTMRecommendationIcons.DEFAULT
+
+
+async def _run_ytmusic[T](func: Callable[[], T]) -> T:
+    """Run a blocking ytmusicapi call in a thread, translating a signed-out session."""
+    try:
+        return await asyncio.to_thread(func)
+    except (KeyError, IndexError) as err:
+        # An invalid cookie makes YouTube answer with its signed-out page instead of an auth
+        # error, so nav() fails on the unexpected payload and embeds it in the message.
+        if "signInEndpoint" not in str(err):
+            raise
+        raise LoginFailed(
+            "Your YouTube Music session is no longer valid. "
+            "Please reconfigure this provider with a fresh cookie."
+        ) from err

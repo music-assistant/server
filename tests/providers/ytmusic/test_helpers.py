@@ -1,0 +1,42 @@
+"""Test the ytmusicapi call wrapper's handling of a signed-out session."""
+
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+import ytmusicapi
+from music_assistant_models.errors import LoginFailed
+
+from music_assistant.providers.ytmusic import helpers
+
+# A trimmed but realistic nav() KeyError: YouTube answered with its signed-out
+# page instead of an auth error, so the renderer lookup fails deep in that payload.
+SIGNED_OUT_PAYLOAD_ERROR = KeyError(
+    "Unable to find 'twoColumnBrowseResultsRenderer' using path "
+    "['contents', 'twoColumnBrowseResultsRenderer', 'tabs', 0] on "
+    "{'singleColumnBrowseResultsRenderer': {'tabs': [{'tabRenderer': {'content': "
+    "{'sectionListRenderer': {'contents': [{'itemSectionRenderer': {'contents': "
+    "[{'buttonRenderer': {'text': {'runs': [{'text': 'Sign in'}]}, "
+    "'navigationEndpoint': {'clickTrackingParams': '...', "
+    "'signInEndpoint': {'hack': True}}}}]}}]}}}}]}}, "
+    "exception: 'twoColumnBrowseResultsRenderer'"
+)
+
+
+def _patch_get_home(error: Exception) -> Any:
+    """Patch ytmusicapi.YTMusic so get_home() raises the given error."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_home.side_effect = error
+    return patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm)
+
+
+async def test_signed_out_payload_is_translated_to_login_failed() -> None:
+    """A KeyError carrying the signed-out page must surface as LoginFailed."""
+    with _patch_get_home(SIGNED_OUT_PAYLOAD_ERROR), pytest.raises(LoginFailed):
+        await helpers.get_home(headers={})
+
+
+async def test_unrelated_key_error_still_propagates() -> None:
+    """A KeyError unrelated to a signed-out session must propagate as-is."""
+    with _patch_get_home(KeyError("some_other_key")), pytest.raises(KeyError):
+        await helpers.get_home(headers={})
