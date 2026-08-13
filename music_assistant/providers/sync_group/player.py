@@ -896,26 +896,14 @@ class SyncGroupPlayer(Player):
                 result.append(pid)
         return result
 
-    def _member_playback_domains(self, player: Player) -> set[str]:
-        """
-        Return the protocol domains a player can be reached on right now.
-
-        Only outputs that are available at this moment count, so a protocol whose
-        player went offline is left out. A wrapper player (UniversalPlayer)
-        contributes its linked protocols but never its own domain.
-
-        :param player: The player to inspect.
-        """
-        return {output.protocol_domain for output in player.output_protocols if output.available}
-
     def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
         """
-        Check if a player supports the given protocol domain.
+        Check if a player can be reached on the given protocol domain right now.
 
         :param player: The player to check.
         :param domain: The protocol domain string (e.g. "airplay", "sonos").
         """
-        return domain in self._member_playback_domains(player)
+        return domain in player.playback_domains
 
     def _all_members_can_play_on_domain(self, domain: str) -> bool:
         """
@@ -930,7 +918,7 @@ class SyncGroupPlayer(Player):
             member = self.mass.players.get_player(member_id)
             if member is None or not member.state.available:
                 continue
-            paths = self._member_playback_domains(member)
+            paths = member.playback_domains
             if paths and domain not in paths:
                 return False
         return True

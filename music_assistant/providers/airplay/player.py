@@ -360,11 +360,13 @@ class AirPlayPlayer(Player):
                 category="protocol_generic",
                 advanced=True,
             ),
-            # Receiver-queue depth presets, capped at 1750 - the receiver's
-            # standard 2 s buffer minus the delivery margin; deeper would
-            # overflow it. The default comes from the device-family table, and
-            # Automatic resolves through that same table at stream time, so
-            # selecting it never downgrades an affected device.
+            # Receiver-queue depth presets. The range reaches past the standard
+            # 2 s receiver buffer because that figure is only what the binary
+            # assumes for a device that reports no window of its own, and the
+            # deepest starving devices ask for more than the assumption. The
+            # default comes from the device-family table, and Automatic resolves
+            # through that same table at stream time, so selecting it never
+            # downgrades an affected device.
             ConfigEntry(
                 key=CONF_BUFFER_DEPTH,
                 type=ConfigEntryType.INTEGER,
@@ -375,6 +377,9 @@ class AirPlayPlayer(Player):
                     ConfigValueOption(1000),
                     ConfigValueOption(1500),
                     ConfigValueOption(1750),
+                    ConfigValueOption(2000),
+                    ConfigValueOption(2500),
+                    ConfigValueOption(3000),
                 ],
                 default_value=default_buffer_depth(
                     self.device_info.manufacturer or "",
