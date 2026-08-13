@@ -137,6 +137,8 @@ class AIRadioRuntimeMixin:
             "host_id": str(host.get("id", "")),
             "instructions": str(host.get("instructions", "")),
             "tts_engine": str(host.get("tts_engine", "")),
+            "language": str(host.get("language", "")),
+            "options": deepcopy(host.get("options", {})),
             "sections": sections,
             "section_order": deepcopy(host.get("section_order", [])),
             "merge_section_id": str(host.get("merge_section_id", "")),
@@ -1205,7 +1207,9 @@ class AIRadioRuntimeMixin:
             )
         return mode
 
-    async def _generate_text(self, instructions: str, prompt: str, web_mode: str) -> str:
+    async def _generate_text(
+        self, instructions: str, prompt: str, web_mode: str, language: str | None = None
+    ) -> str:
         """Generate one section text using the configured AI engine."""
         instructions = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
         query_parts: list[str] = []
@@ -1215,7 +1219,7 @@ class AIRadioRuntimeMixin:
         # stated as a default so a station can still ask for another language in its instructions
         query_parts.append(
             "Unless the program instructions ask for another language, write the output "
-            f"in the language matching the locale '{self.mass.metadata.locale}'."
+            f"in the language matching the locale '{language or self.mass.metadata.locale}'."
         )
         if web_mode == "force":
             query_parts.append(

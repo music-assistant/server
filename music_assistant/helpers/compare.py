@@ -290,6 +290,9 @@ def compare_radio(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
+    # a dynamic station is its provider's own, so a same-named station is a different one
+    if _is_dynamic_radio(base_item) or _is_dynamic_radio(compare_item):
+        return False
     # compare version
     if not compare_version(base_item.version, compare_item.version):
         return False
@@ -621,3 +624,8 @@ def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> boo
         # only strict compare them if both have the info set
         return base.explicit == compare.explicit
     return None
+
+
+def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:
+    """Return True if the item is a dynamic radio station."""
+    return isinstance(item, Radio) and item.is_dynamic

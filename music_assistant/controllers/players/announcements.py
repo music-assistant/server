@@ -48,7 +48,10 @@ from music_assistant.helpers.plugin_engines import (
     resolve_tts_engine,
     select_core_tts_engine,
 )
-from music_assistant.helpers.tts import query_tts_engine, resolve_tts_stream_path
+from music_assistant.helpers.tts import (
+    query_tts_engine_with_language_fallback,
+    resolve_tts_stream_path,
+)
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.player import Player
 
@@ -162,6 +165,7 @@ class AnnouncementsMixin:
         pre_announce_url: str | None = None,
         message: str | None = None,
         tts_engine: str | None = None,
+        language: str | None = None,
     ) -> None:
         """
         Handle playback of an announcement on given player.
@@ -176,6 +180,8 @@ class AnnouncementsMixin:
         :param message: Text to speak as the announcement, rendered by a TTS engine.
         :param tts_engine: Optional uid of the TTS engine to speak the message,
             defaults to the engine configured on the player controller.
+        :param language: Optional language code to speak the message in (e.g. 'nl-NL'),
+            omit to let the engine speak in the language it is configured for.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
@@ -185,6 +191,8 @@ class AnnouncementsMixin:
             raise PlayerCommandFailed("Provide either a url or a message, not both.")
         if tts_engine and not message:
             raise PlayerCommandFailed("A tts_engine can only be used to speak a message.")
+        if language and not message:
+            raise PlayerCommandFailed("A language can only be used to speak a message.")
         if url and not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         if (
@@ -197,7 +205,7 @@ class AnnouncementsMixin:
         # a group - plays the resulting audio instead of speaking the text again
         is_speech = bool(message)
         if message:
-            url = await self._render_announcement_message(message, tts_engine)
+            url = await self._render_announcement_message(message, tts_engine, language)
         assert url is not None  # for type checking
         # determine pre-announce from (group)player config
         if pre_announce is None and (is_speech or "tts" in url):
@@ -393,12 +401,16 @@ class AnnouncementsMixin:
             )
         return None
 
-    async def _render_announcement_message(self, message: str, tts_engine: str | None) -> str:
+    async def _render_announcement_message(
+        self, message: str, tts_engine: str | None, language: str | None
+    ) -> str:
         """
         Speak a message through a TTS engine and return the url of the resulting audio.
 
         :param message: The text to speak.
         :param tts_engine: Optional uid of the engine to use, defaults to the configured one.
+        :param language: Optional language to speak the message in, omit to let the
+            engine speak in the language it is configured for.
         """
         if tts_engine:
             engine = await resolve_tts_engine(self.mass, tts_engine)
@@ -408,7 +420,13 @@ class AnnouncementsMixin:
             engine = await select_core_tts_engine(self.mass, self.domain, CONF_ANNOUNCE_TTS_ENGINE)
             if engine is None:
                 raise PlayerCommandFailed("No text-to-speech engine is available.")
-        stream_details = await query_tts_engine(engine, message, timeout=ANNOUNCEMENT_TTS_TIMEOUT)
+        stream_details = await query_tts_engine_with_language_fallback(
+            engine,
+            message,
+            language,
+            timeout=ANNOUNCEMENT_TTS_TIMEOUT,
+            logger=self.logger,
+        )
         path, _ = await resolve_tts_stream_path(engine, stream_details)
         if not path.startswith("http"):
             # a group announcement is forwarded to each member through this same command,

@@ -14,8 +14,8 @@ import contextlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -32,6 +32,7 @@ from aiolibdatachannel import (
 )
 
 from music_assistant.constants import MASS_LOGGER_NAME, SENDSPIN_SERVER_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.live_announcements import LIVE_ANNOUNCEMENT_ROUTE
 
 if TYPE_CHECKING:
     from aiolibdatachannel import DataChannel
@@ -47,6 +48,27 @@ MA_API_CHUNK_SIZE = 64 * 1024
 
 DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
+# Labels of the data channels that are bridged to a local WebSocket
+CHANNEL_SENDSPIN = "sendspin"
+CHANNEL_LIVE_ANNOUNCEMENT = "live_announcement"
+
+
+class _BridgeTarget(NamedTuple):
+    """The local WebSocket a data channel label is bridged to."""
+
+    url: str
+    on_first_message: Callable[[WebRTCSession, str], None] | None = None
+
+
+@dataclass
+class _ChannelBridge:
+    """A bridged data channel together with the local WebSocket it is connected to."""
+
+    label: str
+    target: _BridgeTarget
+    channel: DataChannel | None
+    local_ws: aiohttp.ClientWebSocketResponse | None = None
+
 
 @dataclass
 class WebRTCSession:
@@ -57,9 +79,8 @@ class WebRTCSession:
     # Main API channel (ma-api) - bridges to local MA WebSocket API
     data_channel: DataChannel | None = None
     local_ws: aiohttp.ClientWebSocketResponse | None = None
-    # Sendspin channel - bridges to internal sendspin server
-    sendspin_channel: DataChannel | None = None
-    sendspin_ws: aiohttp.ClientWebSocketResponse | None = None
+    # Bridged WebSocket channels (sendspin, live announcements) by data channel label
+    ws_bridges: dict[str, _ChannelBridge] = field(default_factory=dict)
     sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
 
 
@@ -123,6 +144,17 @@ class WebRTCGateway:
         self.logger = LOGGER
         self._ice_servers_callback = ice_servers_callback
         self._set_sendspin_player_callback = set_sendspin_player_callback
+
+        # Data channel label -> the local WebSocket that channel is bridged to. The live
+        # announcement route sits on the same webserver as the ma-api WebSocket.
+        self._bridge_targets: dict[str, _BridgeTarget] = {
+            CHANNEL_SENDSPIN: _BridgeTarget(
+                self.sendspin_url, self._try_extract_sendspin_client_id
+            ),
+            CHANNEL_LIVE_ANNOUNCEMENT: _BridgeTarget(
+                _ws_url_for_path(self.local_ws_url, LIVE_ANNOUNCEMENT_ROUTE)
+            ),
+        }
 
         # Static ICE servers used at registration time (relayed to clients via signaling server)
         self.ice_servers = ice_servers or self.DEFAULT_ICE_SERVERS
@@ -575,12 +607,13 @@ class WebRTCGateway:
             return
 
         # Close the local bridges first so no more data is fed through the channels
-        for local_ws in (session.local_ws, session.sendspin_ws):
+        bridged = [bridge.local_ws for bridge in session.ws_bridges.values()]
+        for local_ws in (session.local_ws, *bridged):
             if local_ws is not None and not local_ws.closed:
                 with contextlib.suppress(Exception):
                     await local_ws.close()
         session.local_ws = None
-        session.sendspin_ws = None
+        session.ws_bridges.clear()
 
         # aclose tears down all PC-owned pumps and every data channel; safe here because
         # _close_session is never invoked from within a PC-owned task
@@ -615,13 +648,33 @@ class WebRTCGateway:
     async def _accept_channels(self, session: WebRTCSession) -> None:
         """Accept incoming data channels and start their bridges."""
         async for channel in session.pc.incoming_data_channels():
-            # The browser opens "ma-api" (default) and "sendspin" (by label); route each
-            if channel.label == "sendspin":
-                session.sendspin_channel = channel
-                session.pc.spawn_task(self._bridge_sendspin(session, channel))
-            else:
+            if (target := self._bridge_targets.get(channel.label)) is not None:
+                if channel.label in session.ws_bridges:
+                    # replacing the entry would leave the running bridge untracked, and
+                    # tearing either one down would then orphan the other's websocket
+                    self.logger.warning(
+                        "Refusing a second '%s' data channel for session %s",
+                        channel.label,
+                        session.session_id,
+                    )
+                    channel.close()
+                    continue
+                bridge = _ChannelBridge(label=channel.label, target=target, channel=channel)
+                session.ws_bridges[channel.label] = bridge
+                session.pc.spawn_task(self._bridge_websocket(session, bridge, channel))
+            elif session.data_channel is None:
+                # the browser opens its API channel first, whatever label it gives it
                 session.data_channel = channel
                 session.pc.spawn_task(self._bridge_ma_api(session, channel))
+            else:
+                # a label this server does not know must not be taken for a second API
+                # channel: that would replace the live bridge and break the session
+                self.logger.warning(
+                    "Refusing data channel with unknown label '%s' for session %s",
+                    channel.label,
+                    session.session_id,
+                )
+                channel.close()
 
     async def _bridge_ma_api(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Bridge the ma-api data channel to the local WebSocket API."""
@@ -703,55 +756,67 @@ class WebRTCGateway:
         # leaving the client an open channel that silently drops messages
         self._schedule_close(session.session_id)
 
-    async def _bridge_sendspin(self, session: WebRTCSession, channel: DataChannel) -> None:
-        """Bridge the sendspin data channel to the internal sendspin server."""
+    async def _bridge_websocket(
+        self, session: WebRTCSession, bridge: _ChannelBridge, channel: DataChannel
+    ) -> None:
+        """Bridge a data channel to the local WebSocket its label is routed to."""
         try:
-            session.sendspin_ws = await self.http_session.ws_connect(self.sendspin_url)
-            self.logger.debug("Sendspin channel connected for session %s", session.session_id)
+            # TLS verification would fail on the bind address and adds nothing to a dial
+            # that never leaves this host (a no-op for the plain ws:// targets)
+            bridge.local_ws = await self.http_session.ws_connect(bridge.target.url, ssl=False)
+            self.logger.debug(
+                "%s channel connected for session %s", bridge.label, session.session_id
+            )
         except Exception:
             self.logger.exception(
-                "Failed to connect sendspin channel to internal server for session %s",
+                "Failed to connect %s channel to %s for session %s",
+                bridge.label,
+                bridge.target.url,
                 session.session_id,
             )
-            channel.close()
+            await self._close_ws_bridge(session, bridge)
             return
 
-        # from_local runs as its own PC-owned pump; this task drives channel -> internal
-        session.pc.spawn_task(self._sendspin_from_local(session, channel))
-        await self._sendspin_to_local(session, channel)
-        # channel -> internal loop ended (remote channel closed): tear down only this bridge
-        await self._close_sendspin_bridge(session)
+        # from_local runs as its own PC-owned pump; this task drives channel -> local
+        session.pc.spawn_task(self._ws_bridge_from_local(session, bridge, channel))
+        await self._ws_bridge_to_local(session, bridge, channel)
+        # channel -> local loop ended (remote channel closed): tear down only this bridge
+        await self._close_ws_bridge(session, bridge)
 
-    async def _sendspin_to_local(self, session: WebRTCSession, channel: DataChannel) -> None:
-        """Forward messages from the sendspin data channel to the internal sendspin server."""
+    async def _ws_bridge_to_local(
+        self, session: WebRTCSession, bridge: _ChannelBridge, channel: DataChannel
+    ) -> None:
+        """Forward messages from a bridged data channel to its local WebSocket."""
         first_message = True
         try:
             async for message in channel:
-                # Check only the first message for client_id extraction
                 if first_message:
                     first_message = False
-                    if isinstance(message, str):
-                        self._try_extract_sendspin_client_id(session, message)
+                    if bridge.target.on_first_message and isinstance(message, str):
+                        bridge.target.on_first_message(session, message)
 
-                if session.sendspin_ws and not session.sendspin_ws.closed:
+                local_ws = bridge.local_ws
+                if local_ws and not local_ws.closed:
                     if isinstance(message, bytes):
-                        await session.sendspin_ws.send_bytes(message)
+                        await local_ws.send_bytes(message)
                     else:
-                        await session.sendspin_ws.send_str(message)
+                        await local_ws.send_str(message)
         except ConnectionClosedError:
-            self.logger.debug("Sendspin channel closed for session %s", session.session_id)
+            self.logger.debug("%s channel closed for session %s", bridge.label, session.session_id)
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger.exception("Error forwarding sendspin to local")
+            self.logger.exception("Error forwarding %s to local", bridge.label)
 
-    async def _sendspin_from_local(self, session: WebRTCSession, channel: DataChannel) -> None:
-        """Forward messages from the internal sendspin server to the sendspin data channel."""
-        sendspin_ws = session.sendspin_ws
-        if sendspin_ws is None:
+    async def _ws_bridge_from_local(
+        self, session: WebRTCSession, bridge: _ChannelBridge, channel: DataChannel
+    ) -> None:
+        """Forward messages from a bridged local WebSocket to its data channel."""
+        local_ws = bridge.local_ws
+        if local_ws is None:
             return
         try:
-            async for msg in sendspin_ws:
+            async for msg in local_ws:
                 if msg.type in {aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY}:
                     await self._send_on_channel(channel, msg.data)
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
@@ -759,19 +824,23 @@ class WebRTCGateway:
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger.exception("Error forwarding sendspin from local")
-        # the internal sendspin WS closed: close only this bridge, leaving the ma-api session up
-        await self._close_sendspin_bridge(session)
+            self.logger.exception("Error forwarding %s from local", bridge.label)
+        # the local WS closed: close only this bridge, leaving the ma-api session up
+        await self._close_ws_bridge(session, bridge)
 
-    async def _close_sendspin_bridge(self, session: WebRTCSession) -> None:
-        """Close the internal Sendspin bridge for a WebRTC session."""
-        sendspin_ws = session.sendspin_ws
-        session.sendspin_ws = None
-        if sendspin_ws is not None and not sendspin_ws.closed:
+    async def _close_ws_bridge(self, session: WebRTCSession, bridge: _ChannelBridge) -> None:
+        """Close one bridged data channel and its local WebSocket."""
+        # only drop the entry while it still points at this bridge, so a teardown can
+        # never untrack a bridge that replaced it
+        if session.ws_bridges.get(bridge.label) is bridge:
+            del session.ws_bridges[bridge.label]
+        local_ws = bridge.local_ws
+        bridge.local_ws = None
+        if local_ws is not None and not local_ws.closed:
             with contextlib.suppress(Exception):
-                await sendspin_ws.close()
-        channel = session.sendspin_channel
-        session.sendspin_channel = None
+                await local_ws.close()
+        channel = bridge.channel
+        bridge.channel = None
         if channel is not None and not channel.closed:
             with contextlib.suppress(Exception):
                 await channel.aclose()
@@ -850,6 +919,17 @@ class _BenignNativeNoiseFilter(logging.Filter):
 
 
 _BENIGN_NATIVE_NOISE_FILTER = _BenignNativeNoiseFilter()
+
+
+def _ws_url_for_path(ws_url: str, path: str) -> str:
+    """
+    Return the url of another WebSocket route on the same host.
+
+    :param ws_url: WebSocket url to take the scheme and host from.
+    :param path: Route to reach on that same host.
+    """
+    parsed = urlparse(ws_url)
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
 
 
 def _is_usable_ice_url(url: str) -> bool:
