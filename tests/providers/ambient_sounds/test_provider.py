@@ -1,14 +1,19 @@
 """Tests for the Ambient Sounds provider."""
 
 import pathlib
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError
 
 from music_assistant.providers import ambient_sounds
-from music_assistant.providers.ambient_sounds import PRESETS, AmbientSoundsProvider
+from music_assistant.providers.ambient_sounds import (
+    CONF_KEY_CUSTOM_SOUNDS,
+    PRESETS,
+    AmbientSoundsProvider,
+)
 
 
 def _create_provider(cache_path: str) -> AmbientSoundsProvider:
@@ -27,8 +32,26 @@ def _create_provider(cache_path: str) -> AmbientSoundsProvider:
     provider.mass = MagicMock()
     provider.mass.cache_path = cache_path
     provider.logger = MagicMock()
+    # in-memory stand-in for persistent config storage of custom sounds
+    stored: dict[str, Any] = {}
+    provider.mass.config.get = lambda key, default=None: stored.get(key, default)
+    provider.mass.config.set = lambda key, value: stored.__setitem__(key, value)
+    provider.mass.cache.get = AsyncMock(return_value=None)
+    provider.mass.cache.set = AsyncMock()
 
     return provider
+
+
+def _mock_media_info(duration: float = 3600.0) -> MagicMock:
+    """Create a mocked AudioTags result for a probed custom sound url."""
+    media_info = MagicMock()
+    media_info.duration = duration
+    media_info.format = "mp3"
+    media_info.sample_rate = 44100
+    media_info.bits_per_sample = 16
+    media_info.channels = 2
+    media_info.raw = {}
+    return media_info
 
 
 async def test_sound_effects_enumeration(tmp_path: pathlib.Path) -> None:
@@ -96,6 +119,81 @@ async def test_stream_details_unknown_preset(tmp_path: pathlib.Path) -> None:
     await provider.handle_async_init()
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details("unknown_preset")
+
+
+async def test_add_custom_sound(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A custom sound is probed, stored and enumerated alongside the presets."""
+    monkeypatch.setattr(
+        ambient_sounds, "async_parse_tags", AsyncMock(return_value=_mock_media_info())
+    )
+    provider = _create_provider(str(tmp_path))
+    url = "https://example.com/sounds/rain.mp3"
+
+    item = await provider.add_sound(url, "Rain", image_url="https://example.com/rain.jpg")
+    assert item.item_id == url
+    assert item.name == "Rain"
+    assert item.duration == 3600
+    assert item.media_type == MediaType.SOUND_EFFECT
+    assert item.metadata.images
+    assert item.metadata.images[0].path == "https://example.com/rain.jpg"
+
+    items = [x async for x in provider.get_sound_effects()]
+    assert len(items) == len(PRESETS) + 1
+    assert (await provider.get_sound_effect(url)).name == "Rain"
+
+    # adding the same url again replaces the stored entry instead of duplicating it
+    await provider.add_sound(url, "Rain 2")
+    stored = provider.mass.config.get(CONF_KEY_CUSTOM_SOUNDS)
+    assert len(stored) == 1
+    assert stored[0]["name"] == "Rain 2"
+
+
+async def test_add_custom_sound_invalid_url(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An url that fails to probe is rejected and not stored."""
+    monkeypatch.setattr(
+        ambient_sounds, "async_parse_tags", AsyncMock(side_effect=AudioError("not audio"))
+    )
+    provider = _create_provider(str(tmp_path))
+    with pytest.raises(AudioError):
+        await provider.add_sound("https://example.com/not_audio", "Broken")
+    assert not provider.mass.config.get(CONF_KEY_CUSTOM_SOUNDS)
+
+
+async def test_remove_custom_sound(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A removed custom sound is no longer enumerated or resolvable."""
+    monkeypatch.setattr(
+        ambient_sounds, "async_parse_tags", AsyncMock(return_value=_mock_media_info())
+    )
+    provider = _create_provider(str(tmp_path))
+    url = "https://example.com/sounds/rain.mp3"
+    await provider.add_sound(url, "Rain")
+
+    await provider.remove_sound(url)
+    items = [x async for x in provider.get_sound_effects()]
+    assert len(items) == len(PRESETS)
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_sound_effect(url)
+
+
+async def test_custom_sound_stream_details(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Streamdetails for a custom sound point at its url with probed format info."""
+    monkeypatch.setattr(
+        ambient_sounds, "async_parse_tags", AsyncMock(return_value=_mock_media_info())
+    )
+    provider = _create_provider(str(tmp_path))
+    url = "https://example.com/sounds/rain.mp3"
+    await provider.add_sound(url, "Rain")
+
+    stream_details = await provider.get_stream_details(url)
+    assert stream_details.stream_type == StreamType.HTTP
+    assert stream_details.media_type == MediaType.SOUND_EFFECT
+    assert stream_details.path == url
+    assert stream_details.duration == 3600
+    assert stream_details.audio_format.content_type == ContentType.MP3
 
 
 async def test_failed_render_leaves_no_temp_file(
