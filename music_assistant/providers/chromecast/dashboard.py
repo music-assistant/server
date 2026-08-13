@@ -143,12 +143,12 @@ class ChromecastDashboards:
         :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
         url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
-        chromecast = await self._get_or_create_chromecast(device_id)
         castplayer = self.mass.players.get_player(device_id)
         if isinstance(castplayer, ChromecastPlayer):
             # an earlier stop on the player may still have a release of the receiver
             # app pending, which would close the dashboard we are about to show
             castplayer.cancel_pending_app_quit()
+        chromecast = await self._get_or_create_chromecast(device_id)
         try:
             await self.mass.loop.run_in_executor(None, send_show_dashboard, chromecast, url)
         except TimeoutError as err:

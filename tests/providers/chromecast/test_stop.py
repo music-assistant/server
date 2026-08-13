@@ -50,6 +50,7 @@ def _fake_cast(
     """
     fake = MagicMock()
     fake.type = player_type
+    fake.available = True
     fake.cc.app_id = running_app_id
     fake._app_quit_task_id = "cast_quit_app_test"
     fake.cancel_pending_app_quit = partial(
@@ -125,15 +126,6 @@ async def test_launching_an_app_cancels_a_pending_release() -> None:
     fake.mass.cancel_timer.assert_called_once_with(fake._app_quit_task_id)
 
 
-async def test_claiming_the_device_cancels_a_pending_release() -> None:
-    """Anything launching an app on the device keeps it from being released."""
-    fake = _fake_cast()
-
-    fake.cancel_pending_app_quit()
-
-    fake.mass.cancel_timer.assert_called_once_with(fake._app_quit_task_id)
-
-
 @pytest.mark.parametrize("app_id", [MASS_APP_ID, APP_MEDIA_RECEIVER])
 async def test_unused_receiver_app_is_quit(app_id: str) -> None:
     """Nothing came along within the grace period, so the device is released."""
@@ -142,6 +134,16 @@ async def test_unused_receiver_app_is_quit(app_id: str) -> None:
     await _quit_app_when_unused(fake)
 
     fake.cc.quit_app.assert_called_once()
+
+
+async def test_unreachable_device_is_not_quit() -> None:
+    """The device dropped off within the grace period, so there is nothing to send to."""
+    fake = _fake_cast(player_state="IDLE")
+    fake.available = False
+
+    await _quit_app_when_unused(fake)
+
+    fake.cc.quit_app.assert_not_called()
 
 
 async def test_app_of_another_sender_is_not_quit() -> None:

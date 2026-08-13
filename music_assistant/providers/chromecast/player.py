@@ -504,6 +504,8 @@ class ChromecastPlayer(Player):
 
     async def _quit_app_when_unused(self) -> None:
         """Release the Cast device, unless the receiver app got used again."""
+        if not self.available:
+            return  # the device dropped off in the meantime
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # another app took over the device
         status = self.cc.media_controller.status
