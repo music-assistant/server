@@ -23,6 +23,7 @@ from music_assistant.controllers.players.helpers import handle_player_command
 from music_assistant.controllers.streams import live_announcements
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_ROUTE,
+    MAX_CLOSE_REASON_BYTES,
     LiveAnnouncementManager,
     LiveAnnouncementSession,
 )
@@ -60,6 +61,14 @@ class Harness(NamedTuple):
     player: MagicMock
 
 
+class BlockedAnnouncement(NamedTuple):
+    """An announcement that reports its progress and plays for as long as the test wants."""
+
+    started: asyncio.Event
+    release: asyncio.Event
+    done: asyncio.Event
+
+
 @pytest.fixture(name="harness")
 async def harness_fixture() -> AsyncGenerator[Harness]:
     """Yield a live announcement manager served on a real websocket route."""
@@ -87,12 +96,12 @@ async def harness_fixture() -> AsyncGenerator[Harness]:
 
 
 @pytest.mark.asyncio
-async def test_read_replays_the_clip_and_waits_for_the_rest() -> None:
+async def test_read_replays_the_clip_from_the_start() -> None:
     """
-    A reader attaching mid-sentence gets the clip from the start and then follows along.
+    A reader gets the whole clip from the start and follows the audio still coming in.
 
-    The renderer only starts pulling once its ffmpeg is up, by which time the client is
-    already speaking, so the session is a buffer and not a queue.
+    The clip is replayed rather than consumed, so it can be served again whenever the
+    renderer comes back for it.
     """
     session = _session()
     await session.write(b"first")
@@ -114,7 +123,7 @@ async def test_read_replays_the_clip_and_waits_for_the_rest() -> None:
         with pytest.raises(StopAsyncIteration):
             await asyncio.wait_for(end, timeout=REPLY_TIMEOUT)
 
-    # audio that arrives after the clip ended is not part of it
+    # the whole clip is served again, without the audio that arrived after it ended
     await session.write(b"late")
     assert [chunk async for chunk in session.read()] == [b"first", b"second"]
 
@@ -144,7 +153,7 @@ async def test_an_unknown_session_is_not_served() -> None:
 
 @pytest.mark.asyncio
 async def test_a_spoken_clip_is_announced_on_the_player(harness: Harness) -> None:
-    """The start message starts the announcement and a text frame ends the clip."""
+    """A text frame completes the clip, which is then announced on the chosen player."""
     ws = await _start_speaking(harness.client, pre_announce=True, volume_level=42)
     assert await _reply(ws) == "started"
 
@@ -161,16 +170,9 @@ async def test_a_spoken_clip_is_announced_on_the_player(harness: Harness) -> Non
 
 
 @pytest.mark.asyncio
-async def test_the_renderer_is_served_what_is_being_spoken(harness: Harness) -> None:
-    """The announcement url delivers an open-ended wave header and then the frames."""
-    served: list[bytes] = []
-
-    async def _pull(_player_id: str, url: str, **_kwargs: Any) -> None:
-        request, writer = _stream_request(_session_id(url))
-        await harness.manager.serve_stream(request)
-        served.append(_written(writer))
-
-    harness.mass.players.play_announcement = AsyncMock(side_effect=_pull)
+async def test_the_renderer_is_served_the_finished_clip(harness: Harness) -> None:
+    """The announcement url delivers a wave header followed by the clip that was spoken."""
+    served = _serve_the_clip_when_announced(harness)
 
     ws = await _start_speaking(harness.client)
     assert await _reply(ws) == "started"
@@ -179,32 +181,28 @@ async def test_the_renderer_is_served_what_is_being_spoken(harness: Harness) -> 
     await ws.send_str('{"type": "stop"}')
     assert await _reply(ws) == "finished"
 
-    assert served == [create_streaming_wave_header(LIVE_FORMAT) + b"\x01\x02\x03\x04"]
+    assert served == [[create_streaming_wave_header(LIVE_FORMAT), b"\x01\x02", b"\x03\x04"]]
 
 
 @pytest.mark.asyncio
 async def test_the_session_lives_as_long_as_the_announcement(harness: Harness) -> None:
     """The audio stays available for as long as the player is playing it."""
-    playing = asyncio.Event()
-
-    async def _play(*_args: Any, **_kwargs: Any) -> None:
-        await playing.wait()
-
-    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
+    blocked = _block_announcement(harness)
 
     ws = await _start_speaking(harness.client)
     assert await _reply(ws) == "started"
     await ws.send_bytes(b"\x01\x02")
     await ws.send_str('{"type": "stop"}')
+    await _wait(blocked.started)
 
-    # the player is still on the clip, so a renderer starting late is still served
+    # the player is on the clip, so it must stay available to be (re)fetched
     session_id = _session_id(harness.mass.players.play_announcement.call_args.kwargs["url"])
     assert harness.manager.active_sessions == 1
     request, writer = _stream_request(session_id)
     await harness.manager.serve_stream(request)
-    assert _written(writer).endswith(b"\x01\x02")
+    assert _written(writer) == [create_streaming_wave_header(LIVE_FORMAT), b"\x01\x02"]
 
-    playing.set()
+    blocked.release.set()
     assert await _reply(ws) == "finished"
 
     assert harness.manager.active_sessions == 0
@@ -216,25 +214,36 @@ async def test_the_session_lives_as_long_as_the_announcement(harness: Harness) -
 @pytest.mark.asyncio
 async def test_the_announcement_outlives_a_client_that_drops(harness: Harness) -> None:
     """A client that disconnects mid-sentence still gets what it spoke played out."""
-    playing = asyncio.Event()
-    played = asyncio.Event()
-
-    async def _play(*_args: Any, **_kwargs: Any) -> None:
-        await playing.wait()
-        played.set()
-
-    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
+    blocked = _block_announcement(harness)
 
     ws = await _start_speaking(harness.client)
     assert await _reply(ws) == "started"
     await ws.send_bytes(b"\x01\x02")
     await ws.close()
 
-    assert not played.is_set()
+    # the clip is announced although there is no longer anyone to report back to
+    await _wait(blocked.started)
     assert harness.manager.active_sessions == 1
+    blocked.release.set()
+    await _wait(blocked.done)
 
-    playing.set()
-    await asyncio.wait_for(played.wait(), timeout=REPLY_TIMEOUT)
+
+@pytest.mark.asyncio
+async def test_a_player_that_never_finishes_is_not_waited_on_forever(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A player that never reports back ends as an error instead of holding the session."""
+    monkeypatch.setattr(live_announcements, "ANNOUNCEMENT_TIMEOUT", 0.1)
+    # never released: this stands in for a provider that hands off and never returns
+    _block_announcement(harness)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+
+    assert await _reply(ws) == "error"
+    assert harness.manager.active_sessions == 0
 
 
 @pytest.mark.asyncio
@@ -286,7 +295,7 @@ async def test_a_user_without_access_to_the_player_is_refused(harness: Harness) 
 async def test_a_client_that_goes_silent_ends_its_own_clip(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Silence ends the clip instead of holding the player until the client disconnects."""
+    """Silence ends the clip on its own, so a client that stops sending is not left open."""
     monkeypatch.setattr(live_announcements, "IDLE_TIMEOUT", 0.05)
 
     ws = await _start_speaking(harness.client)
@@ -294,13 +303,14 @@ async def test_a_client_that_goes_silent_ends_its_own_clip(
     await ws.send_bytes(b"\x01\x02")
 
     assert await _reply(ws) == "finished"
+    harness.mass.players.play_announcement.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_a_clip_that_keeps_going_is_cut_off(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A client that keeps sending cannot hold on to the player indefinitely."""
+    """A client that keeps sending cannot keep its session open indefinitely."""
     # with the idle timeout out of reach, only the wall clock bound can end this clip
     monkeypatch.setattr(live_announcements, "MAX_SESSION_SECONDS", 0.1)
     monkeypatch.setattr(live_announcements, "IDLE_TIMEOUT", 30)
@@ -310,6 +320,7 @@ async def test_a_clip_that_keeps_going_is_cut_off(
     await ws.send_bytes(b"\x01\x02")
 
     assert await _reply(ws) == "finished"
+    harness.mass.players.play_announcement.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -318,19 +329,14 @@ async def test_only_so_many_clips_can_be_in_progress_at_once(
 ) -> None:
     """The audio buffered at the same time is bounded by a cap on the sessions."""
     monkeypatch.setattr(live_announcements, "MAX_CONCURRENT_SESSIONS", 1)
-    playing = asyncio.Event()
-
-    async def _play(*_args: Any, **_kwargs: Any) -> None:
-        await playing.wait()
-
-    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
 
     speaking = await _start_speaking(harness.client)
     assert await _reply(speaking) == "started"
+    await speaking.send_bytes(b"\x01\x02")
+
     rejected = await _start_speaking(harness.client)
     assert await _close_code(rejected) == REJECTED
 
-    playing.set()
     await speaking.send_str('{"type": "stop"}')
     assert await _reply(speaking) == "finished"
     assert harness.mass.players.play_announcement.await_count == 1
@@ -339,12 +345,7 @@ async def test_only_so_many_clips_can_be_in_progress_at_once(
 @pytest.mark.asyncio
 async def test_empty_frames_are_not_part_of_the_clip(harness: Harness) -> None:
     """A frame without audio must not grow the clip that is held in memory."""
-    playing = asyncio.Event()
-
-    async def _play(*_args: Any, **_kwargs: Any) -> None:
-        await playing.wait()
-
-    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
+    served = _serve_the_clip_when_announced(harness)
 
     ws = await _start_speaking(harness.client)
     assert await _reply(ws) == "started"
@@ -352,14 +353,28 @@ async def test_empty_frames_are_not_part_of_the_clip(harness: Harness) -> None:
     await ws.send_bytes(b"\x01\x02")
     await ws.send_bytes(b"")
     await ws.send_str('{"type": "stop"}')
-
-    session_id = _session_id(harness.mass.players.play_announcement.call_args.kwargs["url"])
-    request, writer = _stream_request(session_id)
-    await harness.manager.serve_stream(request)
-    assert _frames_written(writer) == [b"\x01\x02"]
-
-    playing.set()
     assert await _reply(ws) == "finished"
+
+    assert served == [[create_streaming_wave_header(LIVE_FORMAT), b"\x01\x02"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frames", [[], [b"", b""]], ids=["no audio at all", "only empty frames"])
+async def test_a_clip_without_audio_is_not_announced(harness: Harness, frames: list[bytes]) -> None:
+    """
+    A clip nobody spoke into is dropped instead of played.
+
+    Announcing silence would interrupt whatever the player is doing for nothing.
+    """
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    for frame in frames:
+        await ws.send_bytes(frame)
+    await ws.send_str('{"type": "stop"}')
+
+    assert await _reply(ws) == "finished"
+    harness.mass.players.play_announcement.assert_not_called()
+    assert harness.manager.active_sessions == 0
 
 
 @pytest.mark.asyncio
@@ -373,6 +388,7 @@ async def test_an_ingress_client_announces_without_an_auth_message(harness: Harn
         ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)
         await ws.send_json({"type": "start", "player_id": PLAYER_ID, "sample_rate": SAMPLE_RATE})
         assert await _reply(ws) == "started"
+        await ws.send_bytes(b"\x01\x02")
         await ws.send_str('{"type": "stop"}')
         assert await _reply(ws) == "finished"
 
@@ -391,6 +407,7 @@ async def test_the_home_assistant_system_user_announces_over_ingress(harness: Ha
         ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)
         await ws.send_json({"type": "start", "player_id": PLAYER_ID, "sample_rate": SAMPLE_RATE})
         assert await _reply(ws) == "started"
+        await ws.send_bytes(b"\x01\x02")
         await ws.send_str('{"type": "stop"}')
         assert await _reply(ws) == "finished"
 
@@ -464,6 +481,21 @@ async def test_an_unavailable_player_is_rejected(harness: Harness) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_long_rejection_reason_still_reaches_the_client(harness: Harness) -> None:
+    """The reason quotes what the client sent, which must still fit in a close frame."""
+    ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)
+    await ws.send_json({"type": "auth", "token": VALID_TOKEN})
+    await ws.send_json({"type": "start", "player_id": "x" * 500, "sample_rate": SAMPLE_RATE})
+
+    msg = await asyncio.wait_for(ws.receive(), timeout=REPLY_TIMEOUT)
+    assert msg.type is WSMsgType.CLOSE
+    assert msg.data == REJECTED
+    assert msg.extra is not None
+    assert msg.extra.startswith("Unknown or unavailable player")
+    assert len(msg.extra.encode()) <= MAX_CLOSE_REASON_BYTES
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "start_message",
     [
@@ -521,6 +553,47 @@ def _announce_through_player_commands(harness: Harness) -> list[tuple[str, User 
     return announced
 
 
+def _block_announcement(harness: Harness) -> BlockedAnnouncement:
+    """
+    Keep an announcement playing until the test releases it.
+
+    :param harness: The harness whose announcements should block.
+    :return: The events reporting the announcement and releasing it again.
+    """
+    blocked = BlockedAnnouncement(asyncio.Event(), asyncio.Event(), asyncio.Event())
+
+    async def _play(*_args: Any, **_kwargs: Any) -> None:
+        blocked.started.set()
+        await blocked.release.wait()
+        blocked.done.set()
+
+    harness.mass.players.play_announcement = AsyncMock(side_effect=_play)
+    return blocked
+
+
+def _serve_the_clip_when_announced(harness: Harness) -> list[list[bytes]]:
+    """
+    Fetch the announcement url the way the renderer does, whenever one is announced.
+
+    :param harness: The harness whose announcements should be fetched.
+    :return: What was written to the stream for each of them.
+    """
+    served: list[list[bytes]] = []
+
+    async def _pull(_player_id: str, url: str, **_kwargs: Any) -> None:
+        request, writer = _stream_request(_session_id(url))
+        await harness.manager.serve_stream(request)
+        served.append(_written(writer))
+
+    harness.mass.players.play_announcement = AsyncMock(side_effect=_pull)
+    return served
+
+
+async def _wait(event: asyncio.Event) -> None:
+    """Wait for something the server is expected to do right away."""
+    await asyncio.wait_for(event.wait(), timeout=REPLY_TIMEOUT)
+
+
 async def _start_speaking(
     client: TestClient[web.Request, web.Application], **start: object
 ) -> ClientWebSocketResponse:
@@ -567,14 +640,9 @@ def _stream_request(session_id: str) -> tuple[web.Request, MagicMock]:
     return request, writer
 
 
-def _written(writer: MagicMock) -> bytes:
-    """Return the body that was written to a served stream."""
-    return b"".join(call.args[0] for call in writer.write.call_args_list)
-
-
-def _frames_written(writer: MagicMock) -> list[bytes]:
-    """Return the audio chunks written to a served stream, without the wave header."""
-    return [call.args[0] for call in writer.write.call_args_list[1:]]
+def _written(writer: MagicMock) -> list[bytes]:
+    """Return the chunks that were written to a served stream, header first."""
+    return [call.args[0] for call in writer.write.call_args_list]
 
 
 def _session_id(url: str) -> str:

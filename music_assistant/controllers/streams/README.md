@@ -44,7 +44,9 @@ Live announcements (`live_announcements.py`) are the one path where audio travel
 This splits across both webservers, because neither can do the job alone:
 
 - The **inbound** half is a WebSocket on the main webserver. Audio from a client is a privileged action, so it needs the authentication and the SSL support that the stream server deliberately does not have. Browsers additionally require a secure context to reach a microphone at all, which only the main webserver can offer.
-- The **outbound** half is an ordinary stream server route serving an open-ended WAV. The announcement renderer only ever pulls its audio from a URL, so exposing the buffered speech as one keeps live announcements on exactly the same path as every other announcement, and playback can start while the user is still talking.
+- The **outbound** half is an ordinary stream server route serving the buffered speech as a WAV. The announcement renderer only ever pulls its audio from a URL, so exposing the clip as one keeps live announcements on exactly the same path as every other announcement.
+
+The announcement is dispatched only once the clip is complete, not while it is still being spoken. Players that announce natively need the whole clip up front: AirPlay renders it to a file and schedules a single synchronized instant across every group member from its exact duration, and Sonos needs the duration to know how long the clip runs. Handing them a clip that is still growing gives one player type a head start and truncates another, so every player gets the same finished clip instead.
 
 A session is identified by an unguessable id that appears only in the stream URL, and it is dropped as soon as the announcement has been played.
 

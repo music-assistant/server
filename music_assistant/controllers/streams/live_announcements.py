@@ -3,9 +3,9 @@ Live announcements: speech captured by a client and played on a player as it is 
 
 A client holds an authenticated WebSocket on the MA webserver and pushes raw PCM frames
 for as long as the user speaks. Those frames land in a LiveAnnouncementSession, which
-serves them as a WAV url on the stream server. From there on this is an ordinary
-announcement: the announcement renderer pulls that url like any other source, so
-playback starts while the user is still talking instead of after they finish.
+serves them as a WAV url on the stream server. Once the clip is complete it is announced
+like any other: the announcement renderer pulls that url the same way it pulls a TTS
+clip, so every player plays it exactly as it plays the announcements it already knows.
 
 Wire format on the inbound WebSocket:
 - text {"type":"auth","token":...} - first message, omitted for Ingress connections
@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, NamedTuple
 
 from aiohttp import WSMsgType, web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 from orjson import dumps
 
@@ -42,7 +43,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.audio import create_streaming_wave_header
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 
-from .announcements import MAX_ANNOUNCEMENT_SECONDS
+from .announcements import MAX_ANNOUNCEMENT_SECONDS, MAX_CLIP_SECONDS
 
 if TYPE_CHECKING:
     import logging
@@ -75,6 +76,11 @@ HANDSHAKE_TIMEOUT = 10
 # Live announcements are spoken one at a time by a person, so a handful of sessions is
 # already generous; the cap bounds the audio that can be buffered at once.
 MAX_CONCURRENT_SESSIONS = 4
+# Room for the whole clip to play out and the player to be restored. A player provider
+# that never returns would otherwise hold one of the session slots until a restart.
+ANNOUNCEMENT_TIMEOUT = MAX_CLIP_SECONDS + 60
+# A close frame carries 125 bytes, two of which are taken by the status code.
+MAX_CLOSE_REASON_BYTES = 123
 
 
 class LiveAnnouncementStart(NamedTuple):
@@ -90,9 +96,9 @@ class LiveAnnouncementSession:
     """
     The audio of a single live announcement, buffered while it is being spoken.
 
-    The whole clip is kept until the session is dropped: the consumer attaches slightly
-    after the first frames arrive (the announcement render has to spawn ffmpeg first),
-    so it must still be able to read the clip from the start.
+    The whole clip is kept until the session is dropped, so the renderer - which only
+    starts pulling once the clip is complete - can read it from the start, and can do so
+    again if it is served more than once.
     """
 
     def __init__(self, session_id: str, url: str, audio_format: AudioFormat) -> None:
@@ -200,11 +206,15 @@ class LiveAnnouncementManager:
         # the header declares an open-ended length: how long the user will speak is
         # not known when the first bytes go out
         await resp.write(create_streaming_wave_header(session.audio_format))
-        async for chunk in session.read():
-            try:
-                await resp.write(chunk)
-            except ConnectionResetError, BrokenPipeError:
-                break
+        # aclosing releases the reader immediately when the renderer goes away, instead
+        # of leaving it parked on the session until garbage collection finalizes it
+        audio = session.read()
+        async with aclosing(audio):
+            async for chunk in audio:
+                try:
+                    await resp.write(chunk)
+                except ConnectionResetError, BrokenPipeError:
+                    break
         return resp
 
     async def handle_ws(self, request: web.Request) -> web.WebSocketResponse:
@@ -230,9 +240,22 @@ class LiveAnnouncementManager:
     async def _run_session(self, ws: web.WebSocketResponse, start: LiveAnnouncementStart) -> None:
         """Announce what the client speaks, from the start message up to the stop."""
         session = self._create_session(start.audio_format)
-        # the announcement runs detached: it outlives the connection (a client that
-        # drops mid-sentence still gets what it spoke played out and its player restored)
-        # and it owns the session, dropping it once the audio has been consumed.
+        try:
+            await self._send(ws, {"type": "started"})
+            await self._receive_audio(ws, session)
+        finally:
+            await session.finish()
+        if not session.duration:
+            # nothing was spoken (a mis-tap, or a client that never sent audio): announcing
+            # it would interrupt whatever the player is doing to play silence
+            self._sessions.pop(session.session_id, None)
+            await self._send(ws, {"type": "finished"})
+            return
+        # only now the clip is complete: players that announce natively need it whole up
+        # front - AirPlay renders it to a file and schedules one synchronized instant for
+        # every group member from its exact duration, which a growing clip cannot give.
+        # Its own task, so a client that drops still gets what it spoke played out, and
+        # it owns the session, dropping it once the audio has been consumed.
         announcement = self.mass.create_task(
             self._play_live_announcement(
                 session,
@@ -241,11 +264,6 @@ class LiveAnnouncementManager:
                 volume_level=start.volume_level,
             )
         )
-        try:
-            await self._send(ws, {"type": "started"})
-            await self._receive_audio(ws, session)
-        finally:
-            await session.finish()
         if ws.closed:
             # there is no longer anyone to report the outcome to, so release the
             # connection handler and let the announcement play itself out
@@ -312,12 +330,20 @@ class LiveAnnouncementManager:
     ) -> None:
         """Play the session audio as an announcement and drop the session afterwards."""
         try:
-            await self.mass.players.play_announcement(
-                player_id,
-                url=session.url,
-                pre_announce=pre_announce,
-                volume_level=volume_level,
-            )
+            # a player that plays announcements natively hands off to its provider, which
+            # has no deadline of its own - one that never returns would otherwise keep
+            # this session (and its slot) alive for as long as the server runs
+            async with asyncio.timeout(ANNOUNCEMENT_TIMEOUT):
+                await self.mass.players.play_announcement(
+                    player_id,
+                    url=session.url,
+                    pre_announce=pre_announce,
+                    volume_level=volume_level,
+                )
+        except TimeoutError as err:
+            # reported to the client rather than swallowed: a timeout means the player
+            # never confirmed it played, so "finished" would be a guess
+            raise PlayerCommandFailed("The announcement did not finish playing.") from err
         finally:
             self._sessions.pop(session.session_id, None)
 
@@ -435,7 +461,12 @@ class LiveAnnouncementManager:
         user what went wrong instead of showing a bare disconnect.
         """
         self.logger.warning("Rejected live announcement from %s: %s", request.remote, reason)
-        await ws.close(code=4001, message=reason.encode())
+        # a close frame carries at most 125 bytes, 2 of which are the status code, and a
+        # reason quoting client input can exceed that - which the browser drops entirely.
+        # the decode/encode round trip drops a character the cut landed in the middle of,
+        # since an invalid utf-8 reason would be rejected just the same.
+        message = reason.encode()[:MAX_CLOSE_REASON_BYTES].decode(errors="ignore").encode()
+        await ws.close(code=4001, message=message)
         return False
 
     async def _send(self, ws: web.WebSocketResponse, message: dict[str, object]) -> None:
