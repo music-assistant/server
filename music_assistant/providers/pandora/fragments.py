@@ -65,13 +65,12 @@ class PandoraFragment:
         """
         Return the tracks not yet handed to the audio pipeline, in the fragment's original order.
 
-        Invariant: serving a fragment's last track sets `spent` (see `mark_resolved`), so a
-        fragment left with nothing pending is always already spent - `should_fetch_fragment`
-        will have returned True and a new fragment will already have replaced it as the
-        session's `current` one. A live fragment's `pending` therefore never comes back empty,
-        which matters because `get_playlist_tracks` treats an empty list as "this station has
-        ended".
+        Never empty for a live fragment.
         """
+        # Serving a fragment's last track sets `spent` (see `mark_resolved`), so a fragment left
+        # with nothing pending is always already spent - `should_fetch_fragment` will have
+        # returned True and a new fragment will already have replaced it as the session's
+        # `current` one.
         return [track for track in self.tracks if track.get("pandoraId") not in self.served]
 
 

@@ -506,7 +506,7 @@ async def test_freshest_fragment_wins_regardless_of_session_order() -> None:
 
 
 async def test_stream_details_rejects_other_media_types() -> None:
-    """Stations expose tracks only; radio is gone."""
+    """A station's tracks stream as tracks; the station id itself is not a stream."""
     provider = _provider()
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details("TR:S0", MediaType.RADIO)
