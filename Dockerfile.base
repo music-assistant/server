@@ -179,6 +179,11 @@ RUN set -x \
 
 FROM python:${PYTHON_VERSION}-slim-trixie
 
+# Ensure UTF-8 encoding across system tools, subprocesses, and Python runtime
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUTF8=1
+
 # Enable non-free and contrib repositories for codec libraries
 # (trixie uses the deb822 sources format)
 RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
