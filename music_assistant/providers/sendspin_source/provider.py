@@ -589,16 +589,22 @@ class SendspinSourceProvider(PluginProvider):
 
     async def _ingest(self, session: _SourceSession, handle: SourceStream) -> None:
         """Feed decoded source chunks into the session's bridge until the stream ends."""
+        bridge = session.bridge
+        if bridge is None:
+            return
         async for pcm, timestamp_us in handle:
-            if self._get_session(session.client_id) is not session or session.bridge is None:
+            if self._get_session(session.client_id) is not session or session.bridge is not bridge:
                 break
             try:
-                session.bridge.feed(pcm, timestamp_us)
+                bridge.feed(pcm, timestamp_us)
             except ValueError as err:
                 self.logger.warning("Dropping malformed chunk from %s: %s", session.client_id, err)
                 continue
             session.last_pcm_monotonic = time.monotonic()
             session.pcm_received.set()
+        else:
+            if self._get_session(session.client_id) is session and session.bridge is bridge:
+                bridge.flush()
 
     async def _teardown_session(
         self, source_id: str, superseded_by_player_id: str | None = None

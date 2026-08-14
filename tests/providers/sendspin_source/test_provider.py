@@ -50,12 +50,16 @@ class _StubBridge:
 
     def __init__(self) -> None:
         self.fed: list[tuple[bytes, int]] = []
+        self.flush_count = 0
 
     def feed(self, pcm: bytes, capture_timestamp_us: int) -> None:
         self.fed.append((pcm, capture_timestamp_us))
 
     def read(self, frames: int) -> bytes:
         return MARKER_BYTE * (frames * 4)
+
+    def flush(self) -> None:
+        self.flush_count += 1
 
 
 def _stream_details(item_id: str = "client-1") -> StreamDetails:
@@ -227,6 +231,15 @@ async def test_stream_switches_to_bridge_audio_after_stream_start(
     assert all(chunk == MARKER_BYTE * (48000 * 25 // 1000 * 4) for chunk in chunks)
     assert bridge.fed == [(b"\x01\x02\x03\x04", 1_000_000)]
     await provider.on_source_unselected("client-1", "queue-1", "session-1")
+
+
+async def test_source_stream_end_flushes_the_live_bridge(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normally ended source stream emits the resampler tail."""
+    provider = await make_provider([fake_client])
+    bridge = await _start_streaming(provider, fake_client, monkeypatch)
+    assert bridge.flush_count == 1
 
 
 async def test_stream_ends_after_source_timeout(
