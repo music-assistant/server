@@ -644,7 +644,8 @@ class WebRTCGateway:
 
     async def _send_chunked(self, channel: DataChannel | None, text: str) -> None:
         """Send a text message on a data channel, chunking it if it exceeds the size limit."""
-        if channel is None or not channel.is_open:
+        # reading the limit off a closed channel raises, and it has nothing left to receive
+        if channel is None or channel.is_closed:
             return
         # a peer that advertises no limit in its SDP is assumed to accept only 64 KiB
         limit = channel.max_message_size
@@ -662,9 +663,10 @@ class WebRTCGateway:
         group_id = self._chunk_group_seq
         count = (len(data) + piece_size - 1) // piece_size
         for seq in range(count):
-            # a send onto a closed channel returns without suspending, so without this the
-            # loop would encode and discard every remaining piece without yielding
-            if channel.is_closed:
+            # a send onto a channel that is no longer open returns without suspending, so
+            # without this the loop would frame and discard every remaining piece without
+            # ever yielding
+            if not channel.is_open:
                 return
             piece = data[seq * piece_size : (seq + 1) * piece_size]
             await self._send_on_channel(

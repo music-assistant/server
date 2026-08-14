@@ -1767,13 +1767,14 @@ async def test_send_chunked_stops_framing_once_the_channel_closes(
     """A channel that goes away mid-message stops the loop instead of encoding the rest."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel(close_after=1)
-    text = '{"data":"' + "x" * (DATA_CHANNEL_CHUNK_SIZE * 3) + '"}'
+    text = '{"data":"' + "x" * (DATA_CHANNEL_CHUNK_SIZE * 10) + '"}'
 
     await gateway._send_chunked(cast("DataChannel", channel), text)
 
     assert len(channel.sent) == 1
-    # the opening guard plus the one delivered piece: the other three are never framed
-    assert channel.open_checks == 2
+    # the guard and the send of the first piece, then the guard again: the other ten pieces
+    # are never framed
+    assert channel.open_checks == 3
 
 
 async def test_ma_api_channel_chunks_within_the_negotiated_limit(
