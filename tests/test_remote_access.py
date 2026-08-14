@@ -13,7 +13,14 @@ from urllib.parse import urlparse
 
 import aiohttp
 import pytest
-from aiolibdatachannel import DataChannel, IceServer, LogLevel, PeerConnection, RTCConfiguration
+from aiolibdatachannel import (
+    DataChannel,
+    IceServer,
+    LogLevel,
+    PeerConnection,
+    RTCConfiguration,
+    RTCError,
+)
 from cryptography.hazmat.primitives import serialization
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -1775,6 +1782,24 @@ async def test_send_chunked_stops_framing_once_the_channel_closes(
     # the guard and the send of the first piece, then the guard again: the other ten pieces
     # are never framed
     assert channel.open_checks == 3
+
+
+async def test_dropped_message_is_logged_with_its_size_on_the_wire(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The size in the drop warning counts bytes, so it can be read against the channel limit."""
+    gateway = _proxy_gateway(cert_pems)
+    gateway.logger = logging.getLogger("test_webrtc_dropped_message_size")
+    channel = Mock()
+    channel.is_open = True
+    channel.send = AsyncMock(side_effect=RTCError("message too large"))
+    # 100 characters, 300 bytes once encoded
+    text = "音" * 100
+
+    with caplog.at_level(logging.WARNING, logger="test_webrtc_dropped_message_size"):
+        await gateway._send_on_channel(cast("DataChannel", channel), text)
+
+    assert "Dropping 300-byte data channel message" in caplog.text
 
 
 async def test_ma_api_channel_chunks_within_the_negotiated_limit(
