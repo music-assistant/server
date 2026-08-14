@@ -618,6 +618,8 @@ async def test_standby_supports_every_connected_streaming_protocol(
     session.sync_clients = players
 
     assert await session.standby()
+    # the park is carried by the session, so it survives the group shrinking
+    assert session.parked is True
     for player in players:
         player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
         player.set_state_from_stream.assert_called_once_with(
@@ -664,6 +666,8 @@ async def test_standby_resumes_warm_on_existing_streams(
     ):
         assert await session.replace(MagicMock(), media)
 
+    # the re-anchor ends the park, so the members are playing again
+    assert session.parked is False
     # start = now (100_000 ms) + solo/group start lead, position 10s
     expected_start = 100_000 + (
         AIRPLAY_START_LEAD_MS if len(protocols) == 1 else AIRPLAY_GROUP_START_LEAD_MS

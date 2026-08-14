@@ -36,6 +36,7 @@ from music_assistant.providers.airplay.constants import (
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -629,6 +630,8 @@ def _setup_running_stream(player: AirPlayPlayer) -> AsyncMock:
     """Attach a mock running stream to the player and return the send_cli_command mock."""
     stream = MagicMock()
     stream.running = True
+    # every streaming player has a session; this one is playing, not parked
+    stream.session = MagicMock(parked=False)
     send_cmd = AsyncMock()
     stream.send_cli_command = send_cmd
     player.stream = stream
@@ -1426,6 +1429,58 @@ async def test_set_members_warns_when_the_leader_has_no_session(
 
     assert leader.group_members == ["leader", "child"]
     assert "no stream session to join" in caplog.text
+
+
+def _attach_live_stream(player: AirPlayPlayer, session: AirPlayStreamSession) -> MagicMock:
+    """Attach a mock stream that is connected and fed by the given session."""
+    stream = MagicMock()
+    stream.running = True
+    stream.connected = True
+    stream.session = session
+    stream.send_cli_command = AsyncMock(return_value=True)
+    stream.stop = AsyncMock()
+    player.stream = stream
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_play_after_ungrouping_a_parked_group_resumes_via_the_queue() -> None:
+    """
+    Breaking a parked group up leaves the remaining player alone with the park.
+
+    Its binary is held at standby with nothing being fed, so the resume still has
+    to re-anchor through the queue: ACTION=PLAY carries no anchor and would
+    report playback over silence.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    players = _players_mock(leader)
+    players.get_player.side_effect = lambda player_id: {"leader": leader, "child": child}.get(
+        player_id
+    )
+    players.get_active_queue.return_value = MagicMock(queue_id="leader")
+    resume_queue = AsyncMock()
+    cast("MagicMock", leader.mass).player_queues.resume = resume_queue
+
+    await leader.pause()
+    await leader.set_members(player_ids_to_remove=["child"])
+    leader_stream.send_cli_command.reset_mock()
+    await leader.play()
+
+    # the removal stops only the child; the leader keeps its parked session
+    child_stream.stop.assert_awaited_once()
+    leader_stream.stop.assert_not_awaited()
+    assert leader.group_members == []
+    assert session.sync_clients == [leader]
+    assert session.parked is True
+    resume_queue.assert_awaited_once_with("leader", fade_in=False)
+    leader_stream.send_cli_command.assert_not_awaited()
 
 
 # --- Device password ---
