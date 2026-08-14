@@ -145,6 +145,23 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url)
 
 
+async def test_on_show_keeps_the_player_from_releasing_the_device() -> None:
+    """A release still pending from a stop on the player would close the dashboard."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = connected_chromecast
+    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value="https://mass.test")  # type: ignore[method-assign]
+
+    with patch("music_assistant.providers.chromecast.dashboard.send_show_dashboard"):
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
+
+    castplayer.cancel_pending_app_quit.assert_called_once()
+
+
 async def test_on_show_reuses_cached_on_demand_connection() -> None:
     """A cached on-demand connection (no MA player) is reused instead of reconnecting."""
     dashboards = _make_dashboards()
