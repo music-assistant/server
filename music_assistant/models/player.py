@@ -2194,18 +2194,24 @@ class Player(ABC):
             # doesn't support the feature, return None
             return None
 
-        # fallback to preferred protocol from config
+        # fallback to preferred protocol from config. the stored value survives a
+        # relink, so it only counts while it still names one of this player's own
+        # outputs - otherwise the command would land on another speaker.
         preferred_conf = self.mass.config.get_raw_player_config_value(
             self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred_conf and preferred_conf not in ("auto", "native"):
             preferred_protocol = str(preferred_conf)
-            if (
-                (_player := self.mass.players.get_player(preferred_protocol))
-                and _player.available_for_playback
-                and feature in _player.supported_features
-            ):
-                return _player
+            for linked in self.linked_output_protocols:
+                if linked.output_protocol_id != preferred_protocol:
+                    continue
+                if (
+                    (_player := self.mass.players.get_player(preferred_protocol))
+                    and _player.available_for_playback
+                    and feature in _player.supported_features
+                ):
+                    return _player
+                break
 
         # Otherwise, use the first available linked protocol.
         # Prefer protocols that can process commands without active streaming

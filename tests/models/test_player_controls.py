@@ -592,6 +592,22 @@ class TestPreferredOutputProtocolAutoValue:
         )
         assert player.power_control == PLAYER_CONTROL_NONE
 
+    def test_preferred_pointing_at_another_players_output_is_ignored(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A preference left behind by a relink does not steal another speaker's output."""
+        own = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        other = _create_protocol_player(mock_mass, "other_proto", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": own, "other_proto": other})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "other_proto"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control == "proto_a"
+
 
 class TestActiveOutputProtocolClearCancellation:
     """Test that setting the active output protocol cancels a pending clear."""
