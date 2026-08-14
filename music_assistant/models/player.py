@@ -1475,7 +1475,12 @@ class Player(ABC):
         if PlayerFeature.VOLUME_MUTE in self.supported_features:
             # player supports native mute control, always prefer that
             return PLAYER_CONTROL_NATIVE
-        # check for protocol player with mute support, and use that if found
+        # check for protocol player with mute support, and use that if found.
+        # this resolves independently from volume_control, so a device whose interfaces
+        # advertise volume and mute separately (DLNA derives both from its own
+        # RenderingControl actions) can end up with the two controls on different
+        # siblings. use the output-scoped variants when the resolution has to stay
+        # inside one signal path.
         if protocol_player := self._get_protocol_player_for_feature(
             PlayerFeature.VOLUME_MUTE, require_active=False
         ):
@@ -2159,7 +2164,15 @@ class Player(ABC):
         feature: PlayerFeature,
         require_active: bool = True,
     ) -> Player | None:
-        """Get player(protocol) which has the given PlayerFeature."""
+        """
+        Get player(protocol) which has the given PlayerFeature.
+
+        This resolves control-plane features (volume, mute), so the native player wins
+        even while a protocol renders the audio: a device's own volume is its own volume,
+        whichever interface the sound arrives on. Commands that ride along with the audio
+        resolve through PlayerController._get_control_target instead, which puts the
+        rendering output first and orders the fallback by output protocol priority.
+        """
         # prefer native player
         if feature in self.supported_features:
             return self

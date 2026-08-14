@@ -1376,6 +1376,111 @@ class TestSelectBestOutputProtocol:
         assert airplay_output.available is False
 
 
+class TestGetControlTarget:
+    """Tests for resolving the target of an audio-path command."""
+
+    def test_fallback_follows_protocol_priority(self, mock_mass: MagicMock) -> None:
+        """
+        Without an active output the fallback picks the highest priority protocol.
+
+        An announcement on an idle player reaches this path, so it has to land on the
+        same output that regular playback would have selected rather than on whichever
+        protocol happened to link first.
+        """
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        universal_provider = MockProvider("universal_player", mass=mock_mass)
+        universal_player = MockPlayer(
+            universal_provider,
+            "universal_123",
+            "Kantoor",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        universal_player._attr_supported_features = set()
+
+        sendspin_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": sendspin_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        # sendspin links first, but airplay outranks it
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == airplay_player
+
+    def test_require_active_skips_the_fallback(self, mock_mass: MagicMock) -> None:
+        """With require_active there is no fallback to an idle linked protocol."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass),
+            "universal_123",
+            "Kantoor",
+        )
+        universal_player._attr_supported_features = set()
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        assert (
+            controller._get_control_target(
+                universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=True
+            )
+            is None
+        )
+
+
 class TestPlayerGrouping:
     """Tests for player grouping scenarios."""
 

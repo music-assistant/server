@@ -394,6 +394,11 @@ class AnnouncementsMixin:
             # an idle linked protocol (e.g. the AirPlay child of a WiiM
             # playing natively) would seize the device from the active
             # output, with nothing restoring that playback afterwards.
+            # The pick is deliberately not published as the active output
+            # protocol: that would make the player mirror the protocol's
+            # playback state and group members, so an idle player would
+            # report PLAYING for the duration of the clip and the guard
+            # above would refuse the next announcement.
             return self._get_control_target(
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,

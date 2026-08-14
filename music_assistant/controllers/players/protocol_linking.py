@@ -1844,10 +1844,15 @@ class ProtocolLinkingMixin:
         require_active: bool = False,
     ) -> Player | None:
         """
-        Get the best player(protocol) to send control commands to.
+        Get the best player(protocol) to send audio-path commands to.
 
-        Prefers the active output protocol, otherwise uses the first available
-        protocol player that supports the needed feature.
+        Prefers the active output protocol, otherwise the best available protocol
+        player that supports the needed feature.
+
+        Note this resolves commands that ride along with the audio (enqueue, pause,
+        announcements), so it deliberately puts the rendering output ahead of the
+        native player. Volume and mute are control-plane instead and resolve through
+        :meth:`Player._get_protocol_player_for_feature`, which orders differently.
         """
         # If we have an active protocol, use that
         if (
@@ -1872,8 +1877,11 @@ class ProtocolLinkingMixin:
         # if the player natively supports the required feature, use that
         if required_feature in player.supported_features:
             return player
-        # Otherwise, use the first available linked protocol
-        for linked in player.linked_output_protocols:
+        # Otherwise, use the best available linked protocol. The same priority as
+        # _select_best_output_protocol is applied, so a command that has to start audio
+        # on an idle player (e.g. an announcement) lands on the output that regular
+        # playback would have picked, instead of on whichever protocol linked first.
+        for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if (
                 (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
                 and protocol_player.available_for_playback
