@@ -1,5 +1,5 @@
 """
-Tests for Player.playback_domains.
+Tests for Player.playback_domains and Player.get_linked_protocol.
 
 Covers the live availability view: native playback, linked protocol players that
 are (un)available, and wrapper players that only contribute their linked protocols.
@@ -146,3 +146,46 @@ class TestPlaybackDomains:
         protocol_player._attr_available = False
         player.update_state(signal_event=False)
         assert player.playback_domains == {"sonos"}
+
+
+class TestGetLinkedProtocol:
+    """Tests for Player.get_linked_protocol."""
+
+    def test_resolves_name_and_availability_from_live_player(self, mock_mass: MagicMock) -> None:
+        """Test that the returned entry describes the protocol player as it is right now."""
+        player = _make_native_player(mock_mass)
+        _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
+
+        output_protocol = player.get_linked_protocol("ap_1")
+        assert output_protocol is not None
+        assert output_protocol.name == "Mock Airplay"
+        assert output_protocol.available is True
+        assert output_protocol.protocol_domain == "airplay"
+        assert output_protocol.priority == 10
+
+    def test_reports_offline_protocol_player(self, mock_mass: MagicMock) -> None:
+        """Test that an unchanged link stops claiming availability once its player drops."""
+        player = _make_native_player(mock_mass)
+        protocol_player = _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
+
+        protocol_player._attr_available = False
+        output_protocol = player.get_linked_protocol("ap_1")
+        assert output_protocol is not None
+        assert output_protocol.available is False
+
+    def test_unregistered_protocol_player_falls_back_to_domain(self, mock_mass: MagicMock) -> None:
+        """Test that a link without a live player reports the domain and no availability."""
+        player = _make_native_player(mock_mass)
+        _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
+        mock_mass.players.get_player = MagicMock(return_value=None)
+
+        output_protocol = player.get_linked_protocol("ap_1")
+        assert output_protocol is not None
+        assert output_protocol.name == "Airplay"
+        assert output_protocol.available is False
+
+    def test_unknown_protocol_id_returns_none(self, mock_mass: MagicMock) -> None:
+        """Test that an id that is not linked resolves to nothing."""
+        player = _make_native_player(mock_mass)
+        _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
+        assert player.get_linked_protocol("cast_1") is None
