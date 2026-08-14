@@ -1438,6 +1438,6 @@ class SyncGroupPlayer(Player):
         if player.provider.domain == domain:
             return player
         for linked in player.linked_output_protocols:
-            if linked.protocol_domain == domain and linked.available:
+            if linked.protocol_domain == domain:
                 return self.mass.players.get_player(linked.output_protocol_id)
         return None
