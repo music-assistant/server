@@ -1483,6 +1483,72 @@ async def test_play_after_ungrouping_a_parked_group_resumes_via_the_queue() -> N
     leader_stream.send_cli_command.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_leader_stepping_out_alone_keeps_the_session_for_the_others() -> None:
+    """
+    A leader that only removes itself hands the live session to the members left behind.
+
+    The leader is not asked to take the others with it, so tearing the session
+    down here would cut off members that are still supposed to be playing.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    leader._attr_playback_state = PlaybackState.PLAYING
+    child._attr_playback_state = PlaybackState.PLAYING
+    lookup = {"leader": leader, "child": child}
+    for player in (leader, child):
+        players = _players_mock(player)
+        players.get_player.side_effect = lookup.get
+        players.iter_players.return_value = [leader, child]
+
+    await leader.set_members(player_ids_to_remove=["leader"])
+
+    leader_stream.stop.assert_awaited_once()
+    child_stream.stop.assert_not_awaited()
+    assert session.sync_clients == [child]
+    assert leader.group_members == []
+    # nothing claims the remaining member anymore: its caller picks the new leader
+    assert child.synced_to is None
+
+
+@pytest.mark.asyncio
+async def test_ungroup_on_a_sync_leader_dissolves_the_whole_group() -> None:
+    """
+    Ungrouping a sync leader must release its members, not just the leader itself.
+
+    A leader lists itself in group_members, so the default ungroup asks to remove
+    the leader AND every member in one call.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    leader._attr_playback_state = PlaybackState.PLAYING
+    child._attr_playback_state = PlaybackState.PLAYING
+    lookup = {"leader": leader, "child": child}
+    for player in (leader, child):
+        players = _players_mock(player)
+        players.get_player.side_effect = lookup.get
+        players.iter_players.return_value = [leader, child]
+
+    await leader.ungroup()
+
+    assert leader.group_members == []
+    leader_stream.stop.assert_awaited_once()
+    child_stream.stop.assert_awaited_once()
+    assert session.sync_clients == []
+
+
 # --- Device password ---
 
 
