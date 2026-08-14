@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerType
+from pychromecast import IDLE_APP_ID
 
 from music_assistant.providers.chromecast.constants import (
     APP_QUIT_DELAY,
@@ -124,6 +125,19 @@ def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_releases_it() -> No
 
     assert fake._attr_playback_state == PlaybackState.IDLE
     _assert_release_scheduled(fake)
+
+
+@pytest.mark.parametrize("app_id", [None, IDLE_APP_ID])
+def test_a_released_device_does_not_become_a_source(app_id: str | None) -> None:
+    """A released device sits on its backdrop, which is not something to select."""
+    fake = _fake_player()
+    fake.cc.app_id = app_id
+    fake._attr_source_list = []
+
+    _handle_media_status(fake, _media_status())
+
+    assert fake._attr_active_source is None
+    assert fake._attr_source_list == []
 
 
 def test_pausing_keeps_the_device_claimed() -> None:

@@ -680,6 +680,10 @@ class ChromecastPlayer(Player):
             self._attr_active_source = group_player.active_source or group_player.player_id
         elif self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER, SENDSPIN_CAST_APP_ID):
             self._attr_active_source = None
+        elif self.cc.app_id in (None, IDLE_APP_ID):
+            # a released device sits on its backdrop with no app running, which is
+            # not something the user can select as a source
+            self._attr_active_source = None
         else:
             app_name = self.cc.app_display_name or "Unknown App"
             app_id = app_name.lower().replace(" ", "_")
