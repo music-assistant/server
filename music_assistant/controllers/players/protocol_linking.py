@@ -45,12 +45,12 @@ from music_assistant.helpers.util import (
     is_locally_administered_mac,
     is_valid_mac_address,
     normalize_mac_for_matching,
-    strong_identifiers_match,
 )
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.providers.sync_group.constants import CONF_ALLOWED_MEMBERS
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
 from music_assistant.providers.universal_player.constants import (
+    CONF_CREATED_AT,
     CONF_DEVICE_IDENTIFIERS,
     CONF_DEVICE_INFO,
 )
@@ -549,7 +549,7 @@ class ProtocolLinkingMixin:
     def _find_matching_universal_player(self, protocol_player: Player) -> Player | None:
         """Find an existing universal player that matches this protocol player."""
         for player in self._players.values():
-            if player.provider.domain != "universal_player":
+            if not isinstance(player, UniversalPlayer):
                 continue
             if self._identifiers_match(protocol_player, player, ""):
                 return player
@@ -799,25 +799,29 @@ class ProtocolLinkingMixin:
         """
         Return which of the two universal players absorbs the other, as (keeper, absorbed).
 
-        The player with the most protocol links wins.
+        The player with the most protocol links wins, on a tie the oldest one.
 
         :param universal_player: The universal player the merge was triggered for.
         :param other_player: The universal player it matched with.
         """
-        len_u = len(universal_player.linked_output_protocols)
-        len_p = len(other_player.linked_output_protocols)
-        if len_u > len_p:
-            return universal_player, other_player
-        if len_u < len_p:
-            return other_player, universal_player
-        # On ties, fall back to a deterministic tiebreaker on player_id so the merge outcome
-        # is stable across server restarts. Without this, which UniversalPlayer "wins" depends
-        # on iteration order of self._players.values(), which can shift between runs and causes
-        # downstream player_id reshuffling (and broken entity bindings in consumers like the
-        # Home Assistant MA integration).
-        if universal_player.player_id < other_player.player_id:
+        # The outcome must be stable across server restarts. Without that, which
+        # UniversalPlayer "wins" depends on iteration order of self._players.values(),
+        # which can shift between runs and causes downstream player_id reshuffling
+        # (and broken entity bindings in consumers like the Home Assistant MA integration).
+        if self._merge_rank(universal_player) <= self._merge_rank(other_player):
             return universal_player, other_player
         return other_player, universal_player
+
+    def _merge_rank(self, universal_player: Player) -> tuple[int, int, str]:
+        """Return the sort key of a universal player in a merge, lowest wins."""
+        created_at = self.mass.config.get(
+            f"{CONF_PLAYERS}/{universal_player.player_id}/values/{CONF_CREATED_AT}", 0
+        )
+        return (
+            -len(universal_player.linked_output_protocols),
+            created_at if isinstance(created_at, int) else 0,
+            universal_player.player_id,
+        )
 
     def _merge_universal_players(self, keep: UniversalPlayer, remove: UniversalPlayer) -> None:
         """
@@ -914,33 +918,24 @@ class ProtocolLinkingMixin:
             return
 
         # Delegate to provider - it handles locking, create/update decision, etc.
-        universal_player = await universal_provider.ensure_universal_player_for_protocols(
+        # It reports which universal player each protocol player belongs to, as a
+        # device with several instances of one protocol domain gets more than one.
+        assignments = await universal_provider.ensure_universal_players_for_protocols(
             protocol_players
         )
 
-        if not universal_player:
-            return
+        # Link the protocols to their universal player (the controller manages
+        # cross-provider state), skipping players that were linked in the meantime.
+        by_universal_player: dict[str, list[Player]] = {}
+        for player in protocol_players:
+            if player.protocol_parent_id:
+                continue
+            if universal_player := assignments.get(player.player_id):
+                by_universal_player.setdefault(universal_player.player_id, []).append(player)
 
-        # Link the protocols to the universal player (controller manages cross-provider state)
-        # Filter out players that were already linked
-        # (e.g., via _add_protocol_to_existing_universal)
-        unlinked_players = [p for p in protocol_players if not p.protocol_parent_id]
-
-        # Split unlinked players: those that can join the main universal player
-        # vs those that got separate universal players (domain-duplicates)
-        for player in list(unlinked_players):
-            # Check if a separate universal player was created for this player
-            fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
-            separate_id = f"up{fallback_key}"
-            if separate_up := self.get_player(separate_id):
-                # Link to the separate universal player instead
-                self._add_protocol_link(separate_up, player, player.provider.domain)
-                player.refresh_state()
-                separate_up.refresh_state()
-                unlinked_players.remove(player)
-
-        self._link_protocols_to_universal(universal_player, unlinked_players)
-        universal_player.refresh_state()
+        for universal_player_id, players in by_universal_player.items():
+            if universal_player := self.get_player(universal_player_id):
+                self._link_protocols_to_universal(universal_player, players)
 
     def _try_link_protocols_to_native(self, native_player: Player) -> None:
         """Try to link protocol players to a native player."""
@@ -1543,13 +1538,17 @@ class ProtocolLinkingMixin:
                         parent_player.provider.domain == "universal_player"
                         and len(parent_player.linked_output_protocols) == 0
                     ):
-                        # No protocols left - remove universal player
+                        # No protocols left - the universal player has nothing to play
+                        # on. Its config is deliberately kept: the player id is opaque
+                        # and cannot be recreated, so deleting it here would orphan the
+                        # entities API consumers bound to it. Only an explicit removal
+                        # by the user deletes a universal player for good.
                         self.logger.info(
-                            "Universal player %s has no protocols left, removing",
+                            "Universal player %s has no protocols left",
                             parent_id,
                         )
                         self.mass.create_task(
-                            self.mass.players.unregister(parent_id, permanent=True)
+                            self.mass.players.unregister(parent_id, permanent=False)
                         )
                     else:
                         parent_player.refresh_state()
@@ -1637,31 +1636,51 @@ class ProtocolLinkingMixin:
         identifiers_a = player_a.device_info.identifiers
         identifiers_b = player_b.device_info.identifiers
 
-        # Strong identifiers (checked in order of reliability:
-        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID).
-        # The comparison rules are shared with the stored device key lookup
-        # of the universal player provider.
-        if strong_identifiers_match(identifiers_a, identifiers_b):
-            return True
+        # Check identifiers in order of reliability
+        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
+        for conn_type in (
+            IdentifierType.MAC_ADDRESS,
+            IdentifierType.SERIAL_NUMBER,
+            IdentifierType.UUID,
+            IdentifierType.CAST_UUID,
+            IdentifierType.AIRPLAY_ID,
+        ):
+            val_a = identifiers_a.get(conn_type)
+            val_b = identifiers_b.get(conn_type)
 
-        val_a = identifiers_a.get(IdentifierType.MAC_ADDRESS)
-        val_b = identifiers_b.get(IdentifierType.MAC_ADDRESS)
-        if val_a and val_b:
-            if not is_valid_mac_address(val_a) or not is_valid_mac_address(val_b):
-                self.logger.log(
-                    VERBOSE_LOG_LEVEL,
-                    "Skipping invalid MAC address for matching: %s=%s, %s=%s",
-                    player_a.display_name,
-                    val_a,
-                    player_b.display_name,
-                    val_b,
-                )
-            else:
+            if not val_a or not val_b:
+                continue
+
+            # Filter out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff)
+            if conn_type == IdentifierType.MAC_ADDRESS:
+                if not is_valid_mac_address(val_a) or not is_valid_mac_address(val_b):
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Skipping invalid MAC address for matching: %s=%s, %s=%s",
+                        player_a.display_name,
+                        val_a,
+                        player_b.display_name,
+                        val_b,
+                    )
+                    continue
+
+            # Normalize values for comparison
+            if conn_type == IdentifierType.MAC_ADDRESS:
+                # Use MAC normalization that handles locally-administered bit differences
+                # Some protocols (like AirPlay) report a locally-administered MAC variant
+                # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
+                val_a_norm = normalize_mac_for_matching(val_a)
+                val_b_norm = normalize_mac_for_matching(val_b)
+
+                # Direct match on current MAC
+                if val_a_norm == val_b_norm:
+                    return True
+
                 # Multi-MAC matching: also check original reported MACs.
                 # Devices with multiple interfaces (WiFi + Ethernet) may have ARP
                 # resolve one MAC while the protocol reports a different one.
-                macs_a = {normalize_mac_for_matching(val_a)}
-                macs_b = {normalize_mac_for_matching(val_b)}
+                macs_a = {val_a_norm}
+                macs_b = {val_b_norm}
                 reported_a = player_a.extra_data.get("reported_mac")
                 reported_b = player_b.extra_data.get("reported_mac")
                 if reported_a and is_valid_mac_address(reported_a):
@@ -1669,6 +1688,24 @@ class ProtocolLinkingMixin:
                 if reported_b and is_valid_mac_address(reported_b):
                     macs_b.add(normalize_mac_for_matching(reported_b))
                 if macs_a & macs_b:
+                    return True
+
+                # No MAC match - continue to next identifier type
+                continue
+
+            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
+            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
+
+            # Direct match
+            if val_a_norm == val_b_norm:
+                return True
+
+            # Special case: Sonos UUID matching with DLNA _MR suffix
+            # Sonos uses RINCON_xxx, DLNA uses RINCON_xxx_MR for Media Renderer
+            if conn_type == IdentifierType.UUID:
+                if val_b_norm.endswith("_mr") and val_b_norm[:-3] == val_a_norm:
+                    return True
+                if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
                     return True
 
         # Last resort: IP-based matching.

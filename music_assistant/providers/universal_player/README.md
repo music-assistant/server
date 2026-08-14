@@ -78,14 +78,23 @@ If a native provider is later installed (e.g., Denon integration), the Universal
 
 ## Technical Details
 
-### Player ID Format
+### Player ID
 
-Universal players use the format: `up{device_key}`
+Universal players use the format `up{random}`, minted once when the device is first
+wrapped. The id carries no device information and is never recomputed.
 
-Where `device_key` is typically the normalized MAC address.
-If no stable MAC is available, the provider falls back to UUID-like identifiers and finally the first protocol player's ID.
+This matters because the player id is the identity API consumers (e.g. the Home
+Assistant integration) bind their entities to, so it has to stay stable for the
+lifetime of the device. A universal player is therefore always resolved through the
+`protocol_parent_id` that each of its protocol players persists, never by deriving an
+id from the identifiers that happen to be available at that moment. Deriving the id
+made it shift whenever a different set of protocol players was registered - from a
+MAC-based to a UUID-based id, for example - which orphaned the consumer's entity.
 
-The player id is the identity API consumers (e.g. the Home Assistant integration) bind entities to, so it must stay stable for the lifetime of the device. When a universal player is (re)created for a device that already has a stored universal player config (matched via its stored protocol player memberships or device identifiers), the stored device key is reused, even if the identifiers available at that moment would compute a different key.
+As a consequence a universal player config is only ever deleted when the user removes
+the player, or when a native player takes over the device. When the protocol players
+of a universal player disappear it becomes unavailable but keeps its config, because
+an opaque id cannot be recreated from the device.
 
 ### File Structure
 

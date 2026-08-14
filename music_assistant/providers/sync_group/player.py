@@ -54,7 +54,9 @@ class SyncGroupPlayer(Player):
     ) -> None:
         """Initialize SyncGroupPlayer instance."""
         super().__init__(provider, player_id)
-        self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = self.config.default_name or self.config.name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
         # Group players default to "no opinion" on power. The session lifecycle
