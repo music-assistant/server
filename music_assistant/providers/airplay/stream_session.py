@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Coroutine
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, MediaType, PlaybackState
+from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
@@ -65,6 +65,7 @@ class AirPlayStreamSession:
         sync_clients: list[AirPlayPlayer],
         pcm_format: AudioFormat,
         media: PlayerMedia,
+        requested_volume: int | None = None,
     ) -> None:
         """
         Initialize AirPlayStreamSession.
@@ -73,12 +74,16 @@ class AirPlayStreamSession:
         :param sync_clients: List of AirPlay players to stream to.
         :param pcm_format: PCM format of the input stream.
         :param media: Queue media that owns the stream session.
+        :param requested_volume: Volume level explicitly requested for this session (an
+            announcement volume), already applied to its members. Omit to let the members
+            take their level from their parent player as usual.
         """
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
         self.pcm_format = pcm_format
         self.media = media
+        self.requested_volume = requested_volume
         self.sync_clients = sync_clients
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
@@ -1018,12 +1023,10 @@ class AirPlayStreamSession:
         """
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
-        # sync volume/mute from parent player if needed. An announcement carries a volume
-        # that was explicitly requested for it, so the parent's level must not replace it:
-        # the level set here is what the connecting stream hands to the receiver.
-        airplay_player.sync_volume_state(
-            adopt_parent_volume=self.media.media_type != MediaType.ANNOUNCEMENT
-        )
+        # sync volume/mute from parent player if needed. A volume requested for this session
+        # is already applied to its members, so the parent's level must not replace it:
+        # the level held here is what the connecting stream hands to the receiver.
+        airplay_player.sync_volume_state(adopt_parent_volume=self.requested_volume is None)
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)

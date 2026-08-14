@@ -813,7 +813,7 @@ class AirPlayPlayer(Player):
             bit_depth=24,
         )
 
-    def sync_volume_state(self, adopt_parent_volume: bool = True) -> None:
+    def sync_volume_state(self, *, adopt_parent_volume: bool = True) -> None:
         """
         Sync volume and mute from the parent player if needed.
 
@@ -836,7 +836,9 @@ class AirPlayPlayer(Player):
         parent_player = self.mass.players.get_player(self.protocol_parent_id)
         if not parent_player:
             return
-        volume_changed = self._sync_volume_level(parent_player, adopt_parent_volume)
+        volume_changed = self._sync_volume_level(
+            parent_player, adopt_parent_volume=adopt_parent_volume
+        )
         mute_changed = self._sync_mute_state(parent_player)
         if volume_changed or mute_changed:
             self.update_state()
@@ -899,7 +901,7 @@ class AirPlayPlayer(Player):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
-    def _sync_volume_level(self, parent_player: Player, adopt_parent_volume: bool) -> bool:
+    def _sync_volume_level(self, parent_player: Player, *, adopt_parent_volume: bool) -> bool:
         """
         Adopt the parent's volume level if it owns this output, return True if changed.
 

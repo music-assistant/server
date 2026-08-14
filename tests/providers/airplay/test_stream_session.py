@@ -1878,3 +1878,33 @@ async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> No
     tail = logger.warning.call_args.args[-1]
     assert "ahead of the group" in tail
     assert "in sync" not in tail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested_volume", "expected_adopt"),
+    [(85, False), (None, True)],
+)
+async def test_start_client_keeps_a_volume_requested_for_the_session(
+    requested_volume: int | None, expected_adopt: bool
+) -> None:
+    """
+    Keep a volume requested for the session, but only when there actually is one.
+
+    An announcement without a volume strategy requests none, so its members must still
+    take their level from their parent player.
+    """
+    session = _make_session(start_time=0.0, seconds_streamed=0.0)
+    session.requested_volume = requested_volume
+    player = _make_late_joiner()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AirPlayStream",
+            return_value=MagicMock(connect=AsyncMock()),
+        ),
+        patch.object(session, "_start_player_ffmpeg", AsyncMock()),
+    ):
+        await session._start_client(player, use_shared_ptp=False)
+
+    player.sync_volume_state.assert_called_once_with(adopt_parent_volume=expected_adopt)

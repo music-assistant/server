@@ -1018,6 +1018,7 @@ def test_sync_volume_state_keeps_unity_gain_for_explicitly_requested_volume(
         airplay_player.sync_volume_state(adopt_parent_volume=False)
 
     assert airplay_player._attr_volume_level == 100
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
     mock_update.assert_called_once()
 
 

@@ -365,7 +365,13 @@ async def _announce_with_session(
                     if prev_volume is not None and prev_volume != volume_level:
                         prev_volumes[member] = prev_volume
                         await member.volume_set(volume_level)
-            session = AirPlayStreamSession(provider, sync_clients, session_pcm_format, announcement)
+            session = AirPlayStreamSession(
+                provider,
+                sync_clients,
+                session_pcm_format,
+                announcement,
+                requested_volume=volume_level,
+            )
             await session.start(render.get_stream(session_pcm_format))
             player._transitioning = False
         # The clip is anchored: wait out the start lead plus the clip and the
