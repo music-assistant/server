@@ -603,12 +603,20 @@ class AirPlayPlayer(Player):
             # handle removals first
             if player_ids_to_remove:
                 if self.player_id in player_ids_to_remove:
-                    if stream_session and len(stream_session.sync_clients) > 1:
-                        # Other clients remain: remove only this leader client,
-                        # session continues for remaining players (dynamic leader switch)
+                    # Callers only ask for this leader alone or for the whole group at once.
+                    # A partial self+subset removal would need the other requested members
+                    # released here as well, instead of returning right after the leader.
+                    remaining_members = [
+                        member_id
+                        for member_id in self._attr_group_members
+                        if member_id != self.player_id and member_id not in player_ids_to_remove
+                    ]
+                    if stream_session and remaining_members:
+                        # Members stay behind: remove only this leader client,
+                        # the session continues for the remaining players
                         await stream_session.remove_client(self, reason="leader removed from group")
                     elif stream_session:
-                        # Last client, stop the whole session
+                        # The whole group is being removed, tear the session down
                         await stream_session.stop()
                     self._attr_group_members = []
                     self.update_state()

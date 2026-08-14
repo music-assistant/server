@@ -2511,6 +2511,12 @@ class ProtocolLinkingMixin:
             else []
         )
 
+        # This runs before set_members because a member's own stream starts inside that call
+        # and the provider resolves the member's volume control as it starts: unless its parent
+        # already points at this protocol, that resolution picks a sibling interface of the same
+        # device (e.g. its cast side) over the one carrying the audio.
+        self._activate_protocol_on_added_children(filtered_protocol_add)
+
         self.logger.debug(
             "Calling set_members on protocol player %s with add=%s, remove=%s",
             parent_protocol_player.state.name,
@@ -2522,118 +2528,10 @@ class ProtocolLinkingMixin:
             player_ids_to_remove=filtered_protocol_remove or None,
         )
 
-        # Set active output protocol on added child players
         if filtered_protocol_add:
-            for child_protocol_id in filtered_protocol_add:
-                if child_protocol := self.get_player(child_protocol_id):
-                    if child_protocol.protocol_parent_id:
-                        if child_player := self.get_player(child_protocol.protocol_parent_id):
-                            if child_player.active_output_protocol != child_protocol_id:
-                                self.logger.debug(
-                                    "Setting active output protocol on child %s to %s",
-                                    child_player.state.name,
-                                    child_protocol_id,
-                                )
-                                child_player.set_active_output_protocol(child_protocol_id)
-
-        # If we added members via this protocol, set it as the active output protocol
-        # and restart playback if currently playing AND we're switching protocols
-        if filtered_protocol_add:
-            previous_protocol = parent_player.active_output_protocol
-            was_playing = parent_player.state.playback_state == PlaybackState.PLAYING
-            # A paused player still holds its output, so the handover has to run for it
-            # too - only the resume at the end is reserved for a player that was playing,
-            # so adding a member does not start playback on its own.
-            was_rendering = was_playing or parent_player.state.playback_state == (
-                PlaybackState.PAUSED
+            await self._activate_group_output_protocol(
+                parent_player, parent_protocol_player, stranded_native_members
             )
-
-            # Determine if we're switching protocols (which requires restart)
-            # Native protocol: parent_protocol_player is the same as parent_player
-            is_native_protocol = parent_protocol_player.player_id == parent_player.player_id
-            already_using_native = previous_protocol in (None, "native")
-            already_using_this_protocol = previous_protocol == parent_protocol_player.player_id
-
-            # Only restart if we're actually switching to a different protocol
-            switching_protocols = not (
-                (is_native_protocol and already_using_native) or already_using_this_protocol
-            )
-
-            self.logger.debug(
-                "Protocol grouping: is_native=%s, already_native=%s, already_this=%s, "
-                "switching=%s, was_rendering=%s",
-                is_native_protocol,
-                already_using_native,
-                already_using_this_protocol,
-                switching_protocols,
-                was_rendering,
-            )
-
-            # Update active output protocol if not already using native
-            if not (is_native_protocol and already_using_native):
-                parent_player.set_active_output_protocol(parent_protocol_player.player_id)
-
-            # Hand the output over only if we're switching protocols
-            if was_rendering and switching_protocols:
-                self.logger.info(
-                    "Handing the output of %s over to the %s protocol%s",
-                    parent_player.state.name,
-                    parent_protocol_player.provider.domain,
-                    " and resuming playback" if was_playing else "",
-                )
-                if stranded_native_members:
-                    await self._stop_native_session(
-                        parent_player, parent_protocol_player, stranded_native_members
-                    )
-                # Collect existing members from old protocol before stopping it,
-                # so we can re-add them to the new protocol afterwards.
-                old_protocol_members: list[str] = []
-                if (
-                    previous_protocol
-                    and previous_protocol not in (None, "native")
-                    and (old_protocol_player := self.get_player(previous_protocol))
-                    and old_protocol_player.player_id != parent_protocol_player.player_id
-                ):
-                    # Collect child members (exclude the leader itself)
-                    old_protocol_members = [
-                        m
-                        for m in old_protocol_player.group_members
-                        if m != old_protocol_player.player_id
-                    ]
-                    # Translate protocol IDs back to parent player IDs
-                    old_parent_members: list[str] = []
-                    for member_id in old_protocol_members:
-                        if member_player := self.get_player(member_id):
-                            parent_id = member_player.protocol_parent_id or member_id
-                            if parent_id != parent_player.player_id:
-                                old_parent_members.append(parent_id)
-                    self.logger.debug(
-                        "Stopping old protocol player %s before switching to %s, "
-                        "migrating members: %s",
-                        old_protocol_player.state.name,
-                        parent_protocol_player.state.name,
-                        old_parent_members,
-                    )
-                    # Use internal handler to stop the specific protocol player,
-                    # bypassing group/sync redirect and queue redirect logic.
-                    await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
-                else:
-                    old_parent_members = []
-                # Resume playback on the new protocol and re-add migrated members.
-                if was_playing:
-                    await self.mass.players.cmd_resume(parent_player.player_id)
-                if old_parent_members:
-                    self.logger.debug(
-                        "Re-adding migrated members %s to %s on new protocol",
-                        old_parent_members,
-                        parent_player.state.name,
-                    )
-                    # Use internal handler because we are already inside a
-                    # _handle_set_members call chain that holds the play lock.
-                    await self.mass.players._handle_set_members(
-                        parent_player,
-                        player_ids_to_add=old_parent_members,
-                    )
 
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
@@ -2641,3 +2539,142 @@ class ProtocolLinkingMixin:
             parent_protocol_player.group_members,
             parent_protocol_player.synced_to,
         )
+
+    def _activate_protocol_on_added_children(self, protocol_member_ids: list[str]) -> None:
+        """
+        Point the parent of each given protocol member at the protocol carrying the group audio.
+
+        :param protocol_member_ids: The protocol player IDs joining the group.
+        """
+        for child_protocol_id in protocol_member_ids:
+            if not (child_protocol := self.get_player(child_protocol_id)):
+                continue
+            if not child_protocol.protocol_parent_id:
+                continue
+            if not (child_player := self.get_player(child_protocol.protocol_parent_id)):
+                continue
+            if child_player.active_output_protocol == child_protocol_id:
+                continue
+            self.logger.debug(
+                "Setting active output protocol on child %s to %s",
+                child_player.state.name,
+                child_protocol_id,
+            )
+            child_player.set_active_output_protocol(child_protocol_id)
+
+    async def _activate_group_output_protocol(
+        self,
+        parent_player: Player,
+        parent_protocol_player: Player,
+        stranded_native_members: list[str],
+    ) -> None:
+        """
+        Mark the given protocol as the parent's output and hand the playback over to it.
+
+        The handover only runs when the parent is actually switching protocol while it is
+        rendering; playback is resumed only for a parent that was playing, so adding a member
+        never starts playback on its own.
+
+        :param parent_player: The parent player that just gained protocol members.
+        :param parent_protocol_player: The protocol player the members joined.
+        :param stranded_native_members: The members left without a stream by the switch.
+        """
+        previous_protocol = parent_player.active_output_protocol
+        was_playing = parent_player.state.playback_state == PlaybackState.PLAYING
+        # A paused player still holds its output, so the handover has to run for it too.
+        was_rendering = was_playing or parent_player.state.playback_state == PlaybackState.PAUSED
+
+        # Native protocol: parent_protocol_player is the same as parent_player
+        is_native_protocol = parent_protocol_player.player_id == parent_player.player_id
+        already_using_native = previous_protocol in (None, "native")
+        already_using_this_protocol = previous_protocol == parent_protocol_player.player_id
+        switching_protocols = not (
+            (is_native_protocol and already_using_native) or already_using_this_protocol
+        )
+
+        self.logger.debug(
+            "Protocol grouping: is_native=%s, already_native=%s, already_this=%s, "
+            "switching=%s, was_rendering=%s",
+            is_native_protocol,
+            already_using_native,
+            already_using_this_protocol,
+            switching_protocols,
+            was_rendering,
+        )
+
+        if not (is_native_protocol and already_using_native):
+            parent_player.set_active_output_protocol(parent_protocol_player.player_id)
+
+        if not (was_rendering and switching_protocols):
+            return
+
+        self.logger.info(
+            "Handing the output of %s over to the %s protocol%s",
+            parent_player.state.name,
+            parent_protocol_player.provider.domain,
+            " and resuming playback" if was_playing else "",
+        )
+        if stranded_native_members:
+            await self._stop_native_session(
+                parent_player, parent_protocol_player, stranded_native_members
+            )
+        old_parent_members = await self._stop_previous_protocol(
+            parent_player, parent_protocol_player, previous_protocol
+        )
+        if was_playing:
+            await self.mass.players.cmd_resume(parent_player.player_id)
+        if old_parent_members:
+            self.logger.debug(
+                "Re-adding migrated members %s to %s on new protocol",
+                old_parent_members,
+                parent_player.state.name,
+            )
+            # Use internal handler because we are already inside a
+            # _handle_set_members call chain that holds the play lock.
+            await self.mass.players._handle_set_members(
+                parent_player,
+                player_ids_to_add=old_parent_members,
+            )
+
+    async def _stop_previous_protocol(
+        self,
+        parent_player: Player,
+        parent_protocol_player: Player,
+        previous_protocol: str | None,
+    ) -> list[str]:
+        """
+        Stop the protocol player the parent was rendering through and return its members.
+
+        The returned IDs are parent player IDs, so the caller can re-add them to the group
+        once the new protocol carries the audio. Empty if there is nothing to hand over.
+
+        :param parent_player: The parent player that is switching protocol.
+        :param parent_protocol_player: The protocol player taking the output over.
+        :param previous_protocol: The parent's previous active output protocol, if any.
+        """
+        if previous_protocol in (None, "native"):
+            return []
+        if not (old_protocol_player := self.get_player(previous_protocol)):
+            return []
+        if old_protocol_player.player_id == parent_protocol_player.player_id:
+            return []
+        # Translate the old protocol's child members back to parent player IDs
+        old_parent_members: list[str] = []
+        for member_id in old_protocol_player.group_members:
+            if member_id == old_protocol_player.player_id:
+                continue
+            if not (member_player := self.get_player(member_id)):
+                continue
+            parent_id = member_player.protocol_parent_id or member_id
+            if parent_id != parent_player.player_id:
+                old_parent_members.append(parent_id)
+        self.logger.debug(
+            "Stopping old protocol player %s before switching to %s, migrating members: %s",
+            old_protocol_player.state.name,
+            parent_protocol_player.state.name,
+            old_parent_members,
+        )
+        # Use internal handler to stop the specific protocol player,
+        # bypassing group/sync redirect and queue redirect logic.
+        await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
+        return old_parent_members

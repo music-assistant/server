@@ -287,11 +287,11 @@ The provider supports synchronized multi-room audio by:
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
 1. **Ring buffer**: Session maintains a few seconds of recent audio chunks in memory
-2. **Anchored past receiver readiness**: The joiner's START is commanded just past the instant its binary projects the receiver's clock becomes usable, and the binary acks the instant it can truly honour
+2. **Anchored past receiver readiness**: The joiner's START is commanded no earlier than the instant its binary projects the receiver's clock becomes usable, and the binary acks the instant it can truly honour
 3. **Anchor first, then prime**: The joiner's START is sent before the buffered chunks; pre-START the binary only buffers its bounded ring and sends nothing, so anchoring first lets it drain the prime as it streams in
 4. **Content mapped onto the acked instant**: The stream position due at that instant is primed from the ring tail (when it is at or behind the write head) or skipped off the head of the live feed (when it is ahead). There is no catch-up: the binary makes the first post-START stdin byte audible exactly at the acked instant and freezes the anchor there
 
-**Note**: The projection can only push a joiner's anchor later, never earlier — `AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS` is the floor, and the one the anchor rests on when no projection arrives. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START, and only for an anchor that clears the receiver queue depth plus 500 ms. The deeper defaults in `AIRPLAY_BUFFER_DEPTH_DEFAULTS` ([constants.py](constants.py)) reach past ~2 s of effective depth, where a joiner's anchor no longer clears that — by design: the queue starts releasing frames one depth *before* the anchor, and a line with audio on the wire cannot move.
+**Note**: The projection can only push a joiner's anchor later, never earlier — `AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS` is the floor, and the one the anchor rests on whenever no projection arrives or the projection does not clear it. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START, and only for an anchor that clears the receiver queue depth plus 500 ms. The deeper defaults in `AIRPLAY_BUFFER_DEPTH_DEFAULTS` ([constants.py](constants.py)) reach past ~2 s of effective depth, where a joiner's anchor no longer clears that — by design: the queue starts releasing frames one depth *before* the anchor, and a line with audio on the wire cannot move.
 
 ## DACP (Digital Audio Control Protocol)
 
@@ -560,7 +560,9 @@ keeps their exposed player id stable and their Universal Player merging intact.
    Companion/MRP for idle and external playback control
 2. **Pause while synced**: Parks the whole session instead of pausing members
    individually, so they can resume sample-aligned; a member that has lost its
-   connection falls back to stop
+   connection falls back to stop. The park belongs to the session rather than to
+   the group membership, so breaking up a paused group leaves the remaining
+   player parked, and only a queue-driven re-anchor revives it
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
 4. **Apple TV artwork for non-public images**: Cover art only reachable through

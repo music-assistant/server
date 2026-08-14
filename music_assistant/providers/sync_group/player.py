@@ -1282,8 +1282,8 @@ class SyncGroupPlayer(Player):
         # 1. Old leader's session protocol player steps out of the session.
         # Direct call (the controller's cmd_set_members would interpret this
         # self-removal as "dissolve the entire group"). The provider's set_members
-        # implementation handles "remove self while other clients remain" by
-        # promoting another sync_client at the protocol level.
+        # keeps the live session running for the members that stay behind and releases
+        # them, so they are briefly without a leader until step 2 picks them back up.
         if session_player is not None:
             await session_player.set_members(player_ids_to_remove=[session_player.player_id])
 
