@@ -966,6 +966,59 @@ def test_sync_volume_state_resolves_against_this_output(
     parent.mute_control_for_output.assert_called_once_with("test_player")
 
 
+def test_sync_volume_state_keeps_explicitly_requested_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Keep a volume that was explicitly requested for the stream about to start.
+
+    An announcement volume is resolved and applied before the session starts, so the
+    parent's level (which on a multi-interface device may come from an idle sibling)
+    must not replace it - the level held here is what reaches the receiver.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 85
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state(adopt_parent_volume=False)
+
+    assert airplay_player._attr_volume_level == 85
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
+def test_sync_volume_state_clears_mute_latch_without_adopting_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A stream with an explicitly requested volume still gets its mute latch released."""
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.state.volume_muted = False
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = "cast_player"
+    cast_player = MagicMock()
+    cast_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "cast_player": cast_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 85
+    airplay_player._attr_volume_muted = True
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state(adopt_parent_volume=False)
+
+    assert airplay_player._attr_volume_muted is False
+    assert airplay_player._attr_volume_level == 85
+    mock_update.assert_called_once()
+
+
 # --- Pause / stop dispatch tests ---
 
 

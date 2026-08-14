@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Coroutine
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
@@ -1018,8 +1018,12 @@ class AirPlayStreamSession:
         """
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
-        # sync volume/mute from parent player if needed
-        airplay_player.sync_volume_state()
+        # sync volume/mute from parent player if needed. An announcement carries a volume
+        # that was explicitly requested for it, so the parent's level must not replace it:
+        # the level set here is what the connecting stream hands to the receiver.
+        airplay_player.sync_volume_state(
+            adopt_parent_volume=self.media.media_type != MediaType.ANNOUNCEMENT
+        )
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
