@@ -3,6 +3,10 @@
     "color_tint": {
       "label": "Tint with track color",
       "description": "Recolor the visualizer toward the current track's dominant artwork color."
+    },
+    "show_on_dashboards": {
+      "label": "Show on dashboards and cast displays",
+      "description": "Render the visualizer on the party screen and on dashboards cast to a TV or display. Those screens sign in as a viewer with no settings of their own, so this decides for them. Your own choice in the player menu always takes precedence on your own session."
     }
   }
 }

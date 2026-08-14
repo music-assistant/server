@@ -1605,6 +1605,8 @@
   "provider.mammamiradio.manifest.description": "Two Italian hosts. One very opinionated smart home. Self-hosted radio for Home Assistant: music, banter, and ads, with your home's moments worked into the show.",
   "provider.milkdrop_visualizer.config_entries.color_tint.description": "Recolor the visualizer toward the current track's dominant artwork color.",
   "provider.milkdrop_visualizer.config_entries.color_tint.label": "Tint with track color",
+  "provider.milkdrop_visualizer.config_entries.show_on_dashboards.description": "Render the visualizer on the party screen and on dashboards cast to a TV or display. Those screens sign in as a viewer with no settings of their own, so this decides for them. Your own choice in the player menu always takes precedence on your own session.",
+  "provider.milkdrop_visualizer.config_entries.show_on_dashboards.label": "Show on dashboards and cast displays",
   "provider.mpd.config_entries.manual_discovery_ip_addresses.description": "List of MPD servers to connect to. Enter one server per line as host or host:port. Port defaults to 6600 if not specified.",
   "provider.mpd.config_entries.manual_discovery_ip_addresses.label": "MPD Servers",
   "provider.mpd.config_entries.password.description": "MPD password, if required by the server.",

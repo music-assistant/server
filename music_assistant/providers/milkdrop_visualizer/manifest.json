@@ -3,7 +3,7 @@
   "stage": "experimental",
   "domain": "milkdrop_visualizer",
   "name": "MilkDrop Visualizer",
-  "description": "Stream real-time waveform data from any playing player to the Music Assistant web interface, powering the MilkDrop visualizer in the now-playing views. The waveform is read from the audio Music Assistant is already decoding for playback, so it works whatever protocol the player renders over.",
+  "description": "Stream real-time waveform data from any playing player to the Music Assistant web interface, powering the MilkDrop visualizer in the now-playing views. The waveform is read from the audio Music Assistant is already decoding for playback, so it works whatever protocol the player renders over. Rendering by Butterchurn, the WebGL implementation of MilkDrop 2. Requires a browser with WebGL2: displays that lack it, including older cast receivers, fall back to a simple waveform rendering on dashboards.",
   "codeowners": [
     "@music-assistant"
   ],
