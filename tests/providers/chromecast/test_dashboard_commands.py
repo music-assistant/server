@@ -192,6 +192,30 @@ async def test_on_show_forces_a_launch_when_a_release_is_on_the_wire(
     assert castplayer.app_quit_sent is False
 
 
+async def test_on_show_leaves_a_release_sent_while_it_was_launching() -> None:
+    """Only the release this launch replaced is resolved, not one that arrived meanwhile."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = connected_chromecast
+    castplayer.app_quit_sent = False
+    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value="https://mass.test")  # type: ignore[method-assign]
+
+    def _release_the_device(*_args: object, **_kwargs: object) -> None:
+        castplayer.app_quit_sent = True
+
+    with patch(
+        "music_assistant.providers.chromecast.dashboard.send_show_dashboard",
+        side_effect=_release_the_device,
+    ):
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
+
+    assert castplayer.app_quit_sent is True
+
+
 async def test_on_show_reuses_cached_on_demand_connection() -> None:
     """A cached on-demand connection (no MA player) is reused instead of reconnecting."""
     dashboards = _make_dashboards()

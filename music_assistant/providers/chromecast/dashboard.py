@@ -168,8 +168,8 @@ class ChromecastDashboards:
                 translation_args=[chromecast.name],
             ) from err
 
-        if castplayer is not None:
-            # this launch established a session the player can trust again
+        if force_launch and castplayer is not None:
+            # this launch replaced the session the recorded release was closing
             castplayer.app_quit_sent = False
 
         self._drop_active_cast(device_id)
