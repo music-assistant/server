@@ -2511,18 +2511,11 @@ class ProtocolLinkingMixin:
             else []
         )
 
-        self.logger.debug(
-            "Calling set_members on protocol player %s with add=%s, remove=%s",
-            parent_protocol_player.state.name,
-            filtered_protocol_add,
-            filtered_protocol_remove,
-        )
-        await parent_protocol_player.set_members(
-            player_ids_to_add=filtered_protocol_add or None,
-            player_ids_to_remove=filtered_protocol_remove or None,
-        )
-
-        # Set active output protocol on added child players
+        # Set active output protocol on added child players. This runs before set_members
+        # because a member's own stream starts inside that call and the provider resolves the
+        # member's volume control as it starts: unless its parent already points at this
+        # protocol, that resolution picks a sibling interface of the same device (e.g. its
+        # cast side) over the one carrying the audio.
         if filtered_protocol_add:
             for child_protocol_id in filtered_protocol_add:
                 if child_protocol := self.get_player(child_protocol_id):
@@ -2535,6 +2528,17 @@ class ProtocolLinkingMixin:
                                     child_protocol_id,
                                 )
                                 child_player.set_active_output_protocol(child_protocol_id)
+
+        self.logger.debug(
+            "Calling set_members on protocol player %s with add=%s, remove=%s",
+            parent_protocol_player.state.name,
+            filtered_protocol_add,
+            filtered_protocol_remove,
+        )
+        await parent_protocol_player.set_members(
+            player_ids_to_add=filtered_protocol_add or None,
+            player_ids_to_remove=filtered_protocol_remove or None,
+        )
 
         # If we added members via this protocol, set it as the active output protocol
         # and restart playback if currently playing AND we're switching protocols

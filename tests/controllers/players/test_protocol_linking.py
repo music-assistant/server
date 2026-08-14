@@ -3090,6 +3090,109 @@ class TestProtocolSwitchingDuringPlayback:
             controller.cmd_resume.assert_not_awaited()
         controller._handle_set_members.assert_not_awaited()
 
+    async def test_joining_member_protocol_is_active_before_its_stream_starts(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A joining member's parent knows which protocol carries its audio before its stream starts.
+
+        The member's stream is started from inside set_members, and providers resolve the
+        member's volume control while starting it. A device that also exposes a higher
+        priority sibling interface (e.g. a soundbar that is both Chromecast and AirPlay)
+        would otherwise resolve volume to that sibling and apply its volume semantics to
+        a stream it does not attenuate.
+        """
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        cast_provider = MockProvider("chromecast", instance_id="chromecast", mass=mock_mass)
+
+        leader = MockPlayer(airplay_provider, "leader", "Kitchen")
+        leader_airplay = MockPlayer(
+            airplay_provider,
+            "leader_airplay",
+            "Kitchen (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        leader_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader_airplay.set_protocol_parent_id("leader")
+
+        # the joining device exposes both a Chromecast and an AirPlay interface, and has no
+        # native volume of its own, so its volume control is one of the two protocol players
+        joiner = MockPlayer(cast_provider, "joiner", "Living Room")
+        joiner._attr_supported_features = set()
+        joiner_cast = MockPlayer(
+            cast_provider,
+            "joiner_cast",
+            "Living Room (Cast)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        joiner_cast.set_protocol_parent_id("joiner")
+        joiner_airplay = MockPlayer(
+            airplay_provider,
+            "joiner_airplay",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        joiner_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        joiner_airplay.set_protocol_parent_id("joiner")
+
+        leader.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="leader_airplay",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+        joiner.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="joiner_cast",
+                    protocol_domain="chromecast",
+                    priority=10,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="joiner_airplay",
+                    protocol_domain="airplay",
+                    priority=20,
+                ),
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            player.player_id: player
+            for player in (leader, leader_airplay, joiner, joiner_cast, joiner_airplay)
+        }
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+
+        # While the device sits idle its Chromecast interface owns the volume: the winner is
+        # decided by the hardcoded per-domain control priority, not by the link priorities.
+        assert joiner.volume_control == "joiner_cast"
+
+        observed_volume_controls: list[str] = []
+
+        async def record_set_members(
+            player_ids_to_add: list[str] | None = None,  # noqa: ARG001
+            player_ids_to_remove: list[str] | None = None,  # noqa: ARG001
+        ) -> None:
+            observed_volume_controls.append(joiner.volume_control)
+
+        leader_airplay.set_members = record_set_members  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=leader_airplay,
+            protocol_members_to_add=["joiner_airplay"],
+            protocol_members_to_remove=[],
+        )
+
+        assert observed_volume_controls == ["joiner_airplay"]
+
 
 class TestNativeProtocolPlayerGrouping:
     """Tests for grouping with native protocol players (e.g., native AirPlay like Apple TV)."""
