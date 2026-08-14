@@ -60,6 +60,7 @@ def _fake_cast(
     fake._schedule_app_release = partial(
         ChromecastPlayer._schedule_app_release, cast("ChromecastPlayer", fake)
     )
+    fake._quit_app = partial(ChromecastPlayer._quit_app, cast("ChromecastPlayer", fake))
     status = fake.cc.media_controller.status
     status.player_state = player_state
     status.player_is_playing = player_state in ("PLAYING", "BUFFERING")
@@ -99,6 +100,7 @@ async def test_stop_ends_a_foreign_cast_session_right_away(app_id: str | None) -
 
     fake.cc.quit_app.assert_called_once()
     fake.mass.call_later.assert_not_called()
+    assert fake.app_quit_sent is True
 
 
 async def test_stop_on_a_group_leaves_the_app_alone() -> None:
@@ -213,3 +215,13 @@ async def test_a_skipped_quit_is_not_recorded(
     await _quit_app_when_unused(fake)
 
     assert fake.app_quit_sent is False
+
+
+async def test_powering_off_a_group_records_the_release() -> None:
+    """A receiver that never answers the quit keeps reporting the app for the full timeout."""
+    fake = _fake_cast(player_type=PlayerType.GROUP)
+
+    await ChromecastPlayer.power(cast("ChromecastPlayer", fake), False)
+
+    fake.cc.quit_app.assert_called_once()
+    assert fake.app_quit_sent is True

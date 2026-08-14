@@ -163,7 +163,7 @@ class ChromecastPlayer(Player):
             return
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             # another app is casting to the device, release it right away
-            await asyncio.to_thread(self.cc.quit_app)
+            await self._quit_app()
             return
         if self.cc.media_controller.status.media_session_id is not None:
             # a stop is refused by the cast library when nothing was ever loaded
@@ -204,7 +204,7 @@ class ChromecastPlayer(Player):
             self._attr_active_source = None
         else:
             self._attr_active_source = None
-            await asyncio.to_thread(self.cc.quit_app)
+            await self._quit_app()
         # optimistically update the state
         self.update_state()
 
@@ -546,6 +546,12 @@ class ChromecastPlayer(Player):
         if (status.player_is_playing or status.player_is_paused) and not ran_dry:
             # something is loaded again, e.g. the keepalive media of a dashboard
             return
+        await self._quit_app()
+
+    async def _quit_app(self) -> None:
+        """Release the Cast device, so a follow-up launch is not skipped as unnecessary."""
+        # a receiver reports our app as running until it answers the quit, and an
+        # unanswered one leaves it reported for the full request timeout
         self.app_quit_sent = True
         await asyncio.to_thread(self.cc.quit_app)
 

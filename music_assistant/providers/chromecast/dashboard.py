@@ -142,9 +142,10 @@ class ChromecastDashboards:
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
+        player = self.mass.players.get_player(device_id)
+        castplayer = player if isinstance(player, ChromecastPlayer) else None
         force_launch = False
-        castplayer = self.mass.players.get_player(device_id)
-        if isinstance(castplayer, ChromecastPlayer):
+        if castplayer is not None:
             # an earlier stop on the player may still have a release of the receiver
             # app pending, which would close the dashboard we are about to show
             castplayer.cancel_pending_app_quit()
@@ -166,6 +167,10 @@ class ChromecastDashboards:
                 translation_owner=self.provider.translation_owner,
                 translation_args=[chromecast.name],
             ) from err
+
+        if castplayer is not None:
+            # this launch established a session the player can trust again
+            castplayer.app_quit_sent = False
 
         self._drop_active_cast(device_id)
         session_id = chromecast.status.session_id if chromecast.status else None

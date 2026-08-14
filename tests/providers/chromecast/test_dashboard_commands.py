@@ -188,6 +188,8 @@ async def test_on_show_forces_a_launch_when_a_release_is_on_the_wire(
     mock_send_show_dashboard.assert_called_once_with(
         connected_chromecast, url, force_launch=app_quit_sent
     )
+    # the dashboard just established a session, so the player can trust it again
+    assert castplayer.app_quit_sent is False
 
 
 async def test_on_show_reuses_cached_on_demand_connection() -> None:
