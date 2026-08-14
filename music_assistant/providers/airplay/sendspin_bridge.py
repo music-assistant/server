@@ -653,7 +653,7 @@ class SendspinAirPlayBridge:
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        self.airplay_player.sync_volume_level()
+        self.airplay_player.sync_volume_state()
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
             "Bridge writer started for %s, awaiting first chunk",
