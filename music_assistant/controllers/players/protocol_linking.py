@@ -1484,7 +1484,10 @@ class ProtocolLinkingMixin:
             if derived_from == native_player.player_id:
                 derived_from = "native"
 
-            # Add the link entry
+            # Appended in place rather than through set_linked_output_protocols():
+            # the player is still registering, so nothing is listening yet, and the
+            # update-all pass that closes registration marks it dirty and
+            # recalculates its state.
             native_player.linked_output_protocols.append(
                 LinkedOutputProtocol(
                     output_protocol_id=protocol_id,
