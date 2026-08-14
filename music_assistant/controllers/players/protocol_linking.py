@@ -1093,7 +1093,7 @@ class ProtocolLinkingMixin:
 
         # only carry an actual user rename, not the auto-generated default name;
         # likewise a name on the native player only counts as a user override when
-        # it differs from the default name (fresh configs store name == default_name)
+        # it differs from the default name
         custom_name = source_raw.get("name")
         target_name = target_raw.get("name")
         target_has_custom_name = bool(target_name) and target_name != target_raw.get("default_name")
