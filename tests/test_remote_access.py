@@ -1584,8 +1584,9 @@ async def test_a_second_http_proxy_channel_is_refused(cert_pems: tuple[str, str]
 class _FakeDataChannel:
     """Data channel stand-in that captures outbound messages for proxy tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_message_size: int = 256 * 1024) -> None:
         self.is_open = True
+        self.max_message_size = max_message_size
         self.sent: list[str] = []
 
     async def send(self, data: str) -> None:
@@ -1676,3 +1677,104 @@ async def test_send_chunked_large_message_chunked(cert_pems: tuple[str, str]) ->
     assert len(channel.sent) > 1
     assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
     assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_send_chunked_keeps_the_framing_released_clients_expect(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Against the 256 KiB limit every browser advertises, the frames must not move."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel()
+    text = '{"event":"' + "x" * (DATA_CHANNEL_CHUNK_SIZE * 2 + 5000) + '"}'
+    data = text.encode()
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    # the exact wire format the bundled frontend and the mobile app reassemble: 64 KiB pieces,
+    # numbered from zero within a group id that counts up per message
+    assert channel.sent == [
+        json.dumps(
+            {
+                "type": "__chunk__",
+                "id": 1,
+                "seq": seq,
+                "count": 3,
+                "b64": base64.b64encode(
+                    data[seq * DATA_CHANNEL_CHUNK_SIZE : (seq + 1) * DATA_CHANNEL_CHUNK_SIZE]
+                ).decode(),
+            }
+        )
+        for seq in range(3)
+    ]
+    # a full piece has always serialised well past 64 KiB, which only a peer advertising no
+    # limit of its own would reject
+    assert len(channel.sent[0]) == 87447
+
+
+async def test_send_chunked_honours_the_negotiated_message_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A peer that advertises no limit in its SDP gets frames it can actually accept."""
+    gateway = _proxy_gateway(cert_pems)
+    # what libdatachannel assumes when the peer advertises no a=max-message-size
+    channel = _FakeDataChannel(max_message_size=64 * 1024)
+    text = '{"data":"' + "音楽" * DATA_CHANNEL_CHUNK_SIZE + '"}'
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    assert len(channel.sent) > 1
+    assert all(len(m.encode()) <= channel.max_message_size for m in channel.sent)
+    assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_send_chunked_passthrough_stops_at_the_negotiated_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A message past a small peer's limit is chunked rather than sent whole."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel(max_message_size=16 * 1024)
+    text = '{"data":"' + "x" * (32 * 1024) + '"}'
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    assert len(channel.sent) > 1
+    assert all(len(m.encode()) <= channel.max_message_size for m in channel.sent)
+    assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_ma_api_channel_chunks_within_the_negotiated_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A large API event reaches a peer that advertises no limit instead of being dropped."""
+    cert_pem, key_pem = cert_pems
+    fake_ws = _FakeLocalWS()
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(
+        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    )
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    # what libdatachannel assumes when the peer advertises no a=max-message-size
+    channel = _FakeBidiChannel(max_message_size=64 * 1024)
+    session = _register_bridge_session(gateway, "small-limit-session", channel)
+    bridge = asyncio.ensure_future(gateway._bridge_ma_api(session, cast("DataChannel", channel)))
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        event = json.dumps({"event": "queue_updated", "data": "x" * (200 * 1024)})
+        fake_ws.feed_text(event)
+        await _wait_for(
+            lambda: bool(channel.sent) and len(channel.sent) == json.loads(channel.sent[0])["count"]
+        )
+
+        frames = cast("list[str]", channel.sent)
+        assert all(len(frame.encode()) <= channel.max_message_size for frame in frames)
+        assert _reassemble_chunks(frames) == event
+    finally:
+        channel.close()
+        await asyncio.wait_for(bridge, timeout=5)
+        await _wait_for(lambda: "small-limit-session" not in gateway.sessions)

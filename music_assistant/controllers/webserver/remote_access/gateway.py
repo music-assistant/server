@@ -44,8 +44,13 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 # instead of piling up local requests and the response bodies they buffer (see #4889).
 HTTP_PROXY_CONCURRENCY = 6
 
-# Chunk messages larger than this; each piece becomes a base64 frame roughly a third larger.
+# Preferred piece size when chunking an oversized message; each piece becomes a base64 frame
+# roughly a third larger, so the channel's negotiated limit can size it down further.
 DATA_CHANNEL_CHUNK_SIZE = 64 * 1024
+
+# Room a chunk frame's JSON envelope takes around its base64 payload: the fixed keys plus the
+# group, sequence and count numbers.
+DATA_CHANNEL_CHUNK_OVERHEAD = 128
 
 # Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,
 # so this sits close to libdatachannel's 256 KiB cap; the channel's negotiated limit still wins.
@@ -639,20 +644,25 @@ class WebRTCGateway:
 
     async def _send_chunked(self, channel: DataChannel | None, text: str) -> None:
         """Send a text message on a data channel, chunking it if it exceeds the size limit."""
+        if channel is None or not channel.is_open:
+            return
+        # a peer that advertises no limit in its SDP is assumed to accept only 64 KiB
+        limit = channel.max_message_size
         data = text.encode()
-        if len(data) <= DATA_CHANNEL_CHUNK_SIZE:
+        if len(data) <= min(DATA_CHANNEL_CHUNK_SIZE, limit):
             await self._send_on_channel(channel, text)
             return
 
         # Oversized messages are split into base64 frames the client reassembles by group id
         # (base64 keeps each frame's size predictable regardless of JSON escaping / unicode).
+        # A piece is sized so its frame still fits the limit: base64 turns every 3 bytes into 4,
+        # on top of the JSON envelope.
+        piece_size = min(DATA_CHANNEL_CHUNK_SIZE, (limit - DATA_CHANNEL_CHUNK_OVERHEAD) // 4 * 3)
         self._chunk_group_seq += 1
         group_id = self._chunk_group_seq
-        count = (len(data) + DATA_CHANNEL_CHUNK_SIZE - 1) // DATA_CHANNEL_CHUNK_SIZE
+        count = (len(data) + piece_size - 1) // piece_size
         for seq in range(count):
-            if channel is None or not channel.is_open:
-                return
-            piece = data[seq * DATA_CHANNEL_CHUNK_SIZE : (seq + 1) * DATA_CHANNEL_CHUNK_SIZE]
+            piece = data[seq * piece_size : (seq + 1) * piece_size]
             await self._send_on_channel(
                 channel,
                 json.dumps(
