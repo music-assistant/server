@@ -655,7 +655,8 @@ class ChromecastPlayer(Player):
         Log a media error reported by the receiver, at most once per incident.
 
         Such an error (e.g. after a failed LOAD) otherwise only shows as a silent
-        return to idle.
+        return to idle. Any other status ends the incident, so a later error is
+        reported again.
 
         :param status: Media status as reported by the receiver.
         :param group_player: Cast group player whose status is being followed, if any.
@@ -665,9 +666,9 @@ class ChromecastPlayer(Player):
             return
         # a group forwards its status to every member, so only the group
         # player itself reports the error
-        if group_player is not None or self._media_error_reported:
+        if group_player is not None:
             return
-        if self._flow_stream_underrun():
+        if self._media_error_reported or self._flow_stream_underrun():
             return
         self._media_error_reported = True
         self.logger.warning(
@@ -689,6 +690,8 @@ class ChromecastPlayer(Player):
             self.set_current_media(uri=status.content_id or "", clear_all=True)
         elif status.player_is_paused:
             self._attr_playback_state = PlaybackState.PAUSED
+            # dropped so the metadata update below builds a fresh PlayerMedia instead of
+            # merging the new track into the previous one, which only truthy fields replace
             self._attr_current_media = None
             self._attr_active_source = None
         else:
