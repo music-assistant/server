@@ -56,6 +56,9 @@ def _fake_cast(
     fake.cancel_pending_app_quit = partial(
         ChromecastPlayer.cancel_pending_app_quit, cast("ChromecastPlayer", fake)
     )
+    fake._schedule_app_release = partial(
+        ChromecastPlayer._schedule_app_release, cast("ChromecastPlayer", fake)
+    )
     status = fake.cc.media_controller.status
     status.player_is_playing = player_state in ("PLAYING", "BUFFERING")
     status.player_is_paused = player_state == "PAUSED"
