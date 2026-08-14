@@ -546,6 +546,8 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
     session = renderer._sessions["sess"]
     assert session.skipped_sections == 1
     assert "enough credit" in session.last_render_error
+    # the hint is a guess, so the probe's own message has to travel with it
+    assert "Server returned 5XX" in session.last_render_error
 
 
 async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
