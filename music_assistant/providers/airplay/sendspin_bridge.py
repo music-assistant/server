@@ -803,9 +803,13 @@ class SendspinAirPlayBridge:
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
         if readiness is ClockReadiness.STALLED:
-            # A bridged device that never answered our clock renders silence,
-            # and unlike a group member it is the whole playback: say so where
-            # the anchor is decided rather than letting it look anchored.
+            # Anchored anyway, like a group start and unlike a late joiner:
+            # dropping a joiner leaves it out of a session whose other members
+            # keep playing, while this stream is the player's whole playback, so
+            # refusing its anchor would stop the speaker outright. The join ack
+            # below is then held until the binary's clock verification runs out,
+            # which for a receiver that never probed lands one receiver queue
+            # depth short of the commanded anchor - well inside the ack window.
             self.logger.warning(
                 "%s never answered the server's PTP clock, so this stream will be silent "
                 "until it does; anchoring anyway",

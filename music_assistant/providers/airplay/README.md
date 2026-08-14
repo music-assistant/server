@@ -651,6 +651,12 @@ Leaving a shared group schedules a bounded re-join through the ordinary `Sendspi
 
 The group re-join recovery in `stream.py` only covers native AirPlay grouping — a bridged player's group membership lives on its Sendspin player, not on the AirPlay one.
 
+### Stalled Receiver Clocks
+
+A receiver that never answers the server's PTP clock renders silence. The bridge warns and anchors anyway, which follows a native group start rather than a late joiner: dropping a joiner leaves it out of a session whose other members keep playing, while a bridge stream is that player's whole playback, so refusing its anchor would stop the speaker outright. It is not a give-up case either — the transport is healthy and the receiver may still start answering — so the bridge stays in its Sendspin session, and the stall reaches the user through the warning the binary's report raises, which names the device and the UDP ports to check.
+
+The binary diagnoses a stall more slowly than it projects readiness (see `AIRPLAY_CLOCK_READY_TIMEOUT_MS`), so a cold start reads `UNREPORTED` and anchors on the join floor. A stall is what a warm re-anchor sees, once the process has run long enough for the verdict to exist.
+
 ### Requirements
 
 - Sendspin provider must be enabled
