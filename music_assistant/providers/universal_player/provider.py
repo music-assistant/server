@@ -120,7 +120,7 @@ class UniversalPlayerProvider(PlayerProvider):
             enabled=True,
             values={
                 CONF_LINKED_PROTOCOL_IDS: protocol_player_ids,
-                CONF_CREATED_AT: int(time.time()),
+                CONF_CREATED_AT: time.time_ns(),
             },
         )
 

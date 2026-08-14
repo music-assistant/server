@@ -7776,6 +7776,32 @@ class TestEndToEndUniversalPlayerId:
         assert universal_id in controller._players
         assert store[CONF_PLAYERS]["ap_1"]["values"][CONF_PROTOCOL_PARENT_ID] == universal_id
 
+    async def test_wrappers_created_in_one_second_still_order(self, mock_mass: MagicMock) -> None:
+        """
+        Two wrappers created back to back get distinct creation timestamps.
+
+        A merge between them must be able to keep the older one, which it cannot do
+        when both carry the same timestamp and the tiebreak falls back to the id.
+        """
+        controller, store = self._setup_controller(mock_mass)
+        players = [
+            self._make_airplay_player(
+                mock_mass, f"ap_{index}", f"Speaker {index}", {IdentifierType.MAC_ADDRESS: mac}
+            )
+            for index, mac in enumerate(("54:78:C9:E6:0D:A0", "AA:BB:CC:DD:EE:FF"), start=1)
+        ]
+        controller._players = {player.player_id: player for player in players}
+
+        for player in players:
+            await controller._delayed_protocol_evaluation(player.player_id)
+
+        created = [
+            store[CONF_PLAYERS][player.protocol_parent_id]["values"][CONF_CREATED_AT]
+            for player in players
+        ]
+        assert all(isinstance(value, int) for value in created)
+        assert created[0] < created[1]
+
     async def test_new_devices_get_distinct_minted_ids(self, mock_mass: MagicMock) -> None:
         """Devices that were never wrapped before each get their own minted id."""
         controller, _ = self._setup_controller(mock_mass)

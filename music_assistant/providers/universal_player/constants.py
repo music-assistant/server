@@ -12,8 +12,9 @@ CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
 # Config key for storing device info (model, manufacturer)
 CONF_DEVICE_INFO: Final[str] = "device_info"
 
-# Config key for the (unix timestamp) moment a universal player was created,
-# used to let the older player win when two of them merge.
+# Config key for the moment a universal player was created, as a nanosecond
+# timestamp so players created in the same second still order, used to let the
+# older player win when two of them merge.
 CONF_CREATED_AT: Final[str] = "created_at"
 
 # Protocols where external sources (e.g. Spotify Connect) can play
