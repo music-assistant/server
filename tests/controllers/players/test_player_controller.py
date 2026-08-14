@@ -3129,6 +3129,7 @@ class _AnnounceSetup(NamedTuple):
     play_announcement: AsyncMock
 
 
+@pytest.mark.usefixtures("running_background_tasks")
 class TestNativeAnnouncementVolumeRouting:
     """The announcement volume is applied through the control that owns it."""
 
@@ -3162,6 +3163,16 @@ class TestNativeAnnouncementVolumeRouting:
             "sibling": sibling,
             "bridge": bridge,
         }
+        # an external control (e.g. a Home Assistant volume entity) is not a player
+        controller._controls = {
+            "ha_volume": PlayerControl(
+                id="ha_volume",
+                provider="hass",
+                name="Amplifier volume",
+                supports_volume=True,
+                volume_level=20,
+            )
+        }
         mock_mass.players = controller
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_player_config_stub({CONF_VOLUME_CONTROL: volume_control})
@@ -3191,6 +3202,20 @@ class TestNativeAnnouncementVolumeRouting:
 
         # the output cannot attenuate what another control is already attenuating,
         # so the level goes through that control and the output announces at unity
+        assert setup.volume_set.await_args_list == [
+            call("parent", self.ANNOUNCE_VOLUME),
+            call("parent", 20),
+        ]
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+    async def test_player_control_applies_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player control owning the volume (e.g. an HA entity) gets the announcement volume."""
+        setup = self._make_setup(mock_mass, "ha_volume")
+
+        await self._announce(setup)
+
         assert setup.volume_set.await_args_list == [
             call("parent", self.ANNOUNCE_VOLUME),
             call("parent", 20),
