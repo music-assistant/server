@@ -301,9 +301,10 @@ interleaving, which a channel that sends one message at a time would do anyway.
 `ma-api` and `http_proxy` size their bulk frames to the channel's `max_message_size`, the lower of
 our own 256 KiB ceiling and what the peer advertises in its SDP — and libdatachannel assumes
 only 64 KiB when it advertises nothing. On `http_proxy` that bounds the binary body frames. On
-`ma-api` a message that does not fit is split into `__chunk__` frames (`id`, `seq`, `count`,
-`b64`) the client reassembles by group id, each piece at most 64 KiB and sized down further so
-its base64 payload and JSON envelope stay under the cap.
+`ma-api` any message over 64 KiB — or over the cap, whichever is lower — is split into
+`__chunk__` frames (`id`, `seq`, `count`, `b64`) the client reassembles by group id. A client
+therefore has to expect chunking well before the cap: pieces are 64 KiB by preference, sized
+down only when the cap cannot fit that much base64 plus the frame's JSON envelope.
 
 **Adding a new label** is not backwards compatible by itself: servers from before the routing
 table mistake an unknown label for the API channel, which breaks the entire remote session
