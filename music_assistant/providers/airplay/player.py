@@ -512,7 +512,7 @@ class AirPlayPlayer(Player):
                     for member in self.stream.session.sync_clients:
                         self.mass.call_later(
                             1,
-                            member._on_player_media_updated,
+                            member.on_player_media_updated,
                             task_id=f"player_media_updated_{member.player_id}",
                         )
                     return
@@ -893,6 +893,16 @@ class AirPlayPlayer(Player):
         if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
             rejoin_task.cancel()
 
+    def on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if not self.stream or not self.stream.running:
+            return
+        metadata = self.state.current_media
+        if not metadata:
+            return
+        progress = int(metadata.corrected_elapsed_time or 0)
+        self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
     def _volume_control_routes_to_self(self, volume_control: str) -> bool:
         """Return True if the given (resolved) volume control routes volume to this player."""
         if volume_control == self.player_id:
@@ -1198,16 +1208,6 @@ class AirPlayPlayer(Player):
             port=port,
             device_id=device_id,
         )
-
-    def _on_player_media_updated(self) -> None:
-        """Handle callback when the current media of the player is updated."""
-        if not self.stream or not self.stream.running:
-            return
-        metadata = self.state.current_media
-        if not metadata:
-            return
-        progress = int(metadata.corrected_elapsed_time or 0)
-        self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
     async def _get_session_pcm_format(
         self, sync_clients: list[AirPlayPlayer], media: PlayerMedia

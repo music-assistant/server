@@ -1666,7 +1666,7 @@ class SendspinPlayer(SendspinBasePlayer):
             self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
-    def _on_player_media_updated(self) -> None:
+    def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
         if self.synced_to is not None:
             # Only leader sends metadata

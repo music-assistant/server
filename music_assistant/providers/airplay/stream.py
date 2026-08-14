@@ -346,7 +346,7 @@ class AirPlayStream:
         await self._send_current_volume()
         self.mass.call_later(2, self._send_current_volume)
         # settle artwork and the position on top of the identity push above
-        self.player._on_player_media_updated()
+        self.player.on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
         """

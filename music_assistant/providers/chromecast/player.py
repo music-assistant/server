@@ -331,22 +331,7 @@ class ChromecastPlayer(Player):
         # Dispatch to event loop for thread-safe attribute mutation
         self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
 
-    @staticmethod
-    def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """
-        Check if a device is a Google device with native Cast support.
-
-        Google devices (Chromecast, Nest, Google Home) have native Cast support
-        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-        support should be exposed as PlayerType.PROTOCOL.
-        """
-        if not cast_info.manufacturer:
-            # If no manufacturer, check model name for Google devices
-            model = cast_info.model_name.lower() if cast_info.model_name else ""
-            return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() in ("google", "google inc.")
-
-    def _on_player_media_updated(self) -> None:
+    def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
         if self.powered is False:
             return
@@ -430,6 +415,21 @@ class ChromecastPlayer(Player):
                 )
 
         self.mass.create_task(update_flow_metadata())
+
+    @staticmethod
+    def _is_google_device(cast_info: ChromecastInfo) -> bool:
+        """
+        Check if a device is a Google device with native Cast support.
+
+        Google devices (Chromecast, Nest, Google Home) have native Cast support
+        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+        support should be exposed as PlayerType.PROTOCOL.
+        """
+        if not cast_info.manufacturer:
+            # If no manufacturer, check model name for Google devices
+            model = cast_info.model_name.lower() if cast_info.model_name else ""
+            return any(google in model for google in ("chromecast", "google", "nest", "home"))
+        return cast_info.manufacturer.lower() in ("google", "google inc.")
 
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""

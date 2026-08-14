@@ -114,7 +114,7 @@ def _resolve_position(
 # position change (seek/buffer correction) instead of regular playback progression
 POSITION_JUMP_THRESHOLD = 1.0
 
-# Changes to any of these state keys fire the (debounced) _on_player_media_updated
+# Changes to any of these state keys fire the (debounced) on_player_media_updated
 # callback. The palette is included because it resolves asynchronously (shortly
 # after a track change) and players push it to their device from the callback.
 MEDIA_IDENTITY_KEYS = frozenset(
@@ -1231,7 +1231,7 @@ class Player(ABC):
             self.device_info.model,
         )
 
-    def _on_player_media_updated(self) -> None:  # noqa: B027
+    def on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
         # optional callback for players that want to be informed when the final
         # current media is updated (after applying group/sync membership logic).
@@ -1923,7 +1923,7 @@ class Player(ABC):
             # debounce the callback to avoid multiple calls when multiple
             # state updates happen in a short time
             self.mass.call_later(
-                1, self._on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
+                1, self.on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
             )
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
