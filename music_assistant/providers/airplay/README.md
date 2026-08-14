@@ -560,7 +560,9 @@ keeps their exposed player id stable and their Universal Player merging intact.
    Companion/MRP for idle and external playback control
 2. **Pause while synced**: Parks the whole session instead of pausing members
    individually, so they can resume sample-aligned; a member that has lost its
-   connection falls back to stop
+   connection falls back to stop. The park belongs to the session rather than to
+   the group membership, so breaking up a paused group leaves the remaining
+   player parked, and only a queue-driven re-anchor revives it
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
 4. **Apple TV artwork for non-public images**: Cover art only reachable through
