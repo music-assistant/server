@@ -530,13 +530,16 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
     return renderer
 
 
+@pytest.mark.parametrize(
+    "server_error",
+    ["Server returned 5XX Server Error reply", "HTTP error 500 Internal Server Error"],
+)
 async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
-    monkeypatch: pytest.MonkeyPatch,
+    server_error: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An engine that hands out a URL it cannot render fails the clip, not the playback."""
     renderer = _failing_probe(
-        "Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 "
-        "(Server returned 5XX Server Error reply)",
+        f"Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 ({server_error})",
         monkeypatch,
     )
 
@@ -546,6 +549,10 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
     session = renderer._sessions["sess"]
     assert session.skipped_sections == 1
     assert "enough credit" in session.last_render_error
+    # the hint is a guess, so the whole probe message travels with it - the url included,
+    # since that is what tells a failing engine apart from a failing tts server behind it
+    assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error
+    assert server_error in session.last_render_error
 
 
 async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
