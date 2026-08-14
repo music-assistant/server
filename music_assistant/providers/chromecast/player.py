@@ -531,7 +531,12 @@ class ChromecastPlayer(Player):
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # another app took over the device
         status = self.cc.media_controller.status
-        if status.player_is_playing or status.player_is_paused:
+        # a device that ran dry at the end of the flow stream keeps reporting buffering,
+        # which counts as playing. no audio is coming for it, so it is not really in use.
+        ran_dry = (
+            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
+        )
+        if (status.player_is_playing or status.player_is_paused) and not ran_dry:
             # something is loaded again, e.g. the keepalive media of a dashboard
             return
         await asyncio.to_thread(self.cc.quit_app)

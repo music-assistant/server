@@ -58,6 +58,7 @@ def _media_status(
     *,
     playing: bool = False,
     paused: bool = False,
+    buffering: bool = False,
     content_id: str = "",
 ) -> MagicMock:
     """
@@ -65,14 +66,17 @@ def _media_status(
 
     :param playing: Whether the receiver reports playback.
     :param paused: Whether the receiver reports paused playback.
+    :param buffering: Whether the receiver reports buffering, which it counts as playing.
     :param content_id: Content id the receiver has loaded, if any.
     """
     status = MagicMock()
     status.content_id = content_id
-    status.player_state = "PLAYING" if playing else "PAUSED" if paused else "IDLE"
-    status.player_is_playing = playing
+    status.player_state = (
+        "BUFFERING" if buffering else "PLAYING" if playing else "PAUSED" if paused else "IDLE"
+    )
+    status.player_is_playing = playing or buffering
     status.player_is_paused = paused
-    status.player_is_idle = not playing and not paused
+    status.player_is_idle = not playing and not paused and not buffering
     return status
 
 
@@ -111,6 +115,17 @@ def test_an_announcement_on_an_idle_player_releases_the_device() -> None:
     _assert_release_scheduled(fake)
 
 
+def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_releases_it() -> None:
+    """A device stuck buffering at flow EOF counts as finished, so it is released too."""
+    fake = _fake_player()
+    fake._flow_stream_underrun.return_value = True
+
+    _handle_media_status(fake, _media_status(buffering=True, content_id="http://mass/flow.flac"))
+
+    assert fake._attr_playback_state == PlaybackState.IDLE
+    _assert_release_scheduled(fake)
+
+
 def test_pausing_keeps_the_device_claimed() -> None:
     """A paused player is meant to be resumed, so it keeps its Cast session."""
     fake = _fake_player()
@@ -131,17 +146,19 @@ def test_an_idle_player_is_not_released_again() -> None:
 
 
 @pytest.mark.parametrize(
-    "content_id",
+    ("content_id", "playing", "paused"),
     [
-        "https://cast.music-assistant.io/dashboard-keepalive.mp4",
-        "https://cast.music-assistant.io/keepalive.png",
+        ("https://cast.music-assistant.io/dashboard-keepalive.mp4", True, False),
+        ("https://cast.music-assistant.io/keepalive.png", False, True),
     ],
 )
-def test_a_dashboard_keepalive_does_not_release_the_device(content_id: str) -> None:
+def test_a_dashboard_keepalive_does_not_release_the_device(
+    content_id: str, playing: bool, paused: bool
+) -> None:
     """The receiver is showing a dashboard, so the device is deliberately kept claimed."""
     fake = _fake_player()
 
-    _handle_media_status(fake, _media_status(content_id=content_id))
+    _handle_media_status(fake, _media_status(playing=playing, paused=paused, content_id=content_id))
 
     assert fake._attr_playback_state == PlaybackState.IDLE
     fake.mass.call_later.assert_not_called()
