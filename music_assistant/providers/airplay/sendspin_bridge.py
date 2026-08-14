@@ -760,10 +760,11 @@ class SendspinAirPlayBridge:
         """
         Flush a kept, still-connected stream and resume it on the new track.
 
-        The stream is flushed in place (receiver + ring + stdin drained) while
-        its connection stays alive, then the new PCM is fed into the SAME cli
-        stdin and re-anchored with a single START. Returns True once resumed; any
-        failure returns False so the caller falls back to a cold restart.
+        The stream is flushed in place (the binary's input ring and stdin
+        drained) while its connection stays alive, then the new PCM is fed into
+        the SAME cli stdin and re-anchored with a single START. Returns True once
+        resumed; any failure returns False so the caller falls back to a cold
+        restart.
 
         :param stream: The kept AirPlayStream to flush and resume.
         """

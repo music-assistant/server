@@ -1019,7 +1019,7 @@ class AirPlayStreamSession:
         Return the shared audible-start instant for a readiness-confirmed start.
 
         :param warm: True for a warm re-start over live connections (seek/next/
-            resume-from-park). Members on the Apple splice timeline report a
+            resume-from-park). Members on the splice timeline report a
             minimum warm lead — their queued audio plays out before the new
             content can begin — and the shared anchor must sit beyond the
             largest member value so every member splices at the same instant.
