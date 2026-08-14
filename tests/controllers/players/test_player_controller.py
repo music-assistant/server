@@ -15,7 +15,7 @@ import contextlib
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -3117,6 +3117,137 @@ class TestPlayAnnouncementCleanup:
         # the length is resolved downstream while it plays
         render.wait_ready.assert_awaited_once()
         render.wait_finished.assert_not_awaited()
+
+
+class _AnnounceSetup(NamedTuple):
+    """A player announcing through a linked protocol output, with the calls it makes mocked."""
+
+    controller: PlayerController
+    parent: MockPlayer
+    output: MockPlayer
+    volume_set: AsyncMock
+    play_announcement: AsyncMock
+
+
+class TestNativeAnnouncementVolumeRouting:
+    """The announcement volume is applied through the control that owns it."""
+
+    ANNOUNCE_VOLUME = 45
+
+    def _make_setup(self, mock_mass: MagicMock, volume_control: str) -> _AnnounceSetup:
+        """
+        Create a player announcing through a linked protocol output.
+
+        The parent holds a sibling interface and a bridge riding on the announcing
+        output, so any of them can be named as its volume control.
+
+        :param volume_control: Value of the parent's volume control config entry.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = MockPlayer(provider, "parent", "Parent")
+        output = MockPlayer(provider, "output", "Output")
+        output._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        output._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        sibling = MockPlayer(provider, "sibling", "Sibling")
+        sibling._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        sibling._attr_volume_level = 20
+        bridge = MockPlayer(provider, "bridge", "Bridge")
+        bridge._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        bridge._attr_underlying_player_id = "output"
+        bridge._attr_volume_level = 20
+        controller._players = {
+            "parent": parent,
+            "output": output,
+            "sibling": sibling,
+            "bridge": bridge,
+        }
+        mock_mass.players = controller
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_VOLUME_CONTROL: volume_control})
+        )
+        for player in controller._players.values():
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        play_announcement = AsyncMock()
+        volume_set = AsyncMock()
+        output.play_announcement = play_announcement  # type: ignore[method-assign]
+        controller._handle_cmd_volume_set = volume_set  # type: ignore[method-assign]
+        return _AnnounceSetup(controller, parent, output, volume_set, play_announcement)
+
+    async def _announce(self, setup: _AnnounceSetup) -> None:
+        """Play an announcement on the parent, rendered by the linked output."""
+        await setup.controller._play_native_announcement(
+            setup.parent, setup.output, _announcement(), self.ANNOUNCE_VOLUME
+        )
+
+    async def test_external_control_applies_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A sibling interface owning the volume gets the announcement volume, not the output."""
+        setup = self._make_setup(mock_mass, "sibling")
+
+        await self._announce(setup)
+
+        # the output cannot attenuate what another control is already attenuating,
+        # so the level goes through that control and the output announces at unity
+        assert setup.volume_set.await_args_list == [
+            call("parent", self.ANNOUNCE_VOLUME),
+            call("parent", 20),
+        ]
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+    async def test_external_control_volume_restored_when_the_announcement_fails(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The temporary volume is restored even when the announcement itself fails."""
+        setup = self._make_setup(mock_mass, "sibling")
+        setup.play_announcement.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            await self._announce(setup)
+
+        assert setup.volume_set.await_args_list[-1] == call("parent", 20)
+
+    async def test_announcing_output_keeps_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An output that owns the volume applies the announcement volume itself."""
+        setup = self._make_setup(mock_mass, "output")
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+
+    async def test_bridge_on_the_announcing_output_keeps_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A bridge riding on the announcing output forwards the volume to it."""
+        setup = self._make_setup(mock_mass, "bridge")
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+
+    async def test_native_volume_keeps_the_announcement_volume(self, mock_mass: MagicMock) -> None:
+        """Native parent volume lives on the device the output talks to, so it applies it."""
+        setup = self._make_setup(mock_mass, PLAYER_CONTROL_NATIVE)
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+
+    async def test_without_volume_control_no_volume_is_applied(self, mock_mass: MagicMock) -> None:
+        """Nothing in the signal path can set a volume, so the announcement plays as-is."""
+        setup = self._make_setup(mock_mass, PLAYER_CONTROL_NONE)
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
 
 
 class TestPlayAnnouncementMessage:

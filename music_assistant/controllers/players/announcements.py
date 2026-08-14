@@ -19,7 +19,7 @@ from math import ceil
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.constants import PLAYER_CONTROL_NONE
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
@@ -465,14 +465,28 @@ class AnnouncementsMixin:
             for member_id in player.state.group_members or (player.player_id,)
             if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
         ]
+        prev_volume: int | None = None
         try:
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, False))
             announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
+            if announcement_volume is not None and not self._output_owns_volume(
+                player, announce_player
+            ):
+                # The level is resolved on the scale of the control that owns the player's
+                # volume, so an output that does not own it cannot apply it: whatever that
+                # output sets is either discarded or stacks on top of the control that is
+                # already attenuating on the device. Apply it through the control instead
+                # and let the provider announce at the level the device now plays at.
+                prev_volume = await self._set_announcement_volume(player, announcement_volume)
+                announcement_volume = None
             await announce_player.play_announcement(announcement, announcement_volume)
         finally:
             # the provider only returns once the announcement finished playing
+            if prev_volume is not None:
+                await self._handle_cmd_volume_set(player.player_id, prev_volume)
+            # restore mute after the volume, because setting a volume unmutes the player again
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, True))
@@ -818,6 +832,46 @@ class AnnouncementsMixin:
             announcement_volume,
         )
         await self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
+
+    def _output_owns_volume(self, player: Player, announce_player: Player) -> bool:
+        """
+        Return True if the announcing output can apply the announcement volume itself.
+
+        :param player: The player the announcement is played on.
+        :param announce_player: The player (or linked protocol) that plays the announcement.
+        """
+        volume_control = player.volume_control_for_output(announce_player.player_id)
+        if volume_control in (PLAYER_CONTROL_NATIVE, announce_player.player_id):
+            # the volume lives on the device the announcing output talks to
+            return True
+        # a bridge player riding on the announcing output forwards its volume to it
+        if control_player := self.get_player(volume_control):
+            return control_player.underlying_player_id == announce_player.player_id
+        return False
+
+    async def _set_announcement_volume(
+        self, player: Player, announcement_volume: int
+    ) -> int | None:
+        """
+        Apply the announcement volume through the player's own volume control.
+
+        :param player: The player to set the announcement volume on.
+        :param announcement_volume: The resolved announcement volume level.
+        :return: The level to restore once the announcement finished, or None when the
+            volume was left untouched.
+        """
+        if player.state.volume_control == PLAYER_CONTROL_NONE:
+            # nothing in the signal path can set a volume at all
+            return None
+        if (prev_volume := player.state.volume_level) is None or prev_volume == announcement_volume:
+            return None
+        self.logger.debug(
+            "Announcement to player %s - setting temporary volume (%s)...",
+            player.state.name,
+            announcement_volume,
+        )
+        await self._handle_cmd_volume_set(player.player_id, announcement_volume)
+        return prev_volume
 
     async def _set_announcement_mute(self, player: Player, muted: bool) -> None:
         """
