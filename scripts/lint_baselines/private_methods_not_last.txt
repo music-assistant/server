@@ -58,7 +58,6 @@ music_assistant/providers/plex_connect/server.py	8
 music_assistant/providers/qqmusic/__init__.py	21
 music_assistant/providers/samsung_wam/features/grouping/coordinator.py	1
 music_assistant/providers/samsung_wam/features/state_sync/handler.py	8
-music_assistant/providers/sendspin/player.py	12
 music_assistant/providers/smart_playlist/__init__.py	8
 music_assistant/providers/snapcast/control.py	1
 music_assistant/providers/snapcast/player.py	5
