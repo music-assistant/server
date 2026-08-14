@@ -165,12 +165,7 @@ class ChromecastPlayer(Player):
         if self.cc.media_controller.status.media_session_id is not None:
             # a stop is refused by the cast library when nothing was ever loaded
             await asyncio.to_thread(self.cc.media_controller.stop)
-        # The device is released a bit later so a follow-up command (such as an
-        # announcement, which stops playback first) can reuse the Cast session.
-        # Starting a new session makes the device play its 'cast connected' chime.
-        self.mass.call_later(
-            APP_QUIT_DELAY, self._quit_app_when_unused, task_id=self._app_quit_task_id
-        )
+        self._schedule_app_release()
 
     def cancel_pending_app_quit(self) -> None:
         """Cancel a pending release of the receiver app, to keep the device claimed."""
@@ -517,6 +512,18 @@ class ChromecastPlayer(Player):
             suggestion,
         )
 
+    def _schedule_app_release(self) -> None:
+        """
+        Arm the delayed release of the Cast device.
+
+        The device is released a bit later so a follow-up command (such as an
+        announcement, which stops playback first) can reuse the Cast session.
+        Starting a new session makes the device play its 'cast connected' chime.
+        """
+        self.mass.call_later(
+            APP_QUIT_DELAY, self._quit_app_when_unused, task_id=self._app_quit_task_id
+        )
+
     async def _quit_app_when_unused(self) -> None:
         """Release the Cast device, unless the receiver app got used again."""
         if not self.available:
@@ -524,7 +531,12 @@ class ChromecastPlayer(Player):
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # another app took over the device
         status = self.cc.media_controller.status
-        if status.player_is_playing or status.player_is_paused:
+        # a device that ran dry at the end of the flow stream keeps reporting buffering,
+        # which counts as playing. no audio is coming for it, so it is not really in use.
+        ran_dry = (
+            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
+        )
+        if (status.player_is_playing or status.player_is_paused) and not ran_dry:
             # something is loaded again, e.g. the keepalive media of a dashboard
             return
         await asyncio.to_thread(self.cc.quit_app)
@@ -631,6 +643,7 @@ class ChromecastPlayer(Player):
         )
         is_playing = status.player_is_playing and not flow_underrun
         is_idle = status.player_is_idle or flow_underrun
+        prev_state = self._attr_playback_state
         self._attr_elapsed_time_last_updated = time.time()
         if is_playing:
             self._attr_playback_state = PlaybackState.PLAYING
@@ -643,6 +656,16 @@ class ChromecastPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
             self._attr_active_source = None
+            if (
+                prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                and self.type != PlayerType.GROUP
+                and self.active_cast_group is None
+            ):
+                # Playback that ends on its own never gets a stop command (the queue ran
+                # out, or an announcement finished), so without this the device would stay
+                # claimed forever. A cast group is left alone: quitting its app is what its
+                # power control does, and a group member follows the group's session.
+                self._schedule_app_release()
 
         # elapsed time
         self._attr_elapsed_time_last_updated = time.time()
@@ -656,6 +679,10 @@ class ChromecastPlayer(Player):
         if group_player:
             self._attr_active_source = group_player.active_source or group_player.player_id
         elif self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER, SENDSPIN_CAST_APP_ID):
+            self._attr_active_source = None
+        elif self.cc.app_id in (None, IDLE_APP_ID):
+            # a released device sits on its backdrop with no app running, which is
+            # not something the user can select as a source
             self._attr_active_source = None
         else:
             app_name = self.cc.app_display_name or "Unknown App"
