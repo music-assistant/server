@@ -84,6 +84,11 @@ class AirPlayStreamSession:
         self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.seconds_streamed: float = 0
+        # Parked in standby: the members stay connected but nothing is fed and
+        # their binaries hold until a START, so only a re-anchor (play_media)
+        # revives them. It outlives the group that parked it, which is why the
+        # session - not the group membership - owns this.
+        self.parked: bool = False
         # Timing source for the whole session, decided once in start() and applied
         # identically to every native AirPlay 2 member (and any late joiner) so a
         # sync group can never mix shared-PTP and NTP members.
@@ -344,6 +349,7 @@ class AirPlayStreamSession:
         self._pcm_buffer.clear()
         self._client_skip_bytes.clear()
         self._reset_member_shifts()
+        self.parked = True
         return True
 
     async def stop(self) -> None:
@@ -1210,6 +1216,8 @@ class AirPlayStreamSession:
             )
         self.start_unix_ms = target_ms
         self.start_time = target_ms / 1000
+        # the only place a session (re)gains a live timeline, so any park ends here
+        self.parked = False
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""

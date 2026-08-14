@@ -429,17 +429,22 @@ class AirPlayPlayer(Player):
             self.update_state()
 
     async def play(self) -> None:
-        """Send PLAY (unpause) command to player."""
-        if self.group_members or self.synced_to:
+        """Handle PLAY (unpause) command on the player."""
+        session = self.stream.session if self.stream and self.stream.running else None
+        if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
-            # member cannot restart the group in sync. Resume via the queue
+            # member cannot restart the group in sync, and a parked member is
+            # held with nothing being fed until a re-anchor - which ACTION=PLAY
+            # does not carry, so it would report playback over silence. The park
+            # outlives the group, so a player left alone by an ungroup is keyed
+            # on the park itself, not on its membership. Resume via the queue
             # instead: play_media flushes and re-anchors every parked member at
             # one shared instant. The queue can belong to a linked native parent
             # (for example Sonos), so resolve it instead of using the AirPlay ID.
             active_queue = self.mass.players.get_active_queue(self)
             if active_queue is None:
                 raise PlayerCommandFailed(
-                    f"Cannot resume grouped AirPlay player {self.display_name} without an active queue"
+                    f"Cannot resume AirPlay player {self.display_name} without an active queue"
                 )
             await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
             return
