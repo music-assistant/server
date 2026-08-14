@@ -227,13 +227,17 @@ class SendspinSourceProvider(PluginProvider):
         if client is None or role is None:
             raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
         state = self._clients.setdefault(source_id, _SourceClientState())
+        # Capture the queue session before waiting so delayed requests keep their identity.
         queue_session_id = self.mass.player_queues.queue_data(queue_id).session_id
         try:
+            # Serialize handoffs because stopping the previous player can suspend.
             async with state.selection_lock:
+                # The client or its role may have changed while waiting for the lock.
                 client = self._get_client(source_id)
                 role = self._get_source_role(client) if client else None
                 if client is None or role is None:
                     raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
+                # Reject only the delayed request from an autostart superseded by the user.
                 if state.suppressed_autostart_claim == (queue_id, queue_session_id):
                     raise RuntimeError("Superseded autostart stream request")
                 autostart_queue_id = state.autostart_queue_id
@@ -274,6 +278,7 @@ class SendspinSourceProvider(PluginProvider):
                 await self._teardown_session(source_id, superseded_by_player_id=player_id)
                 if self._unloading or self._clients.get(source_id) is not state:
                     raise PlayerUnavailableError(f"Sendspin source is unloading: {source_id}")
+                # Teardown can suspend long enough for the connection role to be recreated.
                 client = self._get_client(source_id)
                 role = self._get_source_role(client) if client else None
                 if client is None or role is None:
