@@ -567,13 +567,14 @@ keeps their exposed player id stable and their Universal Player merging intact.
    the imageproxy (e.g. filesystem-provider images with no public URL) does not
    currently render on the Apple TV's now-playing screen, while externally-hosted
    art does
-5. **Warm boundaries wait for the queued audio**: Pause, seek and track changes
-   leave the audio the receiver already holds in place, so it renders that
-   first and `buffer_depth` is also the delay before the boundary is heard.
-   Dropping the queue instead produced audible noise bursts on Apple receivers,
-   so keeping it is an accepted trade-off. It is most noticeable on pause, where
-   playback is expected to stop at once. On a receiver that needs a deep queue
-   to render at all, the delay cannot be tuned away without silencing it
+5. **Warm boundaries wait for the queued audio** (native AirPlay 2): Pause, seek
+   and track changes leave the audio the receiver already holds in place, so it
+   renders that first and `buffer_depth` is also the delay before the boundary
+   is heard. Dropping the queue instead produced audible noise bursts (measured
+   on Apple receivers), so keeping it is an accepted trade-off. It is most
+   noticeable on pause, where playback is expected to stop at once. On a
+   receiver that needs a deep queue to render at all, the delay cannot be tuned
+   away without silencing it
 
 ## Development Notes
 
