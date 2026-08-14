@@ -2067,6 +2067,45 @@ class Player(ABC):
                 f"Player {self.display_name} does not support feature {feature.name}"
             )
 
+    @final
+    def volume_control_for_output(self, output_protocol_id: str) -> str:
+        """
+        Return the volume control that owns audio rendered over the given output.
+
+        Unlike :attr:`volume_control`, which answers where a volume command should go
+        right now, this answers who owns the volume of one specific output. Callers that
+        know which interface is about to carry the audio must use this, so the answer does
+        not depend on whether that output has been marked active yet.
+
+        :param output_protocol_id: Player id of the output protocol rendering the audio.
+        :return: A control id, or NATIVE/FAKE/NONE. NONE means nothing in the signal path
+            of that output owns the volume; no sibling interface is offered as a fallback.
+        """
+        return self.__control_for_output(
+            PlayerFeature.VOLUME_SET, CONF_VOLUME_CONTROL, output_protocol_id
+        )
+
+    @final
+    def mute_control_for_output(self, output_protocol_id: str) -> str:
+        """
+        Return the mute control that owns audio rendered over the given output.
+
+        The mute counterpart of :meth:`volume_control_for_output`.
+
+        :param output_protocol_id: Player id of the output protocol rendering the audio.
+        """
+        control = self.__control_for_output(
+            PlayerFeature.VOLUME_MUTE, CONF_MUTE_CONTROL, output_protocol_id
+        )
+        if (
+            control == PLAYER_CONTROL_FAKE
+            and self.volume_control_for_output(output_protocol_id) == PLAYER_CONTROL_NONE
+        ):
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control on this output there is no way to mute it at all
+            return PLAYER_CONTROL_NONE
+        return control
+
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """
         Update a single setup_data value for this player (e.g. a rotated pairing credential).
@@ -2168,6 +2207,32 @@ class Player(ABC):
                 return protocol_player
 
         return None
+
+    @final
+    def __control_for_output(
+        self, feature: PlayerFeature, conf_key: str, output_protocol_id: str
+    ) -> str:
+        """Resolve the control owning the given feature for one specific output."""
+        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
+            return str(conf)
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
+            # An explicitly configured control is a statement about the device as a whole,
+            # so it stays in charge no matter which of its interfaces renders the audio.
+            if (_player := self.mass.players.get_player(str(conf))) and _player.available:
+                return _player.player_id
+            if _control := self.mass.players.get_player_control(str(conf)):
+                return _control.id
+        if feature in self.supported_features:
+            return PLAYER_CONTROL_NATIVE
+        # Deliberately no fallback to a sibling interface: the caller named the output that
+        # carries the audio, so anything else is by definition not in that signal path.
+        # Availability is not checked either - the named output is the one about to render.
+        if (
+            protocol_player := self.mass.players.get_player(output_protocol_id)
+        ) and feature in protocol_player.supported_features:
+            return protocol_player.player_id
+        return PLAYER_CONTROL_NONE
 
     @final
     def __collect_input_snapshot(self) -> dict[str, Any]:

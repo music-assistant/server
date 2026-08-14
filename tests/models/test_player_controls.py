@@ -527,3 +527,194 @@ class TestActiveOutputProtocolClearCancellation:
         player.set_active_output_protocol("ap_1")
 
         mock_mass.cancel_task.assert_called_once_with("clear_active_protocol_main_player")
+
+
+class TestControlForOutput:
+    """Test the output-scoped volume/mute control resolution."""
+
+    def _get_player_lookup(self, players: dict[str, MockPlayer]) -> Any:
+        """Create a side_effect that looks up players by ID."""
+
+        def _lookup(pid: str) -> MockPlayer | None:
+            return players.get(pid)
+
+        return _lookup
+
+    def test_resolves_named_output_without_active_protocol(self, mock_mass: MagicMock) -> None:
+        """
+        The named output owns the volume even when no protocol is marked active.
+
+        This is the ordering trap the ambient volume_control falls into: with nothing
+        active it picks a sibling interface, which made a joining AirPlay speaker
+        decide another control owned the volume and play at unity gain.
+        """
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(mock_mass, "proto_b", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        # the ambient answer picks the first linked protocol, the output-scoped one
+        # answers for the interface that is actually about to render
+        assert player.volume_control == "proto_a"
+        assert player.volume_control_for_output("proto_b") == "proto_b"
+
+    def test_ignores_active_protocol_pointing_elsewhere(self, mock_mass: MagicMock) -> None:
+        """A protocol marked active does not override the named output."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(mock_mass, "proto_b", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+            active_protocol_id="proto_a",
+        )
+        assert player.volume_control_for_output("proto_b") == "proto_b"
+
+    def test_returns_none_when_output_lacks_feature(self, mock_mass: MagicMock) -> None:
+        """No fallback to a sibling: an output without the feature does not own it."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(mock_mass, "proto_b", set())
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        assert player.volume_control == "proto_a"
+        assert player.volume_control_for_output("proto_b") == PLAYER_CONTROL_NONE
+
+    def test_prefers_native(self, mock_mass: MagicMock) -> None:
+        """A player with native volume owns it regardless of the output."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control_for_output("proto_a") == PLAYER_CONTROL_NATIVE
+
+    def test_explicit_config_wins(self, mock_mass: MagicMock) -> None:
+        """An explicitly configured control is a device-wide statement, so it still wins."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control_for_output("proto_a") == PLAYER_CONTROL_FAKE
+
+    def test_unknown_output_returns_none(self, mock_mass: MagicMock) -> None:
+        """An output that cannot be resolved owns nothing."""
+        player = _create_player(mock_mass)
+        assert player.volume_control_for_output("nope") == PLAYER_CONTROL_NONE
+
+    def test_mute_resolves_named_output(self, mock_mass: MagicMock) -> None:
+        """Mute resolves against the named output the same way volume does."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_MUTE})
+        proto_b = _create_protocol_player(mock_mass, "proto_b", {PlayerFeature.VOLUME_MUTE})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        assert player.mute_control == "proto_a"
+        assert player.mute_control_for_output("proto_b") == "proto_b"
+
+    def test_mute_returns_none_when_output_lacks_feature(self, mock_mass: MagicMock) -> None:
+        """An output with volume but no mute does not own the mute."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.mute_control_for_output("proto_a") == PLAYER_CONTROL_NONE
+
+    def test_explicit_player_id_config_beats_named_output(self, mock_mass: MagicMock) -> None:
+        """An explicitly configured control outranks the output carrying the audio."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(mock_mass, "proto_b", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: "proto_a"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        assert player.volume_control_for_output("proto_b") == "proto_a"
+
+    def test_does_not_require_output_to_be_available(self, mock_mass: MagicMock) -> None:
+        """
+        An unavailable reading does not hand the volume to a different interface.
+
+        The caller names the output it is about to stream to, so a stale registry
+        reading is no reason to fall back to a sibling that isn't in the signal path.
+        """
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(
+            mock_mass, "proto_b", {PlayerFeature.VOLUME_SET}, available=False
+        )
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        assert player.volume_control == "proto_a"
+        assert player.volume_control_for_output("proto_b") == "proto_b"
+
+    def test_fake_mute_degrades_without_volume_control_on_output(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Fake mute drives the volume to zero, so it needs a volume control to drive."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", set())
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control_for_output("proto_a") == PLAYER_CONTROL_NONE
+        assert player.mute_control_for_output("proto_a") == PLAYER_CONTROL_NONE

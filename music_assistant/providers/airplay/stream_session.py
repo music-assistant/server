@@ -1018,8 +1018,8 @@ class AirPlayStreamSession:
         """
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
-        # sync volume from parent player if needed
-        airplay_player.sync_volume_level()
+        # sync volume/mute from parent player if needed
+        airplay_player.sync_volume_state()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
