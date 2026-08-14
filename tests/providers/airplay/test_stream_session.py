@@ -1306,7 +1306,7 @@ async def test_late_join_anchors_on_the_reported_clock_readiness(
     player.stream.wait_clock_ready.assert_awaited_once_with(
         timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
     )
-    assert "receiver clock usable in 3.00s" in caplog.text
+    assert "receiver clock usable in 3.00s; anchoring no earlier than that" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1339,7 +1339,7 @@ async def test_late_join_floor_wins_over_a_clock_that_is_already_ready(
 
     expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
-    assert "receiver clock became usable 1.00s ago" in caplog.text
+    assert "receiver clock became usable 1.00s ago; anchoring on the join floor" in caplog.text
 
 
 @pytest.mark.asyncio
