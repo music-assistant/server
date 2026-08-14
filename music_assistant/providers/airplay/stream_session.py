@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 # What each readiness outcome means for the join anchor: only a projection moves
 # it, every other outcome leaves the join floor carrying it alone, so the note
 # says which of the two happened and why. STALLED has no note because it never
-# reaches an anchor - a stalled joiner is refused the join before that.
+# reaches a join anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
     ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "

@@ -803,13 +803,13 @@ class SendspinAirPlayBridge:
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
         if readiness is ClockReadiness.STALLED:
-            # Anchored anyway, like a group start and unlike a late joiner:
-            # dropping a joiner leaves it out of a session whose other members
-            # keep playing, while this stream is the player's whole playback, so
-            # refusing its anchor would stop the speaker outright. The join ack
-            # below is then held until the binary's clock verification runs out,
-            # which for a receiver that never probed lands one receiver queue
-            # depth short of the commanded anchor - well inside the ack window.
+            # Anchored anyway, like a group start and unlike a late joiner: a
+            # joiner is dropped because the session plays on without it, while
+            # here it would stop the speaker - and a stall is not evidence
+            # enough for that. The binary reports it as a diagnosis rather than
+            # a verdict (a receiver that begins probing late still comes good)
+            # and re-arms that reporting per cycle, so a warm re-anchor is
+            # reading the cycle before it.
             self.logger.warning(
                 "%s never answered the server's PTP clock, so this stream will be silent "
                 "until it does; anchoring anyway",
