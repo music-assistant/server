@@ -1758,6 +1758,21 @@ class TestPlayerGrouping:
         assert protocol_domain == "airplay"
         assert protocol_player == sonos_airplay
 
+        # A group already on DLNA must be moved off it as well, because DLNA cannot
+        # group members itself
+        protocol_members, _native_members, protocol_player, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=sonos_player,
+                player_ids=["wiim_456"],
+                parent_protocol_player=sonos_dlna,
+                parent_protocol_domain="dlna",
+            )
+        )
+
+        assert protocol_members == ["airplay_wiim"]
+        assert protocol_domain == "airplay"
+        assert protocol_player == sonos_airplay
+
 
 class TestJoinActiveNativeSession:
     """
