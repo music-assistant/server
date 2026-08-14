@@ -77,11 +77,11 @@ TTS_SERVER_ERROR_MARKERS = ("Server returned 5XX", "HTTP error 5")
 
 DEFAULT_TTS_LOUDNESS_BOOST = 3
 
-# speech carries ~16 dB between its average level and its peaks, so the gain that would
-# lift it to the target on paper clips instead: speechnorm evens the clip out first and
-# the limiter, not the gain, is what guarantees the ceiling
+# speech carries ~16 dB between its average level and its peaks, so a plain gain that
+# reaches the target clips instead. speechnorm evens the clip out so the level is carried
+# by the whole clip, the trim then places it, and the limiter backstops the peaks
 TTS_SPEECHNORM_FILTER = "speechnorm=e=12.5:r=0.0005:l=1"
-TTS_PEAK_CEILING_DB = -3.0
+TTS_PEAK_CEILING_DB = -1.5
 
 # one measurement stands in for every clip an engine voices, but a fragment of a few
 # words is not representative enough of its level to become that reference

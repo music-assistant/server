@@ -20,7 +20,12 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import CONF_VALUE_DISABLED, CONF_VALUE_ENABLED
+from music_assistant.constants import (
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_TARGET,
+)
 from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
@@ -32,9 +37,11 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
+    CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
     MIN_LOUDNESS_REFERENCE_SECONDS,
     TTS_CLIP_PCM_FORMAT,
+    TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
 )
 from music_assistant.providers.ai_radio.models import SessionState
@@ -179,14 +186,25 @@ def _attach_normalization(
     renderer: DummyRenderer, *, enabled: bool = True, target: int = -14, boost: int = 3
 ) -> None:
     """Wire the queue, streams and provider config that decide the clip's loudness gain."""
+
+    def queue_setting(queue_id: str, key: str, default: str) -> str:
+        assert queue_id == "player_a"
+        assert key == CONF_VOLUME_NORMALIZATION
+        assert default == CONF_VALUE_ENABLED
+        return CONF_VALUE_ENABLED if enabled else CONF_VALUE_DISABLED
+
+    def streams_setting(key: str, **_kwargs: Any) -> int:
+        assert key == CONF_VOLUME_NORMALIZATION_TARGET
+        return target
+
+    def provider_setting(key: str) -> int:
+        assert key == CONF_TTS_LOUDNESS_BOOST
+        return boost
+
     mass = cast("Any", renderer).mass
-    mass.config = SimpleNamespace(
-        get_effective_player_queue_config_value=lambda *_args: (
-            CONF_VALUE_ENABLED if enabled else CONF_VALUE_DISABLED
-        )
-    )
-    mass.streams = SimpleNamespace(get_config_value=lambda *_args, **_kwargs: target)
-    cast("Any", renderer).config = SimpleNamespace(get_value=lambda *_args: boost)
+    mass.config = SimpleNamespace(get_effective_player_queue_config_value=queue_setting)
+    mass.streams = SimpleNamespace(get_config_value=streams_setting)
+    cast("Any", renderer).config = SimpleNamespace(get_value=provider_setting)
 
 
 async def test_render_resolves_deferred_placeholders_at_render_time() -> None:
@@ -871,7 +889,7 @@ async def test_the_clip_is_evened_out_and_lifted_before_it_is_limited(
     assert captured["filter_params"] == [
         TTS_SPEECHNORM_FILTER,
         "volume=7.0dB",
-        "alimiter=limit=-3.0dB:level=false",
+        f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false",
     ]
 
 
@@ -936,8 +954,8 @@ async def test_clip_plays_untouched_when_it_could_not_be_measured() -> None:
     assert streamdetails.data is None
 
 
-async def test_clip_plays_untouched_when_it_is_already_loud_enough() -> None:
-    """A clip at or above the wanted level is not put through the chain for nothing."""
+async def test_a_clip_above_the_wanted_level_is_trimmed_back_down() -> None:
+    """The trim runs in either direction, so a loud voice is brought down to the target."""
     renderer = DummyRenderer()
     renderer.measured_loudness = -8.0
     _attach_queue(renderer, [_clip_item("sess_001")])
@@ -945,8 +963,21 @@ async def test_clip_plays_untouched_when_it_is_already_loud_enough() -> None:
 
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert streamdetails.stream_type == StreamType.HTTP
-    assert streamdetails.data is None
+    assert streamdetails.stream_type == StreamType.CUSTOM
+    assert streamdetails.data.gain_db == pytest.approx(-3.0)
+
+
+async def test_the_levelled_clip_does_not_hand_out_the_shared_pcm_format() -> None:
+    """Core writes what ffmpeg reports onto this format, so it may not be the shared one."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.decoded_audio_format == TTS_CLIP_PCM_FORMAT
+    assert streamdetails.decoded_audio_format is not TTS_CLIP_PCM_FORMAT
 
 
 # verbatim ffmpeg 7.1 output, so the parsing this depends on is covered for real
@@ -979,7 +1010,9 @@ async def test_the_measurement_reads_the_level_out_of_ffmpegs_report(
 
     assert loudness == -18.37
     assert "http://ha.invalid/clip.mp3" in captured["args"]
-    assert "loudnorm=print_format=json" in captured["args"]
+    # the reading has to come from behind speechnorm, or the gain corrects for a level
+    # that never reaches it
+    assert f"{TTS_SPEECHNORM_FILTER},loudnorm=print_format=json" in captured["args"]
 
 
 async def test_a_failed_measurement_leaves_the_level_unknown(

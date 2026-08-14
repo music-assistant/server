@@ -106,3 +106,15 @@ def test_parse_loudnorm_without_a_report_returns_none() -> None:
 def test_parse_loudnorm_with_a_truncated_report_returns_none() -> None:
     """A report cut off mid-object is not mistaken for a measurement."""
     assert parse_loudnorm(b'[Parsed_loudnorm_0 @ 0x1] \n{\n\t"input_i" : "-17.8') is None
+
+
+def test_parse_loudnorm_treats_digital_silence_as_no_measurement() -> None:
+    """A silent clip reports -inf, which is the absence of a level, not a level."""
+    silent = FFMPEG_LOUDNORM_OUTPUT.replace(b'"-17.86"', b'"-inf"')
+    assert parse_loudnorm(silent) is None
+
+
+def test_parse_loudnorm_reads_a_report_from_further_down_the_filter_chain() -> None:
+    """The marker carries the filter's position, which is not zero behind another filter."""
+    chained = FFMPEG_LOUDNORM_OUTPUT.replace(b"[Parsed_loudnorm_0 @", b"[Parsed_loudnorm_1 @")
+    assert parse_loudnorm(chained) == -17.86

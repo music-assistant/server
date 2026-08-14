@@ -231,8 +231,9 @@ class AIRadioRenderMixin:
         boost = coerce_int(
             self.config.get_value(CONF_TTS_LOUDNESS_BOOST), DEFAULT_TTS_LOUDNESS_BOOST
         )
-        gain_db = (target + boost) - loudness
-        return gain_db if gain_db > 0 else None
+        # the reference is taken behind speechnorm, which lands close to the target on its
+        # own, so this trim is small and runs in either direction
+        return (target + boost) - loudness
 
     def _tts_language(self, host_language: str | None = None) -> str | None:
         """
@@ -379,8 +380,11 @@ class AIRadioRenderMixin:
                 "-nostats",
                 "-i",
                 path,
+                # measure behind speechnorm: it is what the gain is applied on top of, and it
+                # levels the clip itself, so the reading has to come from its output or the
+                # gain corrects for a level that no longer reaches it
                 "-af",
-                "loudnorm=print_format=json",
+                f"{TTS_SPEECHNORM_FILTER},loudnorm=print_format=json",
                 "-f",
                 "null",
                 "-",

@@ -10,6 +10,7 @@ import urllib.parse
 from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import aclosing
 from io import BytesIO
+from math import isfinite
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import (
@@ -790,19 +791,23 @@ def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     """Parse Loudness measurement from ffmpeg stderr output."""
     stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
     # the report is the last thing the filter logs, and ffmpeg prints it as a block of its
-    # own below the marker line, so the object is delimited rather than on a known line
-    marker = stderr_data.rfind("[Parsed_loudnorm_0 @")
+    # own below the marker line, so the object is delimited rather than on a known line.
+    # the marker carries the filter's position in the chain, which is only zero when
+    # loudnorm runs on its own
+    marker = stderr_data.rfind("[Parsed_loudnorm_")
     if marker < 0:
         return None
     start = stderr_data.find("{", marker)
-    end = stderr_data.find("}", start)
-    if start < 0 or end < 0:
+    if start < 0 or (end := stderr_data.find("}", start)) < 0:
         return None
     try:
         loudness_data = json_loads(stderr_data[start : end + 1])
-        return float(loudness_data["input_i"])
+        measurement = float(loudness_data["input_i"])
     except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError):
         return None
+    # digital silence reads as -inf, which is a report that the clip has no level rather
+    # than a level to correct against
+    return measurement if isfinite(measurement) else None
 
 
 def get_normalization_mode(
