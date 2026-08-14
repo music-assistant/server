@@ -92,11 +92,12 @@ def _create_protocol_player(
 def _make_protocol_link(
     protocol_id: str,
     priority: int = 0,
+    protocol_domain: str = _PROTO_DOMAIN,
 ) -> LinkedOutputProtocol:
     """Create a protocol link for testing."""
     return LinkedOutputProtocol(
         output_protocol_id=protocol_id,
-        protocol_domain=_PROTO_DOMAIN,
+        protocol_domain=protocol_domain,
         priority=priority,
     )
 
@@ -450,6 +451,86 @@ class TestProtocolPlayerPreferActive:
         assert player.volume_control == "proto_b"
 
 
+class TestControlDomainPriority:
+    """Test the protocol domain order that the ambient volume/mute fallback applies."""
+
+    def _get_player_lookup(self, players: dict[str, MockPlayer]) -> Any:
+        """Create a side_effect that looks up players by ID."""
+
+        def _lookup(pid: str) -> MockPlayer | None:
+            return players.get(pid)
+
+        return _lookup
+
+    def test_prefers_domain_that_takes_commands_while_idle(self, mock_mass: MagicMock) -> None:
+        """A domain that accepts commands while idle owns the volume."""
+        airplay = _create_protocol_player(mock_mass, "airplay_child", {PlayerFeature.VOLUME_SET})
+        cast = _create_protocol_player(mock_mass, "cast_child", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"airplay_child": airplay, "cast_child": cast})
+        )
+        player = _create_player(mock_mass)
+        # airplay links first, but only cast can take a volume command while idle
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("airplay_child", protocol_domain="airplay"),
+                _make_protocol_link("cast_child", protocol_domain="chromecast"),
+            ],
+        )
+        assert player.volume_control == "cast_child"
+
+    def test_unknown_domain_sorts_last(self, mock_mass: MagicMock) -> None:
+        """A domain outside the priority table loses from a known one."""
+        other = _create_protocol_player(mock_mass, "other_child", {PlayerFeature.VOLUME_SET})
+        sendspin = _create_protocol_player(mock_mass, "sendspin_child", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"other_child": other, "sendspin_child": sendspin})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("other_child", protocol_domain="something_else"),
+                _make_protocol_link("sendspin_child", protocol_domain="sendspin"),
+            ],
+        )
+        assert player.volume_control == "sendspin_child"
+
+    def test_volume_and_mute_may_land_on_different_siblings(self, mock_mass: MagicMock) -> None:
+        """
+        Volume and mute resolve independently, so they can pick different interfaces.
+
+        A DLNA renderer derives VOLUME_SET and VOLUME_MUTE from separate
+        RenderingControl actions, so it may advertise one without the other. The
+        ambient controls then split across siblings; only the output-scoped
+        variants keep a resolution inside one signal path.
+        """
+        dlna = _create_protocol_player(mock_mass, "dlna_child", {PlayerFeature.VOLUME_SET})
+        airplay = _create_protocol_player(
+            mock_mass,
+            "airplay_child",
+            {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE},
+        )
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"dlna_child": dlna, "airplay_child": airplay})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("dlna_child", protocol_domain="dlna"),
+                _make_protocol_link("airplay_child", protocol_domain="airplay"),
+            ],
+        )
+        # dlna outranks airplay for volume, but has no mute to offer
+        assert player.volume_control == "dlna_child"
+        assert player.mute_control == "airplay_child"
+        # the output-scoped variants stay within the named signal path
+        assert player.volume_control_for_output("dlna_child") == "dlna_child"
+        assert player.mute_control_for_output("dlna_child") == PLAYER_CONTROL_NONE
+
+
 class TestPreferredOutputProtocolAutoValue:
     """Test that 'auto' preferred output protocol is treated as no preference."""
 
@@ -510,6 +591,22 @@ class TestPreferredOutputProtocolAutoValue:
             [_make_protocol_link("proto_a")],
         )
         assert player.power_control == PLAYER_CONTROL_NONE
+
+    def test_preferred_pointing_at_another_players_output_is_ignored(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A preference left behind by a relink does not steal another speaker's output."""
+        own = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        other = _create_protocol_player(mock_mass, "other_proto", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": own, "other_proto": other})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "other_proto"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control == "proto_a"
 
 
 class TestActiveOutputProtocolClearCancellation:

@@ -1475,7 +1475,11 @@ class Player(ABC):
         if PlayerFeature.VOLUME_MUTE in self.supported_features:
             # player supports native mute control, always prefer that
             return PLAYER_CONTROL_NATIVE
-        # check for protocol player with mute support, and use that if found
+        # check for protocol player with mute support, and use that if found.
+        # this resolves independently from volume_control, so a device whose interfaces
+        # advertise volume and mute separately (DLNA derives both from its own
+        # RenderingControl actions) can end up with the two controls on different
+        # siblings.
         if protocol_player := self._get_protocol_player_for_feature(
             PlayerFeature.VOLUME_MUTE, require_active=False
         ):
@@ -2159,7 +2163,19 @@ class Player(ABC):
         feature: PlayerFeature,
         require_active: bool = True,
     ) -> Player | None:
-        """Get player(protocol) which has the given PlayerFeature."""
+        """
+        Get player(protocol) which has the given PlayerFeature.
+
+        Resolves control-plane features (volume, mute), so the native player wins even
+        while a protocol renders the audio: a device's own volume is its own volume,
+        whichever interface the sound arrives on. Commands that travel with the audio
+        resolve through :meth:`PlayerController._get_control_target` instead, which
+        prefers the rendering output.
+
+        :param feature: The feature the resolved player has to support.
+        :param require_active: Only accept the output that is already rendering,
+            instead of falling back to an idle one.
+        """
         # prefer native player
         if feature in self.supported_features:
             return self
@@ -2178,18 +2194,24 @@ class Player(ABC):
             # doesn't support the feature, return None
             return None
 
-        # fallback to preferred protocol from config
+        # fallback to preferred protocol from config. the stored value survives a
+        # relink, so it only counts while it still names one of this player's own
+        # outputs - otherwise the command would land on another speaker.
         preferred_conf = self.mass.config.get_raw_player_config_value(
             self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred_conf and preferred_conf not in ("auto", "native"):
             preferred_protocol = str(preferred_conf)
-            if (
-                (_player := self.mass.players.get_player(preferred_protocol))
-                and _player.available_for_playback
-                and feature in _player.supported_features
-            ):
-                return _player
+            for linked in self.linked_output_protocols:
+                if linked.output_protocol_id != preferred_protocol:
+                    continue
+                if (
+                    (_player := self.mass.players.get_player(preferred_protocol))
+                    and _player.available_for_playback
+                    and feature in _player.supported_features
+                ):
+                    return _player
+                break
 
         # Otherwise, use the first available linked protocol.
         # Prefer protocols that can process commands without active streaming

@@ -1376,6 +1376,232 @@ class TestSelectBestOutputProtocol:
         assert airplay_output.available is False
 
 
+class TestGetControlTarget:
+    """Tests for resolving the target of an audio-path command."""
+
+    def test_fallback_follows_protocol_priority(self, mock_mass: MagicMock) -> None:
+        """
+        Without an active output the fallback picks the highest priority protocol.
+
+        An announcement on an idle player reaches this path, so it has to land on the
+        same output that regular playback selection would have chosen.
+        """
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        universal_provider = MockProvider("universal_player", mass=mock_mass)
+        universal_player = MockPlayer(universal_provider, "universal_123", "Kantoor")
+        universal_player._attr_supported_features = set()
+
+        sendspin_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": sendspin_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        # sendspin links first, but airplay outranks it
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == airplay_player
+
+    def test_fallback_follows_preferred_output_protocol(self, mock_mass: MagicMock) -> None:
+        """An explicitly preferred output beats the priority order."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        def _get_raw_player_config_value(
+            _player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
+                return "sendspin_AABBCCDDEEFF"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_get_raw_player_config_value
+        )
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
+        )
+        universal_player._attr_supported_features = set()
+        sendspin_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": sendspin_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        # airplay outranks sendspin, but the user picked sendspin
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                ),
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == sendspin_player
+
+    def test_fallback_ignores_preference_for_another_players_output(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A preference left behind by a relink does not steal another speaker's output."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        def _get_raw_player_config_value(
+            _player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
+                return "airplay_998877665544"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_get_raw_player_config_value
+        )
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
+        )
+        universal_player._attr_supported_features = set()
+        own_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        own_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        # the preference now points at an output belonging to a different speaker
+        other_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_998877665544",
+            "Woonkamer AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        other_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": own_player,
+            "airplay_998877665544": other_player,
+        }
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == own_player
+
+    def test_require_active_skips_the_fallback(self, mock_mass: MagicMock) -> None:
+        """With require_active there is no fallback to an idle linked protocol."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass),
+            "universal_123",
+            "Kantoor",
+        )
+        universal_player._attr_supported_features = set()
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        assert (
+            controller._get_control_target(
+                universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=True
+            )
+            is None
+        )
+
+
 class TestPlayerGrouping:
     """Tests for player grouping scenarios."""
 
