@@ -653,7 +653,6 @@ class SendspinAirPlayBridge:
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        self.airplay_player.sync_volume_state()
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
             "Bridge writer started for %s, awaiting first chunk",
@@ -731,6 +730,10 @@ class SendspinAirPlayBridge:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
             self._use_shared_ptp = self._resolve_shared_ptp()
+            # Connecting is what re-sends VOLUME= to the device, so this is the one
+            # place the sync belongs: a kept process never reaches here and would
+            # otherwise be left playing at a volume nobody told it about.
+            self.airplay_player.sync_volume_state()
             await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:

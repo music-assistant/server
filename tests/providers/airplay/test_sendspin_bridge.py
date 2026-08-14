@@ -531,6 +531,99 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     assert bridge._airplay_stream_ready.is_set()
 
 
+async def test_a_fresh_process_is_told_the_synced_volume_and_mute() -> None:
+    """
+    A cold start syncs volume and mute from the parent before it connects.
+
+    Connecting is what carries that state to the device, so a sync after it
+    would not be heard until the next command.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream()
+    order: list[str] = []
+    cast("MagicMock", bridge.airplay_player).sync_volume_state = MagicMock(
+        side_effect=lambda: order.append("sync")
+    )
+    stream.connect = AsyncMock(side_effect=lambda *_a, **_kw: order.append("connect"))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    assert order == ["sync", "connect"]
+
+
+async def test_a_kept_process_keeps_the_volume_and_mute_it_plays_at() -> None:
+    """
+    A warm handover does not re-sync volume and mute from the parent player.
+
+    Only a connect re-sends VOLUME=, so a sync over a kept process would move our
+    state away from what the speaker is playing at -- most visibly by clearing a
+    mute the device is still holding, leaving it silent with nothing to say so.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = _make_anchor_stream()
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+    bridge._started = True
+
+    # the whole warm restart, from the Sendspin stream-start callback to the handover
+    bridge._on_bridge_stream_start()
+    assert bridge._airplay_stream is kept_stream
+    bridge._drop_until_us = SENDSPIN_EPOCH_US
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    kept_stream.flush.assert_awaited_once_with()
+    cast("MagicMock", bridge.airplay_player).sync_volume_state.assert_not_called()
+
+
+async def test_a_failed_warm_handover_syncs_before_its_cold_retry() -> None:
+    """
+    The cold retry after a failed warm handover is not left with un-synced state.
+
+    That retry spawns a fresh process, which is sent whatever volume and mute it
+    finds on connect, so a mute the parent no longer owns would start it silent.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    kept_stream = _make_anchor_stream()
+    kept_stream.flush = AsyncMock(return_value=False)
+    bridge._airplay_stream = kept_stream
+    cold_stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=cold_stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    cold_stream.connect.assert_awaited_once_with(False)
+    cast("MagicMock", bridge.airplay_player).sync_volume_state.assert_called_once_with()
+
+
 async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:
     """
     A cold start that already lost the race bails out before it spawns anything.
