@@ -2,14 +2,15 @@
 
 import asyncio
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
@@ -60,6 +61,18 @@ async def metadata_controller(
     return metadata_controller
 
 
+@pytest.fixture(autouse=True)
+def _reset_image_caches() -> Iterator[None]:
+    """Isolate the module-level image caches between tests."""
+    images_helper._thumb_memory_cache.clear()
+    images_helper._source_memory_cache.clear()
+    images_helper._failed_sources.clear()
+    yield
+    images_helper._thumb_memory_cache.clear()
+    images_helper._source_memory_cache.clear()
+    images_helper._failed_sources.clear()
+
+
 def _fake_image_provider(instance_id: str, resolved_path: str) -> LocalFileSystemProvider:
     """
     Build a bare filesystem provider that resolves any image path to `resolved_path`.
@@ -70,8 +83,7 @@ def _fake_image_provider(instance_id: str, resolved_path: str) -> LocalFileSyste
     :param instance_id: Instance id to register the provider under.
     :param resolved_path: Absolute path every image path resolves to.
     """
-    with patch.object(LocalFileSystemProvider, "__init__", lambda *_a, **_kw: None):
-        provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
+    provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
     provider.config = MagicMock(instance_id=instance_id)
     provider.manifest = MagicMock(domain="filesystem_local")
     provider.logger = MagicMock()
@@ -665,6 +677,9 @@ async def test_cached_thumb_survives_an_unavailable_provider(
 
     provider.available = False
     assert mass.get_provider(provider.instance_id) is None
+    # drop the memory tier so the on-disk thumbnail is what has to answer: that is the
+    # reported scenario, where the art was rendered long before the provider went down
+    images_helper._thumb_memory_cache.clear()
 
     cold = await metadata_controller.handle_imageproxy(request)
     assert cold.status == 200
@@ -672,7 +687,7 @@ async def test_cached_thumb_survives_an_unavailable_provider(
 
 
 async def test_unavailable_provider_is_not_cached_as_a_missing_image(
-    metadata_controller: MetaDataController, tmp_path: Any
+    metadata_controller: MetaDataController, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unavailable provider is not remembered as a failed source, so recovery is instant."""
     mass = metadata_controller.mass
@@ -681,6 +696,13 @@ async def test_unavailable_provider_is_not_cached_as_a_missing_image(
     provider = _fake_image_provider("filesystem_local--efgh5678", str(source_path))
     provider.available = False
     mass._providers[provider.instance_id] = provider
+
+    # a provider-relative path is unresolvable without its provider, so none of the
+    # fallback routes may be tried - probing one costs an ffmpeg spawn per request
+    async def _no_embedded_probe(*_args: Any, **_kwargs: Any) -> bytes | None:
+        raise AssertionError("embedded-image probe attempted without a provider")
+
+    monkeypatch.setattr(images_helper, "get_embedded_image", _no_embedded_probe)
 
     image_path = "Artist/Album/never-fetched.jpg"
     with pytest.raises(ProviderUnavailableError):
@@ -692,6 +714,28 @@ async def test_unavailable_provider_is_not_cached_as_a_missing_image(
     # the provider coming back is enough; nothing has to expire first
     provider.available = True
     assert await get_image_thumb(mass, image_path, 256, provider.instance_id)
+
+
+async def test_get_thumbnail_reports_unavailable_as_media_not_found(
+    metadata_controller: MetaDataController, tmp_path: Any
+) -> None:
+    """
+    `get_thumbnail` keeps normalizing to one typed error when a provider is unavailable.
+
+    Callers that only mean to skip the artwork catch `MediaNotFoundError`; leaking a
+    different type aborts the whole send they were part of.
+    """
+    mass = metadata_controller.mass
+    source_path = tmp_path / "cover.png"
+    Image.new("RGB", (300, 300), (10, 200, 10)).save(str(source_path), "PNG")
+    provider = _fake_image_provider("filesystem_local--ijkl9012", str(source_path))
+    provider.available = False
+    mass._providers[provider.instance_id] = provider
+
+    with pytest.raises(MediaNotFoundError):
+        await metadata_controller.get_thumbnail(
+            "Artist/Album/cover.jpg", provider.instance_id, size=256
+        )
 
 
 def test_player_image_url_forces_jpeg_on_imageproxy_urls() -> None:

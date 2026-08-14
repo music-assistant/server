@@ -720,7 +720,8 @@ class MusicAssistant:
                            for next event loop iteration. This ensures proper ordering
                            when creating multiple tasks in sequence.
         :param log_exceptions: Set to False when the caller awaits the task and reports
-                               its failures itself, so a handled error is not also logged.
+                               its failures itself; the task then logs at debug level
+                               instead of warning.
         :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
@@ -761,9 +762,13 @@ class MusicAssistant:
                 return
             # always retrieve the exception, otherwise asyncio logs a noisy
             # "Task exception was never retrieved" error at garbage collection time
-            if (err := _task.exception()) and log_exceptions:
+            if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
-                LOGGER.warning(
+                # a failure the waiters report themselves is demoted rather than dropped:
+                # work that outlives every waiter (join_task keeps it running) would
+                # otherwise fail without a trace anywhere
+                LOGGER.log(
+                    logging.WARNING if log_exceptions else logging.DEBUG,
                     "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),

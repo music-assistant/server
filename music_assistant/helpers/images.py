@@ -329,8 +329,8 @@ async def get_image_data(
         _depth,
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
-        # the failure reaches every waiter below, and whoever serves the image reports it
-        # once with the path it was asked for
+        # the failure reaches every waiter below; a fetch failure is reported here anyway,
+        # so a warning naming the task on top of that says nothing new
         log_exceptions=False,
     )
     return await join_task(task)
@@ -458,6 +458,16 @@ async def _fetch_source_image(
                 return resolved_image, True
             if isinstance(resolved_image, str):
                 path_or_url = resolved_image
+    elif not path_or_url.startswith(("http", "data:image")) and mass.get_provider(
+        provider, return_unavailable=True
+    ):
+        # a registered provider that is momentarily down is the only thing that can turn
+        # its own path into something readable, so stop here: the routes below would probe
+        # a path relative to nothing (spawning ffmpeg per request for the whole outage),
+        # and reporting it as missing would cache that verdict. An unknown provider does
+        # fall through - it is gone for good, so a missing image is the honest verdict.
+        msg = f"{provider} is not available to resolve image {path_or_url}"
+        raise ProviderUnavailableError(msg)
     # handle HTTP location
     if path_or_url.startswith("http"):
         # handle imageproxy URLs pointing to our own server
@@ -487,12 +497,6 @@ async def _fetch_source_image(
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data, True
-    if prov is None:
-        # every provider-independent route is exhausted, so an absent provider means the
-        # path was never resolved rather than that the image is gone. Reporting it as
-        # missing would cache that verdict and keep serving it after the provider returns.
-        msg = f"{provider} is not available to resolve image {path_or_url}"
-        raise ProviderUnavailableError(msg)
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
 
@@ -647,7 +651,8 @@ async def _get_image_thumb(
         flatten_transparency,
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
-        # as above: reported once by the caller that serves the image
+        # the failure reaches every waiter, which is where it belongs; a task that lost
+        # every waiter still leaves a debug line behind
         log_exceptions=False,
     )
     thumb_data = await join_task(task)

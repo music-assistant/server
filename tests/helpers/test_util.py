@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import gc
+import logging
 import socket
 import threading
 import time
@@ -601,7 +602,7 @@ class TestGuardSingleRequest:
     async def test_failure_reaches_the_caller_without_being_logged(
         self, mass_minimal: MusicAssistant, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A failure raised at the caller is not also logged as an unhandled task exception."""
+        """A failure raised at the caller is not also warned about as an unhandled one."""
         caller = _GuardedCaller(mass_minimal)
         caller.error = ProviderUnavailableError("some_provider is not available")
         caller.release.set()
@@ -612,7 +613,11 @@ class TestGuardSingleRequest:
         # the task's done callback runs an iteration after the task itself finished
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        assert "Exception in task" not in caplog.text
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and "Exception in task" in record.getMessage()
+        ]
 
     @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
