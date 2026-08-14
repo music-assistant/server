@@ -38,6 +38,7 @@ def send_show_dashboard(
     chromecast: Chromecast,
     url: str,
     timeout: float = 30.0,
+    force_launch: bool = False,
 ) -> None:
     """
     Launch the MA cast receiver app and send it a show_dashboard message.
@@ -47,6 +48,8 @@ def send_show_dashboard(
     :param chromecast: Connected Chromecast to show the dashboard on.
     :param url: Fully-qualified dashboard URL for the receiver to load.
     :param timeout: Seconds to wait for the app launch and the dashboard namespace.
+    :param force_launch: Start a new session even when the receiver already reports
+        the app as running.
     :raises TimeoutError: If the receiver app did not launch (in time), or the
         dashboard namespace never became available.
     """
@@ -60,7 +63,7 @@ def send_show_dashboard(
 
     deadline = time.monotonic() + timeout
     chromecast.socket_client.receiver_controller.launch_app(
-        MASS_APP_ID, callback_function=_on_launched
+        MASS_APP_ID, force_launch=force_launch, callback_function=_on_launched
     )
     if not launched.wait(timeout):
         msg = f"Timed out launching app on {chromecast.name}"

@@ -142,15 +142,22 @@ class ChromecastDashboards:
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
+        force_launch = False
         castplayer = self.mass.players.get_player(device_id)
         if isinstance(castplayer, ChromecastPlayer):
             # an earlier stop on the player may still have a release of the receiver
             # app pending, which would close the dashboard we are about to show
             castplayer.cancel_pending_app_quit()
+            # a release that is already on the wire will close the app anyway, so the
+            # receiver's 'already running' short-circuit has to be bypassed
+            force_launch = castplayer.app_quit_sent
         url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
-            await self.mass.loop.run_in_executor(None, send_show_dashboard, chromecast, url)
+            await self.mass.loop.run_in_executor(
+                None,
+                functools.partial(send_show_dashboard, chromecast, url, force_launch=force_launch),
+            )
         except TimeoutError as err:
             # the helper's message already carries device name + failure reason
             raise PlayerUnavailableError(

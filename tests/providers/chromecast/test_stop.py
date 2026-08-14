@@ -52,6 +52,7 @@ def _fake_cast(
     fake.type = player_type
     fake.available = True
     fake.cc.app_id = running_app_id
+    fake.app_quit_sent = False
     fake._app_quit_task_id = "cast_quit_app_test"
     fake.cancel_pending_app_quit = partial(
         ChromecastPlayer.cancel_pending_app_quit, cast("ChromecastPlayer", fake)
@@ -128,7 +129,10 @@ async def test_launching_an_app_cancels_a_pending_release() -> None:
 
     await ChromecastPlayer._launch_app(cast("ChromecastPlayer", fake))
 
+    # a timer that already fired is re-created as a task under the same id, so both
+    # have to be cancelled to reliably catch the release
     fake.mass.cancel_timer.assert_called_once_with(fake._app_quit_task_id)
+    fake.mass.cancel_task.assert_called_once_with(fake._app_quit_task_id)
 
 
 @pytest.mark.parametrize("app_id", [MASS_APP_ID, APP_MEDIA_RECEIVER])
@@ -178,3 +182,34 @@ async def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_is_quit() -> 
     await _quit_app_when_unused(fake)
 
     fake.cc.quit_app.assert_called_once()
+
+
+async def test_a_sent_quit_is_recorded() -> None:
+    """A quit that is on the wire cannot be recalled, so the player has to remember it."""
+    fake = _fake_cast(player_state="IDLE")
+
+    await _quit_app_when_unused(fake)
+
+    assert fake.app_quit_sent is True
+
+
+@pytest.mark.parametrize(
+    ("available", "running_app_id", "player_state"),
+    [
+        (False, MASS_APP_ID, "IDLE"),
+        (True, SENDSPIN_CAST_APP_ID, "IDLE"),
+        (True, MASS_APP_ID, "PLAYING"),
+        (True, MASS_APP_ID, "PAUSED"),
+    ],
+    ids=["unavailable", "foreign_app", "playing", "paused"],
+)
+async def test_a_skipped_quit_is_not_recorded(
+    available: bool, running_app_id: str, player_state: str
+) -> None:
+    """Nothing was sent, so the Cast session is still fine to load into."""
+    fake = _fake_cast(running_app_id=running_app_id, player_state=player_state)
+    fake.available = available
+
+    await _quit_app_when_unused(fake)
+
+    assert fake.app_quit_sent is False
