@@ -150,7 +150,6 @@ isfile = wrap(os.path.isfile)
 ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
-scandir = wrap(os.scandir)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
