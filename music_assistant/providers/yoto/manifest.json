@@ -2,11 +2,12 @@
   "type": "music",
   "domain": "yoto",
   "name": "Yoto",
+  "stage": "beta",
   "description": "Yoto Music Provider for Music Assistant.",
   "codeowners": [
     "@pantsman0"
   ],
-  "requirements": [],
-  "documentation": "https://music-assistant.io/music-providers/yoto/",
-  "icon": "icon.png"
+  "credits": ["[Yoto API](https://github.com/cdnninja/yoto_api)"],
+  "requirements": ["yoto-api==4.3.2", "pkce==1.0.3"],
+  "documentation": "https://music-assistant.io/music-providers/yoto/"
 }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -13,7 +13,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidProviderID,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -25,10 +29,14 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
+from yoto_api import Card as YotoCard
+from yoto_api import Chapter as YotoChapter
+from yoto_api import YotoClient, YotoError
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.music_provider import MusicProvider
+
+from .setup_flow import CONF_CLIENT_ID, CONF_REFRESH_TOKEN
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -36,21 +44,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-
-BASE_URL = "https://api.yotoplay.com"
-TOKEN_URL = "https://api.yotoplay.com/auth/token"
-ANDROID_APP_CLIENT_ID = "fk91pmWesmvNcHTfbrAv9uXI7BS6l6JM"
-
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Yoto/3.37 (com.yotoplay.yoto; build:15572; Android 14) Dalvik/2.1.0 "
-        "(Linux; U; Android 14; Pixel 4 XL Build/AP2A.240805.005)"
-    ),
-    "X-Yoto-App-Version": "3.37.15572",
-    "X-Yoto-Appisalpha": "false",
-    "Accept": "application/json",
-}
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
@@ -60,47 +53,52 @@ SUPPORTED_FEATURES = {
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration."""
+    """
+    Initialize provider(instance) with given configuration.
+
+    :param mass: MusicAssistant instance.
+    :param manifest: ProviderManifest object.
+    :param config: ProviderConfig object.
+    """
     return YotoProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 class YotoProvider(MusicProvider):
     """Yoto music/story provider implementation."""
 
-    _access_token: str | None = None
-    _library_cards: list[dict[str, Any]] | None = None
+    client: YotoClient
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the Yoto provider."""
+        client_id = str(self.get_setup_value(CONF_CLIENT_ID) or "")
+        refresh_token = str(self.get_setup_value(CONF_REFRESH_TOKEN) or "")
+        if not client_id or not refresh_token:
+            raise LoginFailed("Missing Yoto credentials")
+
+        self.client = YotoClient(client_id=client_id, session=self.mass.http_session)
+        self.client.set_refresh_token(refresh_token)
+        try:
+            token = await self.client.check_and_refresh_token()
+            if token.refresh_token and token.refresh_token != refresh_token:
+                self._update_setup_data(CONF_REFRESH_TOKEN, token.refresh_token)
+        except YotoError as err:
+            raise LoginFailed(f"Yoto login via refresh token failed: {err}") from err
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload of provider."""
+        if self.client:
+            await self.client.close()
+        await super().unload(is_removed)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the config entries for this provider instance."""
         return ()
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await self._login()
-
-    @property
-    def is_streaming_provider(self) -> bool:
-        """Return True if the provider is a streaming provider."""
-        return True
-
-    async def sync_library(self, media_type: MediaType) -> None:
-        """
-        Run library sync for this provider.
-
-        :param media_type: Media type to sync.
-        """
-        if media_type in (MediaType.ALBUM, MediaType.ALL):
-            self._library_cards = await self._fetch_library_cards()
-        await super().sync_library(media_type)
-
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
-        if self._library_cards is None:
-            self._library_cards = await self._fetch_library_cards()
-        for card_item in self._library_cards:
-            card = card_item.get("card")
-            if card:
-                yield self._parse_album(card)
+        await self.client.update_library()
+        for card in self.client.library.values():
+            yield self._parse_album(card)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """
@@ -108,13 +106,34 @@ class YotoProvider(MusicProvider):
 
         :param prov_album_id: Provider's album ID.
         """
-        if self._library_cards:
-            for card_item in self._library_cards:
-                card = card_item.get("card", {})
-                if card.get("cardId") == prov_album_id:
-                    return self._parse_album(card)
-        card_data = await self._resolve_card(prov_album_id)
-        return self._parse_album(card_data)
+        card: YotoCard | None = None
+        if prov_album_id in self.client.library:
+            card = self.client.library[prov_album_id]
+        else:
+            await self.client.update_card_detail(prov_album_id)
+            card = self.client.library.get(prov_album_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {prov_album_id} not found")
+        return self._parse_album(card)
+
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """
+        Get full artist details by id.
+
+        :param prov_artist_id: Provider's artist ID.
+        """
+        return Artist(
+            item_id=prov_artist_id,
+            provider=self.domain,
+            name=prov_artist_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_artist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """
@@ -122,12 +141,14 @@ class YotoProvider(MusicProvider):
 
         :param prov_album_id: Provider's album ID.
         """
-        card_data = await self._resolve_card(prov_album_id)
-        chapters = card_data.get("content", {}).get("chapters", [])
-        album = self._parse_album(card_data)
+        await self.client.update_card_detail(prov_album_id)
+        card = self.client.library.get(prov_album_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {prov_album_id} not found")
+        album = self._parse_album(card)
 
         tracks: list[Track] = []
-        for idx, chapter in enumerate(chapters):
+        for idx, chapter in enumerate(card.chapters.values()):
             tracks.append(self._parse_track(prov_album_id, chapter, idx, album))
         return tracks
 
@@ -154,51 +175,38 @@ class YotoProvider(MusicProvider):
         :param media_type: Media type of the item.
         """
         if ":" not in item_id:
-            raise MediaNotFoundError(f"Invalid track ID format: {item_id}")
+            raise InvalidProviderID(f"Invalid track ID format: {item_id}")
         card_id, chapter_key = item_id.split(":", 1)
-        card_data = await self._resolve_card(card_id)
-        chapters = card_data.get("content", {}).get("chapters", [])
+        await self.client.update_card_detail(card_id)
+        card = self.client.library.get(card_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {card_id} not found")
 
-        matching_chapter = None
-        for chapter in chapters:
-            if str(chapter.get("key")) == chapter_key:
-                matching_chapter = chapter
-                break
-
-        if not matching_chapter:
+        chapter = card.chapters.get(chapter_key)
+        if not chapter:
             raise MediaNotFoundError(f"Chapter {chapter_key} not found for card {card_id}")
 
-        inner_tracks = matching_chapter.get("tracks", [])
-        track_urls = [
-            t["trackUrl"] for t in inner_tracks if isinstance(t, dict) and t.get("trackUrl")
-        ]
-
-        if not track_urls:
-            raise MediaNotFoundError(f"No audio URL found for chapter {chapter_key}")
-
-        first_track = inner_tracks[0] if inner_tracks else {}
-        format_str = first_track.get("format")
+        first_track = next(iter(chapter.tracks.values()), None)
+        format_str = first_track.format if first_track else None
         content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
 
-        if len(track_urls) == 1:
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=item_id,
-                audio_format=AudioFormat(content_type=content_type),
-                media_type=MediaType.TRACK,
-                stream_type=StreamType.HTTP,
-                path=track_urls[0],
-                allow_seek=True,
-                can_seek=True,
-            )
+        track_paths = [
+            MultiPartPath(path=track.trackUrl, duration=track.duration)
+            for track in chapter.tracks.values()
+            if track.trackUrl
+        ]
+
+        if len(track_paths) == 0:
+            raise MediaNotFoundError(f"No audio URLs found for chapter {chapter_key}")
 
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(content_type=content_type),
             media_type=MediaType.TRACK,
-            stream_type=StreamType.CUSTOM,
-            data={"track_urls": track_urls},
+            stream_type=StreamType.HTTP,
+            duration=chapter.duration,
+            path=track_paths,
             allow_seek=True,
             can_seek=True,
         )
@@ -225,88 +233,15 @@ class YotoProvider(MusicProvider):
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     yield chunk
 
-    async def _login(self) -> None:
-        """Authenticate with the Yoto API and obtain an access token."""
-        username = self.get_setup_value(CONF_USERNAME)
-        password = self.get_setup_value(CONF_PASSWORD)
-        if not username or not password:
-            raise LoginFailed("Missing Yoto credentials")
-
-        payload = {
-            "client_id": ANDROID_APP_CLIENT_ID,
-            "grant_type": "password",
-            "username": str(username),
-            "password": str(password),
-            "scope": "openid email profile offline_access",
-            "audience": BASE_URL,
-        }
-        headers = {
-            **DEFAULT_HEADERS,
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        async with self.mass.http_session.post(
-            TOKEN_URL, data=payload, headers=headers
-        ) as response:
-            if response.status != 200:
-                res_text = await response.text()
-                raise LoginFailed(f"Yoto login failed ({response.status}): {res_text}")
-            data = await response.json()
-            self._access_token = cast("str | None", data.get("access_token"))
-            if not self._access_token:
-                raise LoginFailed("No access token returned by Yoto API")
-
-    async def _get(self, url: str) -> dict[str, Any]:
+    def _parse_album(self, card: YotoCard) -> Album:
         """
-        Perform an authenticated HTTP GET request to the Yoto API.
+        Parse Yoto card into a Music Assistant Album.
 
-        :param url: The request URL.
+        :param card: Yoto Card instance.
         """
-        if not self._access_token:
-            await self._login()
-
-        headers = {
-            **DEFAULT_HEADERS,
-            "Authorization": f"Bearer {self._access_token}",
-        }
-        async with self.mass.http_session.get(url, headers=headers) as response:
-            if response.status == 401:
-                await self._login()
-                headers["Authorization"] = f"Bearer {self._access_token}"
-                async with self.mass.http_session.get(url, headers=headers) as retry_res:
-                    retry_res.raise_for_status()
-                    return cast("dict[str, Any]", await retry_res.json())
-            response.raise_for_status()
-            return cast("dict[str, Any]", await response.json())
-
-    async def _fetch_library_cards(self) -> list[dict[str, Any]]:
-        """Fetch user's family library cards."""
-        data = await self._get(f"{BASE_URL}/card/family/library")
-        return cast("list[dict[str, Any]]", data.get("cards", []))
-
-    async def _resolve_card(self, card_id: str) -> dict[str, Any]:
-        """
-        Resolve card details by card ID.
-
-        :param card_id: The card ID to resolve.
-        """
-        data = await self._get(f"{BASE_URL}/card/resolve/{card_id}?addToFamily=false")
-        card = data.get("card")
-        if not card:
-            raise MediaNotFoundError(f"Card {card_id} not found")
-        return cast("dict[str, Any]", card)
-
-    def _parse_album(self, card: dict[str, Any]) -> Album:
-        """
-        Parse Yoto card dict into a Music Assistant Album.
-
-        :param card: Yoto card dictionary.
-        """
-        card_id = card["cardId"]
-        title = card.get("title", "Unknown Card")
-        metadata = card.get("metadata", {})
-        author = metadata.get("author")
-        if not author and isinstance(metadata.get("authors"), list) and metadata["authors"]:
-            author = metadata["authors"][0]
+        card_id = card.id
+        title = card.title or "Unknown Card"
+        author = card.author
 
         artists: list[Artist | ItemMapping] = []
         if author:
@@ -319,11 +254,9 @@ class YotoProvider(MusicProvider):
                 )
             )
 
-        cover_url = None
-        if isinstance(metadata.get("cover"), dict):
-            cover_url = metadata["cover"].get("imageL")
+        cover_url = card.cover_image_large
 
-        album = Album(
+        return Album(
             item_id=card_id,
             provider=self.instance_id,
             name=title,
@@ -336,7 +269,7 @@ class YotoProvider(MusicProvider):
                 )
             },
             metadata=MediaItemMetadata(
-                description=metadata.get("description"),
+                description=card.description,
                 images=UniqueList(
                     [
                         MediaItemImage(
@@ -352,54 +285,42 @@ class YotoProvider(MusicProvider):
             ),
         )
 
-        if isinstance(metadata.get("copyrights"), list):
-            album.metadata.copyright = ", ".join(metadata["copyrights"])
-
-        return album
-
-    def _parse_track(self, card_id: str, chapter: dict[str, Any], idx: int, album: Album) -> Track:
+    def _parse_track(self, card_id: str, chapter: YotoChapter, idx: int, album: Album) -> Track:
         """
-        Parse Yoto chapter dict into a Music Assistant Track.
+        Parse Yoto chapter into a Music Assistant Track.
 
         :param card_id: Parent card ID.
-        :param chapter: Chapter dictionary.
+        :param chapter: Yoto Chapter instance.
         :param idx: 0-based index of the chapter.
         :param album: Parent Album object.
         """
-        chapter_key = chapter.get("key", str(idx + 1))
+        chapter_key = chapter.key or str(idx + 1)
         track_id = f"{card_id}:{chapter_key}"
-        chapter_title = chapter.get("title") or f"Chapter {idx + 1}"
+        chapter_title = chapter.title or f"Chapter {idx + 1}"
 
-        chapter_duration = chapter.get("duration")
-        if not chapter_duration and isinstance(chapter.get("tracks"), list):
+        chapter_duration = chapter.duration
+        if not chapter_duration and chapter.tracks:
             chapter_duration = sum(
-                t.get("duration", 0)
-                for t in chapter["tracks"]
-                if isinstance(t, dict) and isinstance(t.get("duration"), (int, float))
+                t.duration for t in chapter.tracks.values() if isinstance(t.duration, (int, float))
             )
 
-        icon = None
-        if isinstance(chapter.get("display"), dict):
-            icon = chapter["display"].get("icon16x16")
+        chapter_cover = chapter.icon
+        album_cover = (
+            album.metadata.images[0].path if (album.metadata and album.metadata.images) else None
+        )
+        track_cover = chapter_cover or album_cover
 
         format_str = None
-        if isinstance(chapter.get("tracks"), list) and chapter["tracks"]:
-            first_tr = chapter["tracks"][0]
-            if isinstance(first_tr, dict):
-                format_str = first_tr.get("format")
+        if chapter.tracks:
+            first_tr = next(iter(chapter.tracks.values()))
+            format_str = first_tr.format
         content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
-
-        album_cover = None
-        if album.metadata and album.metadata.images:
-            album_cover = album.metadata.images[0].path
-
-        chapter_cover = icon or album_cover
 
         return Track(
             item_id=track_id,
             provider=self.instance_id,
             name=chapter_title,
-            duration=int(chapter_duration) if chapter_duration else 0,
+            duration=chapter_duration if chapter_duration else 0,
             disc_number=1,
             track_number=idx + 1,
             album=ItemMapping(
@@ -422,13 +343,13 @@ class YotoProvider(MusicProvider):
                     [
                         MediaItemImage(
                             type=ImageType.THUMB,
-                            path=chapter_cover,
+                            path=track_cover,
                             provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     ]
                 )
-                if chapter_cover
+                if track_cover
                 else None,
             ),
         )

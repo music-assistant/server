@@ -2588,6 +2588,8 @@
   "provider.yandex_ynison.setup_flow.scan_qr.title": "Scan to sign in",
   "provider.yandex_ynison.setup_flow.user.description": "Choose the Yandex Music account, target player and device name.",
   "provider.yandex_ynison.setup_flow.user.title": "Yandex Music account",
+  "provider.yoto.config_entries.client_id": "Client ID",
+  "provider.yoto.config_entries.intro.label": "Create an application using the instruction in the provider page. Paste the Client ID for the application below.",
   "provider.yousee.config_entries.yousee_quality.description": "The streaming quality to use for playback",
   "provider.yousee.config_entries.yousee_quality.label": "Stream Quality",
   "provider.yousee.config_entries.yousee_quality.options.192": "\"Normal\" - MP4 192kbps",
