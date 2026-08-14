@@ -823,8 +823,8 @@ class AirPlayPlayer(Player):
         so we try to sync from that parent player if possible. If another control owns
         the parent's volume, we play at unity gain instead.
 
-        Both controls are resolved against this player as the rendering output, so the
-        outcome does not depend on the parent already pointing at us.
+        Both controls are resolved against this player as the rendering output, so which
+        control is deemed to own them does not depend on the parent already pointing at us.
         """
         if not self.protocol_parent_id:
             return
@@ -927,31 +927,27 @@ class AirPlayPlayer(Player):
         return True
 
     def _sync_mute_state(self, parent_player: Player) -> bool:
-        """Adopt the parent's mute state if it owns this output, return True if changed."""
-        mute_control = parent_player.mute_control_for_output(self.player_id)
-        if self._control_routes_to_self(mute_control):
-            if (parent_muted := parent_player.state.volume_muted) is None:
-                return False
-            muted = bool(parent_muted)
-        elif self._attr_volume_muted:
-            # The mute belongs to a control that does not own this output (a sibling
-            # interface, the receiver itself, or nothing at all). Our mute is a latch that
-            # is only ever cleared by an explicit unmute, so leaving it set here would
-            # start the stream silent and swallow every volume command that follows.
-            muted = False
-        else:
-            # never latched, so there is nothing to clear and no state to invent
+        """Release a mute owned by another control, return True if changed."""
+        if not self._attr_volume_muted:
+            # nothing latched, so nothing that could silence this stream
             return False
-        if self._attr_volume_muted == muted:
+        if self._control_routes_to_self(parent_player.mute_control_for_output(self.player_id)):
+            # our own mute, applied through the parent
             return False
-        self._attr_volume_muted = muted
+        # The mute belongs to a control that does not own this output (a sibling interface,
+        # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
+        # unmute clears, so leaving it set would start the stream silent and swallow every
+        # volume command after it. The parent's mute state is deliberately not adopted here:
+        # it is resolved through the ambient control, which is the very thing that may be
+        # pointing at another interface.
+        self._attr_volume_muted = False
         return True
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control routes to this player."""
         if control == self.player_id:
             return True
-        # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward volume here
+        # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward to us
         if control_player := self.mass.players.get_player(control):
             return control_player.underlying_player_id == self.player_id
         return False

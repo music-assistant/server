@@ -657,3 +657,64 @@ class TestControlForOutput:
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_a")])
         assert player.mute_control_for_output("proto_a") == PLAYER_CONTROL_NONE
+
+    def test_explicit_player_id_config_beats_named_output(self, mock_mass: MagicMock) -> None:
+        """An explicitly configured control outranks the output carrying the audio."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(mock_mass, "proto_b", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: "proto_a"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        assert player.volume_control_for_output("proto_b") == "proto_a"
+
+    def test_does_not_require_output_to_be_available(self, mock_mass: MagicMock) -> None:
+        """
+        An unavailable reading does not hand the volume to a different interface.
+
+        The caller names the output it is about to stream to, so a stale registry
+        reading is no reason to fall back to a sibling that isn't in the signal path.
+        """
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        proto_b = _create_protocol_player(
+            mock_mass, "proto_b", {PlayerFeature.VOLUME_SET}, available=False
+        )
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
+            ],
+        )
+        assert player.volume_control == "proto_a"
+        assert player.volume_control_for_output("proto_b") == "proto_b"
+
+    def test_fake_mute_degrades_without_volume_control_on_output(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Fake mute drives the volume to zero, so it needs a volume control to drive."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", set())
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control_for_output("proto_a") == PLAYER_CONTROL_NONE
+        assert player.mute_control_for_output("proto_a") == PLAYER_CONTROL_NONE

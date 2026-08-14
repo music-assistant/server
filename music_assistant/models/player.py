@@ -2078,6 +2078,8 @@ class Player(ABC):
         not depend on whether that output has been marked active yet.
 
         :param output_protocol_id: Player id of the output protocol rendering the audio.
+        :return: A control id, or NATIVE/FAKE/NONE. NONE means nothing in the signal path
+            of that output owns the volume; no sibling interface is offered as a fallback.
         """
         return self.__control_for_output(
             PlayerFeature.VOLUME_SET, CONF_VOLUME_CONTROL, output_protocol_id
@@ -2092,9 +2094,17 @@ class Player(ABC):
 
         :param output_protocol_id: Player id of the output protocol rendering the audio.
         """
-        return self.__control_for_output(
+        control = self.__control_for_output(
             PlayerFeature.VOLUME_MUTE, CONF_MUTE_CONTROL, output_protocol_id
         )
+        if (
+            control == PLAYER_CONTROL_FAKE
+            and self.volume_control_for_output(output_protocol_id) == PLAYER_CONTROL_NONE
+        ):
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control on this output there is no way to mute it at all
+            return PLAYER_CONTROL_NONE
+        return control
 
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """
