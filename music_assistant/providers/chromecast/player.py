@@ -21,7 +21,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 from pychromecast import IDLE_APP_ID
-from pychromecast.controllers.media import MEDIA_PLAYER_STATE_BUFFERING, STREAM_TYPE_LIVE
+from pychromecast.controllers.media import (
+    MEDIA_PLAYER_ERROR_CODES,
+    MEDIA_PLAYER_STATE_BUFFERING,
+    STREAM_TYPE_LIVE,
+)
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
@@ -86,6 +90,7 @@ class ChromecastPlayer(Player):
         self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
+        self._media_error_reported = False
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -311,6 +316,14 @@ class ChromecastPlayer(Player):
         # Dispatch to event loop for thread-safe attribute mutation
         self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
 
+    def on_load_media_failed(self, queue_item_id: int, error_code: int) -> None:
+        """Handle a failed media load (called from pychromecast socket thread)."""
+        if self.mass.closing:
+            return
+        self.mass.loop.call_soon_threadsafe(
+            self._handle_load_media_failed, queue_item_id, error_code
+        )
+
     def on_new_connection_status(self, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
         if self.mass.closing:
@@ -421,13 +434,15 @@ class ChromecastPlayer(Player):
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
         self.cancel_pending_app_quit()
-        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
-            return  # already active with a compatible media receiver app
-
         if self.config.get_value(CONF_USE_MASS_APP, True):
             app_id = MASS_APP_ID
         else:
             app_id = APP_MEDIA_RECEIVER
+
+        # compare against the configured app, not any compatible one: otherwise the
+        # use_mass_app setting is ignored for as long as the other app is running
+        if self.cc.app_id == app_id:
+            return  # the configured receiver app is already active
 
         event = asyncio.Event()
         launched = False
@@ -588,6 +603,19 @@ class ChromecastPlayer(Player):
             self.update_state()
             return
 
+        # surface a media error reported by the receiver (e.g. after a failed LOAD),
+        # which otherwise only shows as a silent return to idle
+        if status.player_is_idle and status.idle_reason == "ERROR":
+            if not self._media_error_reported and not self._flow_stream_underrun():
+                self._media_error_reported = True
+                self.logger.warning(
+                    "%s reported a media playback error for %s",
+                    self.display_name,
+                    status.content_id or "the loaded media",
+                )
+        else:
+            self._media_error_reported = False
+
         # player state
         # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
         # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
@@ -670,6 +698,17 @@ class ChromecastPlayer(Player):
                     child._attr_active_source = self.active_source
                     child.update_state()
         self.update_state()
+
+    def _handle_load_media_failed(self, queue_item_id: int, error_code: int) -> None:
+        """Process a failed media load on the event loop thread."""
+        self._media_error_reported = True
+        self.logger.warning(
+            "%s failed to load media (queue item %s): error %s (%s)",
+            self.display_name,
+            queue_item_id,
+            error_code,
+            MEDIA_PLAYER_ERROR_CODES.get(error_code, "unknown code"),
+        )
 
     def _handle_connection_status(self, status: ConnectionStatus) -> None:
         """Process ConnectionStatus on the event loop thread."""

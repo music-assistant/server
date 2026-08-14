@@ -391,9 +391,12 @@ class CastStatusListener:
 
     def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
         """Call when media failed to load."""
-        self.castplayer.logger.warning(
-            "Load media failed: %s - error code: %s", queue_item_id, error_code
-        )
+        if not self._valid:
+            return
+        # NOTE: pychromecast only calls this when the receiver includes a detailed
+        # error code in its LOAD_FAILED message; receivers that omit it are caught
+        # by the idleReason ERROR handling in the media status instead.
+        self.castplayer.on_load_media_failed(queue_item_id, error_code)
 
     def invalidate(self) -> None:
         """
