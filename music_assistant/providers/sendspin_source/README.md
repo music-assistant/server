@@ -4,6 +4,13 @@ Exposes Sendspin clients that implement the [source role](https://github.com/Sen
 (line-in, turntable preamp, microphone, Bluetooth receiver) as Music Assistant
 audio sources, playable on any player or group.
 
+## Why a separate provider?
+
+Music Assistant assigns each provider one type. The main Sendspin provider is a
+player provider, so it cannot also expose captured inputs through the plugin
+AudioSource interface. This separate plugin provides that interface while
+reusing the main provider's client connections.
+
 ## How it works
 
 Every connected Sendspin client whose negotiated roles include the `source`
@@ -13,7 +20,7 @@ activates on paired connections, so an unpaired device never appears here.
 When a user plays a source, the provider sends the client a
 `server/command: start`. The client announces its native stream format,
 streams timestamped encoded audio up to the server, and the Sendspin server
-library decodes it back to PCM. The provider feeds that PCM into a clock
+library decodes it back to PCM. This provider feeds that PCM into a clock
 bridge (`aiosendspin.audio.AsrcSourceBridge`) and serves Music Assistant a
 steady 48 kHz / 16-bit / stereo stream.
 
@@ -25,41 +32,25 @@ steady 48 kHz / 16-bit / stereo stream.
   format, so format discovery never blocks stream setup.
 - **Clock bridge.** The client's capture clock (its ADC) and the consuming
   player's clock drift relative to each other, and capture timestamps can be
-  gappy. The bridge holds a configurable target latency (default 500 ms) and
-  folds drift correction into a phase-continuous variable-rate resample
-  (soxr).
+  gappy. The bridge holds a configurable target latency and folds drift
+  correction into a phase-continuous variable-rate resample (soxr).
 - **Silence-hold.** A real line-in goes silent when unplugged, it does not
   stop. This provider mirrors that: when source audio stops flowing (stream
   end, disconnect, client unavailable) the stream keeps playing silence rather
-  than ending, and after 30 seconds without source audio it ends and the queue
-  stops. This intentionally differs from providers like Spotify Connect, which
-  end the stream immediately on pause: those have an upstream transport state
-  to mirror, a line-in does not.
+  than ending. After the source timeout, the stream ends. This intentionally
+  differs from providers like Spotify Connect, which end the stream immediately
+  on pause: those have an upstream transport state to mirror, a line-in does not.
 - **Reconnect recovery.** A reconnect clears the client's start request, so the
-  provider re-sends it and the stream picks up where it left off. Recovery is
-  scoped to reconnects: a client that reports itself unavailable also has its
-  start request cleared, but announces nothing when it returns, so that stream
-  runs out the 30-second timeout instead.
-- **Cold start still fails.** The silence-hold only applies once audio has
-  flowed. A client that never answers the start command is a failed
-  acquisition rather than a quiet input, so the stream raises after 5 seconds
-  instead of playing silence into the 30-second timeout.
+  provider re-sends it. The existing Music Assistant stream remains open with
+  silence and resumes live audio after the client reconnects and rebuilds its
+  latency buffer, provided audio returns before the source timeout. Audio
+  captured during the disconnect is lost. Recovery is scoped to reconnects: a
+  client that reports itself unavailable also has its start request cleared, but
+  announces nothing when it returns, so that stream runs out the source timeout
+  instead.
 - **Server-initiated streaming only.** Per the Sendspin spec, a source client
   must not stream until the server asks. Streaming starts on source selection
   and stops on unselection, so no bandwidth is spent while nobody listens.
-
-## Evaluating audio continuity
-
-The clock bridge logs the corrections it applies at DEBUG under the
-`aiosendspin.audio.source_bridge` logger. Enabling it surfaces discrete events
-(silence inserted for capture gaps, dropped out-of-order or overflow audio,
-underruns, buffer resets) and a periodic occupancy heartbeat that reports the
-buffered latency against the target, plus the applied resample ratio and the
-measured source rate estimate (both in ppm). A healthy source sits near the
-target with the ratio settled at the estimate and no discrete events. The
-estimate is the source clock's true skew; a real ADC reads tens to low
-hundreds of ppm. A saturated ratio means the skew exceeds the bridge's
-correction cap and the stream is degrading to drops or silence padding.
 
 ## Autostart
 
