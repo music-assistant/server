@@ -1882,16 +1882,22 @@ class ProtocolLinkingMixin:
 
         # An output the user explicitly picked owns the audio, so a command that has to
         # start playback on an idle player follows it rather than the priority below.
+        # The stored value survives a relink, so it only counts while it still names one
+        # of this player's own outputs.
         preferred = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred and preferred not in ("auto", "native"):
-            if (
-                (preferred_player := self.mass.players.get_player(str(preferred)))
-                and preferred_player.available_for_playback
-                and required_feature in preferred_player.supported_features
-            ):
-                return preferred_player
+            for linked in player.linked_output_protocols:
+                if linked.output_protocol_id != preferred:
+                    continue
+                if (
+                    (preferred_player := self.mass.players.get_player(str(preferred)))
+                    and preferred_player.available_for_playback
+                    and required_feature in preferred_player.supported_features
+                ):
+                    return preferred_player
+                break
 
         # Otherwise, use the best available linked protocol, ordered by the same
         # priority that regular playback selection applies.
