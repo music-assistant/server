@@ -89,6 +89,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
@@ -177,6 +178,7 @@ class LocalFileSystemProvider(MusicProvider):
     _SYNC_CONCURRENCY: ClassVar[int] = 16
     _sync_tracks: bool = True
     _sync_playlists: bool = True
+    _availability_probe: asyncio.TimerHandle | None = None
 
     def __init__(
         self,
@@ -261,6 +263,10 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        self._cancel_availability_probe()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -1194,7 +1200,45 @@ class LocalFileSystemProvider(MusicProvider):
         if self.available == available:
             return
         self.available = available
+        if available:
+            self._cancel_availability_probe()
+        else:
+            self._schedule_availability_probe()
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the storage backing this provider can be read."""
+        return bool(await isdir(self.base_path))
+
+    def _schedule_availability_probe(self) -> None:
+        """Arm the next reachability check."""
+        self._cancel_availability_probe()
+        self._availability_probe = self.mass.call_later(
+            AVAILABILITY_PROBE_INTERVAL,
+            self._probe_availability,
+            task_id=f"filesystem_availability_probe_{self.instance_id}",
+        )
+
+    def _cancel_availability_probe(self) -> None:
+        """Stop checking for the storage coming back."""
+        if self._availability_probe is not None:
+            self._availability_probe.cancel()
+            self._availability_probe = None
+
+    async def _probe_availability(self) -> None:
+        """Mark the provider available again once its storage can be read."""
+        self._availability_probe = None
+        try:
+            reachable = await self._is_reachable()
+        except Exception as err:
+            # any failure to reach the storage means it is still gone
+            self.logger.debug("%s is still unreachable: %s", self.name, err)
+            reachable = False
+        if reachable:
+            self.logger.info("%s is reachable again", self.name)
+            self._set_available(True)
+            return
+        self._schedule_availability_probe()
 
     async def _process_item_async(
         self,
