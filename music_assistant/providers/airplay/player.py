@@ -429,7 +429,7 @@ class AirPlayPlayer(Player):
             self.update_state()
 
     async def play(self) -> None:
-        """Send PLAY (unpause) command to player."""
+        """Handle PLAY (unpause) command on the player."""
         session = self.stream.session if self.stream and self.stream.running else None
         if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one

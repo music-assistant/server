@@ -1059,7 +1059,7 @@ def _make_playing_leader(player_id: str = "leader") -> AirPlayPlayer:
     leader._attr_playback_state = PlaybackState.PLAYING
     stream = MagicMock()
     stream.running = True
-    stream.session = MagicMock()
+    stream.session = MagicMock(parked=False)
     leader.stream = stream
     return leader
 
@@ -1073,7 +1073,7 @@ def _attach_running_session(player: AirPlayPlayer, sync_clients: list[AirPlayPla
     """Attach a mock running stream whose session carries the given members."""
     stream = MagicMock()
     stream.running = True
-    stream.session = MagicMock()
+    stream.session = MagicMock(parked=False)
     stream.session.sync_clients = sync_clients
     player.stream = stream
 
