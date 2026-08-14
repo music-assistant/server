@@ -255,12 +255,16 @@ async def test_fill_error_propagation() -> None:
 
     assert buf.has_error
 
-    # consumer should receive the valid chunk and get a clean EOF
+    # consumer should receive the valid chunk before the source error surfaces.
     result: list[bytes] = []
-    async for chunk in buf.get_raw_stream():
-        result.append(chunk)
-    assert len(result) == 1
-    assert result[0] == ONE_SECOND_CHUNK
+
+    async def _consume() -> None:
+        async for chunk in buf.get_raw_stream():
+            result.append(chunk)
+
+    with pytest.raises(RuntimeError, match="test error"):
+        await _consume()
+    assert result == [ONE_SECOND_CHUNK]
 
 
 @pytest.mark.asyncio

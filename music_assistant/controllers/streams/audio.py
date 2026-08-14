@@ -2350,6 +2350,33 @@ class StreamsAudio:
                     del crossfade_buffer[:pcm_sample_size]
                     await asyncio.sleep(0)
 
+            # An item stream can yield buffered audio and then report a source error. Do not let that
+            # swallowed error look like a naturally completed item or flow stream. Keep the existing
+            # zero-audio skip behavior below, which allows the flow to try the next queue item.
+            if first_chunk_received and queue_track.streamdetails.stream_error:
+                if _superseded():
+                    return
+                # Only remove the entry we appended above. A newer producer may have replaced the
+                # shared log while this source stream was awaiting data.
+                if (
+                    pq_data.flow_mode_stream_log
+                    and pq_data.flow_mode_stream_log[-1] is play_log_entry
+                ):
+                    pq_data.flow_mode_stream_log.pop()
+                self.logger.warning(
+                    "Queue flow for %s stopped after a stream error on %s (%s)",
+                    queue.display_name,
+                    queue_track.name,
+                    queue_track.streamdetails.uri,
+                )
+                # The previous track's tail is valid audio held back for a possible crossfade.
+                # Flush it, but never flush the failed track's partial crossfade buffer.
+                if last_fadeout_part:
+                    for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
+                        yield pcm_slice
+                        await asyncio.sleep(0)
+                return
+
             #### HANDLE END OF TRACK
             if not first_chunk_received:
                 self.logger.warning(
