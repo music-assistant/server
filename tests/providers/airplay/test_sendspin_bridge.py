@@ -724,12 +724,10 @@ def _commanded_instant(stream: MagicMock) -> int:
 
 async def test_anchor_floors_at_the_join_headroom() -> None:
     """
-    A Sendspin lead shorter than the binary needs is raised to the join floor.
+    A Sendspin lead shorter than the join floor is raised to it.
 
-    The binary verifies the receiver's clock before it will seat an anchor and
-    gives up on that verification shortly before the commanded instant, so an
-    anchor inside AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS leaves the device seating on
-    an unverified clock and landing audibly behind the group.
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS is the least the anchor may sit ahead of
+    now, so a shorter lead is floored rather than honoured.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     stream = _make_anchor_stream()
@@ -784,6 +782,27 @@ async def test_anchor_follows_the_clock_ready_projection() -> None:
     assert await _anchor(bridge, stream) is True
 
     assert _commanded_instant(stream) == ready_at + AIRPLAY_CLOCK_READY_LEAD_MS
+
+
+async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
+    """
+    A stalled receiver is anchored anyway, unlike a late joiner, and warned about.
+
+    A joiner is dropped because the session plays on without it, while here
+    dropping would stop the speaker, and the binary's stall report is a
+    diagnosis a receiver can still come good from.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream()
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+    _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
+
+    with patch.object(bridge.logger, "warning") as warning:
+        assert await _anchor(bridge, stream) is True
+
+    assert _commanded_instant(stream) == UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
+    assert bridge._started is True
+    assert len([call for call in warning.call_args_list if "PTP clock" in call.args[0]]) == 1
 
 
 async def test_anchor_never_precedes_content_already_scheduled() -> None:

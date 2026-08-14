@@ -35,6 +35,8 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
+from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -628,6 +630,8 @@ def _setup_running_stream(player: AirPlayPlayer) -> AsyncMock:
     """Attach a mock running stream to the player and return the send_cli_command mock."""
     stream = MagicMock()
     stream.running = True
+    # every streaming player has a session; this one is playing, not parked
+    stream.session = MagicMock(parked=False)
     send_cmd = AsyncMock()
     stream.send_cli_command = send_cmd
     player.stream = stream
@@ -881,6 +885,33 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     assert PlayerFeature.PAUSE in airplay_player.supported_features
 
 
+def test_bridged_player_advertises_announcements_only_while_streaming(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A Sendspin-bridged player advertises PLAY_ANNOUNCEMENT only while streaming.
+
+    The bridge's live stream is a regular AirPlayStream the clip mixes into, so
+    the feature stays available then. An idle bridged player must not advertise
+    it - a dedicated announcement session would fight the bridge for the
+    device, so those announcements keep their existing routing.
+    """
+    bridge_manager = cast("AirPlayProvider", airplay_player.provider).bridge_manager
+    with patch.object(bridge_manager, "get_bridge", return_value=None):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    streaming_bridge = MagicMock(owns_airplay_stream=True)
+    with patch.object(bridge_manager, "get_bridge", return_value=streaming_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    idle_bridge = MagicMock(owns_airplay_stream=False)
+    with patch.object(bridge_manager, "get_bridge", return_value=idle_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+        # ... but a configured-yet-idle bridge never hides the feature while the
+        # player runs its own session-backed stream (playing over AirPlay itself)
+        airplay_player.stream = MagicMock(running=True, session=MagicMock())
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+        airplay_player.stream = None
+
+
 @pytest.mark.asyncio
 async def test_single_player_play_sends_action_play(airplay_player: AirPlayPlayer) -> None:
     """An unsynced player resumes its paused stream in place with ACTION=PLAY."""
@@ -1028,7 +1059,7 @@ def _make_playing_leader(player_id: str = "leader") -> AirPlayPlayer:
     leader._attr_playback_state = PlaybackState.PLAYING
     stream = MagicMock()
     stream.running = True
-    stream.session = MagicMock()
+    stream.session = MagicMock(parked=False)
     leader.stream = stream
     return leader
 
@@ -1042,7 +1073,7 @@ def _attach_running_session(player: AirPlayPlayer, sync_clients: list[AirPlayPla
     """Attach a mock running stream whose session carries the given members."""
     stream = MagicMock()
     stream.running = True
-    stream.session = MagicMock()
+    stream.session = MagicMock(parked=False)
     stream.session.sync_clients = sync_clients
     player.stream = stream
 
@@ -1361,6 +1392,26 @@ async def test_set_members_adds_the_child_to_the_running_session() -> None:
     assert leader.group_members == ["leader", "child"]
 
 
+def test_live_session_members_reports_who_the_session_actually_feeds() -> None:
+    """Group membership outlives the session, so only the session itself can answer."""
+    leader = _make_playing_leader()
+    leader._attr_group_members = ["leader", "child"]
+    # the session dropped the child (e.g. its receiver never answered our clock)
+    _attach_running_session(leader, [leader])
+
+    assert leader.live_session_members == ["leader"]
+
+    # no session means nobody is being rendered with, whatever the group says
+    stream = cast("MagicMock", leader.stream)
+    stream.running = False
+    assert leader.live_session_members == []
+    stream.running = True
+    stream.session = None
+    assert leader.live_session_members == []
+    leader.stream = None
+    assert leader.live_session_members == []
+
+
 @pytest.mark.asyncio
 async def test_set_members_warns_when_the_leader_has_no_session(
     caplog: pytest.LogCaptureFixture,
@@ -1378,6 +1429,124 @@ async def test_set_members_warns_when_the_leader_has_no_session(
 
     assert leader.group_members == ["leader", "child"]
     assert "no stream session to join" in caplog.text
+
+
+def _attach_live_stream(player: AirPlayPlayer, session: AirPlayStreamSession) -> MagicMock:
+    """Attach a mock stream that is connected and fed by the given session."""
+    stream = MagicMock()
+    stream.running = True
+    stream.connected = True
+    stream.session = session
+    stream.send_cli_command = AsyncMock(return_value=True)
+    stream.stop = AsyncMock()
+    player.stream = stream
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_play_after_ungrouping_a_parked_group_resumes_via_the_queue() -> None:
+    """
+    Breaking a parked group up leaves the remaining player alone with the park.
+
+    Its binary is held at standby with nothing being fed, so the resume still has
+    to re-anchor through the queue: ACTION=PLAY carries no anchor and would
+    report playback over silence.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    players = _players_mock(leader)
+    players.get_player.side_effect = lambda player_id: {"leader": leader, "child": child}.get(
+        player_id
+    )
+    players.get_active_queue.return_value = MagicMock(queue_id="leader")
+    resume_queue = AsyncMock()
+    cast("MagicMock", leader.mass).player_queues.resume = resume_queue
+
+    await leader.pause()
+    await leader.set_members(player_ids_to_remove=["child"])
+    leader_stream.send_cli_command.reset_mock()
+    await leader.play()
+
+    # the removal stops only the child; the leader keeps its parked session
+    child_stream.stop.assert_awaited_once()
+    leader_stream.stop.assert_not_awaited()
+    assert leader.group_members == []
+    assert session.sync_clients == [leader]
+    assert session.parked is True
+    resume_queue.assert_awaited_once_with("leader", fade_in=False)
+    leader_stream.send_cli_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_leader_stepping_out_alone_keeps_the_session_for_the_others() -> None:
+    """
+    A leader that only removes itself hands the live session to the members left behind.
+
+    The leader is not asked to take the others with it, so tearing the session
+    down here would cut off members that are still supposed to be playing.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    leader._attr_playback_state = PlaybackState.PLAYING
+    child._attr_playback_state = PlaybackState.PLAYING
+    lookup = {"leader": leader, "child": child}
+    for player in (leader, child):
+        players = _players_mock(player)
+        players.get_player.side_effect = lookup.get
+        players.iter_players.return_value = [leader, child]
+
+    await leader.set_members(player_ids_to_remove=["leader"])
+
+    leader_stream.stop.assert_awaited_once()
+    child_stream.stop.assert_not_awaited()
+    assert session.sync_clients == [child]
+    assert leader.group_members == []
+    # nothing claims the remaining member anymore: its caller picks the new leader
+    assert child.synced_to is None
+
+
+@pytest.mark.asyncio
+async def test_ungroup_on_a_sync_leader_dissolves_the_whole_group() -> None:
+    """
+    Ungrouping a sync leader must release its members, not just the leader itself.
+
+    A leader lists itself in group_members, so the default ungroup asks to remove
+    the leader AND every member in one call.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    leader._attr_playback_state = PlaybackState.PLAYING
+    child._attr_playback_state = PlaybackState.PLAYING
+    lookup = {"leader": leader, "child": child}
+    for player in (leader, child):
+        players = _players_mock(player)
+        players.get_player.side_effect = lookup.get
+        players.iter_players.return_value = [leader, child]
+
+    await leader.ungroup()
+
+    assert leader.group_members == []
+    leader_stream.stop.assert_awaited_once()
+    child_stream.stop.assert_awaited_once()
+    assert session.sync_clients == []
 
 
 # --- Device password ---

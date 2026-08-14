@@ -76,6 +76,7 @@ from music_assistant.constants import (
     ATTR_PREVIOUS_VOLUME,
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
+    CONF_ANNOUNCE_TTS_ENGINE,
     CONF_AUTO_PLAY,
     CONF_CACHED_ARP_MAC,
     CONF_ENTRY_MAX_VOLUME,
@@ -102,6 +103,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
+from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
     TaskManager,
     enrich_device_mac_address,
@@ -250,6 +252,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 range=(0, 10),
                 required=False,
                 category="generic",
+            ),
+            *await create_tts_engine_config_entries(
+                self.mass, CONF_ANNOUNCE_TTS_ENGINE, category="announcements"
             ),
         )
 
@@ -3308,10 +3313,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         Pick the new leader for an ad-hoc sync group leadership transfer.
 
-        Prefers a remaining member that supports the protocol the group is currently
-        playing on, so the other members can be regrouped under it; falls back to the
-        first remaining member. The members' own ``can_group_with`` is unusable here
-        because it is empty while they are still synced to the old leader.
+        Prefers a remaining member that can currently be reached on the protocol the
+        group is playing on, so the other members can be regrouped under it; falls back
+        to the first remaining member. The members' own ``can_group_with`` is unusable
+        here because it is empty while they are still synced to the old leader.
 
         :param leader: The current sync leader being removed.
         :param remaining_members: Candidate member player_ids, already filtered for
@@ -3326,10 +3331,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 member = self.get_player(member_id)
                 if member is None:
                     continue
-                if member.provider.domain == active_domain or any(
-                    protocol.protocol_domain == active_domain and protocol.available
-                    for protocol in member.linked_output_protocols
-                ):
+                if active_domain in member.playback_domains:
                     return member_id
         return remaining_members[0]
 
@@ -3785,14 +3787,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             and (protocol_player := self.get_player(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
-            output_protocol = next(
-                (
-                    p
-                    for p in player.linked_output_protocols
-                    if p.output_protocol_id == player.active_output_protocol
-                ),
-                None,
-            )
+            output_protocol = player.get_linked_protocol(player.active_output_protocol)
             if output_protocol is not None:
                 target_player = protocol_player
         if target_player is None:

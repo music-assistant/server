@@ -10,7 +10,7 @@ CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
 CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
-CONF_ALLOW_UNENCRYPTED = "allow_unencrypted"
+CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
 CONF_MIN_PIN_LENGTH = "min_pin_length"
 DEFAULT_MIN_PIN_LENGTH = 4
 

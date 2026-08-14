@@ -265,6 +265,17 @@ class MusicProvider(Provider):
         """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station.
+
+        Only called for a Radio with `is_dynamic` set. Every call returns a new batch;
+        there is no stable listing and no pagination.
+
+        :param prov_radio_id: The provider's ID of the radio station.
+        """
+        raise NotImplementedError
+
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
@@ -1471,7 +1482,21 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif self._library_item_needs_update(library_item, prov_item):
+                    elif prov_item.is_dynamic and (
+                        not library_item.is_dynamic
+                        or prov_item.name != library_item.name
+                        or prov_item.metadata.images != library_item.metadata.images
+                    ):
+                        # must overwrite: merging keeps mappings that serve the wrong tracks
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True  # overwrite re-inserts the rows
+                        library_item = await self.mass.music.radio.update_item_in_library(
+                            library_item.item_id, prov_item, overwrite=True
+                        )
+                    elif self._library_item_needs_update(library_item, prov_item) or (
+                        library_item.is_dynamic and not prov_item.is_dynamic
+                    ):
+                        # a station leaving dynamic mode is no longer provider-owned, so merge
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )

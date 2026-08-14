@@ -22,12 +22,15 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
+    CLIP_STREAMDETAILS_EXPIRATION,
+    DEFAULT_LLM_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
@@ -43,18 +46,19 @@ class DummyRenderer(AIRadioRenderMixin):
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
         self._sessions: dict[str, Any] = {}
-        self._stations: dict[str, dict[str, Any]] = {
-            "st": {"id": "st", "general": {"instructions": "be warm"}}
-        }
+        self._hosts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
+        self.tts_options: list[dict[str, Any] | None] = []
         self.weather_calls = 0
         self.fail_generation = False
 
     def _configured_now(self) -> Any:
         return __import__("datetime").datetime(2026, 7, 30, 18, 30)
 
-    async def _generate_text(self, station: dict[str, Any], prompt: str, web_mode: str) -> str:
+    async def _generate_text(
+        self, instructions: str, prompt: str, web_mode: str, language: str | None = None
+    ) -> str:
         # a real suspension point so concurrent callers actually interleave under
         # asyncio.gather, otherwise the lock in get_stream_details is never exercised
         await asyncio.sleep(0)
@@ -63,12 +67,19 @@ class DummyRenderer(AIRadioRenderMixin):
         self.llm_prompts.append(prompt)
         return "Good evening, it is warm out."
 
-    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+    async def _prepare_weather_tokens(self) -> dict[str, str]:
         self.weather_calls += 1
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
-    async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+    async def _render_tts_media(
+        self,
+        text: str,
+        engine_uid: str | None = None,
+        language: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[str, StreamType, AudioFormat]:
         self.tts_texts.append(text)
+        self.tts_options.append(options)
         return (
             f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
             StreamType.HTTP,
@@ -172,8 +183,8 @@ async def test_render_resolves_deferred_placeholders_at_render_time() -> None:
     assert streamdetails.allow_seek is False
 
 
-async def test_render_caches_the_script_and_remints_the_url() -> None:
-    """A second render reuses the stored script but mints a fresh URL."""
+async def test_render_caches_the_script_and_the_minted_media() -> None:
+    """A second render within the cache window reuses both the stored script and media."""
     renderer = DummyRenderer()
     item = _clip_item("sess_001")
     signals = _attach_queue(renderer, [item])
@@ -182,11 +193,8 @@ async def test_render_caches_the_script_and_remints_the_url() -> None:
     second = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert len(renderer.llm_prompts) == 1
-    assert renderer.tts_texts == [
-        "Good evening, it is warm out.",
-        "Good evening, it is warm out.",
-    ]
-    assert first.path != second.path
+    assert renderer.tts_texts == ["Good evening, it is warm out."]
+    assert first.path == second.path
     assert item.extra_attributes[ATTR_RENDERED_TEXT] == "Good evening, it is warm out."
     assert signals == [True]
 
@@ -202,6 +210,134 @@ async def test_concurrent_renders_call_the_llm_once() -> None:
     )
 
     assert len(renderer.llm_prompts) == 1
+
+
+async def test_concurrent_renders_mint_the_clip_only_once() -> None:
+    """Three simultaneous requests for one clip share a single minted TTS render."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    results = await asyncio.gather(
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+    )
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once()
+    assert len({result.path for result in results}) == 1
+
+
+async def test_cached_media_remints_once_it_expires() -> None:
+    """A render requested after the cache window elapses mints a fresh clip."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    cached = cast("Any", renderer)._media_cache["sess_001"]
+    cached.minted_at -= CLIP_STREAMDETAILS_EXPIRATION + 1
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    assert engine.provider.get_tts_message.await_count == 2
+
+
+async def test_a_late_cache_hit_expires_with_the_url_it_serves() -> None:
+    """A hit late in the window hands out the url's remaining life, not a fresh full window."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    cached = cast("Any", renderer)._media_cache["sess_001"]
+    cached.minted_at -= 45
+
+    late = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    assert engine.provider.get_tts_message.await_count == 1
+    assert 14 <= late.expiration <= 15
+
+
+async def test_a_cache_hit_with_no_useful_life_left_remints() -> None:
+    """A hit in the last seconds of the window mints again instead of serving a dying url."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    cached = cast("Any", renderer)._media_cache["sess_001"]
+    cached.minted_at -= CLIP_STREAMDETAILS_EXPIRATION - 2
+
+    fresh = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    assert engine.provider.get_tts_message.await_count == 2
+    assert fresh.expiration == CLIP_STREAMDETAILS_EXPIRATION
+
+
+async def test_expired_cache_entries_are_pruned_on_the_next_mint() -> None:
+    """Minting a clip drops the entries whose urls died, so the cache cannot grow forever."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001"), _clip_item("sess_002")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    media_cache = cast("Any", renderer)._media_cache
+    media_cache["sess_001"].minted_at -= CLIP_STREAMDETAILS_EXPIRATION + 1
+    await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert set(media_cache) == {"sess_002"}
+
+
+async def test_render_tts_media_passes_the_locale_as_language() -> None:
+    """The DJ script's locale reaches the TTS engine as a hyphenated language code."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud", options={}
+    )
+
+
+async def test_render_tts_media_falls_back_without_language_on_rejection() -> None:
+    """An engine that rejects the requested language is retried once without it."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(
+        side_effect=[
+            Exception("unsupported language"),
+            SimpleNamespace(
+                path="http://example.test/api/tts_proxy/abc123.mp3",
+                audio_format=AudioFormat(content_type=ContentType.MP3),
+            ),
+        ]
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.path == "http://example.test/api/tts_proxy/abc123.mp3"
+    assert engine.provider.get_tts_message.await_count == 2
+    first_call, second_call = engine.provider.get_tts_message.await_args_list
+    assert first_call.kwargs["language"] == "en-US"
+    assert second_call.kwargs["language"] is None
+
+
+async def test_render_tts_media_does_not_retry_after_a_timeout_style_failure() -> None:
+    """A structured MusicAssistantError is not a language rejection, so it skips the retry."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(
+        side_effect=MusicAssistantError("engine did not respond within 5s")
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine.provider.get_tts_message.assert_awaited_once()
 
 
 async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
@@ -281,7 +417,13 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
     """A TTS failure surfaces as missing media and is recorded on the owning session."""
 
     class UnspeakableRenderer(DummyRenderer):
-        async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+        async def _render_tts_media(
+            self,
+            text: str,
+            engine_uid: str | None = None,
+            language: str | None = None,
+            options: dict[str, Any] | None = None,
+        ) -> tuple[str, StreamType, AudioFormat]:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
@@ -362,6 +504,211 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
     assert renderer._sessions["sess"].skipped_sections == 0
 
 
+async def test_generate_script_uses_host_instructions() -> None:
+    """The prompt sent to the LLM carries the resolved host's persona instructions."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "instructions": "Persona text.", "tts_engine": ""}}
+    captured: dict[str, str] = {}
+
+    async def fake_generate_text(
+        instructions: str,
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,  # noqa: ARG001
+    ) -> str:
+        captured["instructions"] = instructions
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    text = await renderer._generate_script(item, "p", "clip_1")
+
+    assert text == "script"
+    assert captured["instructions"] == "Persona text."
+
+
+async def test_generate_script_falls_back_to_default_instructions() -> None:
+    """A clip whose host is gone by render time still generates, using the default persona."""
+    renderer = DummyRenderer()
+    renderer._hosts = {}
+    captured: dict[str, str] = {}
+
+    async def fake_generate_text(
+        instructions: str,
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,  # noqa: ARG001
+    ) -> str:
+        # mirrors the empty-to-default fallback the real _generate_text applies (runtime.py)
+        captured["instructions"] = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "gone", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["instructions"] == DEFAULT_LLM_INSTRUCTIONS
+
+
+async def test_generate_script_forwards_the_hosts_language() -> None:
+    """The host's configured language reaches _generate_text, ready to override the locale."""
+    renderer = DummyRenderer()
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "instructions": "Persona text.",
+            "tts_engine": "",
+            "language": "fr_FR",
+        }
+    }
+    captured: dict[str, str | None] = {}
+
+    async def fake_generate_text(
+        instructions: str,  # noqa: ARG001
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,
+    ) -> str:
+        captured["language"] = language
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["language"] == "fr_FR"
+
+
+async def test_generate_script_forwards_empty_language_when_host_has_none() -> None:
+    """A host with no configured language forwards an empty string, not None."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "instructions": "Persona text.", "tts_engine": ""}}
+    captured: dict[str, str | None] = {}
+
+    async def fake_generate_text(
+        instructions: str,  # noqa: ARG001
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,
+    ) -> str:
+        captured["language"] = language
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["language"] == ""
+
+
+async def test_render_tts_media_prefers_the_hosts_language_over_the_locale() -> None:
+    """A host's configured language reaches the TTS engine, overriding the server locale."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "", "language": "fr_FR"}}
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="fr-FR", engine_id="tts.cloud", options={}
+    )
+
+
+async def test_render_tts_media_falls_back_to_locale_when_host_language_is_empty() -> None:
+    """A host with no configured language falls back to the server locale for the TTS call."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": ""}}
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud", options={}
+    )
+
+
+async def test_resolve_deferred_placeholders_skips_weather_without_token() -> None:
+    """A prompt with no weather placeholder never triggers a weather fetch."""
+    renderer = DummyRenderer()
+
+    values = await renderer._resolve_deferred_placeholders("Just plain text, no tokens.")
+
+    assert renderer.weather_calls == 0
+    assert values["<weather_hourly>"] == ""
+    assert values["<weather_daily>"] == ""
+
+
+async def test_mint_clip_media_resolves_host_tts_engine() -> None:
+    """A clip whose host declares a tts_engine reaches _get_tts_engine with that override."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
+
+    await renderer._mint_clip_media(item, "hello world", "clip_1")
+
+    cast("Any", renderer)._get_tts_engine.assert_awaited_once_with("tts.rick_voice")
+
+
+async def test_mint_clip_media_forwards_the_hosts_options() -> None:
+    """A host's configured TTS options are forwarded into the render call."""
+    renderer = DummyRenderer()
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "tts_engine": "",
+            "options": {"voice": "en_US-lessac-medium", "length_scale": 1.2},
+        }
+    }
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
+
+    await renderer._mint_clip_media(item, "hello world", "clip_1")
+
+    assert renderer.tts_options == [{"voice": "en_US-lessac-medium", "length_scale": 1.2}]
+
+
+async def test_mint_clip_media_sends_no_options_for_a_host_without_any() -> None:
+    """A host with no configured options forwards an empty dict, not None."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": ""}}
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
+
+    await renderer._mint_clip_media(item, "hello world", "clip_1")
+
+    assert renderer.tts_options == [{}]
+
+
+async def test_render_tts_media_forwards_the_hosts_tts_options() -> None:
+    """A host's configured TTS options reach the engine's get_tts_message call."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "tts_engine": "",
+            "options": {"voice": "en_US-lessac-medium", "length_scale": 1.2},
+        }
+    }
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.",
+        language="en-US",
+        engine_id="tts.cloud",
+        options={"voice": "en_US-lessac-medium", "length_scale": 1.2},
+    )
+
+
 async def test_render_tts_media_streams_a_url_over_http() -> None:
     """A TTS engine returning a proxy URL yields an HTTP stream with the MP3 default format."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
@@ -373,7 +720,9 @@ async def test_render_tts_media_streams_a_url_over_http() -> None:
     assert audio_format.content_type == ContentType.MP3
     engine = cast("Any", renderer)._get_tts_engine.return_value
     # the provider-scoped engine.id, never engine.uid, and never omitted
-    engine.provider.get_tts_message.assert_awaited_once_with("hello world", engine_id="tts.cloud")
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "hello world", language=None, engine_id="tts.cloud", options=None
+    )
 
 
 async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -> None:
@@ -413,9 +762,7 @@ async def test_render_tts_media_gives_up_on_a_stalled_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stalled TTS engine fails the clip instead of pinning the render path."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.rendering.TTS_QUERY_TIMEOUT_SECONDS", 0.01
-    )
+    monkeypatch.setattr("music_assistant.helpers.tts.TTS_QUERY_TIMEOUT_SECONDS", 0.01)
 
     async def _answers_too_late(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         await asyncio.sleep(5)

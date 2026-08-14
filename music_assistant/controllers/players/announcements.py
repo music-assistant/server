@@ -32,6 +32,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    CONF_ANNOUNCE_TTS_ENGINE,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
@@ -41,6 +42,16 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.announcements import MAX_CLIP_SECONDS
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.plugin_engines import (
+    engine_display_name,
+    get_tts_engines,
+    resolve_tts_engine,
+    select_core_tts_engine,
+)
+from music_assistant.helpers.tts import (
+    query_tts_engine_with_language_fallback,
+    resolve_tts_stream_path,
+)
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.player import Player
 
@@ -51,6 +62,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant import MusicAssistant
+
+# the caller waits for this command and it holds the player's playback lock while it runs,
+# so a wedged engine must give up well before the generic (background) engine timeout
+ANNOUNCEMENT_TTS_TIMEOUT = 30
 
 
 class AnnouncementsMixin:
@@ -76,6 +91,7 @@ class AnnouncementsMixin:
     if TYPE_CHECKING:
         mass: MusicAssistant
         logger: logging.Logger
+        domain: str
         _players: dict[str, Player]
 
         def get_player(  # noqa: D102
@@ -143,23 +159,41 @@ class AnnouncementsMixin:
     async def play_announcement(
         self,
         player_id: str,
-        url: str,
+        url: str | None = None,
         pre_announce: bool | None = None,
         volume_level: int | None = None,
         pre_announce_url: str | None = None,
+        message: str | None = None,
+        tts_engine: str | None = None,
+        language: str | None = None,
     ) -> None:
         """
-        Handle playback of an announcement (url) on given player.
+        Handle playback of an announcement on given player.
+
+        Provide either a url to play or a message to speak, not both.
 
         :param player_id: Player ID of the player to handle the command.
         :param url: URL of the announcement to play.
         :param pre_announce: Optional bool if pre-announce should be used.
         :param volume_level: Optional volume level to set for the announcement.
         :param pre_announce_url: Optional custom URL to use for the pre-announce chime.
+        :param message: Text to speak as the announcement, rendered by a TTS engine.
+        :param tts_engine: Optional uid of the TTS engine to speak the message,
+            defaults to the engine configured on the player controller.
+        :param language: Optional language code to speak the message in (e.g. 'nl-NL'),
+            omit to let the engine speak in the language it is configured for.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        if not url.startswith("http"):
+        if not url and not message:
+            raise PlayerCommandFailed("Either a url or a message is required.")
+        if url and message:
+            raise PlayerCommandFailed("Provide either a url or a message, not both.")
+        if tts_engine and not message:
+            raise PlayerCommandFailed("A tts_engine can only be used to speak a message.")
+        if language and not message:
+            raise PlayerCommandFailed("A language can only be used to speak a message.")
+        if url and not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         if (
             pre_announce
@@ -167,8 +201,14 @@ class AnnouncementsMixin:
             and not validate_announcement_chime_url(pre_announce_url)
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
+        # a spoken message is rendered up front so everything below - including each member of
+        # a group - plays the resulting audio instead of speaking the text again
+        is_speech = bool(message)
+        if message:
+            url = await self._render_announcement_message(message, tts_engine, language)
+        assert url is not None  # for type checking
         # determine pre-announce from (group)player config
-        if pre_announce is None and "tts" in url:
+        if pre_announce is None and (is_speech or "tts" in url):
             conf_pre_announce = self.mass.config.get_raw_player_config_value(
                 player_id,
                 CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
@@ -226,16 +266,9 @@ class AnnouncementsMixin:
                 pre_announce,
                 url,
             )
-            # determine if the player has native announcements support
-            # or if any linked protocol has announcement support
-            native_announce_support = False
-            if announce_player := self._get_control_target(
-                player,
-                required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
-                require_active=False,
-            ):
-                native_announce_support = True
-            else:
+            announce_player = self._resolve_announce_player(player)
+            native_announce_support = announce_player is not None
+            if announce_player is None:
                 announce_player = player
             # create a PlayerMedia object for the announcement so
             # we can send a regular play-media call downstream
@@ -267,6 +300,14 @@ class AnnouncementsMixin:
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
             await self.mass.streams.announcement_renderer.unregister(player_id, render)
+
+    @api_command("players/tts_engines", required_scope=Scope.PLAYERS_CONTROL)
+    async def get_announcement_tts_engines(self) -> list[dict[str, str]]:
+        """Return the TTS engines that can speak an announcement."""
+        return [
+            {"uid": engine.uid, "name": engine_display_name(engine)}
+            for engine in await get_tts_engines(self.mass)
+        ]
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
         """
@@ -321,6 +362,80 @@ class AnnouncementsMixin:
             )
             volume_level = min(int(announce_volume_max), volume_level)
         return None if volume_level is None else int(volume_level)
+
+    def _resolve_announce_player(self, player: Player) -> Player | None:
+        """
+        Return the player (or linked protocol) that plays an announcement natively.
+
+        Returns None when nothing in the chain announces natively, so the caller has to
+        fall back to the default implementation.
+
+        :param player: The player the announcement is played on.
+        """
+        if announce_player := self._get_control_target(
+            player,
+            required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
+            require_active=True,
+        ):
+            # The output that is ACTIVELY rendering can announce: the
+            # announcement rides the same audio path as the music (e.g. a
+            # Sonos playing through its AirPlay child gets the clip mixed
+            # into that live stream, in sync with the rest of the group)
+            # instead of a second mechanism firing beside the playback.
+            return announce_player
+        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+            # Not playing through an announce-capable output: the player's
+            # own native support (e.g. Sonos audioClip, which overlays the
+            # clip on whatever source is playing) is the next-best path.
+            return player
+        if player.state.playback_state != PlaybackState.PLAYING:
+            # An idle player may announce through any linked protocol. A
+            # PLAYING player deliberately gets no such fallback: routing to
+            # an idle linked protocol (e.g. the AirPlay child of a WiiM
+            # playing natively) would seize the device from the active
+            # output, with nothing restoring that playback afterwards.
+            return self._get_control_target(
+                player,
+                required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
+                require_active=False,
+            )
+        return None
+
+    async def _render_announcement_message(
+        self, message: str, tts_engine: str | None, language: str | None
+    ) -> str:
+        """
+        Speak a message through a TTS engine and return the url of the resulting audio.
+
+        :param message: The text to speak.
+        :param tts_engine: Optional uid of the engine to use, defaults to the configured one.
+        :param language: Optional language to speak the message in, omit to let the
+            engine speak in the language it is configured for.
+        """
+        if tts_engine:
+            engine = await resolve_tts_engine(self.mass, tts_engine)
+            if engine is None:
+                raise PlayerCommandFailed(f"TTS engine '{tts_engine}' is not available.")
+        else:
+            engine = await select_core_tts_engine(self.mass, self.domain, CONF_ANNOUNCE_TTS_ENGINE)
+            if engine is None:
+                raise PlayerCommandFailed("No text-to-speech engine is available.")
+        stream_details = await query_tts_engine_with_language_fallback(
+            engine,
+            message,
+            language,
+            timeout=ANNOUNCEMENT_TTS_TIMEOUT,
+            logger=self.logger,
+        )
+        path, _ = await resolve_tts_stream_path(engine, stream_details)
+        if not path.startswith("http"):
+            # a group announcement is forwarded to each member through this same command,
+            # whose url guard only accepts http - so a clip rendered to disk never gets past it
+            raise PlayerCommandFailed(
+                f"TTS engine '{engine.uid}' rendered the message to a local file. "
+                "Announcements need an engine that serves its audio over http."
+            )
+        return path
 
     async def _play_native_announcement(
         self,

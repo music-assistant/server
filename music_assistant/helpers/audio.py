@@ -255,6 +255,32 @@ def create_wave_header(
     return file.getvalue()
 
 
+def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
+    """
+    Generate a wave header for a stream whose length is not known up front.
+
+    :param audio_format: The PCM format the audio behind the header is in.
+    """
+    channels = audio_format.channels
+    sample_rate = audio_format.sample_rate
+    bits_per_sample = audio_format.bit_depth
+    byte_rate = sample_rate * channels * (bits_per_sample // 8)
+    block_align = channels * (bits_per_sample // 8)
+    # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
+    # length fields don't cut the stream off (create_wave_header hardcodes ~6.7h).
+    return (
+        b"RIFF"
+        + struct.pack("<L", 0xFFFFFFFF)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack(
+            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
+        )
+        + b"data"
+        + struct.pack("<L", 0xFFFFFFFF)
+    )
+
+
 def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
     """
     Parse metadata from HLS EXTINF line.

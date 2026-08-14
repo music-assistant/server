@@ -69,6 +69,7 @@ CLI_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
 CLI_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
 CLI_ERROR_START_FAILED: Final[str] = "start_failed"
 CLI_ERROR_FLUSH_FAILED: Final[str] = "flush_failed"
+CLI_ERROR_ANNOUNCE_FAILED: Final[str] = "announce_failed"
 
 _CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
 _CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
@@ -106,7 +107,9 @@ class AirPlayStream:
     # which a START would anchor as if it were the new first sample.
     audio_pending_ms: int = 0
 
-    def __init__(self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None) -> None:
+    def __init__(  # noqa: PLR0915
+        self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None
+    ) -> None:
         """
         Initialize AirPlay stream.
 
@@ -164,6 +167,16 @@ class AirPlayStream:
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
         self._start_error: CliError | None = None
+        # The binary's answers to an ANNOUNCE arm: announce_started carries the
+        # actual audible instant plus clip duration, a reported announce failure
+        # fills the error slot instead (each answer clears the other), and
+        # announce_done is set once the clip is fully mixed - with the cancelled
+        # flag when it was cut short (or never played at all).
+        self._announce_started = asyncio.Event()
+        self._announce_done = asyncio.Event()
+        self._announce_ack: tuple[int, int] | None = None
+        self._announce_error: CliError | None = None
+        self._announce_done_cancelled = False
         # Whether the last commanded START was a late-join start: routes the
         # post-commit correction log level (a corrected join is the routine
         # landing path, a corrected origin start is a loud signal).
@@ -181,7 +194,14 @@ class AirPlayStream:
         # clock_ready): either it projected when the clock becomes usable, or it
         # reported that there is nothing to wait for. The projected instant
         # (unix ms) stays 0 in the latter case, and the readiness below says
-        # which of the reasons it was.
+        # which of the reasons it was. Never re-armed: the binary restarts this
+        # reporting on every FLUSH and START, but the re-armed report waits on
+        # its audio loop, which the flush ack ordinarily beats, so a warm
+        # re-anchor plans against what the previous cycle latched here - which
+        # still holds, a flush leaving the receiver's own clock undisturbed.
+        # Clearing it per cycle would cost a silent receiver its stall verdict:
+        # the binary restarts a five-second stall window at each re-arm, so the
+        # wait below could only ever time out to UNREPORTED.
         self._clock_ready = asyncio.Event()
         self._clock_ready_at_unix_ms: int = 0
         self._clock_readiness: ClockReadiness = ClockReadiness.UNREPORTED
@@ -213,9 +233,10 @@ class AirPlayStream:
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
         # Minimum lead (ms) a warm commanded START needs for exact placement.
-        # Nonzero on the Apple splice timeline, where the receiver's queued
-        # audio plays out before the new content can begin; a warm group
-        # anchor must sit beyond the largest member value. 0 = no constraint.
+        # Nonzero on the splice timeline, the default for every native AirPlay 2
+        # session, where the receiver's queued audio plays out before the new
+        # content can begin; a warm group anchor must sit beyond the largest
+        # member value. 0 = no constraint.
         self.warm_lead_ms: int = 0
         # Audible instant (unix ms) of the delivery head frozen by the latest
         # warm flush, from the flushed ack (0 = none/no constraint). The warm
@@ -332,7 +353,7 @@ class AirPlayStream:
         await self._send_current_volume()
         self.mass.call_later(2, self._send_current_volume)
         # settle artwork and the position on top of the identity push above
-        self.player._on_player_media_updated()
+        self.player.on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
         """
@@ -409,9 +430,12 @@ class AirPlayStream:
         """
         Flush the live stream in place and wait for the binary's acknowledgement.
 
-        Sends ``ACTION=FLUSH`` — the binary stops sending audio, flushes the
-        receiver, discards its input ring and drains stdin, then reports
-        ``[STATUS] flushed`` while keeping the connection and stdin reader alive.
+        Sends ``ACTION=FLUSH`` — the binary stops sending content, discards its
+        input ring and drains stdin, then reports ``[STATUS] flushed`` while
+        keeping the connection and stdin reader alive. The receiver is not asked
+        to discard on the splice timeline: its queued audio plays out and the
+        next START splices onto the same line, so a warm anchor has to clear
+        :attr:`warm_lead_ms` and :attr:`flushed_head_unix_ms`.
         The caller must have stopped feeding old audio before calling this; what
         it already wrote is seen through to the binary here, and stdin is held
         quiet until the flush is acknowledged, so the drain removes exactly the
@@ -463,6 +487,76 @@ class AirPlayStream:
             )
             return False
         return True
+
+    async def announce(self, file_path: str, at_unix_ms: int, duck_db: float) -> bool:
+        """
+        Arm the binary's native announcement mixer with a clip file.
+
+        The clip is mixed over the outgoing music with the music ducked
+        underneath - no flush, no re-anchor, the group timeline is untouched.
+        The binary requires an anchored, playing stream to accept the arm.
+
+        :param file_path: Raw headerless PCM clip in exactly this stream's
+            stdin format.
+        :param at_unix_ms: Unix epoch ms at which the clip must be audible
+            (0 = earliest feasible).
+        :param duck_db: Music gain in dB while the clip plays (<= -60 mutes).
+        :return: True when the command was delivered; the binary then answers
+            with announce_started/announce_done (or a reported announce
+            failure), awaited via :meth:`wait_announce_started` and
+            :meth:`wait_announce_done`.
+        """
+        if not self.running or not self.connected:
+            return False
+        self._arm_announce_answer()
+        return await self._write_cli_command(
+            f"ANNOUNCE_FILE={file_path}\n"
+            f"ANNOUNCE_AT_UNIX_MS={at_unix_ms}\n"
+            f"ANNOUNCE_DUCK_DB={duck_db}\n"
+            "ACTION=ANNOUNCE"
+        )
+
+    async def wait_announce_started(self, timeout: float) -> tuple[int, int] | None:
+        """
+        Wait for the binary to commit the armed clip's first sample.
+
+        :param timeout: Seconds to wait for the report.
+        :return: The ACTUAL audible instant (unix ms, possibly corrected later
+            than requested) and the clip duration (ms), either 0 when
+            unreported. None when the arm failed, the clip was cancelled before
+            it played, or nothing arrived in time (an outdated binary ignores
+            the command entirely).
+        """
+        # announce_done can be the only answer (cancelled before the clip ever
+        # played), so the wait watches both events instead of running out its
+        # timeout on a clip that is already settled.
+        waiters = [
+            asyncio.ensure_future(self._announce_started.wait()),
+            asyncio.ensure_future(self._announce_done.wait()),
+        ]
+        try:
+            await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._announce_error is not None or not self._announce_started.is_set():
+            return None
+        return self._announce_ack or (0, 0)
+
+    async def wait_announce_done(self, timeout: float) -> bool:
+        """
+        Wait for the armed clip (and its tail ramp) to be fully mixed.
+
+        :param timeout: Seconds to wait for the report.
+        :return: True for a completed clip; False when it was cancelled, the arm
+            failed, or nothing arrived in time (e.g. the status stream ended on
+            the eof of a queue that ran out mid-clip).
+        """
+        try:
+            await asyncio.wait_for(self._announce_done.wait(), timeout)
+        except TimeoutError:
+            return False
+        return self._announce_error is None and not self._announce_done_cancelled
 
     async def wait_audio_present(self, timeout: float = 5.0) -> bool:
         """
@@ -520,10 +614,10 @@ class AirPlayStream:
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
-            late joiner): the binary then enforces receiver clock readiness and
-            holds its ack until that resolves, so the returned instant is the one
-            the caller must map the joiner's content onto. Group/solo origin
-            starts leave it False.
+            late joiner): the binary holds its ack until its receiver clock
+            verification resolves whenever it arms, so the returned instant is
+            the one the caller must map the joiner's content onto. Group/solo
+            origin starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise.
@@ -587,10 +681,10 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. A join's ack is held back until the receiver clock
-        # verification resolves and therefore gets a much wider window than a
-        # plain start, which acks within the command round-trip. A reported
-        # failure answers the wait immediately.
+        # re-align a group. A join's ack is held back whenever the receiver
+        # clock verification arms, so it gets a much wider window than a plain
+        # start, which acks within the command round-trip. A reported failure
+        # answers the wait immediately.
         ack_timeout = (
             AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
         ) / 1000
@@ -916,8 +1010,9 @@ class AirPlayStream:
             str(self.pcm_format.bit_depth),
         ]
 
-        # The binary owns the playback lead/buffer (2000 ms default, clamped to
-        # the device-reported window); there is no user override for it.
+        # The binary owns the playback lead (2000 ms default, clamped to the
+        # device-reported window) and there is no user override for it; the
+        # receiver queue depth is the one tunable, passed as --latency below.
 
         # The endpoint must follow the same capability decision as the binary:
         # legacy RAOP uses _raop, while native and RAOP-compatible AP2 use _airplay.
@@ -1247,9 +1342,12 @@ class AirPlayStream:
           [STATUS] playing elapsed_ms=<ms>
           [STATUS] paused
           [STATUS] eof
+          [STATUS] announce_started at_unix_ms=<ms> duration_ms=<ms>
+          [STATUS] announce_done [cancelled=1]
           [STATUS] error code=<slug> http=<int> detail="<short text>"
             (auth_required/auth_failed/connect_failed are terminal; the
-             start_failed/flush_failed command slugs answer a pending ack)
+             start_failed/flush_failed/announce_failed command slugs answer
+             a pending ack)
           [ERROR] <message>
         """
         player = self.player
@@ -1420,6 +1518,19 @@ class AirPlayStream:
                 self.flushed_head_unix_ms = 0
             self._flush_error = None
             self._flushed.set()
+        elif "[STATUS] announce_started" in line:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            self._announce_ack = (
+                _status_int(fields, "at_unix_ms"),
+                _status_int(fields, "duration_ms"),
+            )
+            # The started report and a reported announce failure are the two
+            # mutually exclusive answers to one arm, so each clears the other.
+            self._announce_error = None
+            self._announce_started.set()
+        elif "[STATUS] announce_done" in line:
+            self._announce_done_cancelled = "cancelled=1" in line
+            self._announce_done.set()
         elif "[STATUS] audio " in line:
             if "buffered_ms=" in line:
                 try:
@@ -1586,6 +1697,14 @@ class AirPlayStream:
         self._flushed.clear()
         self._flush_error = None
 
+    def _arm_announce_answer(self) -> None:
+        """Clear the slots the binary answers an ANNOUNCE in, so only this one's answer is read."""
+        self._announce_started.clear()
+        self._announce_done.clear()
+        self._announce_ack = None
+        self._announce_error = None
+        self._announce_done_cancelled = False
+
     async def _write_cli_command(self, command: str) -> bool:
         """Write an interactive command regardless of stream teardown state."""
         if not self._cli_proc or self._cli_proc.closed:
@@ -1699,6 +1818,13 @@ class AirPlayStream:
         if error.code == CLI_ERROR_FLUSH_FAILED:
             self._flush_error = error
             self._flushed.set()
+            return
+        if error.code == CLI_ERROR_ANNOUNCE_FAILED:
+            # A rejected arm plays nothing, so both announce waits are answered
+            # at once - nothing else will ever answer them.
+            self._announce_error = error
+            self._announce_started.set()
+            self._announce_done.set()
             return
         self._connect_error = error
         if error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED):

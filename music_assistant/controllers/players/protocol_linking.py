@@ -25,7 +25,6 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
@@ -47,7 +46,7 @@ from music_assistant.helpers.util import (
     is_valid_mac_address,
     normalize_mac_for_matching,
 )
-from music_assistant.models.player import Player
+from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.providers.sync_group.constants import CONF_ALLOWED_MEMBERS
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
 from music_assistant.providers.universal_player.constants import (
@@ -58,6 +57,8 @@ from music_assistant.providers.universal_player.constants import (
 if TYPE_CHECKING:
     from collections.abc import Coroutine
     from typing import Any
+
+    from music_assistant_models.player import OutputProtocol
 
     from music_assistant import MusicAssistant
 
@@ -1273,9 +1274,8 @@ class ProtocolLinkingMixin:
 
         # Add the new link
         updated_protocols.append(
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id=protocol_player.player_id,
-                name=protocol_player.provider.name,
                 protocol_domain=protocol_domain,
                 priority=priority,
                 derived_from=derived_from,
@@ -1445,12 +1445,13 @@ class ProtocolLinkingMixin:
         if not cached_protocol_ids:
             return
 
-        # Add OutputProtocol entries for any cached protocols that aren't currently linked
+        # Add link entries for any cached protocols that aren't currently linked
+        updated_protocols = list(native_player.linked_output_protocols)
         for protocol_id in cached_protocol_ids:
             if protocol_id in linked_protocol_ids:
                 continue  # Already linked
 
-            # Get protocol player config to determine the protocol domain and availability
+            # Get protocol player config to determine the protocol domain
             protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
             if not protocol_config:
                 continue
@@ -1464,26 +1465,16 @@ class ProtocolLinkingMixin:
             protocol_domain = protocol_provider.split("--", maxsplit=1)[0]
 
             # Skip if parent already has a link from this domain
-            existing_domains = {
-                link.protocol_domain for link in native_player.linked_output_protocols
-            }
+            existing_domains = {link.protocol_domain for link in updated_protocols}
             if protocol_domain in existing_domains:
                 continue
-
-            # Get provider name for display
-            provider_name = protocol_domain.title()  # Default fallback
-            if provider := self.mass.get_provider(protocol_domain, return_unavailable=True):
-                provider_name = provider.name
 
             # Get priority for this protocol
             priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
-            # Check if protocol player is available (registered)
-            protocol_player = self.get_player(protocol_id)
-            is_available = protocol_player is not None and protocol_player.available
-
             # Resolve the derived-transport edge from the live player when
             # registered, else from the persisted edge in config
+            protocol_player = self.get_player(protocol_id)
             derived_from = (
                 protocol_player.underlying_player_id
                 if protocol_player
@@ -1492,24 +1483,22 @@ class ProtocolLinkingMixin:
             if derived_from == native_player.player_id:
                 derived_from = "native"
 
-            # Add the OutputProtocol entry
-            native_player.linked_output_protocols.append(
-                OutputProtocol(
+            updated_protocols.append(
+                LinkedOutputProtocol(
                     output_protocol_id=protocol_id,
-                    name=provider_name,
                     protocol_domain=protocol_domain,
                     priority=priority,
-                    is_native=False,
-                    available=is_available,
                     derived_from=derived_from,
                 )
             )
             self.logger.debug(
-                "Recovered cached protocol link %s -> %s (available: %s)",
+                "Recovered cached protocol link %s -> %s",
                 native_player.player_id,
                 protocol_id,
-                is_available,
             )
+
+        if len(updated_protocols) != len(native_player.linked_output_protocols):
+            native_player.set_linked_output_protocols(updated_protocols)
 
     def _cleanup_protocol_links(self, player: Player) -> None:
         """Clean up protocol links when a player is permanently removed."""
@@ -1763,7 +1752,7 @@ class ProtocolLinkingMixin:
                         player.state.name,
                         protocol_player.state.name,
                     )
-                    return protocol_player, linked
+                    return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
 
         # 2. Check for user's preferred output protocol.
         # The value is only stored while it differs from the entry's default, which is computed
@@ -1792,7 +1781,9 @@ class ProtocolLinkingMixin:
                                     player.state.name,
                                     protocol_player.state.name,
                                 )
-                                return protocol_player, linked
+                                return protocol_player, player.get_linked_protocol(
+                                    linked.output_protocol_id
+                                )
                         break
 
         # 3. Use native playback if available
@@ -1812,7 +1803,7 @@ class ProtocolLinkingMixin:
                         player.state.name,
                         protocol_player.state.name,
                     )
-                    return protocol_player, linked
+                    return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
 
         raise PlayerCommandFailed(f"Player {player.state.name} has no available output protocols")
 

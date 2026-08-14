@@ -46,7 +46,7 @@ on:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.5.4"
+  BASE_IMAGE_VERSION_STABLE: "1.6.0"
   BASE_IMAGE_VERSION_BETA: "1.6.0"
   BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
   EXPECTED_APP_SLUG: musicassistant-bot
@@ -1432,6 +1432,7 @@ jobs:
         env:
           CHANNEL: ${{ inputs.channel }}
         run: |
+          dev_folder=""
           case "$CHANNEL" in
             stable)
               folder="music_assistant"
@@ -1441,9 +1442,12 @@ jobs:
               ;;
             nightly)
               folder="music_assistant_nightly"
+              # the dev add-on is built from the nightly image, so it follows this release
+              dev_folder="music_assistant_dev"
               ;;
           esac
           echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"
 
       - name: Update add-on release
         env:
@@ -1465,9 +1469,20 @@ jobs:
             --notes "$RUNNER_TEMP/release-notes.md" \
             --retain 3
 
+      - name: Update dev add-on version
+        if: steps.channel.outputs.dev_folder != ''
+        env:
+          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py set-addon-version \
+            --config "addon-repo/$DEV_FOLDER/config.yaml" \
+            --version "$VERSION"
+
       - name: Commit add-on update
         env:
           ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
+          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
           APP_SLUG: ${{ steps.app.outputs.slug }}
           APP_USER_ID: ${{ steps.app.outputs.user_id }}
           ADDON_BRANCH: ${{ steps.addon_repository.outputs.default_branch }}
@@ -1476,6 +1491,9 @@ jobs:
         run: |
           cd addon-repo
           git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
+          if [ -n "$DEV_FOLDER" ]; then
+            git add "$DEV_FOLDER/config.yaml"
+          fi
           if git diff --cached --quiet; then
             echo "Add-on $ADDON_FOLDER already references $VERSION"
             exit 0
