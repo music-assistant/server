@@ -298,12 +298,12 @@ image costs its own size and no more. Those binary messages carry no request id,
 gateway holds the channel for a whole reply: replies go out one at a time rather than
 interleaving, which a channel that sends one message at a time would do anyway.
 
-Frames on both channels are capped at the channel's `max_message_size`, which is the lower of
+Both channels size their bulk frames to the channel's `max_message_size`, which is the lower of
 our own 256 KiB ceiling and what the peer advertises in its SDP — and libdatachannel assumes
-only 64 KiB when it advertises nothing. An `ma-api` message that does not fit is split into
-`__chunk__` frames (`id`, `seq`, `count`, `b64`) the client reassembles by group id, each piece
-at most 64 KiB and sized down further so its base64 payload and JSON envelope stay under the
-cap.
+only 64 KiB when it advertises nothing. On `http_proxy` that bounds the binary body frames. On
+`ma-api` a message that does not fit is split into `__chunk__` frames (`id`, `seq`, `count`,
+`b64`) the client reassembles by group id, each piece at most 64 KiB and sized down further so
+its base64 payload and JSON envelope stay under the cap.
 
 **Adding a new label** is not backwards compatible by itself: servers from before the routing
 table mistake an unknown label for the API channel, which breaks the entire remote session
