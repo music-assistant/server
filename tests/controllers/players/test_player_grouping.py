@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -503,11 +503,10 @@ def _make_ad_hoc_group(
     mock_mass.players = controller
 
 
-def _airplay_link(protocol_id: str) -> OutputProtocol:
-    """Build an AirPlay link the way production does: without an `available` argument."""
-    return OutputProtocol(
+def _airplay_link(protocol_id: str) -> LinkedOutputProtocol:
+    """Build an AirPlay link to the given protocol player."""
+    return LinkedOutputProtocol(
         output_protocol_id=protocol_id,
-        name="AirPlay",
         protocol_domain="airplay",
         priority=10,
     )
@@ -538,7 +537,6 @@ class TestAdHocLeadershipTransfer:
         assert leader is not None
         member_b = controller.get_player("b")
         assert member_b is not None
-        assert member_b.linked_output_protocols[0].available is True
 
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
 
@@ -556,9 +554,8 @@ class TestAdHocLeadershipTransfer:
         )
         leader.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id=leader_protocol.player_id,
-                    name="Chromecast",
                     protocol_domain="chromecast",
                     priority=30,
                 )

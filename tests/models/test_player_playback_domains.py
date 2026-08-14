@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol
 
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -55,11 +55,8 @@ def _link_protocol(
     parent.set_linked_output_protocols(
         [
             *parent.linked_output_protocols,
-            # no `available` argument: production links protocols without one, so the
-            # flag stays at its dataclass default of True forever
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id=protocol_id,
-                name=domain,
                 protocol_domain=domain,
                 priority=10,
             ),
@@ -103,8 +100,6 @@ class TestPlaybackDomains:
         """Test that a linked protocol whose player went offline is not reported."""
         player = _make_native_player(mock_mass)
         _link_protocol(mock_mass, player, "ap_1", "airplay", available=False)
-        # the link itself still claims to be available; only the live player counts
-        assert player.linked_output_protocols[0].available is True
         assert player.playback_domains == {"sonos"}
 
     def test_linked_protocol_needing_setup_is_left_out(self, mock_mass: MagicMock) -> None:

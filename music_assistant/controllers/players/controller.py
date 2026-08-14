@@ -3787,14 +3787,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             and (protocol_player := self.get_player(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
-            output_protocol = next(
-                (
-                    p
-                    for p in player.linked_output_protocols
-                    if p.output_protocol_id == player.active_output_protocol
-                ),
-                None,
-            )
+            output_protocol = player.get_linked_protocol(player.active_output_protocol)
             if output_protocol is not None:
                 target_player = protocol_player
         if target_player is None:

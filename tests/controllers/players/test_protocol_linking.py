@@ -14,7 +14,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.player import OutputProtocol, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     ATTR_ENABLED,
@@ -27,7 +27,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
@@ -1171,9 +1171,8 @@ class TestSelectBestOutputProtocol:
         # Link DLNA protocol to native player
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_AABBCCDDEEFF",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
                 )
@@ -1244,15 +1243,13 @@ class TestSelectBestOutputProtocol:
         # Link protocols to native player
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_AABBCCDDEEFF",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_AABBCCDDEEFF",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
                 ),
@@ -1349,15 +1346,13 @@ class TestSelectBestOutputProtocol:
         # Link both protocols, AirPlay with the better priority
         universal_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_AABBCCDDEEFF",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_AABBCCDDEEFF",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
                 ),
@@ -1482,23 +1477,19 @@ class TestPlayerGrouping:
         # Link protocol players to native players
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_wiim",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -1589,23 +1580,19 @@ class TestPlayerGrouping:
         # Link AirPlay to Sonos A
         sonos_a.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_wiim",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -1712,37 +1699,29 @@ class TestPlayerGrouping:
         # Link protocols (DLNA has lower priority than AirPlay)
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_sonos",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,  # Lower priority (higher number)
-                    available=True,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,  # Higher priority (lower number)
-                    available=True,
                 ),
             ]
         )
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_wiim",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
-                    available=True,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_wiim",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
             ]
         )
@@ -1802,12 +1781,10 @@ class TestJoinActiveNativeSession:
         """Link an AirPlay protocol player to a native player."""
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id=airplay_id,
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2135,12 +2112,10 @@ class TestSessionBoundNativeGrouping:
         """Link a bridge protocol player to a native player."""
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id=bridge_id,
-                    name="Bridge",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -2335,12 +2310,10 @@ class TestCanGroupWith:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2430,24 +2403,20 @@ class TestCanGroupWith:
 
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_other",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
             ]
         )
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2562,31 +2531,25 @@ class TestCanGroupWith:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_sonos",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
-                    available=True,
                 ),
             ]
         )
 
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_other",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
             ]
         )
@@ -2666,12 +2629,10 @@ class TestNativePlayerProtocolGrouping:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2735,12 +2696,10 @@ class TestNativePlayerProtocolGrouping:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2820,12 +2779,10 @@ class TestProtocolSwitchingDuringPlayback:
             players[bridge_id] = bridge
             players[parent_id].set_linked_output_protocols(
                 [
-                    OutputProtocol(
+                    LinkedOutputProtocol(
                         output_protocol_id=bridge_id,
-                        name="Bridge",
                         protocol_domain="sendspin",
                         priority=40,
-                        available=True,
                     )
                 ]
             )
@@ -2879,12 +2836,10 @@ class TestProtocolSwitchingDuringPlayback:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2942,12 +2897,10 @@ class TestProtocolSwitchingDuringPlayback:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3021,12 +2974,10 @@ class TestProtocolSwitchingDuringPlayback:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3184,12 +3135,10 @@ class TestNativeProtocolPlayerGrouping:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3399,12 +3348,10 @@ class TestFinalSyncedToWithNativeProtocolParent:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3467,12 +3414,10 @@ class TestUngroupTranslation:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3548,12 +3493,10 @@ class TestNativeProtocolDomainPlayerGrouping:
         # Link sendspin protocol to Kantoor
         kantoor.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="sendspin_kantoor",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -3623,12 +3566,10 @@ class TestNativeProtocolDomainPlayerGrouping:
         # Link sendspin protocol to Kantoor
         kantoor.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="sendspin_kantoor",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -3698,12 +3639,10 @@ class TestNativeProtocolDomainPlayerGrouping:
 
         kantoor.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="sendspin_kantoor",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -3832,12 +3771,10 @@ class TestNativeProtocolDomainPlayerGrouping:
 
         mancave.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="spb_mancave",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -7799,9 +7736,8 @@ class TestProtocolParentIdPersistence:
         # Set up linked protocols
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_test",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -7855,9 +7791,8 @@ class TestCleanupProtocolLinks:
 
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_test",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -7924,9 +7859,8 @@ class TestCleanupProtocolLinks:
 
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_live",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -7988,9 +7922,8 @@ class TestCleanupProtocolLinks:
 
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_live",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -8876,15 +8809,13 @@ class TestParentDisableCascade:
         native_player._attr_available = False
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="ap_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_1",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=20,
                 ),
@@ -8934,9 +8865,8 @@ class TestParentDisableCascade:
         native_player._attr_available = False
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="ap_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
