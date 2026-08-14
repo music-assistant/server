@@ -606,7 +606,13 @@ class ChromecastPlayer(Player):
         # surface a media error reported by the receiver (e.g. after a failed LOAD),
         # which otherwise only shows as a silent return to idle
         if status.player_is_idle and status.idle_reason == "ERROR":
-            if not self._media_error_reported and not self._flow_stream_underrun():
+            # a group forwards its status to every member, so only the group
+            # player itself reports the error
+            if (
+                group_player is None
+                and not self._media_error_reported
+                and not self._flow_stream_underrun()
+            ):
                 self._media_error_reported = True
                 self.logger.warning(
                     "%s reported a media playback error for %s",

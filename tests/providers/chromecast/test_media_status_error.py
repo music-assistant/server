@@ -84,6 +84,25 @@ def test_error_logged_again_after_recovery() -> None:
     assert fake.logger.warning.call_count == 2
 
 
+def test_group_error_is_not_logged_by_every_member() -> None:
+    """A group's error reaches all its members, but only the group itself reports it."""
+    group = MagicMock()
+    # a plain spec= mock has no 'cc', which is set in __init__
+    group.__class__ = ChromecastPlayer  # type: ignore[assignment]
+    group.cc.media_controller.status = _error_status()
+    member = _fake_player()
+    member.active_cast_group = "group-uuid"
+    member.mass.players.get_player = MagicMock(return_value=group)
+
+    _handle_media_status(member, _error_status())
+
+    member.logger.warning.assert_not_called()
+    # assert the group status was really processed, so the check above cannot pass
+    # just because the member bailed out before reaching the error handling
+    member.mass.players.get_player.assert_called_once_with("group-uuid")
+    member.update_state.assert_called_once()
+
+
 def test_flow_stream_underrun_is_not_an_error() -> None:
     """An idle ERROR at the end of a fully consumed flow stream is expected, not logged."""
     fake = _fake_player()
