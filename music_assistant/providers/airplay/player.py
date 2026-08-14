@@ -813,7 +813,7 @@ class AirPlayPlayer(Player):
             bit_depth=24,
         )
 
-    def sync_volume_state(self) -> None:
+    def sync_volume_state(self, *, adopt_parent_volume: bool = True) -> None:
         """
         Sync volume and mute from the parent player if needed.
 
@@ -825,13 +825,20 @@ class AirPlayPlayer(Player):
 
         Both controls are resolved against this player as the rendering output, so which
         control is deemed to own them does not depend on the parent already pointing at us.
+
+        :param adopt_parent_volume: Set to False when the volume of the stream about to start
+            was explicitly requested by the caller, so the parent's level does not overwrite
+            it. The mute release always runs: a latch left behind by another control would
+            silence the stream regardless of the level it plays at.
         """
         if not self.protocol_parent_id:
             return
         parent_player = self.mass.players.get_player(self.protocol_parent_id)
         if not parent_player:
             return
-        volume_changed = self._sync_volume_level(parent_player)
+        volume_changed = self._sync_volume_level(
+            parent_player, adopt_parent_volume=adopt_parent_volume
+        )
         mute_changed = self._sync_mute_state(parent_player)
         if volume_changed or mute_changed:
             self.update_state()
@@ -894,8 +901,15 @@ class AirPlayPlayer(Player):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
-    def _sync_volume_level(self, parent_player: Player) -> bool:
-        """Adopt the parent's volume level if it owns this output, return True if changed."""
+    def _sync_volume_level(self, parent_player: Player, *, adopt_parent_volume: bool) -> bool:
+        """
+        Adopt the parent's volume level if it owns this output, return True if changed.
+
+        :param parent_player: The parent player to resolve the volume control against.
+        :param adopt_parent_volume: False to keep our own level where we would otherwise
+            adopt the parent's. The unity gain reset still applies: a control that owns
+            the volume of this output attenuates on the device itself.
+        """
         volume_control = parent_player.volume_control_for_output(self.player_id)
         if volume_control == PLAYER_CONTROL_NATIVE:
             # Native parent volume is on the receiver/amplifier scale.
@@ -909,6 +923,8 @@ class AirPlayPlayer(Player):
                 return False
             self._attr_volume_level = 100
             return True
+        if not adopt_parent_volume:
+            return False
         if parent_player.state.volume_level is None:
             return False
         if parent_player.state.volume_level == 0:
