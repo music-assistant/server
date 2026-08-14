@@ -437,11 +437,11 @@ class AIRadioRenderMixin:
             tags = await async_parse_tags(path, require_duration=True)
         except (InvalidDataError, OSError) as err:
             if any(marker in str(err) for marker in TTS_SERVER_ERROR_MARKERS):
-                # the engine reports no reason (Home Assistant answers a failed render with an
-                # empty 500), so carry what the probe saw or the hint is all the user gets
+                # the engine reports no reason of its own (Home Assistant answers a failed
+                # render with an empty 500), so the probe's message is the only clue there is
                 raise MusicAssistantError(
-                    f"Error during TTS generation: {err}. Does your TTS provider have enough "
-                    "credit? Check the logs of your TTS provider for the reason."
+                    f"{err}. Does your TTS provider have enough credit? "
+                    "Check the logs of your TTS provider for the reason."
                 ) from err
             self.logger.warning("Could not determine AI Radio clip duration: %s", err)
             return None
