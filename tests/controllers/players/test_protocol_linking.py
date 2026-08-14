@@ -1384,19 +1384,13 @@ class TestGetControlTarget:
         Without an active output the fallback picks the highest priority protocol.
 
         An announcement on an idle player reaches this path, so it has to land on the
-        same output that regular playback would have selected rather than on whichever
-        protocol happened to link first.
+        same output that regular playback selection would have chosen.
         """
         controller = PlayerController(mock_mass)
         mock_mass.players = controller
 
         universal_provider = MockProvider("universal_player", mass=mock_mass)
-        universal_player = MockPlayer(
-            universal_provider,
-            "universal_123",
-            "Kantoor",
-            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
-        )
+        universal_player = MockPlayer(universal_provider, "universal_123", "Kantoor")
         universal_player._attr_supported_features = set()
 
         sendspin_player = MockPlayer(
@@ -1439,6 +1433,71 @@ class TestGetControlTarget:
             universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
         )
         assert target == airplay_player
+
+    def test_fallback_follows_preferred_output_protocol(self, mock_mass: MagicMock) -> None:
+        """An explicitly preferred output beats the priority order."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        def _get_raw_player_config_value(
+            _player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
+                return "sendspin_AABBCCDDEEFF"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_get_raw_player_config_value
+        )
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
+        )
+        universal_player._attr_supported_features = set()
+        sendspin_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": sendspin_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        # airplay outranks sendspin, but the user picked sendspin
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                ),
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == sendspin_player
 
     def test_require_active_skips_the_fallback(self, mock_mass: MagicMock) -> None:
         """With require_active there is no fallback to an idle linked protocol."""

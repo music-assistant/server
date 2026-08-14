@@ -451,8 +451,8 @@ class TestProtocolPlayerPreferActive:
         assert player.volume_control == "proto_b"
 
 
-class TestControlProtocolPriority:
-    """Test the domain priority that orders the ambient volume/mute fallback."""
+class TestControlDomainPriority:
+    """Test the protocol domain order that the ambient volume/mute fallback applies."""
 
     def _get_player_lookup(self, players: dict[str, MockPlayer]) -> Any:
         """Create a side_effect that looks up players by ID."""
@@ -462,8 +462,8 @@ class TestControlProtocolPriority:
 
         return _lookup
 
-    def test_prefers_always_reachable_domain_over_link_order(self, mock_mass: MagicMock) -> None:
-        """A domain that takes commands while idle wins from one that linked earlier."""
+    def test_prefers_domain_that_takes_commands_while_idle(self, mock_mass: MagicMock) -> None:
+        """A domain that accepts commands while idle owns the volume."""
         airplay = _create_protocol_player(mock_mass, "airplay_child", {PlayerFeature.VOLUME_SET})
         cast = _create_protocol_player(mock_mass, "cast_child", {PlayerFeature.VOLUME_SET})
         mock_mass.players.get_player = MagicMock(

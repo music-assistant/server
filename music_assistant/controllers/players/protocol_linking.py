@@ -1846,13 +1846,15 @@ class ProtocolLinkingMixin:
         """
         Get the best player(protocol) to send audio-path commands to.
 
-        Prefers the active output protocol, otherwise the best available protocol
-        player that supports the needed feature.
-
-        Note this resolves commands that ride along with the audio (enqueue, pause,
-        announcements), so it deliberately puts the rendering output ahead of the
-        native player. Volume and mute are control-plane instead and resolve through
+        Resolves commands that travel with the audio (enqueue, pause, announcements),
+        so the output that renders the audio outranks the native player. Volume and
+        mute are control-plane instead and resolve through
         :meth:`Player._get_protocol_player_for_feature`, which orders differently.
+
+        :param player: The player the command was issued on.
+        :param required_feature: The feature the resolved target has to support.
+        :param require_active: Only accept the output that is already rendering,
+            instead of falling back to an idle one.
         """
         # If we have an active protocol, use that
         if (
@@ -1877,10 +1879,22 @@ class ProtocolLinkingMixin:
         # if the player natively supports the required feature, use that
         if required_feature in player.supported_features:
             return player
-        # Otherwise, use the best available linked protocol. The same priority as
-        # _select_best_output_protocol is applied, so a command that has to start audio
-        # on an idle player (e.g. an announcement) lands on the output that regular
-        # playback would have picked, instead of on whichever protocol linked first.
+
+        # An output the user explicitly picked owns the audio, so a command that has to
+        # start playback on an idle player follows it rather than the priority below.
+        preferred = self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
+        )
+        if preferred and preferred not in ("auto", "native"):
+            if (
+                (preferred_player := self.mass.players.get_player(str(preferred)))
+                and preferred_player.available_for_playback
+                and required_feature in preferred_player.supported_features
+            ):
+                return preferred_player
+
+        # Otherwise, use the best available linked protocol, ordered by the same
+        # priority that regular playback selection applies.
         for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if (
                 (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
