@@ -173,6 +173,7 @@ class _FakeMass:
         self.player_queues = _FakePlayerQueues()
         self.config = _FakeConfigController()
         self._sendspin_provider = sendspin_provider
+        self._timers: dict[str, asyncio.TimerHandle] = {}
 
     def get_provider(self, domain: str) -> Any:
         if domain == "sendspin":
@@ -183,6 +184,29 @@ class _FakeMass:
         # Mirror the real controller's eager default, which decides whether a task
         # body runs inside the event callback that created it.
         return asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
+
+    def call_later(
+        self,
+        delay: float,
+        target: Callable[..., Any],
+        *args: Any,
+        task_id: str | None = None,
+        **kwargs: Any,
+    ) -> asyncio.TimerHandle:
+        timer_id = task_id or str(id(target))
+        self.cancel_timer(timer_id)
+
+        def run() -> None:
+            self._timers.pop(timer_id, None)
+            self.create_task(target(*args, **kwargs))
+
+        handle = self.loop.call_later(delay, run)
+        self._timers[timer_id] = handle
+        return handle
+
+    def cancel_timer(self, task_id: str) -> None:
+        if (timer := self._timers.pop(task_id, None)) is not None:
+            timer.cancel()
 
 
 class _FakeConfig:

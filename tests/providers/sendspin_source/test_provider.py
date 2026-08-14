@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
@@ -124,18 +124,24 @@ async def test_unselect_stops_and_releases(fake_client: _FakeClient) -> None:
     await provider.on_source_unselected("client-1", "queue-1", "session-1")
     assert fake_client.source_role is not None
     assert fake_client.source_role.stop_requests == 1
-    assert provider._sessions == {}
+    with pytest.raises(AudioError):
+        await _take(provider.get_audio_stream(_stream_details()), 1)
     assert get_players(provider).stopped == []
     # The signal watcher outlives the session, so autostart still works afterwards.
     assert len(fake_client.listeners) == 1
 
 
-async def test_unselect_ignores_stale_session_id(fake_client: _FakeClient) -> None:
+async def test_unselect_ignores_stale_session_id(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A stale unselect callback must not tear down the live session."""
     provider = await make_provider([fake_client])
-    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    await _start_streaming(provider, fake_client, monkeypatch)
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
     await provider.on_source_unselected("client-1", "queue-1", "session-1")
+    assert fake_client.source_role is not None
+    assert fake_client.source_role.stop_requests == 0
+    assert await _take(provider.get_audio_stream(_stream_details()), 1)
     assert len(fake_client.listeners) == 1
 
 
@@ -292,14 +298,13 @@ async def test_reclaim_by_the_same_queue_keeps_the_client_streaming(
 ) -> None:
     """A renderer opening the stream url twice must not cost a stop/start of the source."""
     provider = await make_provider([fake_client])
-    bridge = await _start_streaming(provider, fake_client, monkeypatch)
+    await _start_streaming(provider, fake_client, monkeypatch)
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
     assert fake_client.source_role is not None
     assert fake_client.source_role.stop_requests == 0
     assert fake_client.source_role.start_requests == 1
     assert get_players(provider).stopped == []
-    # The primed bridge carries over, so the replacement request never re-buffers.
-    assert cast("object", provider._sessions["client-1"].bridge) is bridge
+    assert await _take(provider.get_audio_stream(_stream_details()), 1)
 
 
 async def test_reclaim_by_the_same_queue_retires_the_previous_generator(
