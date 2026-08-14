@@ -1333,6 +1333,43 @@ async def test_late_join_floor_wins_over_a_clock_that_is_already_ready() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offset", "expected_note"),
+    [(3.0, "usable in 3.00s"), (-1.0, "became usable 1.00s ago")],
+    ids=["cold", "locked"],
+)
+async def test_late_join_clock_note_reads_in_the_direction_of_the_projection(
+    offset: float,
+    expected_note: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The readiness note counts forward for a cold clock and back for a locked one."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    session.prov.logger = logging.getLogger("test.airplay.session")
+    player = _make_late_joiner()
+    ready_at_unix_ms = int((now + offset) * 1000)
+
+    def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
+        )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        patch.object(session, "_start_client", side_effect=setup_with_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    assert f"receiver clock {expected_note}" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_late_join_falls_back_to_the_floor_without_a_clock_projection() -> None:
     """No projection (NTP timing or a silent receiver) anchors on the floor."""
     # Freeze time so both the test and the code under test agree on `now`.
