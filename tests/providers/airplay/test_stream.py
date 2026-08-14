@@ -2209,10 +2209,10 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     # Nothing is written before the binary has a reader on the command pipe.
     assert operation_order == ["reader", "metadata"]
     # Metadata pushed synchronously on connect...
-    player._on_player_media_updated.assert_called_once_with()
+    player.on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
     deferred_callables = [call.args[1] for call in player.provider.mass.call_later.call_args_list]
-    assert player._on_player_media_updated not in deferred_callables
+    assert player.on_player_media_updated not in deferred_callables
     # The volume resend is still deferred (existing behavior preserved).
     assert player.provider.mass.call_later.call_count == 1
     assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
