@@ -4,11 +4,12 @@ import asyncio
 import hashlib
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from music_assistant_models.enums import ImageType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
@@ -42,6 +43,7 @@ from music_assistant.helpers.images import (
     is_svg_data,
     player_image_url,
 )
+from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
 
 @pytest.fixture
@@ -56,6 +58,26 @@ async def metadata_controller(
     pure helper tests here, which need neither a controller nor a cache database.
     """
     return metadata_controller
+
+
+def _fake_image_provider(instance_id: str, resolved_path: str) -> LocalFileSystemProvider:
+    """
+    Build a bare filesystem provider that resolves any image path to `resolved_path`.
+
+    A real provider instance is used rather than a mock because the image helpers narrow
+    on the concrete provider types before calling `resolve_image`.
+
+    :param instance_id: Instance id to register the provider under.
+    :param resolved_path: Absolute path every image path resolves to.
+    """
+    with patch.object(LocalFileSystemProvider, "__init__", lambda *_a, **_kw: None):
+        provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
+    provider.config = MagicMock(instance_id=instance_id)
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider.logger = MagicMock()
+    provider.available = True
+    provider.resolve_image = AsyncMock(return_value=resolved_path)  # type: ignore[method-assign]
+    return provider
 
 
 async def _wait_for_persisted_image_id(
@@ -613,6 +635,63 @@ async def test_invalidate_image_cache_end_to_end(
     new_palette = await get_palette(mass, image_path, "builtin")
     assert new_palette is not None
     assert new_palette.primary != palette.primary
+
+
+async def test_cached_thumb_survives_an_unavailable_provider(
+    metadata_controller: MetaDataController, tmp_path: Any
+) -> None:
+    """
+    An already-rendered thumbnail is served while its owning provider is unavailable.
+
+    A filesystem provider marks itself unavailable after a single failed scan and only
+    recovers on a later full sync, so art that is already cached must keep being served
+    for the whole of that window.
+    """
+    mass = metadata_controller.mass
+    source_path = tmp_path / "cover.png"
+    Image.new("RGB", (300, 300), (200, 30, 30)).save(str(source_path), "PNG")
+    provider = _fake_image_provider("filesystem_local--abcd1234", str(source_path))
+    mass._providers[provider.instance_id] = provider
+
+    # the relative path is only resolvable through the provider
+    image_id = metadata_controller.compute_image_id(provider.instance_id, "Artist/Album/cover.jpg")
+    request = MagicMock()
+    request.path = f"/imageproxy/{image_id}"
+    request.query = {"size": "256"}
+
+    warm = await metadata_controller.handle_imageproxy(request)
+    assert warm.status == 200
+    assert warm.body
+
+    provider.available = False
+    assert mass.get_provider(provider.instance_id) is None
+
+    cold = await metadata_controller.handle_imageproxy(request)
+    assert cold.status == 200
+    assert cold.body == warm.body
+
+
+async def test_unavailable_provider_is_not_cached_as_a_missing_image(
+    metadata_controller: MetaDataController, tmp_path: Any
+) -> None:
+    """An unavailable provider is not remembered as a failed source, so recovery is instant."""
+    mass = metadata_controller.mass
+    source_path = tmp_path / "cover.png"
+    Image.new("RGB", (300, 300), (30, 30, 200)).save(str(source_path), "PNG")
+    provider = _fake_image_provider("filesystem_local--efgh5678", str(source_path))
+    provider.available = False
+    mass._providers[provider.instance_id] = provider
+
+    image_path = "Artist/Album/never-fetched.jpg"
+    with pytest.raises(ProviderUnavailableError):
+        await get_image_thumb(mass, image_path, 256, provider.instance_id)
+
+    cache_key = create_thumb_hash(provider.instance_id, image_path)
+    assert cache_key not in images_helper._failed_sources
+
+    # the provider coming back is enough; nothing has to expire first
+    provider.available = True
+    assert await get_image_thumb(mass, image_path, 256, provider.instance_id)
 
 
 def test_player_image_url_forces_jpeg_on_imageproxy_urls() -> None:

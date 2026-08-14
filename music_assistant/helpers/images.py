@@ -24,7 +24,11 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+)
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
@@ -325,6 +329,9 @@ async def get_image_data(
         _depth,
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
+        # the failure reaches every waiter below, and whoever serves the image reports it
+        # once with the path it was asked for
+        log_exceptions=False,
     )
     return await join_task(task)
 
@@ -480,6 +487,12 @@ async def _fetch_source_image(
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data, True
+    if prov is None:
+        # every provider-independent route is exhausted, so an absent provider means the
+        # path was never resolved rather than that the image is gone. Reporting it as
+        # missing would cache that verdict and keep serving it after the provider returns.
+        msg = f"{provider} is not available to resolve image {path_or_url}"
+        raise ProviderUnavailableError(msg)
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
 
@@ -634,6 +647,8 @@ async def _get_image_thumb(
         flatten_transparency,
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
+        # as above: reported once by the caller that serves the image
+        log_exceptions=False,
     )
     thumb_data = await join_task(task)
     _put_in_memory_cache(cache_filename, thumb_data)

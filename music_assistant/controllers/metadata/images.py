@@ -20,7 +20,7 @@ import aiofiles
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -419,8 +419,6 @@ class ImageProxyMixin:
         :param image_format: Requested output format (jpg/jpeg/png/svg).
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
