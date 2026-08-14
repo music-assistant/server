@@ -48,8 +48,8 @@ HTTP_PROXY_CONCURRENCY = 6
 # roughly a third larger, so the channel's negotiated limit can size it down further.
 DATA_CHANNEL_CHUNK_SIZE = 64 * 1024
 
-# Room a chunk frame's JSON envelope takes around its base64 payload: the fixed keys plus the
-# group, sequence and count numbers.
+# Room a chunk frame's JSON envelope takes around its base64 payload: 60 bytes of fixed keys
+# plus the group, sequence and count numbers.
 DATA_CHANNEL_CHUNK_OVERHEAD = 128
 
 # Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,

@@ -298,7 +298,7 @@ image costs its own size and no more. Those binary messages carry no request id,
 gateway holds the channel for a whole reply: replies go out one at a time rather than
 interleaving, which a channel that sends one message at a time would do anyway.
 
-Both channels size their bulk frames to the channel's `max_message_size`, which is the lower of
+`ma-api` and `http_proxy` size their bulk frames to the channel's `max_message_size`, the lower of
 our own 256 KiB ceiling and what the peer advertises in its SDP — and libdatachannel assumes
 only 64 KiB when it advertises nothing. On `http_proxy` that bounds the binary body frames. On
 `ma-api` a message that does not fit is split into `__chunk__` frames (`id`, `seq`, `count`,

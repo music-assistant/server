@@ -1708,7 +1708,7 @@ async def test_send_chunked_keeps_the_framing_released_clients_expect(
     ]
     # a full piece has always serialised well past 64 KiB, which only a peer advertising no
     # limit of its own would reject
-    assert len(channel.sent[0]) == 87447
+    assert len(channel.sent[0].encode()) == 87447
 
 
 async def test_send_chunked_honours_the_negotiated_message_limit(
