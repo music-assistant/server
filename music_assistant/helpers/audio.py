@@ -789,16 +789,20 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
 def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     """Parse Loudness measurement from ffmpeg stderr output."""
     stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
-    if "[Parsed_loudnorm_0 @" not in stderr_data:
+    # the report is the last thing the filter logs, and ffmpeg prints it as a block of its
+    # own below the marker line, so the object is delimited rather than on a known line
+    marker = stderr_data.rfind("[Parsed_loudnorm_0 @")
+    if marker < 0:
         return None
-    for jsun_chunk in stderr_data.split(" { "):
-        try:
-            stderr_data = "{" + jsun_chunk.rsplit("}")[0].strip() + "}"
-            loudness_data = json_loads(stderr_data)
-            return float(loudness_data["input_i"])
-        except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError, IndexError):
-            continue
-    return None
+    start = stderr_data.find("{", marker)
+    end = stderr_data.find("}", start)
+    if start < 0 or end < 0:
+        return None
+    try:
+        loudness_data = json_loads(stderr_data[start : end + 1])
+        return float(loudness_data["input_i"])
+    except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError):
+        return None
 
 
 def get_normalization_mode(

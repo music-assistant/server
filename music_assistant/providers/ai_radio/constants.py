@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
+
 CONF_AI_ENGINE = "ai_engine"
 CONF_TTS_ENGINE = "tts_engine"
+CONF_TTS_LOUDNESS_BOOST = "tts_loudness_boost"
 CONF_TIMEZONE = "timezone"
 CONF_WEATHER_CITY = "weather_city"
 CONF_WEATHER_COUNTRY = "weather_country"
@@ -43,7 +47,11 @@ TTS_PRONUNCIATION_INSTRUCTIONS = (
     "notation, or both versions. Output only the spoken version. Examples: INXS → In Excess; "
     "Mi-Sex → My Sex; P!nk → Pink; blink-182 → Blink One Eighty-Two. If a name could be "
     "mispronounced by the TTS engine, rewrite it into the clearest natural spoken form "
-    "without explaining the change."
+    "without explaining the change. "
+    "Names and titles often stay in their original language while the voice reads everything "
+    "with the pronunciation rules of the script's language. When a name would be mangled that "
+    "way, respell it phonetically for the script's language so it still sounds like the "
+    "original; leave names that already read correctly untouched."
 )
 MERGE_SECTION_PROMPT = (
     "Merge the drafts below into one coherent radio break. "
@@ -66,6 +74,30 @@ AI_QUERY_TIMEOUT_SECONDS = 180
 
 # ffprobe reports no status code, so its message is all we have to spot a failed render
 TTS_SERVER_ERROR_MARKERS = ("Server returned 5XX", "HTTP error 5")
+
+DEFAULT_TTS_LOUDNESS_BOOST = 3
+
+# speech carries ~16 dB between its average level and its peaks, so the gain that would
+# lift it to the target on paper clips instead: speechnorm evens the clip out first and
+# the limiter, not the gain, is what guarantees the ceiling
+TTS_SPEECHNORM_FILTER = "speechnorm=e=12.5:r=0.0005:l=1"
+TTS_PEAK_CEILING_DB = -3.0
+
+# one measurement stands in for every clip an engine voices, but a fragment of a few
+# words is not representative enough of its level to become that reference
+MIN_LOUDNESS_REFERENCE_SECONDS = 2
+
+# a clip is seconds of audio, so a measurement that takes this long is a wedged fetch
+LOUDNESS_MEASURE_TIMEOUT = 60
+
+# spoken clips are handed to MA already decoded, so the filter chain runs once here
+# instead of once per output
+TTS_CLIP_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE,
+    sample_rate=48000,
+    bit_depth=16,
+    channels=2,
+)
 
 SUPPORTED_FEATURES: set[Any] = set()
 EMPTY_SECTION_ID = "EMPTY_SECTION"

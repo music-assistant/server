@@ -23,6 +23,10 @@
     "weather_timeout_seconds": {
       "label": "Weather Request Timeout",
       "description": "How long to wait for the weather provider to respond, in seconds, before giving up."
+    },
+    "tts_loudness_boost": {
+      "label": "Spoken Clip Loudness Boost",
+      "description": "How many decibels above the music the spoken sections should sit. Peaks are always limited so the audio can never clip, which means high values mainly add compression rather than loudness. Set to 0 to keep spoken clips at the same level as the music."
     }
   },
   "setup_flow": {

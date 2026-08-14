@@ -844,6 +844,8 @@
   "provider.acoustid_lookup.manifest.description": "Identifies local audio files using AcoustID/Chromaprint fingerprinting and fills in their MusicBrainz recording ID for subsequent metadata enrichment.",
   "provider.ai_radio.config_entries.timezone.description": "IANA timezone (e.g. Europe/Amsterdam) used to resolve the current time for stations.",
   "provider.ai_radio.config_entries.timezone.label": "Timezone",
+  "provider.ai_radio.config_entries.tts_loudness_boost.description": "How many decibels above the music the spoken sections should sit. Peaks are always limited so the audio can never clip, which means high values mainly add compression rather than loudness. Set to 0 to keep spoken clips at the same level as the music.",
+  "provider.ai_radio.config_entries.tts_loudness_boost.label": "Spoken Clip Loudness Boost",
   "provider.ai_radio.config_entries.weather_city.description": "City used to look up the weather forecast for stations that reference it.",
   "provider.ai_radio.config_entries.weather_city.label": "Weather City",
   "provider.ai_radio.config_entries.weather_country.description": "Country used to look up the weather forecast for stations that reference it.",
