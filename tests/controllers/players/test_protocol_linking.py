@@ -1599,7 +1599,7 @@ class TestPlayerGrouping:
         wiim_player.set_active_output_protocol("airplay_wiim")
         wiim_player.set_protocol_parent_id("airplay_wiim")
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -2318,7 +2318,7 @@ class TestCanGroupWith:
             ]
         )
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -2422,7 +2422,7 @@ class TestCanGroupWith:
         )
         sonos_player.set_active_output_protocol("airplay_sonos")
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -2558,7 +2558,7 @@ class TestCanGroupWith:
         sonos_player._cache.clear()
         wiim_player._cache.clear()
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {

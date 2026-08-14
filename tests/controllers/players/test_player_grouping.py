@@ -535,8 +535,6 @@ class TestAdHocLeadershipTransfer:
 
         leader = controller.get_player("leader")
         assert leader is not None
-        member_b = controller.get_player("b")
-        assert member_b is not None
 
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
 
