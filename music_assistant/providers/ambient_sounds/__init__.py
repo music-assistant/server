@@ -18,12 +18,13 @@ import os
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NotRequired, TypedDict, cast
+from urllib.parse import urlparse
 
 from aiofiles.os import makedirs, remove, replace
 from aiofiles.os import path as aiopath
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -171,6 +172,11 @@ class AmbientSoundsProvider(MusicProvider):
         :param url: Stream URL of the ambient sound.
         :param name: Display name.
         """
+        # only accept absolute http(s) urls: the raw string is handed to ffprobe,
+        # which would otherwise happily open local files or any ffmpeg protocol
+        parsed_url = urlparse(url)
+        if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+            raise InvalidDataError(f"Not a valid HTTP(S) stream URL: {url}")
         # probe the url upfront so an invalid/unreachable url is rejected at add time
         media_info = await self._get_media_info(url, force_refresh=True)
         stored_item = StoredSound(item_id=url, name=name)

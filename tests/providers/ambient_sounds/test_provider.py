@@ -187,6 +187,26 @@ async def test_add_custom_sound_invalid_url(
     assert not provider.get_setup_value(CONF_KEY_CUSTOM_SOUNDS)
 
 
+async def test_add_custom_sound_rejects_non_http_urls(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only absolute http(s) urls reach ffprobe; anything else is rejected upfront."""
+    parse_tags_mock = AsyncMock(return_value=_mock_media_info())
+    monkeypatch.setattr(ambient_sounds, "async_parse_tags", parse_tags_mock)
+    provider = _create_provider(str(tmp_path))
+    for bad_url in (
+        "file:///etc/passwd",
+        "/etc/passwd",
+        "concat:file1|file2",
+        "ftp://example.com/sound.mp3",
+        "https://",
+    ):
+        with pytest.raises(InvalidDataError):
+            await provider.add_sound(bad_url, "Evil")
+    parse_tags_mock.assert_not_awaited()
+    assert not provider.get_setup_value(CONF_KEY_CUSTOM_SOUNDS)
+
+
 async def test_remove_custom_sound(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A removed custom sound is no longer enumerated or resolvable."""
     monkeypatch.setattr(
