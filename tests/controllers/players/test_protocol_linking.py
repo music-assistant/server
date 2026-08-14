@@ -7565,8 +7565,8 @@ class TestNativePlayerSiblingLinking:
 class TestCachedProtocolLinkRecovery:
     """Tests for recovering protocol links from config."""
 
-    def test_only_one_link_per_domain_is_recovered(self, mock_mass: MagicMock) -> None:
-        """Two cached protocols from the same domain recover a single link."""
+    def test_recovered_links_are_applied_through_the_setter(self, mock_mass: MagicMock) -> None:
+        """Recovery applies a single link per protocol domain through the setter."""
         controller = PlayerController(mock_mass)
 
         protocol_configs = {
@@ -7601,9 +7601,13 @@ class TestCachedProtocolLinkRecovery:
 
         controller._recover_cached_protocol_links(heos_player)
 
-        assert [link.output_protocol_id for link in heos_player.linked_output_protocols] == [
-            "ap_first"
-        ]
+        recovered = [link.output_protocol_id for link in heos_player.linked_output_protocols]
+        assert recovered == ["ap_first"]
+        mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
+
+        # a repeat pass has nothing left to recover, so no update is triggered
+        controller._recover_cached_protocol_links(heos_player)
+        mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
 
 
 class TestMultiMACMatching:
