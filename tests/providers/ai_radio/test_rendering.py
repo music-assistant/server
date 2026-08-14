@@ -11,7 +11,12 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    StreamType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -25,6 +30,7 @@ from music_assistant.constants import (
     CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
@@ -174,6 +180,7 @@ def _attach_queues(renderer: DummyRenderer, queues: dict[str, list[QueueItem]]) 
         ),
         metadata=SimpleNamespace(locale="en_US"),
     )
+    _attach_normalization(renderer, queue_ids=tuple(queues))
     return signals
 
 
@@ -183,17 +190,25 @@ def _attach_queue(renderer: DummyRenderer, items: list[QueueItem]) -> list[bool]
 
 
 def _attach_normalization(
-    renderer: DummyRenderer, *, enabled: bool = True, target: int = -14, boost: int = 3
+    renderer: DummyRenderer,
+    *,
+    enabled: bool = True,
+    target: int = -14,
+    boost: int = 3,
+    tracks_mode: str = VolumeNormalizationMode.FALLBACK_DYNAMIC.value,
+    queue_ids: tuple[str, ...] = ("player_a",),
 ) -> None:
     """Wire the queue, streams and provider config that decide the clip's loudness gain."""
 
     def queue_setting(queue_id: str, key: str, default: str) -> str:
-        assert queue_id == "player_a"
+        assert queue_id in queue_ids
         assert key == CONF_VOLUME_NORMALIZATION
         assert default == CONF_VALUE_ENABLED
         return CONF_VALUE_ENABLED if enabled else CONF_VALUE_DISABLED
 
-    def streams_setting(key: str, **_kwargs: Any) -> int:
+    def streams_setting(key: str, **_kwargs: Any) -> str | int:
+        if key == CONF_VOLUME_NORMALIZATION_TRACKS:
+            return tracks_mode
         assert key == CONF_VOLUME_NORMALIZATION_TARGET
         return target
 
@@ -692,6 +707,7 @@ async def test_mint_clip_media_resolves_host_tts_engine() -> None:
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
     renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
     cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    _attach_normalization(renderer)
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
 
     await renderer._mint_clip_media(item, "hello world", "clip_1")
@@ -710,6 +726,7 @@ async def test_mint_clip_media_forwards_the_hosts_options() -> None:
         }
     }
     cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    _attach_normalization(renderer)
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
 
     await renderer._mint_clip_media(item, "hello world", "clip_1")
@@ -722,6 +739,7 @@ async def test_mint_clip_media_sends_no_options_for_a_host_without_any() -> None
     renderer = DummyRenderer()
     renderer._hosts = {"rick": {"id": "rick", "tts_engine": ""}}
     cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    _attach_normalization(renderer)
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
 
     await renderer._mint_clip_media(item, "hello world", "clip_1")
@@ -1031,3 +1049,28 @@ async def test_a_failed_measurement_leaves_the_level_unknown(
     assert (
         await AIRadioRenderMixin._measure_loudness(renderer, "http://ha.invalid/clip.mp3") is None
     )
+
+
+async def test_clip_plays_untouched_when_tracks_are_not_normalized() -> None:
+    """The queue switch alone does not mean the music around the clip is levelled."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, tracks_mode=VolumeNormalizationMode.DISABLED.value)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.stream_type == StreamType.HTTP
+    assert streamdetails.data is None
+
+
+async def test_no_measurement_is_taken_when_the_reading_has_nowhere_to_go() -> None:
+    """Measuring costs a fetch and a decode, so a queue that will not use it is not charged."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, enabled=False)
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.measure_calls == []

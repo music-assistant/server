@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, StreamType, VolumeNormalizationMode
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -23,6 +23,7 @@ from music_assistant.constants import (
     CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -215,15 +216,17 @@ class AIRadioRenderMixin:
         elapsed = asyncio.get_running_loop().time() - media.minted_at
         return max(MIN_CLIP_MEDIA_LIFETIME, round(CLIP_STREAMDETAILS_EXPIRATION - elapsed))
 
-    def _loudness_gain(self, queue_id: str, loudness: float | None) -> float | None:
-        """Return the dB to lift the clip by, or None when it should air untouched."""
-        if loudness is None:
-            return None
+    def _wanted_loudness(self, queue_id: str) -> float | None:
+        """Return the level in LUFS a clip should air at, or None when it should air as is."""
         normalization = self.mass.config.get_effective_player_queue_config_value(
             queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
         )
         if normalization == CONF_VALUE_DISABLED:
-            # the music is not levelled either, so there is nothing to match
+            return None
+        # the queue switch only says normalization may run; the tracks around the clip are
+        # the ones it has to match, and their own preference can still turn it off
+        tracks_mode = self.mass.streams.get_config_value(CONF_VOLUME_NORMALIZATION_TRACKS)
+        if tracks_mode == VolumeNormalizationMode.DISABLED.value:
             return None
         target = self.mass.streams.get_config_value(
             CONF_VOLUME_NORMALIZATION_TARGET, return_type=int
@@ -231,9 +234,15 @@ class AIRadioRenderMixin:
         boost = coerce_int(
             self.config.get_value(CONF_TTS_LOUDNESS_BOOST), DEFAULT_TTS_LOUDNESS_BOOST
         )
+        return target + boost
+
+    def _loudness_gain(self, queue_id: str, loudness: float | None) -> float | None:
+        """Return the dB to lift the clip by, or None when it should air untouched."""
+        if loudness is None or (wanted := self._wanted_loudness(queue_id)) is None:
+            return None
         # the reference is taken behind speechnorm, which lands close to the target on its
         # own, so this trim is small and runs in either direction
-        return (target + boost) - loudness
+        return wanted - loudness
 
     def _tts_language(self, host_language: str | None = None) -> str | None:
         """
@@ -346,7 +355,13 @@ class AIRadioRenderMixin:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
             self._record_skip(queue_item, f"TTS failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
-        loudness = await self._reference_loudness(engine_uid, language, options, path, duration)
+        # measuring costs a fetch and a decode on the just-in-time render path, so it only
+        # runs where the reading has somewhere to go
+        loudness = (
+            await self._reference_loudness(engine_uid, language, options, path, duration)
+            if self._wanted_loudness(queue_item.queue_id) is not None
+            else None
+        )
         return path, stream_type, audio_format, duration, loudness
 
     async def _reference_loudness(
