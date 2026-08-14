@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.chromecast.player import ChromecastPlayer
+from tests.providers.chromecast.helpers import bind_media_status_helpers
 
 
 def _handle_media_status(fake: MagicMock, status: MagicMock) -> None:
@@ -26,7 +27,7 @@ def _fake_player() -> MagicMock:
     """Build a MagicMock standing in for a ChromecastPlayer with no active cast group."""
     fake = MagicMock()
     fake.active_cast_group = None
-    return fake
+    return bind_media_status_helpers(fake)
 
 
 def _media_status(content_id: str, *, player_is_playing: bool, player_is_paused: bool) -> MagicMock:

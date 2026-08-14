@@ -21,6 +21,7 @@ from music_assistant.providers.chromecast.constants import (
     MASS_APP_ID,
 )
 from music_assistant.providers.chromecast.player import ChromecastPlayer
+from tests.providers.chromecast.helpers import bind_media_status_helpers
 
 
 def _handle_media_status(fake: MagicMock, status: MagicMock) -> None:
@@ -52,7 +53,7 @@ def _fake_player(
     fake._schedule_app_release = partial(
         ChromecastPlayer._schedule_app_release, cast("ChromecastPlayer", fake)
     )
-    return fake
+    return bind_media_status_helpers(fake)
 
 
 def _media_status(

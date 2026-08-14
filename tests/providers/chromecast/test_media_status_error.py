@@ -17,6 +17,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 from music_assistant.providers.chromecast.player import ChromecastPlayer
+from tests.providers.chromecast.helpers import bind_media_status_helpers
 
 
 def _handle_media_status(fake: MagicMock, status: MagicMock) -> None:
@@ -29,7 +30,7 @@ def _fake_player() -> MagicMock:
     fake.active_cast_group = None
     fake._media_error_reported = False
     fake._flow_stream_underrun = MagicMock(return_value=False)
-    return fake
+    return bind_media_status_helpers(fake)
 
 
 def _error_status() -> MagicMock:
