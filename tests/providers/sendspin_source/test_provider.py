@@ -328,6 +328,35 @@ async def test_reclaim_by_the_same_queue_retires_the_previous_generator(
     assert [chunk async for chunk in stream] == []
 
 
+async def test_reclaim_while_waiting_for_audio_retires_the_previous_generator(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-queue reclaim retires a generator that is still waiting for first audio."""
+    provider = await make_provider([fake_client])
+    bridge = _StubBridge()
+    monkeypatch.setattr(provider, "_create_bridge", lambda *_args: bridge)
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    previous = provider.get_audio_stream(_stream_details())
+    previous_chunk = asyncio.create_task(anext(previous))
+    await asyncio.sleep(0)
+
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    replacement = provider.get_audio_stream(_stream_details())
+    replacement_chunk = asyncio.create_task(anext(replacement))
+    fake_client.emit(
+        SourceStreamStartedEvent(
+            audio_format=NATIVE_FORMAT,
+            handle=_fake_handle([(b"\x01\x02\x03\x04", 1_000_000)]),
+        )
+    )
+    await _settle()
+
+    with pytest.raises(StopAsyncIteration):
+        await previous_chunk
+    assert await replacement_chunk == MARKER_BYTE * (48000 * 25 // 1000 * 4)
+    await replacement.aclose()
+
+
 async def test_reclaim_by_the_same_player_on_another_queue_still_hands_off(
     fake_client: _FakeClient,
 ) -> None:
@@ -338,6 +367,33 @@ async def test_reclaim_by_the_same_player_on_another_queue_still_hands_off(
     assert fake_client.source_role is not None
     assert fake_client.source_role.stop_requests == 1
     assert get_players(provider).stopped == []
+
+
+async def test_concurrent_handoffs_leave_the_newest_selection_active(
+    fake_client: _FakeClient,
+) -> None:
+    """Concurrent handoffs serialize so an older stop cannot overwrite the latest claim."""
+    provider = await make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    players = get_players(provider)
+    players.stop_started = asyncio.Event()
+    players.release_stop = asyncio.Event()
+
+    first = asyncio.create_task(
+        provider.on_source_selected("client-1", "player-2", "queue-2", "session-2")
+    )
+    await players.stop_started.wait()
+    second = asyncio.create_task(
+        provider.on_source_selected("client-1", "player-3", "queue-3", "session-3")
+    )
+    await asyncio.sleep(0)
+    players.release_stop.set()
+    await asyncio.gather(first, second)
+
+    await provider.on_source_unselected("client-1", "queue-3", "session-3")
+    assert players.stopped == ["player-1", "player-2"]
+    assert fake_client.source_role is not None
+    assert fake_client.source_role.stop_requests == 3
 
 
 async def test_two_sources_stream_concurrently(fake_client: _FakeClient) -> None:
@@ -435,6 +491,59 @@ async def test_transient_signal_does_not_autostart(
     await provider.unload()
 
 
+async def test_manual_selection_cancels_a_fired_autostart(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual selection wins while a fired autostart is starting playback."""
+    provider = await make_provider([fake_client])
+    get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
+    queues = get_queues(provider)
+    queues.play_started = asyncio.Event()
+    queues.release_play = asyncio.Event()
+    monkeypatch.setattr(provider_module, "AUTOSTART_SIGNAL_DEBOUNCE_S", 0.0)
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await queues.play_started.wait()
+
+    await provider.on_source_selected("client-1", "player-2", "queue-2", "session-1")
+    queues.release_play.set()
+    await _settle()
+    assert queues.played == []
+
+
+@pytest.mark.usefixtures("fast_autostart")
+async def test_delayed_autostart_stream_cannot_override_manual_selection(
+    fake_client: _FakeClient,
+) -> None:
+    """A delayed stream request from a completed autostart cannot reclaim the source."""
+    provider = await make_provider([fake_client])
+    get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await _settle()
+
+    queues = get_queues(provider)
+    queues.stop_started = asyncio.Event()
+    queues.release_stop = asyncio.Event()
+    manual = asyncio.create_task(
+        provider.on_source_selected("client-1", "player-2", "queue-2", "session-1")
+    )
+    await queues.stop_started.wait()
+    delayed = asyncio.create_task(
+        provider.on_source_selected("client-1", "client-1", "client-1", "session-2")
+    )
+    await asyncio.sleep(0)
+    queues.release_stop.set()
+    await manual
+    with pytest.raises(RuntimeError, match="Superseded autostart"):
+        await delayed
+
+    await queues.play_media("client-1", "sendspin_source://audio_source/client-1")
+    await provider.on_source_selected("client-1", "client-1", "client-1", "session-3")
+    assert fake_client.source_role is not None
+    assert fake_client.source_role.start_requests == 2
+
+
 @pytest.mark.usefixtures("fast_autostart")
 async def test_autostart_stays_off_without_a_configured_target(fake_client: _FakeClient) -> None:
     """With no target configured the signal is observed but never acted on."""
@@ -508,3 +617,12 @@ async def test_a_reconnect_does_not_defuse_a_pending_autostop(fake_client: _Fake
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
     await _settle()
     assert get_queues(provider).stopped == ["queue-1"]
+
+
+async def test_deferred_reconnect_does_not_rewatch_after_unload(fake_client: _FakeClient) -> None:
+    """A connected callback queued before unload cannot restore its client listener."""
+    provider = await make_provider([fake_client])
+    get_server_api(provider).emit(ClientConnectedEvent("client-1"))
+    await provider.unload()
+    await _settle()
+    assert fake_client.listeners == []

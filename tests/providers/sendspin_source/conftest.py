@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -119,6 +120,8 @@ class _FakePlayers:
     def __init__(self) -> None:
         self.stopped: list[str] = []
         self.players: dict[str, _FakePlayer] = {}
+        self.stop_started: asyncio.Event | None = None
+        self.release_stop: asyncio.Event | None = None
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
@@ -128,6 +131,10 @@ class _FakePlayers:
 
     async def cmd_stop(self, player_id: str) -> None:
         self.stopped.append(player_id)
+        if self.stop_started is not None:
+            self.stop_started.set()
+        if self.release_stop is not None:
+            await self.release_stop.wait()
 
 
 class _FakePlayerQueues:
@@ -136,12 +143,32 @@ class _FakePlayerQueues:
     def __init__(self) -> None:
         self.played: list[tuple[str, str, Any]] = []
         self.stopped: list[str] = []
+        self.play_started: asyncio.Event | None = None
+        self.release_play: asyncio.Event | None = None
+        self.stop_started: asyncio.Event | None = None
+        self.release_stop: asyncio.Event | None = None
+        self._sessions: dict[str, str | None] = {}
+        self._session_counter = 0
 
     async def play_media(self, queue_id: str, media: Any, option: Any = None, **_: Any) -> None:
+        self._session_counter += 1
+        self._sessions[queue_id] = f"session-{self._session_counter}"
+        if self.play_started is not None:
+            self.play_started.set()
+        if self.release_play is not None:
+            await self.release_play.wait()
         self.played.append((queue_id, media, option))
 
     async def stop(self, queue_id: str) -> None:
         self.stopped.append(queue_id)
+        if self.stop_started is not None:
+            self.stop_started.set()
+        if self.release_stop is not None:
+            await self.release_stop.wait()
+        self._sessions[queue_id] = None
+
+    def queue_data(self, queue_id: str) -> Any:
+        return SimpleNamespace(session_id=self._sessions.get(queue_id))
 
 
 class _FakeConfigController:
@@ -174,16 +201,39 @@ class _FakeMass:
         self.config = _FakeConfigController()
         self._sendspin_provider = sendspin_provider
         self._timers: dict[str, asyncio.TimerHandle] = {}
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
 
     def get_provider(self, domain: str) -> Any:
         if domain == "sendspin":
             return self._sendspin_provider
         return None
 
-    def create_task(self, coro: Any, *, eager_start: bool = True) -> asyncio.Task[Any]:
+    def create_task(
+        self,
+        coro: Any,
+        *,
+        task_id: str | None = None,
+        abort_existing: bool = False,
+        eager_start: bool = True,
+    ) -> asyncio.Task[Any]:
         # Mirror the real controller's eager default, which decides whether a task
         # body runs inside the event callback that created it.
-        return asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
+        if task_id is not None and (existing := self._tasks.get(task_id)) is not None:
+            if not abort_existing:
+                coro.close()
+                return existing
+            existing.cancel()
+        task = asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
+        if task_id is not None:
+            self._tasks[task_id] = task
+            task.add_done_callback(
+                lambda completed: (
+                    self._tasks.pop(task_id, None)
+                    if self._tasks.get(task_id) is completed
+                    else None
+                )
+            )
+        return task
 
     def call_later(
         self,
@@ -198,7 +248,7 @@ class _FakeMass:
 
         def run() -> None:
             self._timers.pop(timer_id, None)
-            self.create_task(target(*args, **kwargs))
+            self.create_task(target(*args, **kwargs), task_id=timer_id, abort_existing=True)
 
         handle = self.loop.call_later(delay, run)
         self._timers[timer_id] = handle
@@ -207,6 +257,13 @@ class _FakeMass:
     def cancel_timer(self, task_id: str) -> None:
         if (timer := self._timers.pop(task_id, None)) is not None:
             timer.cancel()
+
+    def get_task(self, task_id: str) -> asyncio.Task[Any] | None:
+        return self._tasks.get(task_id)
+
+    def cancel_task(self, task_id: str) -> None:
+        if (task := self._tasks.pop(task_id, None)) is not None:
+            task.cancel()
 
 
 class _FakeConfig:

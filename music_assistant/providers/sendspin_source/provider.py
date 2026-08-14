@@ -117,6 +117,10 @@ class _SourceClientState:
     session: _SourceSession | None = None
     unwatch: Callable[[], None] | None = None
     signal: SignalState | None = None
+    autostart_queue_id: str | None = None
+    autostart_queue_session_id: str | None = None
+    suppressed_autostart_claim: tuple[str, str | None] | None = None
+    selection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SendspinSourceProvider(PluginProvider):
@@ -133,10 +137,12 @@ class SendspinSourceProvider(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._clients: dict[str, _SourceClientState] = {}
         self._server_unsubscribe: Callable[[], None] | None = None
+        self._unloading = False
 
     async def loaded_in_mass(self) -> None:
         """Start watching every source client, including ones that are already idle."""
         await super().loaded_in_mass()
+        self._unloading = False
         if (sendspin := self._sendspin_provider) is None:
             return
         self._server_unsubscribe = sendspin.server_api.add_event_listener(self._on_server_event)
@@ -145,6 +151,7 @@ class SendspinSourceProvider(PluginProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        self._unloading = True
         if self._server_unsubscribe is not None:
             self._server_unsubscribe()
             self._server_unsubscribe = None
@@ -219,26 +226,67 @@ class SendspinSourceProvider(PluginProvider):
         role = self._get_source_role(client) if client else None
         if client is None or role is None:
             raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
-        # Keep the running bridge when renderers reopen the URL for the same queue.
-        if (live := self._get_session(source_id)) is not None and (
-            live.player_id,
-            live.queue_id,
-        ) == (player_id, queue_id):
-            live.stream_session_id = stream_session_id
-            live.generation += 1
-            self._cancel_pending_autostart(source_id)
-            return
-        await self._teardown_session(source_id, superseded_by_player_id=player_id)
-        session = _SourceSession(
-            client_id=source_id,
-            player_id=player_id,
-            queue_id=queue_id,
-            stream_session_id=stream_session_id,
-        )
-        self._clients.setdefault(source_id, _SourceClientState()).session = session
-        # Manual selection supersedes a pending autostart target.
-        self._cancel_pending_autostart(source_id)
-        role.request_start()
+        state = self._clients.setdefault(source_id, _SourceClientState())
+        queue_session_id = self.mass.player_queues.queue_data(queue_id).session_id
+        try:
+            async with state.selection_lock:
+                client = self._get_client(source_id)
+                role = self._get_source_role(client) if client else None
+                if client is None or role is None:
+                    raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
+                if state.suppressed_autostart_claim == (queue_id, queue_session_id):
+                    raise RuntimeError("Superseded autostart stream request")
+                autostart_queue_id = state.autostart_queue_id
+                if autostart_queue_id == queue_id:
+                    state.autostart_queue_id = None
+                    state.autostart_queue_session_id = None
+                    self._cancel_pending_autostart(source_id, cancel_running=False)
+                else:
+                    if autostart_queue_id is not None:
+                        autostart_session_id = (
+                            state.autostart_queue_session_id
+                            or self.mass.player_queues.queue_data(autostart_queue_id).session_id
+                        )
+                        state.autostart_queue_id = None
+                        state.autostart_queue_session_id = None
+                        state.suppressed_autostart_claim = (
+                            autostart_queue_id,
+                            autostart_session_id,
+                        )
+                    self._cancel_pending_autostart(source_id)
+                    if autostart_queue_id is not None:
+                        try:
+                            await self.mass.player_queues.stop(autostart_queue_id)
+                        except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
+                            self.logger.debug(
+                                "Failed to stop autostart queue %s: %s",
+                                autostart_queue_id,
+                                err,
+                            )
+                # Keep the running bridge when renderers reopen the URL for the same queue.
+                if (live := state.session) is not None and (
+                    live.player_id,
+                    live.queue_id,
+                ) == (player_id, queue_id):
+                    live.stream_session_id = stream_session_id
+                    live.generation += 1
+                    return
+                await self._teardown_session(source_id, superseded_by_player_id=player_id)
+                if self._unloading or self._clients.get(source_id) is not state:
+                    raise PlayerUnavailableError(f"Sendspin source is unloading: {source_id}")
+                client = self._get_client(source_id)
+                role = self._get_source_role(client) if client else None
+                if client is None or role is None:
+                    raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
+                state.session = _SourceSession(
+                    client_id=source_id,
+                    player_id=player_id,
+                    queue_id=queue_id,
+                    stream_session_id=stream_session_id,
+                )
+                role.request_start()
+        finally:
+            self._drop_empty_client_state(source_id, state)
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
@@ -249,6 +297,9 @@ class SendspinSourceProvider(PluginProvider):
         if session is None or session.stream_session_id != stream_session_id:
             return
         await self._teardown_session(source_id)
+        if (state := self._clients.get(source_id)) is not None:
+            state.suppressed_autostart_claim = None
+            self._drop_empty_client_state(source_id, state)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -265,9 +316,9 @@ class SendspinSourceProvider(PluginProvider):
         session = self._get_session(streamdetails.item_id)
         if session is None:
             raise AudioError(f"Sendspin source is not selected: {streamdetails.item_id}")
-        await self._await_first_audio(session)
         generation = session.generation
-        if self._get_session(session.client_id) is not session:
+        await self._await_first_audio(session)
+        if self._get_session(session.client_id) is not session or session.generation != generation:
             return
         frames_per_chunk = OUTPUT_SAMPLE_RATE * CHUNK_DURATION_MS // 1000
         period = CHUNK_DURATION_MS / 1000
@@ -335,6 +386,8 @@ class SendspinSourceProvider(PluginProvider):
             ) from None
 
     def _on_server_event(self, server: SendspinServer, event: SendspinEvent) -> None:
+        if self._unloading:
+            return
         match event:
             case ClientConnectedEvent(client_id):
                 # Roles attach after this event, so defer until the next loop turn.
@@ -344,6 +397,10 @@ class SendspinSourceProvider(PluginProvider):
                 self._cancel_pending_autostop(client_id)
                 if (state := self._clients.get(client_id)) is not None:
                     state.signal = None
+                    state.autostart_queue_id = None
+                    state.autostart_queue_session_id = None
+                    if state.session is None:
+                        state.suppressed_autostart_claim = None
                     if state.unwatch is not None:
                         state.unwatch()
                         state.unwatch = None
@@ -351,6 +408,8 @@ class SendspinSourceProvider(PluginProvider):
 
     async def _on_client_connected(self, client_id: str) -> None:
         """Re-arm watching and streaming for a client that just (re)connected."""
+        if self._unloading:
+            return
         client = self._get_client(client_id)
         if client is None:
             return
@@ -420,26 +479,53 @@ class SendspinSourceProvider(PluginProvider):
                 task_id=self._autostop_timer_id(client_id),
             )
 
-    def _cancel_pending_autostart(self, client_id: str) -> None:
-        self.mass.cancel_timer(self._autostart_timer_id(client_id))
+    def _cancel_pending_autostart(self, client_id: str, *, cancel_running: bool = True) -> None:
+        self._cancel_scheduled_action(
+            self._autostart_timer_id(client_id), cancel_running=cancel_running
+        )
 
     def _cancel_pending_autostop(self, client_id: str) -> None:
-        self.mass.cancel_timer(self._autostop_timer_id(client_id))
+        self._cancel_scheduled_action(self._autostop_timer_id(client_id))
 
     async def _autostart(self, client_id: str) -> None:
         """Start playing a source whose signal has stayed present."""
-        if self._get_session(client_id) is not None:
+        state = self._clients.get(client_id)
+        if state is None or state.signal != SignalState.PRESENT or state.session is not None:
             return
         if (target := await self._resolve_autostart_target(client_id)) is None:
             return
+        state = self._clients.get(client_id)
+        if state is None or state.signal != SignalState.PRESENT or state.session is not None:
+            return
         queue_id, uri = target
         self.logger.info("Line-in signal on %s, starting playback on %s", client_id, queue_id)
-        await self.mass.player_queues.play_media(queue_id, uri, option=QueueOption.PLAY)
+        state.suppressed_autostart_claim = None
+        state.autostart_queue_id = queue_id
+        state.autostart_queue_session_id = None
+        completed = False
+        try:
+            await self.mass.player_queues.play_media(queue_id, uri, option=QueueOption.PLAY)
+            completed = True
+            if self._clients.get(client_id) is state and state.autostart_queue_id == queue_id:
+                state.autostart_queue_session_id = self.mass.player_queues.queue_data(
+                    queue_id
+                ).session_id
+        finally:
+            if (
+                not completed
+                and self._clients.get(client_id) is state
+                and state.autostart_queue_id == queue_id
+            ):
+                state.autostart_queue_id = None
+                state.autostart_queue_session_id = None
+                self._drop_empty_client_state(client_id, state)
 
     async def _autostop(self, client_id: str) -> None:
         """Stop a source whose signal has stayed absent, e.g. a record that ended."""
-        if (session := self._get_session(client_id)) is None:
+        state = self._clients.get(client_id)
+        if state is None or state.signal != SignalState.ABSENT or state.session is None:
             return
+        session = state.session
         self.logger.info("Line-in signal gone on %s, stopping playback", client_id)
         try:
             # Queue stop also cancels pending preload and enqueue timers.
@@ -543,8 +629,18 @@ class SendspinSourceProvider(PluginProvider):
             and state.session is None
             and state.unwatch is None
             and state.signal is None
+            and state.autostart_queue_id is None
+            and state.autostart_queue_session_id is None
+            and state.suppressed_autostart_claim is None
+            and not state.selection_lock.locked()
         ):
             self._clients.pop(client_id)
+
+    def _cancel_scheduled_action(self, task_id: str, *, cancel_running: bool = True) -> None:
+        self.mass.cancel_timer(task_id)
+        task = self.mass.get_task(task_id)
+        if cancel_running and task is not None and task is not asyncio.current_task():
+            self.mass.cancel_task(task_id)
 
     def _autostart_timer_id(self, client_id: str) -> str:
         return f"{self.instance_id}_autostart_{client_id}"
