@@ -493,6 +493,12 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
         raise
     with entries:
         for entry in entries:
+            if (
+                entry.name in IGNORE_DIRS
+                or entry.name.startswith(".")
+                or _skip_undecodable_name(entry.name, logger)
+            ):
+                continue
             try:
                 is_dir = entry.is_dir(follow_symlinks=False)
                 is_file = entry.is_file(follow_symlinks=False)
@@ -504,12 +510,6 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
                     )
                 continue
             if not (is_dir or is_file):
-                continue
-            if (
-                entry.name in IGNORE_DIRS
-                or entry.name.startswith(".")
-                or _skip_undecodable_name(entry.name, logger)
-            ):
                 continue
             try:
                 items.append(FileSystemItem.from_dir_entry(entry, base_path))
@@ -541,8 +541,7 @@ def _skip_undecodable_name(name: str, log: logging.Logger) -> bool:
     :param name: Name of the file or directory, as returned by the os module.
     :param log: Logger to report a skipped name on.
     """
-    # such a path can be neither stored in the database nor sent to a client;
-    # isascii() is O(1) and true for almost every name, keeping this off the hot path
+    # such a path can be neither stored in the database nor sent to a client
     if name.isascii():
         return False
     if (safe_name := make_utf8_safe(name)) == name:

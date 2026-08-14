@@ -5,7 +5,7 @@ import base64
 import re
 from _collections_abc import dict_keys, dict_values
 from types import MethodType
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 import aiofiles
 import orjson
@@ -45,47 +45,26 @@ def get_serializable_value(obj: Any) -> Any:
     return obj
 
 
-@overload
-def make_utf8_safe(value: str) -> str: ...
-
-
-@overload
-def make_utf8_safe(value: Any) -> Any: ...
-
-
-def make_utf8_safe(value: Any) -> Any:
+def make_utf8_safe(value: str) -> str:
     """
-    Return the given value with any strings that are not valid UTF-8 made encodable.
+    Return the given string made encodable if it is not valid UTF-8.
 
     Lone surrogates, as the os module returns for undecodable filesystem paths, come
-    back as their backslash escapes. Containers and objects are covered too.
+    back as their backslash escapes.
 
-    :param value: The value to make safe.
+    :param value: The string to make safe.
     """
-    if isinstance(value, str):
+    try:
+        value.encode()
+    except UnicodeEncodeError:
         try:
-            value.encode()
+            # a surrogate escape stands for one raw byte, so map it back to show
+            # the actual filename bytes instead of the surrogates
+            raw = value.encode("utf-8", "surrogateescape")
         except UnicodeEncodeError:
-            try:
-                # a surrogate escape stands for one raw byte, so map it back to show
-                # the actual filename bytes instead of the surrogates
-                raw = value.encode("utf-8", "surrogateescape")
-            except UnicodeEncodeError:
-                # any other lone surrogate has no byte to map back to
-                return value.encode("utf-8", "backslashreplace").decode()
-            return raw.decode("utf-8", "backslashreplace")
-        return value
-    if isinstance(value, dict):
-        return {make_utf8_safe(key): make_utf8_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [make_utf8_safe(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(make_utf8_safe(item) for item in value)
-    if isinstance(value, set):
-        return {make_utf8_safe(item) for item in value}
-    if (serializable := get_serializable_value(value)) is not value:
-        # objects (such as dataclasses) only expose their strings once converted
-        return make_utf8_safe(serializable)
+            # any other lone surrogate has no byte to map back to
+            return value.encode("utf-8", "backslashreplace").decode()
+        return raw.decode("utf-8", "backslashreplace")
     return value
 
 
