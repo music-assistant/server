@@ -653,7 +653,12 @@ class SendspinAirPlayBridge:
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        self.airplay_player.sync_volume_state()
+        if not keep_stream:
+            # Only a fresh process re-sends VOLUME= (on connect), and only a stream
+            # that stopped can have left our volume and mute state behind. A kept
+            # process kept streaming, so that state is still the one the device
+            # plays at and syncing it from the parent here would only desync it.
+            self.airplay_player.sync_volume_state()
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
             "Bridge writer started for %s, awaiting first chunk",

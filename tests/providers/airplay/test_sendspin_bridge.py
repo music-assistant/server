@@ -1844,6 +1844,31 @@ def test_a_grace_timer_that_already_fired_spares_the_restarted_stream() -> None:
     assert not bridge._write_queue.empty()
 
 
+def test_a_kept_process_keeps_the_volume_and_mute_it_plays_at() -> None:
+    """
+    A warm restart does not re-sync volume and mute from the parent player.
+
+    Only a fresh cli process re-sends VOLUME= to the device, so a sync over a
+    kept process would move our state away from what the speaker is playing at
+    -- most visibly by clearing a mute the device is still holding, leaving it
+    silent with nothing in the UI to say so.
+    """
+    bridge, _ = _make_anchored_bridge(running=True)
+
+    bridge._restart_transport()
+
+    cast("MagicMock", bridge.airplay_player).sync_volume_state.assert_not_called()
+
+
+def test_a_fresh_process_syncs_the_volume_and_mute_from_the_parent() -> None:
+    """A cold restart still adopts the parent's volume and releases a foreign mute."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+
+    bridge._restart_transport()
+
+    cast("MagicMock", bridge.airplay_player).sync_volume_state.assert_called_once_with()
+
+
 async def test_the_cleanup_a_start_waits_on_cannot_cancel_it() -> None:
     """
     A start waiting for the pending teardown is not among the handles it cancels.
