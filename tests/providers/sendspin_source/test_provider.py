@@ -18,7 +18,9 @@ from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.providers.sendspin_source.provider as provider_module
+from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.providers.sendspin.constants import CONF_SOURCE_AUTOSTART_TARGET
+from music_assistant.providers.sendspin_source import get_config_entries
 from music_assistant.providers.sendspin_source.constants import (
     CONF_TARGET_LATENCY,
     DEFAULT_TARGET_LATENCY_MS,
@@ -64,6 +66,13 @@ def _stream_details(item_id: str = "client-1") -> StreamDetails:
         media_type=MediaType.AUDIO_SOURCE,
         stream_type=StreamType.CUSTOM,
     )
+
+
+async def test_config_entries_start_with_preview_warning() -> None:
+    """The alpha provider warns users before showing its options."""
+    mass: Any = None
+    entries = await get_config_entries(mass)
+    assert entries[0] is CONF_ENTRY_WARN_PREVIEW
 
 
 async def _take(stream: AsyncGenerator[bytes], count: int) -> list[bytes]:
@@ -411,6 +420,21 @@ async def test_first_signal_report_never_autostarts(fake_client: _FakeClient) ->
     assert get_queues(provider).played == []
 
 
+async def test_transient_signal_does_not_autostart(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal that disappears during the debounce never starts playback."""
+    monkeypatch.setattr(provider_module, "AUTOSTART_SIGNAL_DEBOUNCE_S", 60.0)
+    provider = await make_provider([fake_client])
+    get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    fake_client.emit(_signal(SignalState.ABSENT))
+    await _settle()
+    assert get_queues(provider).played == []
+    await provider.unload()
+
+
 @pytest.mark.usefixtures("fast_autostart")
 async def test_autostart_stays_off_without_a_configured_target(fake_client: _FakeClient) -> None:
     """With no target configured the signal is observed but never acted on."""
@@ -457,6 +481,21 @@ async def test_signal_loss_stops_a_running_source(fake_client: _FakeClient) -> N
     await _settle()
     # Stopping the queue, not the player, also clears its pending preload timers.
     assert get_queues(provider).stopped == ["queue-1"]
+
+
+async def test_signal_return_cancels_pending_autostop(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal returning during the hold keeps the running source playing."""
+    monkeypatch.setattr(provider_module, "AUTOSTART_SIGNAL_ABSENT_HOLD_S", 60.0)
+    provider = await make_provider([fake_client])
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    fake_client.emit(_signal(SignalState.PRESENT))
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await _settle()
+    assert get_queues(provider).stopped == []
+    await provider.unload()
 
 
 @pytest.mark.usefixtures("fast_autostart")
