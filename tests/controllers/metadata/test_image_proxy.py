@@ -716,6 +716,25 @@ async def test_unavailable_provider_is_not_cached_as_a_missing_image(
     assert await get_image_thumb(mass, image_path, 256, provider.instance_id)
 
 
+async def test_absolute_path_is_read_without_its_provider(
+    metadata_controller: MetaDataController, tmp_path: Any
+) -> None:
+    """
+    An absolute image path stays readable while its provider is unavailable.
+
+    Providers that write their own image files (playlist artwork, collages) pair an
+    absolute path with their instance id, and such a file needs no provider to be read.
+    """
+    mass = metadata_controller.mass
+    source_path = tmp_path / "playlist-art.png"
+    Image.new("RGB", (300, 300), (200, 200, 10)).save(str(source_path), "PNG")
+    provider = _fake_image_provider("playlist_metadata--mnop3456", str(source_path))
+    provider.available = False
+    mass._providers[provider.instance_id] = provider
+
+    assert await get_image_thumb(mass, str(source_path), 256, provider.instance_id)
+
+
 async def test_get_thumbnail_reports_unavailable_as_media_not_found(
     metadata_controller: MetaDataController, tmp_path: Any
 ) -> None:

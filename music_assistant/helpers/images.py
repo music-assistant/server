@@ -458,14 +458,16 @@ async def _fetch_source_image(
                 return resolved_image, True
             if isinstance(resolved_image, str):
                 path_or_url = resolved_image
-    elif not path_or_url.startswith(("http", "data:image")) and mass.get_provider(
-        provider, return_unavailable=True
+    elif (
+        not path_or_url.startswith(("http", "data:image"))
+        and not Path(path_or_url).is_absolute()
+        and mass.get_provider(provider, return_unavailable=True)
     ):
-        # a registered provider that is momentarily down is the only thing that can turn
-        # its own path into something readable, so stop here: the routes below would probe
-        # a path relative to nothing (spawning ffmpeg per request for the whole outage),
-        # and reporting it as missing would cache that verdict. An unknown provider does
-        # fall through - it is gone for good, so a missing image is the honest verdict.
+        # a relative path means only the provider can say what it is relative to, so a
+        # registered provider that is momentarily down leaves nothing to try: the routes
+        # below would probe a path relative to nothing (spawning ffmpeg per request for
+        # the whole outage) and reporting it as missing would cache that verdict. An
+        # unknown provider does fall through - it is gone for good, so missing is honest.
         msg = f"{provider} is not available to resolve image {path_or_url}"
         raise ProviderUnavailableError(msg)
     # handle HTTP location
