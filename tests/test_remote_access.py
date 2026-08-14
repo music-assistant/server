@@ -868,6 +868,7 @@ class _FakeBidiChannel:
     def __init__(self, label: str = "ma-api", max_message_size: int = 256 * 1024) -> None:
         self.label = label
         self.is_open = True
+        self.is_closed = False
         self.closed = False
         self.max_message_size = max_message_size
         self.sent: list[str | bytes] = []
@@ -887,6 +888,7 @@ class _FakeBidiChannel:
 
     def close(self) -> None:
         self.closed = True
+        self.is_closed = True
         self.is_open = False
         self._inbound.put_nowait(None)
 
@@ -1582,15 +1584,32 @@ async def test_a_second_http_proxy_channel_is_refused(cert_pems: tuple[str, str]
 
 
 class _FakeDataChannel:
-    """Data channel stand-in that captures outbound messages for proxy tests."""
+    """
+    Data channel stand-in that captures outbound messages for proxy tests.
 
-    def __init__(self, max_message_size: int = 256 * 1024) -> None:
-        self.is_open = True
+    :param close_after: Close the channel once this many messages have been sent.
+    """
+
+    def __init__(self, max_message_size: int = 256 * 1024, close_after: int | None = None) -> None:
+        self.is_closed = False
         self.max_message_size = max_message_size
         self.sent: list[str] = []
+        # the gateway consults the channel once per outbound message, so this counts how far
+        # a send loop got even when the messages themselves are discarded
+        self.open_checks = 0
+        self._is_open = True
+        self._close_after = close_after
+
+    @property
+    def is_open(self) -> bool:
+        self.open_checks += 1
+        return self._is_open
 
     async def send(self, data: str) -> None:
         self.sent.append(data)
+        if self._close_after is not None and len(self.sent) >= self._close_after:
+            self._is_open = False
+            self.is_closed = True
 
 
 def _proxy_gateway(cert_pems: tuple[str, str]) -> WebRTCGateway:
@@ -1740,6 +1759,21 @@ async def test_send_chunked_passthrough_stops_at_the_negotiated_limit(
     assert len(channel.sent) > 1
     assert all(len(m.encode()) <= channel.max_message_size for m in channel.sent)
     assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_send_chunked_stops_framing_once_the_channel_closes(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A channel that goes away mid-message stops the loop instead of encoding the rest."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel(close_after=1)
+    text = '{"data":"' + "x" * (DATA_CHANNEL_CHUNK_SIZE * 3) + '"}'
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    assert len(channel.sent) == 1
+    # the opening guard plus the one delivered piece: the other three are never framed
+    assert channel.open_checks == 2
 
 
 async def test_ma_api_channel_chunks_within_the_negotiated_limit(
