@@ -784,6 +784,27 @@ async def test_anchor_follows_the_clock_ready_projection() -> None:
     assert _commanded_instant(stream) == ready_at + AIRPLAY_CLOCK_READY_LEAD_MS
 
 
+async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
+    """
+    A stalled receiver is anchored anyway, unlike a late joiner, and warned about.
+
+    A joiner is dropped because the session plays on without it, while here
+    dropping would stop the speaker, and the binary's stall report is a
+    diagnosis a receiver can still come good from.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream()
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+    _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
+
+    with patch.object(bridge.logger, "warning") as warning:
+        assert await _anchor(bridge, stream) is True
+
+    assert _commanded_instant(stream) == UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
+    assert bridge._started is True
+    assert len([call for call in warning.call_args_list if "PTP clock" in call.args[0]]) == 1
+
+
 async def test_anchor_never_precedes_content_already_scheduled() -> None:
     """
     A buffered source keeps its intro: the anchor lands on the first chunk we hold.

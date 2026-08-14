@@ -194,7 +194,14 @@ class AirPlayStream:
         # clock_ready): either it projected when the clock becomes usable, or it
         # reported that there is nothing to wait for. The projected instant
         # (unix ms) stays 0 in the latter case, and the readiness below says
-        # which of the reasons it was.
+        # which of the reasons it was. Never re-armed: the binary restarts this
+        # reporting on every FLUSH and START, but the re-armed report waits on
+        # its audio loop, which the flush ack ordinarily beats, so a warm
+        # re-anchor plans against what the previous cycle latched here - which
+        # still holds, a flush leaving the receiver's own clock undisturbed.
+        # Clearing it per cycle would cost a silent receiver its stall verdict:
+        # the binary restarts a five-second stall window at each re-arm, so the
+        # wait below could only ever time out to UNREPORTED.
         self._clock_ready = asyncio.Event()
         self._clock_ready_at_unix_ms: int = 0
         self._clock_readiness: ClockReadiness = ClockReadiness.UNREPORTED

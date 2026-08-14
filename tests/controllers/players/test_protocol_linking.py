@@ -7562,6 +7562,54 @@ class TestNativePlayerSiblingLinking:
         assert sendspin_linked, "Sendspin should be linked via sibling protocol matching"
 
 
+class TestCachedProtocolLinkRecovery:
+    """Tests for recovering protocol links from config."""
+
+    def test_recovered_links_are_applied_through_the_setter(self, mock_mass: MagicMock) -> None:
+        """Recovery applies a single link per protocol domain through the setter."""
+        controller = PlayerController(mock_mass)
+
+        protocol_configs = {
+            "ap_first": {
+                "provider": "airplay--first",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "heos_player"},
+            },
+            "ap_second": {
+                "provider": "airplay--second",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "heos_player"},
+            },
+        }
+
+        def config_get_side_effect(key: str, default: object = None) -> object:
+            if key == "players/heos_player/values/linked_protocol_ids":
+                return ["ap_first", "ap_second"]
+            if key == "players":
+                return protocol_configs
+            if key.startswith("players/"):
+                return protocol_configs.get(key.split("/", maxsplit=1)[1])
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=config_get_side_effect)
+
+        heos_player = MockPlayer(
+            MockProvider("heos", mass=mock_mass),
+            "heos_player",
+            "Denon AVR-X2700H",
+        )
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        recovered = [link.output_protocol_id for link in heos_player.linked_output_protocols]
+        assert recovered == ["ap_first"]
+        mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
+
+        # a repeat pass has nothing left to recover, so no update is triggered
+        controller._recover_cached_protocol_links(heos_player)
+        mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
+
+
 class TestMultiMACMatching:
     """Tests for multi-MAC matching (reported MAC vs ARP MAC)."""
 

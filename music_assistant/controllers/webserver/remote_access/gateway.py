@@ -1008,7 +1008,8 @@ class WebRTCGateway:
             pass
         except RTCError as err:
             # a single failed send (e.g. an over-limit message) must not tear down the pump
-            self.logger.warning("Dropping %d-byte data channel message: %s", len(data), err)
+            size = len(data.encode()) if isinstance(data, str) else len(data)
+            self.logger.warning("Dropping %d-byte data channel message: %s", size, err)
 
     def _try_extract_sendspin_client_id(self, session: WebRTCSession, message: str) -> None:
         """Try to extract client_id from sendspin auth message and set on websocket client."""

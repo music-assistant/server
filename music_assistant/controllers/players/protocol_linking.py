@@ -1446,6 +1446,7 @@ class ProtocolLinkingMixin:
             return
 
         # Add link entries for any cached protocols that aren't currently linked
+        updated_protocols = list(native_player.linked_output_protocols)
         for protocol_id in cached_protocol_ids:
             if protocol_id in linked_protocol_ids:
                 continue  # Already linked
@@ -1464,9 +1465,7 @@ class ProtocolLinkingMixin:
             protocol_domain = protocol_provider.split("--", maxsplit=1)[0]
 
             # Skip if parent already has a link from this domain
-            existing_domains = {
-                link.protocol_domain for link in native_player.linked_output_protocols
-            }
+            existing_domains = {link.protocol_domain for link in updated_protocols}
             if protocol_domain in existing_domains:
                 continue
 
@@ -1484,8 +1483,7 @@ class ProtocolLinkingMixin:
             if derived_from == native_player.player_id:
                 derived_from = "native"
 
-            # Add the link entry
-            native_player.linked_output_protocols.append(
+            updated_protocols.append(
                 LinkedOutputProtocol(
                     output_protocol_id=protocol_id,
                     protocol_domain=protocol_domain,
@@ -1498,6 +1496,9 @@ class ProtocolLinkingMixin:
                 native_player.player_id,
                 protocol_id,
             )
+
+        if len(updated_protocols) != len(native_player.linked_output_protocols):
+            native_player.set_linked_output_protocols(updated_protocols)
 
     def _cleanup_protocol_links(self, player: Player) -> None:
         """Clean up protocol links when a player is permanently removed."""

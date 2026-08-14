@@ -40,17 +40,20 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
 
-# What each readiness outcome means for the join anchor: only a projection moves
-# it, every other outcome leaves the join floor carrying it alone, so the note
-# says which of the two happened and why. STALLED has no note because it never
-# reaches an anchor - a stalled joiner is refused the join before that.
+# What each readiness outcome means for the join anchor: a projection only moves
+# it when it clears the join floor, which otherwise carries the anchor alone, so
+# the note says which bound the outcome set. STALLED has no note because it never
+# reaches a join anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
-    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
+    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring no earlier than that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
     "anchoring on the join floor",
     ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
     "receiver that never answered); anchoring on the join floor",
 }
+# A locked clock projects an instant that has already passed - the common case,
+# since only a cold receiver is still probing - so its note reads back in time.
+_CLOCK_LOCKED_NOTE = "became usable {ago:.2f}s ago; anchoring on the join floor"
 
 
 class AirPlayStreamSession:
@@ -84,6 +87,11 @@ class AirPlayStreamSession:
         self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.seconds_streamed: float = 0
+        # Parked in standby: the members stay connected but nothing is fed and
+        # their binaries hold until a START, so only a re-anchor (play_media)
+        # revives them. It outlives the group that parked it, which is why the
+        # session - not the group membership - owns this.
+        self.parked: bool = False
         # Timing source for the whole session, decided once in start() and applied
         # identically to every native AirPlay 2 member (and any late joiner) so a
         # sync group can never mix shared-PTP and NTP members.
@@ -344,6 +352,7 @@ class AirPlayStreamSession:
         self._pcm_buffer.clear()
         self._client_skip_bytes.clear()
         self._reset_member_shifts()
+        self.parked = True
         return True
 
     async def stop(self) -> None:
@@ -576,13 +585,18 @@ class AirPlayStreamSession:
             return anchor_at, due, prime_slice, skip
 
         now = time.time()
+        clock_out = ready_at_unix_ms / 1000 - now
+        if readiness is ClockReadiness.PROJECTED and clock_out <= 0:
+            clock_note = _CLOCK_LOCKED_NOTE.format(ago=abs(clock_out))
+        else:
+            clock_note = _CLOCK_READINESS_NOTES.get(readiness, "").format(
+                out=clock_out,
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
+            )
         self.prov.logger.debug(
             "Late joiner %s: receiver clock %s",
             airplay_player.player_id,
-            _CLOCK_READINESS_NOTES.get(readiness, "").format(
-                out=ready_at_unix_ms / 1000 - now,
-                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
-            ),
+            clock_note,
         )
         async with self._lock:
             if not self._session_is_live():
@@ -1210,6 +1224,8 @@ class AirPlayStreamSession:
             )
         self.start_unix_ms = target_ms
         self.start_time = target_ms / 1000
+        # the only place a session (re)gains a live timeline, so any park ends here
+        self.parked = False
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""
