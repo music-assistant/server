@@ -992,6 +992,35 @@ def test_sync_volume_state_keeps_explicitly_requested_volume(
     mock_update.assert_not_called()
 
 
+def test_sync_volume_state_keeps_unity_gain_for_explicitly_requested_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Reset to unity gain even for an explicitly requested volume.
+
+    A control that owns the volume of this output attenuates on the device itself, so
+    the requested level would land on top of it.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.volume_control_for_output.return_value = "cast_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    cast_player = MagicMock()
+    cast_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "cast_player": cast_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 85
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state(adopt_parent_volume=False)
+
+    assert airplay_player._attr_volume_level == 100
+    mock_update.assert_called_once()
+
+
 def test_sync_volume_state_clears_mute_latch_without_adopting_volume(
     airplay_player: AirPlayPlayer,
 ) -> None:
