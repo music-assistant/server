@@ -18,6 +18,28 @@ from typing import TYPE_CHECKING
 
 from hue_entertainment import LightColorCommand
 
+from .constants import (
+    CONF_PULSE_DECAY,
+    CONF_PULSE_DOWNBEAT,
+    CONF_PULSE_FLOOR,
+    CONF_PULSE_SELECT,
+    DEFAULT_PULSE_DECAY,
+    DEFAULT_PULSE_DOWNBEAT,
+    DEFAULT_PULSE_FLOOR,
+    DEFAULT_PULSE_SELECT,
+)
+from .palettes import resolve_palette
+from .strobe_overlay import StrobeOverlay, StrobeSettings
+from .structure import (
+    SECTION_BREAK,
+    SECTION_DROP,
+    SECTION_NORMAL,
+    SECTION_RISE,
+    SECTION_SUSTAIN,
+    SectionState,
+    StructureDetector,
+)
+
 if TYPE_CHECKING:
     from aiosendspin.models.visualizer import BeatTiming
     from hue_entertainment import LightChannel
@@ -118,6 +140,39 @@ class _ModePreset:
     bass_saturation_scale: float = 1.0
 
 
+@dataclass(frozen=True, slots=True)
+class PulseSettings:
+    """User knobs for the distributed fire engine (pulse mode + club groove)."""
+
+    floor: float = 0.0  # 0..1 brightness held between beats (0 = full black)
+    decay: float = 0.90  # 0..1 fraction of the beat gap the envelope spans
+    select: str = "chase"  # which light fires each beat: chase / scatter / spectrum
+    downbeat_all: bool = True  # downbeats fire the whole room (bloom)
+
+    @classmethod
+    def from_config(cls, config: object) -> PulseSettings:
+        """Build pulse settings from a provider config exposing ``get_value``."""
+        get = config.get_value  # type: ignore[attr-defined]
+
+        def _pct(key: str, default: int) -> float:
+            value = get(key)
+            if value is None or value == "":
+                return default / 100.0
+            try:
+                return int(float(str(value))) / 100.0
+            except TypeError, ValueError:
+                return default / 100.0
+
+        select = str(get(CONF_PULSE_SELECT) or DEFAULT_PULSE_SELECT)
+        downbeat = get(CONF_PULSE_DOWNBEAT)
+        return cls(
+            floor=_pct(CONF_PULSE_FLOOR, DEFAULT_PULSE_FLOOR),
+            decay=_pct(CONF_PULSE_DECAY, DEFAULT_PULSE_DECAY),
+            select=select if select in {"chase", "scatter", "spectrum"} else DEFAULT_PULSE_SELECT,
+            downbeat_all=DEFAULT_PULSE_DOWNBEAT if downbeat is None else bool(downbeat),
+        )
+
+
 # Modes selectable from the UI. ``DEFAULT_MODE`` is used when the configured
 # mode string is unknown or missing.
 DEFAULT_MODE = "smooth"
@@ -172,7 +227,69 @@ _MODES: dict[str, _ModePreset] = {
         channel_floor=0.30,
         channel_max=1.00,
     ),
+    "club": _ModePreset(
+        # Structure-aware. These preset fields only seed the palette walk +
+        # per-channel spectrum sparkle; the section envelope (groove / build /
+        # drop / break) is applied on top in _render_club().
+        pulse_peak=1.4,
+        downbeat_pulse_peak=1.7,
+        beat_animation_fraction=0.12,
+        channel_transient_scale=5.0,
+        color_gradient_spread=1.0,
+        palette_advance=0.25,
+        spatial_drift_per_second=0.05,
+        channel_floor=0.75,
+        channel_max=1.00,
+        onset_boost=0.6,
+    ),
+    "pulse": _ModePreset(
+        # Distributed decay-to-black sequential beat pulse. Brightness is owned by
+        # the per-channel fire engine (_distributed_fire_levels), so the floor is 0
+        # and the spectrum-driven multiplier path is bypassed; only the palette walk
+        # fields below are used for colour.
+        pulse_peak=1.0,
+        downbeat_pulse_peak=1.0,
+        beat_animation_fraction=0.0,
+        channel_transient_scale=0.0,
+        color_gradient_spread=1.0,
+        palette_advance=0.25,
+        spatial_drift_per_second=0.03,
+        channel_floor=0.0,
+        channel_max=1.00,
+        onset_boost=0.0,
+    ),
 }
+
+# -- Distributed decay-to-black sequential beat pulse ("pulse" mode + club groove) --
+# One light fires bright on each beat then eases to black before the next beat,
+# the hit chasing to a different light each beat; tails of earlier hits overlap.
+_FIRE_PEAK = 1.0  # brightness a fired light reaches at the attack apex
+_FIRE_DECAY_BEATS = 0.90  # full attack+tail fire envelope spans this fraction of the beat gap
+_FIRE_MIN_DECAY_US = 90_000  # floor on decay so a fast-tempo hit is never a 1-frame blip
+_FIRE_ATTACK_FRACTION = 0.06  # fraction of the decay spent ramping 0 -> peak (snappy)
+_FIRE_MIN_ATTACK_US = 12_000  # floor on attack so it is never a hard single-frame step
+_FIRE_DECAY_GAMMA = 1.6  # >1 = slam then long thin eased tail (more visible easing)
+_FIRE_FALLBACK_PERIOD_US = 500_000  # decay timing when neither segment nor bpm is known
+_FIRE_COVERAGE_GAIN = 2.0  # extra lights joining the moving front at full intensity
+_FIRE_CHASE_STEP = 1  # spatial step between consecutive fired lights
+_FIRE_SCATTER_PRIME = 2_654_435_761  # deterministic scatter hash multiplier
+# Club SUSTAIN keeps a faint constant bed under the fire so the room is a fuller
+# wash; club NORMAL goes fully dark between hits.
+_CLUB_SUSTAIN_BED = 0.06
+
+# -- Club mode (structure-aware) brightness envelope --
+# Per-channel level the groove sits at in the verse vs. the high-energy sustain.
+_CLUB_NORMAL_LEVEL = 0.62
+_CLUB_SUSTAIN_LEVEL = 0.82
+# During a build, lights ramp from this floor up to full as the recruit front
+# sweeps across the room (rise_progress 0 -> 1).
+_CLUB_RISE_FLOOR = 0.12
+# Breakdown breathes between these two levels (near-black, slow sine).
+_CLUB_BREAK_FLOOR = 0.04
+_CLUB_BREAK_CEIL = 0.18
+_CLUB_BREAK_HZ = 0.15
+# White slam on the drop: full white at the hit, decaying to the palette colour.
+_CLUB_DROP_US = 600_000
 
 # Brightness pulse on the beat. Triangle window with this half-width fraction
 # of the surrounding beat interval. ~8% of segment ≈ ±40 ms at 120 BPM. The
@@ -237,6 +354,15 @@ _PEAK_BOOST_SCALE = 0.3
 # scroll the palette or lift brightness. Tunable.
 _PEAK_MIN_STRENGTH = 0.1
 
+# Optional palette-rotation crossfade (CONF_PALETTE_ROTATE_SMOOTH). The glide
+# lasts one beat so it tracks tempo, clamped to a short ceiling and with a fixed
+# fallback when the BPM is unknown. Two palettes of different lengths are blended
+# by resampling both to this many slots.
+_ROTATE_XFADE_BEATS = 1.0
+_ROTATE_XFADE_MAX_US = 800_000
+_ROTATE_XFADE_FALLBACK_US = 450_000
+_ROTATE_XFADE_SLOTS = 12
+
 
 @dataclass(frozen=True, slots=True)
 class _ScheduledBeat:
@@ -270,6 +396,11 @@ class HueAudioAnalyzer:
         channels: list[LightChannel],
         color_mode: str = DEFAULT_MODE,
         brightness: int = 100,
+        strobe_channel_ids: set[int] | None = None,
+        strobe: StrobeSettings | None = None,
+        palette: str = "",
+        per_light: dict[int, float] | None = None,
+        pulse: PulseSettings | None = None,
     ) -> None:
         """
         Initialize the analyzer.
@@ -281,6 +412,49 @@ class HueAudioAnalyzer:
         self._color_mode = color_mode
         self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
         self._brightness = max(0, min(100, brightness)) / 100.0
+        # Selected named palette (None = derive colours from the music/album art).
+        self._palette_colors = resolve_palette(palette)
+        # Per-light base-brightness scale (channel_id -> 0-1), base effects only.
+        self._per_light = dict(per_light or {})
+        # Bar-aligned palette rotation state (configured via set_rotation()).
+        self._rotate_enabled = False
+        self._rotate_colors: list[list[tuple[float, float, float]]] = []
+        self._rotate_beats = 16
+        self._rotate_index = 0
+        self._rotate_beat_count = 0
+        self._rotate_prev_beat_ts = -1
+        self._rotate_anchored = False
+        self._rotate_unanchored = 0
+        self._rotate_smooth = False
+        self._rotate_prev_index = 0
+        self._rotate_xfade_start_us = -1  # server time the current crossfade began (-1 = none)
+        self._render_now_us = 0  # latest render time, for the palette path
+        # Club-mode (structure-aware) state.
+        self._club_drop_us = -1  # server time the current white slam started (-1 = none)
+        self._prev_sec_state = SECTION_NORMAL  # for drop-edge detection
+        self._club_order: list[int] | None = None  # channels sorted by space (lazy)
+        # Distributed-fire (pulse mode + club groove) per-channel envelope state.
+        pulse = pulse or PulseSettings()
+        self._pulse_floor = pulse.floor  # brightness held between beats (0 = full black)
+        self._pulse_decay = pulse.decay  # fraction of the beat gap the fire envelope spans
+        self._pulse_select = pulse.select  # which light fires each beat: chase/scatter/spectrum
+        self._pulse_downbeat_all = pulse.downbeat_all  # downbeats fire the whole room (bloom)
+        self._reset_fire_state()
+
+        # Distributed strobe overlay (runs on top of the selected base mode).
+        # Colour + brightness cap are kept on the analyzer so the strobe stays
+        # independent of the base brightness; the overlay only decides on/off.
+        # Song-structure detector feeding the strobe gate a climax score that
+        # rises on builds/drops rather than on any sustained loud passage.
+        self._structure = StructureDetector()
+        strobe = strobe or StrobeSettings()
+        self._strobe_color = strobe.color
+        self._strobe_brightness = max(0, min(100, strobe.brightness)) / 100.0
+        self._strobe = StrobeOverlay(
+            channel_order=[c.channel_id for c in channels],
+            selected_ids=strobe_channel_ids or (),
+            settings=strobe,
+        )
 
         self._server_palette: dict[str, tuple[int, int, int] | None] = {}
         self._beats: deque[_ScheduledBeat] = deque()
@@ -330,6 +504,11 @@ class HueAudioAnalyzer:
         self,
         color_mode: str | None = None,
         brightness: int | None = None,
+        strobe_channel_ids: set[int] | None = None,
+        strobe: StrobeSettings | None = None,
+        palette: str | None = None,
+        per_light: dict[int, float] | None = None,
+        pulse: PulseSettings | None = None,
     ) -> None:
         """Update settings without reset."""
         if color_mode is not None:
@@ -337,6 +516,39 @@ class HueAudioAnalyzer:
             self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
         if brightness is not None:
             self._brightness = max(0, min(100, brightness)) / 100.0
+        if strobe_channel_ids is not None:
+            self._strobe.update_config(selected_ids=strobe_channel_ids)
+        if strobe is not None:
+            self._strobe_color = strobe.color
+            self._strobe_brightness = max(0, min(100, strobe.brightness)) / 100.0
+            self._strobe.apply_settings(strobe)
+        if palette is not None:
+            self._palette_colors = resolve_palette(palette)
+        if per_light is not None:
+            self._per_light = dict(per_light)
+        if pulse is not None:
+            self._pulse_floor = pulse.floor
+            self._pulse_decay = pulse.decay
+            self._pulse_select = pulse.select
+            self._pulse_downbeat_all = pulse.downbeat_all
+
+    def set_rotation(
+        self, enabled: bool, names: list[str], beats: int, smooth: bool = False
+    ) -> None:
+        """
+        Configure bar-aligned palette rotation.
+
+        :param enabled: Whether the palette rotates over time.
+        :param names: Ordered palette names to cycle through.
+        :param beats: Beats between steps (snapped to bar starts); e.g. 16 = 4 bars.
+        :param smooth: Crossfade (~1 beat) between palettes instead of a hard cut.
+        """
+        self._rotate_enabled = bool(enabled)
+        self._rotate_beats = max(1, int(beats))
+        self._rotate_smooth = bool(smooth)
+        self._rotate_colors = [c for c in (resolve_palette(n) for n in names) if c]
+        if self._rotate_index >= len(self._rotate_colors):
+            self._rotate_index = 0
 
     # -- Input events --
 
@@ -390,6 +602,7 @@ class HueAudioAnalyzer:
                 )
             )
             self._last_beat_in_bar = bib
+            self._structure.note_beat(beat.timestamp_us, beat.is_downbeat)
 
     def clear_beat_schedule(self) -> None:
         """Drop only the beat schedule (a track change re-pushes it; spectrum keeps flowing)."""
@@ -405,20 +618,22 @@ class HueAudioAnalyzer:
         self._peak_palette_position = 0.0
         self._pending_spectrum.clear()
         self._spectrum = []
+        self._structure.reset()
+        self._reset_fire_state()
 
     # -- Rendering --
 
     def render(self, now_us: int) -> list[LightColorCommand]:
         """Render every channel at server-clock time ``now_us``."""
+        self._render_now_us = now_us
         self._prune(now_us)
         self._advance_spectrum(now_us)
-        palette = self._active_palette()
         if not self._channels:
             return []
         channel_mults = self._combined_channel_multipliers()
-        # `_consume_peaks` always runs (it advances the peak palette walker);
-        # `onset_boost` gates only the brightness flash, so ambient still cycles
-        # colour on onsets but does not flash.
+        # `_consume_peaks` always runs (it advances the peak palette walker and
+        # feeds the structure detector's onset window); `onset_boost` gates only
+        # the brightness flash, so ambient still cycles colour on onsets.
         peak_factor = self._consume_peaks(now_us) * self._mode.onset_boost
         if peak_factor > 0.0:
             channel_mults = [min(1.0, m + peak_factor) for m in channel_mults]
@@ -428,13 +643,51 @@ class HueAudioAnalyzer:
         # both a prior and a next beat the beat-driven walker can't
         # interpolate, so fall back to a peak-driven palette scroll.
         prior, next_beat, segment, _prior_bib = self._current_segment(now_us)
+        self._advance_rotation(prior)
+        # Build the cycling palette AFTER advancing rotation so a rotation step that
+        # lands on this frame uses the new index and starts its crossfade now.
+        palette = self._active_palette()
+
+        # Distributed strobe overlay decision (None unless an energetic burst is
+        # active on the selected lights). The gate is fed a structure-aware climax
+        # score (loud + transient-dense + bright) so it engages on drops/choruses
+        # rather than on any sustained loud passage. Beat timing lets it align
+        # flashes to the beat when beat-sync is enabled.
+        self._structure.update(now_us, self._spectrum)
+        energy = self._structure.climax_score(now_us, self._spectrum)
+        strobe_levels = self._strobe.tick(
+            now_us,
+            energy,
+            beat_period_us=segment if segment and segment > 0 else None,
+            beat_anchor_us=prior.timestamp_us if prior is not None else None,
+            section=self._structure.section(),
+        )
+
+        if self._color_mode == "club":
+            return self._render_club(
+                now_us, palette, (prior, next_beat, segment), channel_mults, strobe_levels
+            )
+
+        if self._color_mode == "pulse":
+            return self._render_pulse(now_us, palette, (prior, next_beat, segment), strobe_levels)
+
         if next_beat is None or segment is None or segment <= 0 or prior is None:
             colors = self._peak_walk_colors(palette, now_us)
-            return self._fill_per_channel(colors, base_brightness, channel_mults)
+            return self._fill_per_channel(colors, base_brightness, channel_mults, strobe_levels)
 
         pulse = self._compute_pulse(now_us, prior, next_beat, segment)
         colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
-        return self._fill_per_channel(colors, base_brightness * pulse, channel_mults)
+        return self._fill_per_channel(colors, base_brightness * pulse, channel_mults, strobe_levels)
+
+    def _reset_fire_state(self) -> None:
+        """Reset the distributed-fire per-channel envelopes so a new track starts dark."""
+        n_ch = len(self._channels)
+        self._fire_set_us = [-1] * n_ch  # server time each channel was last triggered
+        self._fire_peak = [0.0] * n_ch  # the peak level each channel was fired at
+        self._last_fire_beat_us = -1  # ts of the last scheduled beat already fired (edge guard)
+        self._fire_onset_rank = 0  # monotonic chase counter for the onset fallback
+        self._last_virtual_beat = -1  # last synthesized free-run beat index
+        self._onset_fires: list[int] = []  # onset timestamps consumed this render (tier 2)
 
     def _advance_spectrum(self, now_us: int) -> None:
         """Drain due spectrum frames and update saturation per drained frame."""
@@ -444,9 +697,6 @@ class HueAudioAnalyzer:
 
     def _consume_spectrum_frame(self, bins: list[int]) -> None:
         """Normalize ``bins`` into ``self._spectrum`` and step bass saturation."""
-        if not bins:
-            self._spectrum = []
-            return
         spectrum: list[float] = []
         for b in bins:
             norm = max(0, min(65535, b)) / 65535.0
@@ -455,9 +705,10 @@ class HueAudioAnalyzer:
                 continue
             spectrum.append(min(1.0, norm**_SPECTRUM_GAMMA))
         self._spectrum = spectrum
-        # Bass energy → saturation via transient detection. Slow baseline
-        # tracks the sustained level, so only bass HITS above the baseline
-        # push saturation up.
+        # Bass energy → saturation via transient detection. Slow baseline tracks the
+        # sustained level, so only bass HITS above the baseline push saturation up.
+        # An empty frame counts as silence (bass_energy 0) so saturation keeps
+        # decaying toward the floor rather than freezing at its last value.
         bass_count = min(_BASS_SAT_BINS, len(spectrum))
         bass_energy = sum(spectrum[:bass_count]) / bass_count if bass_count else 0.0
         self._bass_baseline += (bass_energy - self._bass_baseline) * _BASS_BASELINE_SMOOTHING
@@ -478,12 +729,20 @@ class HueAudioAnalyzer:
         fade over ``_PEAK_BOOST_DECAY_US``; peaks scheduled in the future
         contribute nothing yet.
         """
+        self._onset_fires = []
         while self._pending_peaks and self._pending_peaks[0][0] <= now_us:
             ts, boost = self._pending_peaks.popleft()
+            # Compare against the SEED magnitude of the active boost (not its current
+            # decayed value), so a fresh hit only re-arms the flash if it is at least
+            # as strong as the one that started the current fade.
             if self._peak_set_at_us is None or boost >= self._peak_boost:
                 self._peak_boost = boost
                 self._peak_set_at_us = ts
             self._peak_palette_position += self._mode.palette_advance
+            # Feed the structure detector's onset-density window + the fire engine's
+            # tier-2 (no-beat) trigger.
+            self._structure.note_onset(ts)
+            self._onset_fires.append(ts)
         if self._peak_set_at_us is None:
             return 0.0
         elapsed = now_us - self._peak_set_at_us
@@ -542,7 +801,10 @@ class HueAudioAnalyzer:
         if t_norm <= hold_until or anim_fraction <= 0.0:
             time_blend = 0.0
         else:
-            time_blend = (t_norm - hold_until) / anim_fraction
+            # Ease the temporal crossfade (EDK EaseInOutSine) so the colour glides
+            # onto the beat instead of ramping linearly; the spatial gradient frac
+            # below stays linear so the room layout isn't distorted.
+            time_blend = _ease_in_out_sine((t_norm - hold_until) / anim_fraction)
 
         prior_slot = (prior.beat_in_bar * advance) % palette_len
         next_slot = (next_beat.beat_in_bar * advance) % palette_len
@@ -624,16 +886,28 @@ class HueAudioAnalyzer:
         colors: list[tuple[float, float, float]],
         brightness: float,
         channel_multipliers: list[float] | None,
+        strobe_levels: dict[int, float] | None = None,
     ) -> list[LightColorCommand]:
         """Emit one command per channel with its own color and brightness."""
         commands: list[LightColorCommand] = []
         for i, ch in enumerate(self._channels):
+            # Strobe overlay owns this channel: emit the strobe colour at its own
+            # brightness cap (level 1.0 = flash, 0.0 = blackout), independent of
+            # the base brightness. Channels the overlay does not list fall through
+            # to the base effect below (off-phase when blackout is disabled).
+            if strobe_levels is not None and ch.channel_id in strobe_levels:
+                scale = self._strobe_brightness * strobe_levels[ch.channel_id]
+                sr, sg, sb = self._strobe_color
+                commands.append(self._to_command(ch.channel_id, sr * scale, sg * scale, sb * scale))
+                continue
             mult = (
                 channel_multipliers[i]
                 if channel_multipliers is not None and i < len(channel_multipliers)
                 else 1.0
             )
-            scale = brightness * mult
+            # Per-light base-brightness scale applies to the base effects only
+            # (the strobe branch above already returned, so it is never limited).
+            scale = brightness * mult * self._per_light.get(ch.channel_id, 1.0)
             color = colors[i] if i < len(colors) else (0.0, 0.0, 0.0)
             commands.append(
                 self._to_command(
@@ -761,6 +1035,338 @@ class HueAudioAnalyzer:
                 max_effect = effect
         return 1.0 + max_effect
 
+    def _render_club(
+        self,
+        now_us: int,
+        palette: list[tuple[float, float, float]],
+        beat_info: tuple[_ScheduledBeat | None, _ScheduledBeat | None, int | None],
+        channel_mults: list[float],
+        strobe_levels: dict[int, float] | None,
+    ) -> list[LightColorCommand]:
+        """
+        Render the structure-aware "club" mode.
+
+        Layers a section envelope on top of the palette walk: a soft groove
+        pulse in the verse, lights recruited one by one through a build, a hard
+        white slam on the drop, and a breathing blackout on breakdowns. The
+        strobe overlay and per-light brightness still apply via
+        :meth:`_fill_per_channel`.
+
+        :param now_us: Server-clock render time.
+        :param palette: The active cycling palette.
+        :param beat_info: ``(prior, next_beat, segment_us)`` for the current moment.
+        :param channel_mults: Per-channel spectrum-sparkle multipliers.
+        :param strobe_levels: Strobe overlay per-channel levels (or None).
+        """
+        prior, next_beat, segment = beat_info
+        sec = self._structure.section()
+        n = len(self._channels)
+        if prior is not None and next_beat is not None and segment and segment > 0:
+            colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
+        else:
+            colors = self._peak_walk_colors(palette, now_us)
+        drop_mix = self._club_drop_mix(now_us, sec)
+        if drop_mix > 0.0:
+            white = (1.0, 1.0, 1.0)
+            colors = [_lerp(c, white, drop_mix) for c in colors]
+        if sec.state in (SECTION_NORMAL, SECTION_SUSTAIN):
+            # Groove uses the distributed fire engine (dark between beats, a hit
+            # chasing light-to-light) instead of a flat constant wash; SUSTAIN
+            # keeps a faint bed so the loud section reads as fuller.
+            fire = self._distributed_fire_levels(now_us, prior, next_beat, segment)
+            bed = _CLUB_SUSTAIN_BED if sec.state == SECTION_SUSTAIN else 0.0
+            mults = [max(bed, fire[i]) for i in range(n)]
+            brightness = self._brightness
+        else:
+            # RISE recruit front / DROP white slam / BREAK breathing blackout.
+            pulse = self._club_pulse(now_us, prior, next_beat, segment, sec)
+            levels = self._club_levels(now_us, sec, n)
+            mults = [channel_mults[i] * levels[i] for i in range(n)]
+            brightness = self._brightness * pulse
+        return self._fill_per_channel(colors, brightness, mults, strobe_levels)
+
+    def _club_pulse(
+        self,
+        now_us: int,
+        prior: _ScheduledBeat | None,
+        next_beat: _ScheduledBeat | None,
+        segment: int | None,
+        sec: SectionState,
+    ) -> float:
+        """Section-driven brightness pulse for the club mode (1.0 = no change)."""
+        st = sec.state
+        if st in (SECTION_DROP, SECTION_BREAK):
+            return 1.0  # the slam / blackout drives brightness, not the beat pulse
+        if st == SECTION_RISE:
+            # Build flutter: a tremolo that accelerates and deepens toward the drop.
+            freq = 2.0 + 14.0 * sec.rise_progress
+            depth = 0.25 + 0.45 * sec.rise_progress
+            phase = (now_us / 1_000_000.0) * freq
+            return 1.0 + depth * math.sin(2.0 * math.pi * phase)
+        if prior is None or next_beat is None or not segment or segment <= 0:
+            return 1.0
+        peak, downbeat_peak = (1.4, 1.7) if st == SECTION_SUSTAIN else (1.3, 1.5)
+        half_width_us = max(1, int(segment * _PULSE_HALF_FRACTION))
+        effect = 0.0
+        for beat in (prior, next_beat):
+            dist = abs(now_us - beat.timestamp_us)
+            if dist >= half_width_us:
+                continue
+            pk = downbeat_peak if beat.is_downbeat else peak
+            value = (pk - 1.0) * (1.0 - dist / half_width_us)
+            if abs(value) > abs(effect):
+                effect = value
+        return 1.0 + effect
+
+    def _club_levels(self, now_us: int, sec: SectionState, n: int) -> list[float]:
+        """Per-channel brightness envelope (0..1) for the current section."""
+        if n == 0:
+            return []
+        st = sec.state
+        if st == SECTION_DROP:
+            return [1.0] * n
+        if st == SECTION_BREAK:
+            t = now_us / 1_000_000.0
+            breathe = 0.5 * (1.0 + math.sin(2.0 * math.pi * _CLUB_BREAK_HZ * t))
+            lvl = _CLUB_BREAK_FLOOR + (_CLUB_BREAK_CEIL - _CLUB_BREAK_FLOOR) * breathe
+            return [lvl] * n
+        if st == SECTION_RISE:
+            # A recruit front sweeps the room: lights switch on one by one in
+            # spatial order as rise_progress climbs 0 -> 1.
+            order = self._club_spatial_order()
+            edge = sec.rise_progress * (n + 1.0)
+            levels = [0.0] * n
+            for rank, idx in enumerate(order):
+                local = max(0.0, min(1.0, edge - rank))
+                levels[idx] = _CLUB_RISE_FLOOR + (1.0 - _CLUB_RISE_FLOOR) * local
+            return levels
+        base = _CLUB_SUSTAIN_LEVEL if st == SECTION_SUSTAIN else _CLUB_NORMAL_LEVEL
+        return [base] * n
+
+    def _club_drop_mix(self, now_us: int, sec: SectionState) -> float:
+        """White-slam mix (0..1): 1.0 at the drop hit, decaying back to palette."""
+        if sec.state == SECTION_DROP and self._prev_sec_state != SECTION_DROP:
+            self._club_drop_us = now_us
+        self._prev_sec_state = sec.state
+        if self._club_drop_us < 0:
+            return 0.0
+        elapsed = now_us - self._club_drop_us
+        if elapsed < 0 or elapsed >= _CLUB_DROP_US:
+            self._club_drop_us = -1
+            return 0.0
+        return float((1.0 - elapsed / _CLUB_DROP_US) ** 1.5)
+
+    def _club_spatial_order(self) -> list[int]:
+        """Channel indices sorted along the room's wider spatial axis (cached)."""
+        if self._club_order is None:
+            n = len(self._channels)
+            if self._x_valid:
+                self._club_order = sorted(range(n), key=lambda i: self._x_norm[i])
+            elif self._z_valid:
+                self._club_order = sorted(range(n), key=lambda i: self._z_norm[i])
+            else:
+                self._club_order = list(range(n))
+        return self._club_order
+
+    def _render_pulse(
+        self,
+        now_us: int,
+        palette: list[tuple[float, float, float]],
+        beat_info: tuple[_ScheduledBeat | None, _ScheduledBeat | None, int | None],
+        strobe_levels: dict[int, float] | None,
+    ) -> list[LightColorCommand]:
+        """
+        Render the distributed decay-to-black sequential pulse mode.
+
+        Colour still comes from the palette walk; brightness is owned entirely by
+        the per-channel fire engine, so lights sit at black between hits and a
+        different light fires (then eases out) on each beat.
+
+        :param now_us: Server-clock render time.
+        :param palette: The active cycling palette.
+        :param beat_info: ``(prior, next_beat, segment_us)`` for the current moment.
+        :param strobe_levels: Strobe overlay per-channel levels (or None).
+        """
+        prior, next_beat, segment = beat_info
+        if prior is not None and next_beat is not None and segment and segment > 0:
+            colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
+        else:
+            colors = self._peak_walk_colors(palette, now_us)
+        fire_mults = self._distributed_fire_levels(now_us, prior, next_beat, segment)
+        return self._fill_per_channel(colors, self._brightness, fire_mults, strobe_levels)
+
+    def _distributed_fire_levels(
+        self,
+        now_us: int,
+        prior: _ScheduledBeat | None,
+        next_beat: _ScheduledBeat | None,
+        segment: int | None,
+    ) -> list[float]:
+        """
+        Per-channel brightness from the distributed fire engine (0..1 each).
+
+        Triggers a fresh fire (edge-locked to the beat) on the chosen channel(s),
+        then evaluates every channel's decay envelope so earlier hits keep easing
+        to black while the new one attacks.
+        """
+        n = len(self._channels)
+        if n == 0:
+            return []
+        beat_period_us = self._fire_beat_period(prior, next_beat, segment)
+        self._advance_fire(now_us, prior, beat_period_us, n)
+        decay_us = max(_FIRE_MIN_DECAY_US, int(beat_period_us * self._pulse_decay))
+        attack_us = max(_FIRE_MIN_ATTACK_US, int(decay_us * _FIRE_ATTACK_FRACTION))
+        floor = self._pulse_floor
+        return [
+            floor + (1.0 - floor) * self._fire_envelope(i, now_us, attack_us, decay_us)
+            for i in range(n)
+        ]
+
+    def _fire_beat_period(
+        self,
+        prior: _ScheduledBeat | None,
+        next_beat: _ScheduledBeat | None,
+        segment: int | None,
+    ) -> int:
+        """Inter-beat period for the fire decay: live segment, else bpm, else fallback."""
+        if prior is not None and next_beat is not None and segment and segment > 0:
+            return segment
+        bpm = self._structure.bpm
+        if bpm > 0:
+            return int(60_000_000 / bpm)
+        return _FIRE_FALLBACK_PERIOD_US
+
+    def _fire_envelope(self, i: int, now_us: int, attack_us: int, decay_us: int) -> float:
+        """Return channel ``i``'s fire level (0..1): eased attack then eased tail to black."""
+        set_us = self._fire_set_us[i]
+        if set_us < 0:
+            return 0.0
+        elapsed = now_us - set_us
+        if elapsed < 0 or elapsed >= decay_us:
+            self._fire_set_us[i] = -1
+            return 0.0
+        peak = self._fire_peak[i]
+        if elapsed < attack_us:
+            return peak * _ease_in_out_sine(elapsed / attack_us)
+        tail = (elapsed - attack_us) / max(1, decay_us - attack_us)
+        return float(peak * (1.0 - _ease_in_out_sine(tail)) ** _FIRE_DECAY_GAMMA)
+
+    def _advance_fire(
+        self, now_us: int, prior: _ScheduledBeat | None, beat_period_us: int, n: int
+    ) -> None:
+        """
+        Edge-triggered fire selection: scheduled beats -> onsets -> free-run bpm -> nothing.
+
+        A present ``prior`` beat owns selection and returns immediately, so the onset
+        and free-run tiers are fallbacks used only when the beat schedule is empty;
+        there is no staleness guard, so a still-present but old prior beat keeps
+        suppressing onset-driven fires.
+        """
+        order = self._club_spatial_order()
+        if prior is not None:
+            # Edge-detect on the beat's timestamp, but ANCHOR the envelope to now_us:
+            # with latency compensation now_us runs ahead of the beat audio time, so
+            # anchoring to the (older) beat time would start the decay already expired
+            # and the light would never light. now_us starts the envelope at 0.
+            if prior.timestamp_us != self._last_fire_beat_us:
+                self._last_fire_beat_us = prior.timestamp_us
+                self._trigger_beat(now_us, prior.beat_in_bar, prior.is_downbeat, order, n)
+            return
+        if self._onset_fires:
+            for _ in self._onset_fires:
+                self._fire(order[self._fire_onset_rank % n], now_us, _FIRE_PEAK)
+                self._fire_onset_rank += 1
+            return
+        bpm = self._structure.bpm
+        if bpm > 0:
+            vbeat = int(now_us / (60_000_000 / bpm))
+            if vbeat != self._last_virtual_beat:
+                self._last_virtual_beat = vbeat
+                self._trigger_beat(now_us, vbeat, vbeat % 4 == 0, order, n)
+
+    def _trigger_beat(
+        self, anchor_us: int, beat_in_bar: int, is_downbeat: bool, order: list[int], n: int
+    ) -> None:
+        """Fire the channel(s) for this beat: chase/scatter/spectrum, with a downbeat bloom."""
+        if is_downbeat and self._pulse_downbeat_all:
+            for idx in range(n):
+                self._fire(idx, anchor_us, _FIRE_PEAK)
+            return
+        if self._pulse_select == "scatter":
+            base_rank = (beat_in_bar * _FIRE_SCATTER_PRIME) % n
+        elif self._pulse_select == "spectrum":
+            base_rank = self._spectrum_fire_rank(n)
+        else:
+            base_rank = beat_in_bar % n
+        coverage = max(1, 1 + round(_FIRE_COVERAGE_GAIN * self._structure.section().intensity))
+        for k in range(coverage):
+            self._fire(order[(base_rank + k * _FIRE_CHASE_STEP) % n], anchor_us, _FIRE_PEAK)
+
+    def _fire(self, idx: int, anchor_us: int, peak: float) -> None:
+        """Trigger channel ``idx``: (re)start its decay envelope anchored at ``anchor_us``."""
+        self._fire_set_us[idx] = anchor_us
+        self._fire_peak[idx] = peak
+
+    def _spectrum_fire_rank(self, n: int) -> int:
+        """Slot index of the loudest spectrum band (for the spectrum firing rule)."""
+        spec = self._spectrum
+        if not spec:
+            return 0
+        usable = min(_CHANNEL_BIN_MAX, len(spec) - 1) + 1
+        best_rank, best_energy = 0, -1.0
+        for slot in range(n):
+            lo = (slot * usable) // n
+            hi = max(lo + 1, ((slot + 1) * usable) // n)
+            energy = sum(spec[lo:hi]) / max(1, hi - lo)
+            if energy > best_energy:
+                best_energy, best_rank = energy, slot
+        return best_rank
+
+    def _rotation_palette(self) -> list[tuple[float, float, float]]:
+        """
+        Return the active rotation palette, optionally mid-crossfade to the previous.
+
+        With smoothing off (or no crossfade in flight) the new palette is returned
+        as a hard cut on the bar. With smoothing on, the two palettes are blended
+        over a one-beat, tempo-locked window eased with the EDK sine curve.
+        """
+        count = len(self._rotate_colors)
+        cur = self._rotate_colors[self._rotate_index % count]
+        if not self._rotate_smooth or self._rotate_xfade_start_us < 0:
+            return list(cur)
+        bpm = self._structure.bpm
+        beat_us = 60_000_000.0 / bpm if bpm > 0 else _ROTATE_XFADE_FALLBACK_US
+        duration = min(_ROTATE_XFADE_MAX_US, beat_us * _ROTATE_XFADE_BEATS)
+        t = (self._render_now_us - self._rotate_xfade_start_us) / duration
+        if t < 0.0 or t >= 1.0:
+            self._rotate_xfade_start_us = -1
+            return list(cur)
+        prev = self._rotate_colors[self._rotate_prev_index % count]
+        return _blend_palettes(prev, cur, _ease_in_out_sine(t), _ROTATE_XFADE_SLOTS)
+
+    def _advance_rotation(self, prior: _ScheduledBeat | None) -> None:
+        """Advance the rotating palette one step every N beats, snapped to bar starts."""
+        if not self._rotate_enabled or not self._rotate_colors or prior is None:
+            return
+        ts = prior.timestamp_us
+        if ts == self._rotate_prev_beat_ts:
+            return
+        self._rotate_prev_beat_ts = ts
+        # Anchor the beat count on the first downbeat so each step lands on a bar
+        # start; fall back to anchoring after a few beats if no downbeat arrives.
+        if not self._rotate_anchored:
+            self._rotate_unanchored += 1
+            if getattr(prior, "is_downbeat", False) or self._rotate_unanchored >= 8:
+                self._rotate_anchored = True
+                self._rotate_beat_count = 0
+            return
+        self._rotate_beat_count += 1
+        if self._rotate_beat_count % self._rotate_beats == 0:
+            self._rotate_prev_index = self._rotate_index
+            self._rotate_index = (self._rotate_index + 1) % len(self._rotate_colors)
+            # Anchor the optional crossfade to this bar boundary (the flip moment).
+            self._rotate_xfade_start_us = ts
+
     def _active_palette(self) -> list[tuple[float, float, float]]:
         """
         Return the cycling palette ordered for vibrancy + maximum contrast.
@@ -783,7 +1389,7 @@ class HueAudioAnalyzer:
         if synthesized:
             return equalized
         deduped = _drop_close_neighbours(equalized, _PALETTE_DEDUP_DISTANCE)
-        return _enforce_neighbour_contrast(deduped, deduped)
+        return _enforce_neighbour_contrast(deduped)
 
     def _gather_raw_palette(self) -> tuple[list[tuple[float, float, float]], bool]:
         """
@@ -804,6 +1410,15 @@ class HueAudioAnalyzer:
         boolean flags the synthesized cases so the caller can skip passes
         that would flatten their subtle variation.
         """
+        # Bar-aligned palette rotation (if active) takes priority, then a single
+        # selected palette. Both override the music-derived colours and are flagged
+        # synthesized so the dedup / neighbour-contrast passes (tuned for noisy
+        # album colours) don't flatten a deliberately curated colour set.
+        if self._rotate_enabled and self._rotate_colors:
+            return self._rotation_palette(), True
+        if self._palette_colors:
+            return list(self._palette_colors), True
+
         bases: list[tuple[float, float, float]] = []
         seen: set[tuple[int, int, int]] = set()
         for name in _PALETTE_SOURCE_FIELDS:
@@ -827,7 +1442,19 @@ class HueAudioAnalyzer:
 
     @staticmethod
     def _to_command(channel_id: int, r: float, g: float, b: float) -> LightColorCommand:
-        """Convert float RGB (0-1) to a 16-bit LightColorCommand."""
+        """
+        Convert float RGB to a 16-bit LightColorCommand, preserving hue on overshoot.
+
+        Brightness pulses and per-channel transients scale a colour by more than the
+        palette's reserved headroom, so the brightest channel can exceed 1.0. Clamping
+        each channel independently lets that channel saturate while the others keep
+        rising, shifting the hue (a pulsing amber drifts to yellow-green). Instead, when
+        any channel overshoots we divide the whole triple by the peak so the channel
+        ratios - the hue - are preserved; only the very peak loses a little brightness.
+        """
+        peak = max(r, g, b)
+        if peak > 1.0:
+            r, g, b = r / peak, g / peak, b / peak
         return LightColorCommand(
             channel_id=channel_id,
             red=int(max(0.0, min(1.0, r)) * 65535),
@@ -841,6 +1468,51 @@ def _lerp(
 ) -> tuple[float, float, float]:
     """Linear interpolation between two RGB triples."""
     return (a[0] * (1.0 - t) + b[0] * t, a[1] * (1.0 - t) + b[1] * t, a[2] * (1.0 - t) + b[2] * t)
+
+
+def _ease_in_out_sine(t: float) -> float:
+    """
+    Sine ease-in-out over ``t`` in [0, 1] (matches the Hue EDK's EaseInOutSine).
+
+    Softens the start and end of a colour crossfade so beat-to-beat transitions
+    glide instead of ramping linearly. Used only for the temporal colour fade in
+    the smooth-family modes; the strobe and drop slam stay hard (linear/instant).
+    """
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return 0.5 * (1.0 - math.cos(math.pi * t))
+
+
+def _resample_palette(
+    palette: list[tuple[float, float, float]], n: int
+) -> list[tuple[float, float, float]]:
+    """Resample a cyclic palette to ``n`` evenly spaced slots (linear between colours)."""
+    length = len(palette)
+    if length == 0:
+        return [(0.0, 0.0, 0.0)] * n
+    if length == 1:
+        return [palette[0]] * n
+    out: list[tuple[float, float, float]] = []
+    for i in range(n):
+        pos = i / n * length
+        low = int(pos) % length
+        high = (low + 1) % length
+        out.append(_lerp(palette[low], palette[high], pos - int(pos)))
+    return out
+
+
+def _blend_palettes(
+    a: list[tuple[float, float, float]],
+    b: list[tuple[float, float, float]],
+    t: float,
+    n: int,
+) -> list[tuple[float, float, float]]:
+    """Crossfade two cyclic palettes by ``t`` (0 -> a, 1 -> b), resampled to ``n`` slots."""
+    resampled_a = _resample_palette(a, n)
+    resampled_b = _resample_palette(b, n)
+    return [_lerp(resampled_a[i], resampled_b[i], t) for i in range(n)]
 
 
 def _normalise_axis(
@@ -998,32 +1670,32 @@ def _drop_close_neighbours(
 
 
 def _enforce_neighbour_contrast(
-    ordered_raw: list[tuple[float, float, float]],
-    equalized: list[tuple[float, float, float]],
+    palette: list[tuple[float, float, float]],
 ) -> list[tuple[float, float, float]]:
     """
-    Dim consecutive entries whose raw RGB is too similar to the previous one.
+    Dim consecutive entries that are too similar to the previous one.
 
     Brightness contrast carries the eye through the cycle when hue contrast
-    alone is too weak. Dimming alternates so we never dim two in a row.
+    alone is too weak. Dimming alternates so we never dim two in a row. Operates
+    on the already-equalized palette (the distance check and the dimmed value are
+    the same list).
     """
-    if len(equalized) <= 1:
-        return list(equalized)
-    result = [equalized[0]]
+    if len(palette) <= 1:
+        return list(palette)
+    result = [palette[0]]
     last_dimmed = False
-    for idx in range(1, len(ordered_raw)):
+    for idx in range(1, len(palette)):
         too_close = (
-            _rgb_distance(ordered_raw[idx - 1], ordered_raw[idx])
-            < _PALETTE_NEIGHBOUR_DISTANCE_THRESHOLD
+            _rgb_distance(palette[idx - 1], palette[idx]) < _PALETTE_NEIGHBOUR_DISTANCE_THRESHOLD
         )
         if too_close and not last_dimmed:
-            r, g, b = equalized[idx]
+            r, g, b = palette[idx]
             result.append(
                 (r * _PALETTE_DIM_FACTOR, g * _PALETTE_DIM_FACTOR, b * _PALETTE_DIM_FACTOR)
             )
             last_dimmed = True
         else:
-            result.append(equalized[idx])
+            result.append(palette[idx])
             last_dimmed = False
     return result
 
