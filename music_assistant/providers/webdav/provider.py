@@ -118,6 +118,14 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         )
         self.write_access = False
 
+    async def _is_reachable(self) -> bool:
+        """Return whether the WebDAV server can be reached."""
+        # base_path is the server url here, so the parent's directory stat cannot answer this
+        await webdav_test_connection(
+            self._session, self.base_url, self.username, self.password, timeout=10
+        )
+        return True
+
     def _build_authenticated_url(self, file_path: str) -> str:
         """Build authenticated WebDAV URL with properly encoded credentials."""
         webdav_url = build_webdav_url(self.base_url, file_path)
