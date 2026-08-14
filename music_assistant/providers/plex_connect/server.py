@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import platform
 import time
-import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -14,6 +13,7 @@ from music_assistant_models.enums import EventType
 
 from .gdm import PlexGDMAdvertiser
 from .playback import PlaybackMixin
+from .plextv import compute_client_id
 from .queue_commands import QueueCommandsMixin
 from .queue_sync import QueueSyncMixin
 from .timeline import TimelineMixin
@@ -54,12 +54,7 @@ class PlayerRemoteInstance:
         self.device_class = device_class
         self.remote_control = remote_control
 
-        self.client_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_DNS,
-                f"music-assistant-plex-{plex_provider.instance_id}-{ma_player_id}",
-            )
-        )
+        self.client_id = compute_client_id(plex_provider.instance_id, ma_player_id)
 
         if self.remote_control:
             self.server: PlexRemoteControlServer | None = None
