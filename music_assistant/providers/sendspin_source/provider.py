@@ -29,7 +29,6 @@ from aiosendspin.server import (
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
-    PlaybackState,
     QueueOption,
     StreamType,
 )
@@ -45,7 +44,6 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sendspin.constants import (
-    CONF_SOURCE_AUTOSTART_INTERRUPT,
     CONF_SOURCE_AUTOSTART_TARGET,
     SOURCE_AUTOSTART_OFF,
 )
@@ -371,8 +369,8 @@ class SendspinSourceProvider(PluginProvider):
         """Subscribe to a source client's events, for signal presence while idle."""
         if client.client_id in self._watchers:
             return
-        # Gate on negotiated rather than active roles: activation follows the pairing
-        # state and can happen on an already-connected client, with no event to re-arm on.
+        # Watch negotiated source roles because pairing can activate the role later
+        # without reconnecting or emitting another event.
         if "source" not in {role_family(role_id) for role_id in client.negotiated_role_ids}:
             return
         self._watchers[client.client_id] = client.add_event_listener(self._on_client_event)
@@ -485,16 +483,6 @@ class SendspinSourceProvider(PluginProvider):
         queue = self.mass.players.get_active_queue(player)
         if queue is None:
             self.logger.debug("Autostart target %s has no queue", target_player_id)
-            return None
-        if (
-            not await self.mass.config.get_player_config_value(
-                client_id, CONF_SOURCE_AUTOSTART_INTERRUPT, default=True
-            )
-            and queue.state == PlaybackState.PLAYING
-        ):
-            self.logger.debug(
-                "Not interrupting playback on %s for Sendspin source %s", queue.queue_id, client_id
-            )
             return None
         return queue.queue_id, create_uri(MediaType.AUDIO_SOURCE, self.instance_id, client_id)
 

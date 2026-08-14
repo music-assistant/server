@@ -18,10 +18,7 @@ from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.providers.sendspin_source.provider as provider_module
-from music_assistant.providers.sendspin.constants import (
-    CONF_SOURCE_AUTOSTART_INTERRUPT,
-    CONF_SOURCE_AUTOSTART_TARGET,
-)
+from music_assistant.providers.sendspin.constants import CONF_SOURCE_AUTOSTART_TARGET
 from music_assistant.providers.sendspin_source.constants import (
     CONF_TARGET_LATENCY,
     DEFAULT_TARGET_LATENCY_MS,
@@ -420,17 +417,17 @@ async def test_autostart_stays_off_without_a_configured_target(fake_client: _Fak
 
 
 @pytest.mark.usefixtures("fast_autostart")
-async def test_autostart_respects_the_interrupt_opt_out(fake_client: _FakeClient) -> None:
-    """With interrupt disabled a busy target is left playing whatever it already had."""
+async def test_autostart_interrupts_a_busy_target(fake_client: _FakeClient) -> None:
+    """A detected signal takes over a target that is already playing."""
     provider = await make_provider([fake_client])
-    config = get_config(provider)
-    config.values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
-    config.values[("client-1", CONF_SOURCE_AUTOSTART_INTERRUPT)] = False
+    get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
     get_players(provider).players["client-1"].queue.state = PlaybackState.PLAYING
     fake_client.emit(_signal(SignalState.ABSENT))
     fake_client.emit(_signal(SignalState.PRESENT))
     await _settle()
-    assert get_queues(provider).played == []
+    assert get_queues(provider).played == [
+        ("client-1", "sendspin_source://audio_source/client-1", QueueOption.PLAY)
+    ]
 
 
 @pytest.mark.usefixtures("fast_autostart")

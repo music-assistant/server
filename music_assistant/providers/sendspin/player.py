@@ -97,7 +97,6 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
-    CONF_SOURCE_AUTOSTART_INTERRUPT,
     CONF_SOURCE_AUTOSTART_TARGET,
     DEFAULT_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
@@ -481,13 +480,15 @@ class SendspinBasePlayer(Player):
         # protocol player means the visible player it belongs to.
         own_target = self.protocol_parent_id or self.player_id
         options = [
-            ConfigValueOption(SOURCE_AUTOSTART_OFF, title=SOURCE_AUTOSTART_OFF),
+            ConfigValueOption(SOURCE_AUTOSTART_OFF),
             *(
-                ConfigValueOption(player.player_id, title=player.display_name)
+                ConfigValueOption(
+                    player.player_id,
+                    title=None if player.player_id == own_target else player.display_name,
+                    translation_key="this_device" if player.player_id == own_target else None,
+                )
                 for player in sorted(
-                    # Include unavailable players: a target that is merely asleep must
-                    # stay selected rather than being reset to off on the next render.
-                    self.mass.players.all_players(True, False),
+                    self.mass.players.all_players(False, False),
                     # Lead with the device's own player, so the default sits at the top
                     # of the list rather than alphabetically among every other player.
                     key=lambda player: (
@@ -510,12 +511,6 @@ class SendspinBasePlayer(Player):
                 type=ConfigEntryType.STRING,
                 options=options,
                 default_value=default or SOURCE_AUTOSTART_OFF,
-            ),
-            ConfigEntry(
-                key=CONF_SOURCE_AUTOSTART_INTERRUPT,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                advanced=True,
             ),
         ]
 

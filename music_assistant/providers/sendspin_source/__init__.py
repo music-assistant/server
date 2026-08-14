@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
+from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.providers.sendspin_source.constants import (
     CONF_TARGET_LATENCY,
     DEFAULT_TARGET_LATENCY_MS,
@@ -38,6 +39,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
+        CONF_ENTRY_WARN_PREVIEW,
         ConfigEntry(
             key=CONF_TARGET_LATENCY,
             type=ConfigEntryType.INTEGER,

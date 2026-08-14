@@ -28,10 +28,10 @@ def _player(
     known_players: list[str],
     unavailable_players: list[str] | None = None,
     non_audio_players: dict[str, PlayerType] | None = None,
+    protocol_parent_id: str | None = None,
 ) -> SendspinBasePlayer:
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
     player._player_id = "turntable"
-    player._Player__attr_protocol_parent_id = None  # type: ignore[attr-defined]
     player.api = cast(
         "SendspinClient",
         SimpleNamespace(
@@ -56,10 +56,12 @@ def _player(
                         ),
                         *(non_audio_players or {}).items(),
                     ]
-                ]
+                ],
+                trigger_player_update=lambda _player_id: None,
             ),
         ),
     )
+    player.set_protocol_parent_id(protocol_parent_id)
     return player
 
 
@@ -100,8 +102,8 @@ def test_a_source_that_is_also_a_player_defaults_to_itself() -> None:
     assert entry.default_value == "turntable"
 
 
-def test_an_unavailable_player_stays_selectable() -> None:
-    """A target that is merely asleep must stay offered, not vanish from the list."""
+def test_an_unavailable_player_is_not_selectable() -> None:
+    """Unavailable players are not offered as autostart targets."""
     player = _player(
         negotiated_role_ids=["source@v1"],
         line_sense=True,
@@ -110,7 +112,7 @@ def test_an_unavailable_player_stays_selectable() -> None:
     )
     entry = _target_entry(player)
     assert entry is not None
-    assert "sleeping-speaker" in {option.value for option in entry.options or []}
+    assert "sleeping-speaker" not in {option.value for option in entry.options or []}
 
 
 def test_players_that_cannot_render_audio_are_not_offered() -> None:
@@ -145,6 +147,25 @@ def test_the_devices_own_player_leads_the_target_list() -> None:
         "amp",
         "zone",
     ]
+    assert (entry.options or [])[1].translation_key == "this_device"
+
+
+def test_a_protocol_parent_is_the_default_target() -> None:
+    """A linked source defaults to its visible parent rather than its hidden protocol player."""
+    player = _player(
+        negotiated_role_ids=["source@v1", "player@v1"],
+        line_sense=True,
+        known_players=["amp", "visible-player"],
+        protocol_parent_id="visible-player",
+    )
+    entry = _target_entry(player)
+    assert entry is not None
+    assert entry.default_value == "visible-player"
+    assert [option.value for option in entry.options or []][:2] == [
+        SOURCE_AUTOSTART_OFF,
+        "visible-player",
+    ]
+    assert (entry.options or [])[1].translation_key == "this_device"
 
 
 def test_groups_and_stereo_pairs_are_offered() -> None:
