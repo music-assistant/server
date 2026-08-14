@@ -1274,83 +1274,18 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_join_anchors_on_the_reported_clock_readiness() -> None:
-    """A projected readiness instant anchors the join, just past the receiver's clock."""
-    # Freeze time so both the test and the code under test agree on `now`.
-    now = 1_000_000.0
-    session = _make_session(now - 5.0, 5.0)
-    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
-    player = _make_late_joiner()
-    # A cold receiver: its clock is projected usable 3.0s out, well past the floor.
-    ready_at_unix_ms = int((now + 3.0) * 1000)
-
-    def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
-        _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(
-            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
-        )
-
-    with (
-        patch.object(session, "_start_client", side_effect=setup_with_projection),
-        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
-    ):
-        await session.add_client(player)
-
-    expected_lead = AIRPLAY_CLOCK_READY_LEAD_MS / 1000
-    assert _captured_start_at(player) - now == pytest.approx(3.0 + expected_lead, abs=0.01)
-    player.stream.wait_clock_ready.assert_awaited_once_with(
-        timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
-    )
-
-
-@pytest.mark.asyncio
-async def test_late_join_floor_wins_over_a_clock_that_is_already_ready() -> None:
-    """A receiver whose clock is already locked still gets the join floor as its anchor."""
-    # Freeze time so both the test and the code under test agree on `now`.
-    now = 1_000_000.0
-    session = _make_session(now - 5.0, 5.0)
-    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
-    player = _make_late_joiner()
-    # A warm receiver reports a readiness instant that has already passed.
-    ready_at_unix_ms = int((now - 1.0) * 1000)
-
-    def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
-        _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(
-            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
-        )
-
-    with (
-        patch.object(session, "_start_client", side_effect=setup_with_projection),
-        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
-    ):
-        await session.add_client(player)
-
-    expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
-    assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("offset", "expected_note"),
-    [(3.0, "usable in 3.00s"), (-1.0, "became usable 1.00s ago")],
-    ids=["cold", "locked"],
-)
-async def test_late_join_clock_note_reads_in_the_direction_of_the_projection(
-    offset: float,
-    expected_note: str,
+async def test_late_join_anchors_on_the_reported_clock_readiness(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The readiness note counts forward for a cold clock and back for a locked one."""
+    """A projected readiness instant anchors the join, just past the receiver's clock."""
     # Freeze time so both the test and the code under test agree on `now`.
     now = 1_000_000.0
     session = _make_session(now - 5.0, 5.0)
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
     session.prov.logger = logging.getLogger("test.airplay.session")
     player = _make_late_joiner()
-    ready_at_unix_ms = int((now + offset) * 1000)
+    # A cold receiver: its clock is projected usable 3.0s out, well past the floor.
+    ready_at_unix_ms = int((now + 3.0) * 1000)
 
     def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
@@ -1366,7 +1301,45 @@ async def test_late_join_clock_note_reads_in_the_direction_of_the_projection(
     ):
         await session.add_client(player)
 
-    assert f"receiver clock {expected_note}" in caplog.text
+    expected_lead = AIRPLAY_CLOCK_READY_LEAD_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(3.0 + expected_lead, abs=0.01)
+    player.stream.wait_clock_ready.assert_awaited_once_with(
+        timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
+    )
+    assert "receiver clock usable in 3.00s" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_late_join_floor_wins_over_a_clock_that_is_already_ready(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A receiver whose clock is already locked still gets the join floor as its anchor."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    session.prov.logger = logging.getLogger("test.airplay.session")
+    player = _make_late_joiner()
+    # A warm receiver reports a readiness instant that has already passed.
+    ready_at_unix_ms = int((now - 1.0) * 1000)
+
+    def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
+        )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        patch.object(session, "_start_client", side_effect=setup_with_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
+    assert "receiver clock became usable 1.00s ago" in caplog.text
 
 
 @pytest.mark.asyncio

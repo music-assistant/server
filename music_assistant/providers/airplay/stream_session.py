@@ -40,13 +40,12 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
 
-# What each readiness outcome means for the join anchor: only a projection still
-# ahead of us moves it, every other outcome leaves the join floor carrying it
-# alone, so the note says which of the two happened and why. STALLED has no note
-# because it never reaches a join anchor - a stalled joiner is refused the join
-# before that.
+# What each readiness outcome means for the join anchor: a projection only moves
+# it when it clears the join floor, which otherwise carries the anchor alone, so
+# the note says which bound the outcome set. STALLED has no note because it never
+# reaches a join anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
-    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
+    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring no earlier than that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
     "anchoring on the join floor",
     ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
