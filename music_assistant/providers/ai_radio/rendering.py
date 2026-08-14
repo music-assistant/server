@@ -170,7 +170,7 @@ class AIRadioRenderMixin:
             filter_params=[
                 TTS_SPEECHNORM_FILTER,
                 f"volume={round(clip.gain_db, 2)}dB",
-                f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false",
+                f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false:latency=true",
             ],
         ):
             yield chunk

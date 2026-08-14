@@ -889,7 +889,7 @@ async def test_the_clip_is_evened_out_and_lifted_before_it_is_limited(
     assert captured["filter_params"] == [
         TTS_SPEECHNORM_FILTER,
         "volume=7.0dB",
-        f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false",
+        f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false:latency=true",
     ]
 
 
