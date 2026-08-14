@@ -92,8 +92,10 @@ made it shift whenever a different set of protocol players was registered - from
 MAC-based to a UUID-based id, for example - which orphaned the consumer's entity.
 
 As a consequence a universal player config is only ever deleted when the user removes
-the player, or when a native player takes over the device. When the protocol players
-of a universal player disappear it becomes unavailable but keeps its config, because
+the player, when a native player takes over the device, or when it is absorbed by
+another universal player of the same device in a merge. The latter two carry its
+settings over to the player that replaces it first. When the protocol players of a
+universal player merely disappear it becomes unavailable but keeps its config, because
 an opaque id cannot be recreated from the device.
 
 ### File Structure

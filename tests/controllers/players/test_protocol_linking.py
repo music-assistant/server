@@ -6317,6 +6317,37 @@ class TestUniversalPlayerMerging:
         # non-conflicting values still migrate
         assert config_store["players/up_keep/values/flow_mode"] is True
 
+    def test_merge_does_not_carry_over_the_creation_moment(self, mock_mass: MagicMock) -> None:
+        """
+        The absorbed player's creation moment stays behind.
+
+        It is bookkeeping of that wrapper alone; copying it onto the keeper would let a
+        later merge discard the keeper's older - and therefore established - player id.
+        """
+        config_store: dict[str, Any] = {
+            "players/up_keep": {
+                "enabled": True,
+                "name": "Keep (Universal)",
+                "default_name": "Keep (Universal)",
+                "values": {},
+            },
+            "players/up_remove": {
+                "enabled": True,
+                "name": "Remove (Universal)",
+                "default_name": "Remove (Universal)",
+                "values": {CONF_CREATED_AT: 5000},
+            },
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+        }
+        controller, keep, _ = self._setup_merge_scenario(mock_mass, config_store)
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        assert f"players/up_keep/values/{CONF_CREATED_AT}" not in config_store
+        assert CONF_CREATED_AT not in config_store["players/up_keep"]["values"]
+
     def test_merge_repoints_group_memberships(self, mock_mass: MagicMock) -> None:
         """Merge re-points group memberships from the removed wrapper to the keeper."""
         config_store: dict[str, Any] = {

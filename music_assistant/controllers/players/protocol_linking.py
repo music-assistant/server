@@ -64,8 +64,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 # Config value keys that are bookkeeping of the universal player wrapper itself
-# (protocol links and device-identity caches) and must never be carried over
-# when a native player replaces a universal player.
+# (protocol links, device-identity caches and its creation moment) and must never
+# be carried over when a native player replaces a universal player, or when one
+# universal player absorbs another.
 UNIVERSAL_PLAYER_INTERNAL_CONF_KEYS = (
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PROTOCOL_PARENT_ID,
@@ -74,6 +75,7 @@ UNIVERSAL_PLAYER_INTERNAL_CONF_KEYS = (
     CONF_DEVICE_INFO,
     CONF_CACHED_ARP_MAC,
     CONF_REPORTED_MAC,
+    CONF_CREATED_AT,
 )
 
 
