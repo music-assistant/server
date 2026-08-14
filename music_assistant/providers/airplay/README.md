@@ -567,13 +567,14 @@ keeps their exposed player id stable and their Universal Player merging intact.
    the imageproxy (e.g. filesystem-provider images with no public URL) does not
    currently render on the Apple TV's now-playing screen, while externally-hosted
    art does
-5. **Warm boundaries wait for the queued audio**: Pause, seek and track changes
-   leave the audio the receiver already holds in place, so it renders that
-   first and `buffer_depth` is also the delay before the boundary is heard.
-   Dropping the queue instead produced audible noise bursts on Apple receivers,
-   so keeping it is an accepted trade-off. It is most noticeable on pause, where
-   playback is expected to stop at once. On a receiver that needs a deep queue
-   to render at all, the delay cannot be tuned away without silencing it
+5. **Warm boundaries wait for the queued audio** (native AirPlay 2): Pause, seek
+   and track changes leave the audio the receiver already holds in place, so it
+   renders that first and `buffer_depth` is also the delay before the boundary
+   is heard. Dropping the queue instead produced audible noise bursts (measured
+   on Apple receivers), so keeping it is an accepted trade-off. It is most
+   noticeable on pause, where playback is expected to stop at once. On a
+   receiver that needs a deep queue to render at all, the delay cannot be tuned
+   away without silencing it
 
 ## Development Notes
 
@@ -649,6 +650,12 @@ Giving up on a stream — a start that raised, a protocol that never became read
 Leaving a shared group schedules a bounded re-join through the ordinary `SendspinGroup.add_client`, on the delays in `BRIDGE_REJOIN_ATTEMPT_DELAYS`, so a speaker that was only briefly away comes back on its own. A bridge that gives up again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of being put back is left out for good — that is what keeps a device which cannot hold a connection from cycling in and out of the group, since re-joining re-runs the very start that just failed. The attempt is abandoned when the speaker has meanwhile been given a group or a stream of its own, is streaming outside the bridge, or the group it left no longer exists. A speaker missing from discovery is not re-joined but is looked for again on the next attempt, because a device that rebooted stays absent for a while after it starts answering. A solo bridge has nothing to re-join, since leaving is what stops it.
 
 The group re-join recovery in `stream.py` only covers native AirPlay grouping — a bridged player's group membership lives on its Sendspin player, not on the AirPlay one.
+
+### Stalled Receiver Clocks
+
+A receiver that never answers the server's PTP clock renders silence. The bridge warns and anchors anyway, which follows a native group start rather than a late joiner: a joiner is dropped because the session plays on without it, whereas here dropping would stop the speaker — and a stall is not evidence enough for that. The binary reports it as a diagnosis rather than a verdict (a receiver that begins probing late reports probing and then ready as usual) and re-arms that reporting on every `FLUSH` and `START`, while the server latches the last reading it parsed — `state=cold` lines carry no projection and are dropped. The re-armed report waits on the audio loop's next pass, which the flush ack ordinarily beats, so a warm re-anchor is reading the cycle before it. Nothing is lost by that: a flush leaves the receiver's clock alone, so the projection still describes the same acquisition and the anchor is right to sit past it whether or not that instant has arrived; for a receiver that is not answering, that reading is the only evidence there is. Nor is this the give-up case above: the transport is healthy, so the bridge stays in its Sendspin session and the stall reaches the user through the warning the binary's report raises, which names the device and the UDP ports to check.
+
+The binary diagnoses a stall deliberately more slowly than it projects readiness (see `AIRPLAY_CLOCK_READY_TIMEOUT_MS`), so a cold start reads `UNREPORTED` and anchors without a projection; a stall is what a warm re-anchor sees. Either way the receiver has not probed, so the post-commit clock verification described under Late Join Support arms wherever the anchor clears the receiver queue depth, and holds the join's `started` ack until it gives up short of the commanded anchor — bounded by that anchor, and well inside `AIRPLAY_JOIN_START_ACK_TIMEOUT_MS`.
 
 ### Requirements
 

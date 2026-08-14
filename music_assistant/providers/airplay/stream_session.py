@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 # What each readiness outcome means for the join anchor: only a projection moves
 # it, every other outcome leaves the join floor carrying it alone, so the note
 # says which of the two happened and why. STALLED has no note because it never
-# reaches an anchor - a stalled joiner is refused the join before that.
+# reaches a join anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
     ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
@@ -84,6 +84,11 @@ class AirPlayStreamSession:
         self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.seconds_streamed: float = 0
+        # Parked in standby: the members stay connected but nothing is fed and
+        # their binaries hold until a START, so only a re-anchor (play_media)
+        # revives them. It outlives the group that parked it, which is why the
+        # session - not the group membership - owns this.
+        self.parked: bool = False
         # Timing source for the whole session, decided once in start() and applied
         # identically to every native AirPlay 2 member (and any late joiner) so a
         # sync group can never mix shared-PTP and NTP members.
@@ -344,6 +349,7 @@ class AirPlayStreamSession:
         self._pcm_buffer.clear()
         self._client_skip_bytes.clear()
         self._reset_member_shifts()
+        self.parked = True
         return True
 
     async def stop(self) -> None:
@@ -1019,7 +1025,7 @@ class AirPlayStreamSession:
         Return the shared audible-start instant for a readiness-confirmed start.
 
         :param warm: True for a warm re-start over live connections (seek/next/
-            resume-from-park). Members on the Apple splice timeline report a
+            resume-from-park). Members on the splice timeline report a
             minimum warm lead — their queued audio plays out before the new
             content can begin — and the shared anchor must sit beyond the
             largest member value so every member splices at the same instant.
@@ -1210,6 +1216,8 @@ class AirPlayStreamSession:
             )
         self.start_unix_ms = target_ms
         self.start_time = target_ms / 1000
+        # the only place a session (re)gains a live timeline, so any park ends here
+        self.parked = False
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""

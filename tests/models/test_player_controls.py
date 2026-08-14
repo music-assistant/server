@@ -21,7 +21,6 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import PlayerFeature
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_MUTE_CONTROL,
@@ -29,6 +28,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 _PROTO_DOMAIN = "test_protocol"
@@ -89,15 +89,13 @@ def _create_protocol_player(
     return player
 
 
-def _make_output_protocol(
+def _make_protocol_link(
     protocol_id: str,
-    name: str,
     priority: int = 0,
-) -> OutputProtocol:
-    """Create an OutputProtocol for testing."""
-    return OutputProtocol(
+) -> LinkedOutputProtocol:
+    """Create a protocol link for testing."""
+    return LinkedOutputProtocol(
         output_protocol_id=protocol_id,
-        name=name,
         protocol_domain=_PROTO_DOMAIN,
         priority=priority,
     )
@@ -105,7 +103,7 @@ def _make_output_protocol(
 
 def _link_protocols(
     player: MockPlayer,
-    protocols: list[OutputProtocol],
+    protocols: list[LinkedOutputProtocol],
     active_protocol_id: str | None = None,
 ) -> None:
     """Link output protocols to a player and optionally set active protocol."""
@@ -210,7 +208,7 @@ class TestPowerControlAutoSelect:
         player = _create_player(mock_mass)
         _link_protocols(
             player,
-            [_make_output_protocol("proto_power", "Proto Power")],
+            [_make_protocol_link("proto_power")],
             active_protocol_id="proto_power",
         )
         assert player.power_control == PLAYER_CONTROL_NONE
@@ -220,7 +218,7 @@ class TestPowerControlAutoSelect:
         protocol = _create_protocol_player(mock_mass, "proto_power", {PlayerFeature.POWER})
         mock_mass.players.get_player = MagicMock(return_value=protocol)
         player = _create_player(mock_mass)
-        _link_protocols(player, [_make_output_protocol("proto_power", "Proto Power")])
+        _link_protocols(player, [_make_protocol_link("proto_power")])
         assert player.power_control == PLAYER_CONTROL_NONE
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
@@ -282,7 +280,7 @@ class TestVolumeControlAutoSelect:
         protocol = _create_protocol_player(mock_mass, "proto_vol", {PlayerFeature.VOLUME_SET})
         mock_mass.players.get_player = MagicMock(return_value=protocol)
         player = _create_player(mock_mass)
-        _link_protocols(player, [_make_output_protocol("proto_vol", "Proto Vol")])
+        _link_protocols(player, [_make_protocol_link("proto_vol")])
         assert player.volume_control == "proto_vol"
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
@@ -347,7 +345,7 @@ class TestMuteControlAutoSelect:
         protocol = _create_protocol_player(mock_mass, "proto_mute", {PlayerFeature.VOLUME_MUTE})
         mock_mass.players.get_player = MagicMock(return_value=protocol)
         player = _create_player(mock_mass)
-        _link_protocols(player, [_make_output_protocol("proto_mute", "Proto Mute")])
+        _link_protocols(player, [_make_protocol_link("proto_mute")])
         assert player.mute_control == "proto_mute"
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
@@ -378,8 +376,8 @@ class TestProtocolPlayerPreferActive:
         _link_protocols(
             player,
             [
-                _make_output_protocol("proto_a", "Proto A", priority=0),
-                _make_output_protocol("proto_b", "Proto B", priority=1),
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
             ],
             active_protocol_id="proto_b",
         )
@@ -396,8 +394,8 @@ class TestProtocolPlayerPreferActive:
         _link_protocols(
             player,
             [
-                _make_output_protocol("proto_a", "Proto A", priority=0),
-                _make_output_protocol("proto_b", "Proto B", priority=1),
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
             ],
         )
         assert player.volume_control == "proto_a"
@@ -411,7 +409,7 @@ class TestProtocolPlayerPreferActive:
         player = _create_player(mock_mass)
         _link_protocols(
             player,
-            [_make_output_protocol("proto_a", "Proto A", priority=0)],
+            [_make_protocol_link("proto_a", priority=0)],
         )
         # no active protocol set -> power returns NONE
         assert player.power_control == PLAYER_CONTROL_NONE
@@ -425,7 +423,7 @@ class TestProtocolPlayerPreferActive:
         player = _create_player(mock_mass)
         _link_protocols(
             player,
-            [_make_output_protocol("proto_a", "Proto A", priority=0)],
+            [_make_protocol_link("proto_a", priority=0)],
             active_protocol_id="proto_a",
         )
         assert player.power_control == PLAYER_CONTROL_NONE
@@ -445,8 +443,8 @@ class TestProtocolPlayerPreferActive:
         _link_protocols(
             player,
             [
-                _make_output_protocol("proto_a", "Proto A", priority=0),
-                _make_output_protocol("proto_b", "Proto B", priority=1),
+                _make_protocol_link("proto_a", priority=0),
+                _make_protocol_link("proto_b", priority=1),
             ],
         )
         assert player.volume_control == "proto_b"
@@ -475,7 +473,7 @@ class TestPreferredOutputProtocolAutoValue:
         player = _create_player(mock_mass)
         _link_protocols(
             player,
-            [_make_output_protocol("proto_a", "Proto A")],
+            [_make_protocol_link("proto_a")],
             active_protocol_id="proto_a",
         )
         assert player.power_control == PLAYER_CONTROL_NONE
@@ -492,7 +490,7 @@ class TestPreferredOutputProtocolAutoValue:
         player = _create_player(mock_mass)
         _link_protocols(
             player,
-            [_make_output_protocol("proto_a", "Proto A")],
+            [_make_protocol_link("proto_a")],
         )
         # volume doesn't require active, so it falls back to linked protocol
         assert player.volume_control == "proto_a"
@@ -509,7 +507,7 @@ class TestPreferredOutputProtocolAutoValue:
         player = _create_player(mock_mass)
         _link_protocols(
             player,
-            [_make_output_protocol("proto_a", "Proto A")],
+            [_make_protocol_link("proto_a")],
         )
         assert player.power_control == PLAYER_CONTROL_NONE
 

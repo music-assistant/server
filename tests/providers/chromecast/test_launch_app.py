@@ -130,13 +130,40 @@ async def test_default_receiver_used_when_mass_app_disabled() -> None:
     assert fake.launch_attempts == [APP_MEDIA_RECEIVER]
 
 
-async def test_compatible_app_already_running_is_left_alone() -> None:
-    """No LAUNCH is sent when a compatible receiver app is already active."""
-    fake = _fake_cast(running_app_id=APP_MEDIA_RECEIVER, launch_results={MASS_APP_ID: True})
+async def test_configured_app_already_running_is_left_alone() -> None:
+    """No LAUNCH is sent when the configured receiver app is already active."""
+    fake = _fake_cast(running_app_id=MASS_APP_ID, launch_results={MASS_APP_ID: True})
 
     await _launch_app(fake)
 
     assert fake.launch_attempts == []
+
+
+async def test_other_receiver_app_is_replaced_by_the_configured_one() -> None:
+    """
+    The other compatible receiver app is not accepted as-is.
+
+    Treating both receiver apps as interchangeable made the use_mass_app setting a
+    no-op for as long as the other app was running on the device.
+    """
+    fake = _fake_cast(running_app_id=APP_MEDIA_RECEIVER, launch_results={MASS_APP_ID: True})
+
+    await _launch_app(fake)
+
+    assert fake.launch_attempts == [MASS_APP_ID]
+
+
+async def test_disabled_mass_app_is_replaced_by_the_default_receiver() -> None:
+    """With the option disabled, a running MA app is replaced by the default receiver."""
+    fake = _fake_cast(
+        running_app_id=MASS_APP_ID,
+        use_mass_app=False,
+        launch_results={APP_MEDIA_RECEIVER: True},
+    )
+
+    await _launch_app(fake)
+
+    assert fake.launch_attempts == [APP_MEDIA_RECEIVER]
 
 
 async def test_refusal_reason_is_logged() -> None:

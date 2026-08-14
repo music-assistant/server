@@ -17,6 +17,7 @@ import builtins
 import time
 from abc import ABC
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
@@ -114,7 +115,7 @@ def _resolve_position(
 # position change (seek/buffer correction) instead of regular playback progression
 POSITION_JUMP_THRESHOLD = 1.0
 
-# Changes to any of these state keys fire the (debounced) _on_player_media_updated
+# Changes to any of these state keys fire the (debounced) on_player_media_updated
 # callback. The palette is included because it resolves asynchronously (shortly
 # after a track change) and players push it to their device from the callback.
 MEDIA_IDENTITY_KEYS = frozenset(
@@ -134,6 +135,29 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # only invalidated by set_config, all other cached properties (including those
 # defined by player implementations) are invalidated on every update_state call
 _CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedOutputProtocol:
+    """
+    A protocol player linked to a parent player.
+
+    Records the link itself (which protocol player, on which domain, how preferred)
+    and nothing about its current state: whether the protocol can actually be reached
+    right now is answered by Player.output_protocols / Player.playback_domains, which
+    resolve it from the live protocol player on every read.
+
+    :param output_protocol_id: player_id of the linked protocol player.
+    :param protocol_domain: Domain of the protocol, e.g. "airplay" or "dlna".
+    :param priority: Selection preference, lower is more preferred.
+    :param derived_from: output_protocol_id of the base output this transport runs on
+        top of ("native" when it rides on the parent player itself), if any.
+    """
+
+    output_protocol_id: str
+    protocol_domain: str
+    priority: int = 100
+    derived_from: str | None = None
 
 
 def _reconcile_position_anchor(
@@ -380,7 +404,7 @@ class Player(ABC):
         self._attr_options = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
-        self.__attr_linked_protocols: list[OutputProtocol] = []
+        self.__attr_linked_protocols: list[LinkedOutputProtocol] = []
         self.__attr_protocol_parent_id: str | None = None
         self.__attr_active_output_protocol: str | None = None
         self._player_id = player_id
@@ -1231,7 +1255,7 @@ class Player(ABC):
             self.device_info.model,
         )
 
-    def _on_player_media_updated(self) -> None:  # noqa: B027
+    def on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
         # optional callback for players that want to be informed when the final
         # current media is updated (after applying group/sync membership logic).
@@ -1713,7 +1737,7 @@ class Player(ABC):
 
     @property
     @final
-    def linked_output_protocols(self) -> list[OutputProtocol]:
+    def linked_output_protocols(self) -> list[LinkedOutputProtocol]:
         """Return the list of actively linked output protocol players."""
         return self.__attr_linked_protocols
 
@@ -1776,11 +1800,11 @@ class Player(ABC):
         self.update_state()
 
     @final
-    def set_linked_output_protocols(self, protocols: list[OutputProtocol]) -> None:
+    def set_linked_output_protocols(self, protocols: list[LinkedOutputProtocol]) -> None:
         """
         Set the actively linked output protocol players.
 
-        :param protocols: List of OutputProtocol objects representing active protocol players.
+        :param protocols: List of links to the active protocol players.
         """
         self.__attr_linked_protocols = protocols
         self.mass.players.trigger_player_update(self.player_id)
@@ -1796,14 +1820,15 @@ class Player(ABC):
         self.mass.players.trigger_player_update(self.player_id)
 
     @final
-    def get_linked_protocol(self, protocol_domain: str) -> OutputProtocol | None:
-        """Get a linked protocol by domain with current availability."""
+    def get_linked_protocol(self, output_protocol_id: str) -> OutputProtocol | None:
+        """
+        Get a linked output protocol by its id, with its name and availability resolved.
+
+        :param output_protocol_id: player_id of the linked protocol player.
+        """
         for linked in self.__attr_linked_protocols:
-            if linked.protocol_domain == protocol_domain:
-                protocol_player = self.mass.players.get_player(linked.output_protocol_id)
-                current_available = (
-                    protocol_player.available_for_playback if protocol_player else False
-                )
+            if linked.output_protocol_id == output_protocol_id:
+                protocol_player = self.mass.players.get_player(output_protocol_id)
                 return OutputProtocol(
                     output_protocol_id=linked.output_protocol_id,
                     name=protocol_player.provider.name
@@ -1811,8 +1836,7 @@ class Player(ABC):
                     else linked.protocol_domain.title(),
                     protocol_domain=linked.protocol_domain,
                     priority=linked.priority,
-                    available=current_available,
-                    is_native=False,
+                    available=protocol_player.available_for_playback if protocol_player else False,
                     derived_from=linked.derived_from,
                 )
         return None
@@ -1822,8 +1846,7 @@ class Player(ABC):
         """
         Get an output protocol by domain, including native protocol.
 
-        Unlike get_linked_protocol, this also checks if the player's native protocol
-        matches the requested domain.
+        Unlike get_linked_protocol, this also covers the player's own native output.
 
         :param protocol_domain: The protocol domain to search for (e.g., "airplay", "sonos").
         """
@@ -1923,7 +1946,7 @@ class Player(ABC):
             # debounce the callback to avoid multiple calls when multiple
             # state updates happen in a short time
             self.mass.call_later(
-                1, self._on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
+                1, self.on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
             )
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
@@ -2219,10 +2242,7 @@ class Player(ABC):
                 self._extra_data.get(ATTR_FAKE_VOLUME),
                 self._extra_data.get(ATTR_FAKE_MUTE),
             ),
-            "linked_protocols": tuple(
-                (p.output_protocol_id, p.protocol_domain, p.priority, p.derived_from)
-                for p in self.__attr_linked_protocols
-            ),
+            "linked_protocols": tuple(self.__attr_linked_protocols),
             "protocol_parent_id": self.__attr_protocol_parent_id,
             "active_output_protocol": self.__attr_active_output_protocol,
             "active_mass_source": self.__active_mass_source,

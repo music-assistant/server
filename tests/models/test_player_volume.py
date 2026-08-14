@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerFeature
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -107,9 +107,8 @@ class TestFinalVolumeLevel:
         player._attr_volume_level = 55
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="cast_child",
-                    name="Chromecast",
                     protocol_domain="chromecast",
                 )
             ]
@@ -136,9 +135,8 @@ class TestFinalVolumeLevel:
         player._attr_volume_level = 55
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="cast_child",
-                    name="Chromecast",
                     protocol_domain="chromecast",
                 )
             ]

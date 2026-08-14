@@ -40,7 +40,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
+from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
@@ -61,6 +61,7 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
+from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
@@ -1584,9 +1585,8 @@ class TestProtocolOutputPlayPause:
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="proto_1",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
                 )
@@ -2901,9 +2901,8 @@ class TestMuteLockAfterUngroup:
         controller._players["proto_member"] = protocol_player
         member.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="proto_member",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
                 )
@@ -3427,9 +3426,8 @@ class TestNativeAnnouncementRouting:
         mock_mass.players = controller
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="proto_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=40,
                 )
