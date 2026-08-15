@@ -2671,13 +2671,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # First, get the id of the latest row
             conflict_params = {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
             latest_rows = await self.database.get_rows_from_query(
-                f"SELECT id FROM {DB_TABLE_PLAYLOG} WHERE "
+                f"SELECT id, fully_played FROM {DB_TABLE_PLAYLOG} WHERE "
                 + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
-                + " ORDER BY timestamp DESC LIMIT 1",
+                + " ORDER BY timestamp DESC, id DESC LIMIT 1",
                 conflict_params,
+                limit=0,
             )
 
-            if latest_rows:
+            if latest_rows and not latest_rows[0]["fully_played"]:
                 latest_row = latest_rows[0]
                 # Update existing row with sticky user_initiated logic
                 set_clauses = []
