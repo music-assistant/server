@@ -80,6 +80,31 @@ def _fake_group_member(*, multichannel: bool) -> Any:
     return child
 
 
+def _fake_group_with_a_stereo_pair(*, powered: bool = True) -> tuple[Any, Any, Any]:
+    """
+    Build a cast group holding a regular speaker and a stereo pair, in that order.
+
+    The regular speaker comes first because it is the one that has to be skipped: a group
+    that gave up on the first member it skips would leave the stereo pair behind.
+
+    :param powered: Whether the group is powered on.
+    :return: The group, its regular speaker and its stereo pair.
+    """
+    group = _fake_player(
+        player_type=PlayerType.GROUP,
+        powered=powered,
+        group_members=["speaker_1", "stereo_pair_1"],
+    )
+    speaker = _fake_group_member(multichannel=False)
+    stereo_pair = _fake_group_member(multichannel=True)
+    # by id, so the group is held to looking up the members it lists
+    group.mass.players.get_player.side_effect = {
+        "speaker_1": speaker,
+        "stereo_pair_1": stereo_pair,
+    }.get
+    return group, speaker, stereo_pair
+
+
 def _media_status(
     *,
     playing: bool = False,
@@ -212,58 +237,50 @@ def test_the_previous_track_metadata_does_not_linger() -> None:
     assert fake._attr_current_media.album is None
 
 
-def test_an_idle_player_shows_nothing_playing() -> None:
-    """Nothing is loaded once playback ended, so the previous track must be gone."""
+def test_an_idle_status_does_not_put_its_content_back_on_screen() -> None:
+    """A receiver keeps naming the content it last had loaded, which is not playback."""
     fake = _fake_player()
 
-    fake._handle_media_status(_media_status())
+    fake._handle_media_status(_media_status(content_id="http://mass/track.flac"))
 
     assert fake._attr_current_media is None
 
 
 def test_a_multichannel_member_follows_its_group() -> None:
     """A stereo pair gets no status of its own, so the group hands it its state."""
-    fake = _fake_player(player_type=PlayerType.GROUP, powered=True, group_members=["stereo_pair_1"])
-    child = _fake_group_member(multichannel=True)
-    fake.mass.players.get_player.return_value = child
+    group, _, stereo_pair = _fake_group_with_a_stereo_pair()
 
-    fake._handle_media_status(
+    group._handle_media_status(
         _media_status(playing=True, title="Sun Rays", adjusted_current_time=30.0)
     )
 
-    assert child._attr_playback_state == PlaybackState.PLAYING
-    assert child._attr_current_media is fake._attr_current_media
-    assert child._attr_elapsed_time == 30.0
-    assert child._attr_elapsed_time_last_updated == fake._attr_elapsed_time_last_updated
+    assert stereo_pair._attr_playback_state == PlaybackState.PLAYING
+    assert stereo_pair._attr_current_media is group._attr_current_media
+    assert stereo_pair._attr_elapsed_time == 30.0
+    assert stereo_pair._attr_elapsed_time_last_updated == group._attr_elapsed_time_last_updated
     # the group plays an MA queue, which is not a source the member is on
-    assert child._attr_active_source is None
-    child.update_state.assert_called_once()
+    assert stereo_pair._attr_active_source is None
+    stereo_pair.update_state.assert_called_once()
 
 
 def test_a_regular_group_member_is_left_alone() -> None:
     """A regular speaker reports its own status, which the group must not overwrite."""
-    fake = _fake_player(player_type=PlayerType.GROUP, powered=True, group_members=["speaker_1"])
-    child = _fake_group_member(multichannel=False)
-    fake.mass.players.get_player.return_value = child
+    group, speaker, _ = _fake_group_with_a_stereo_pair()
 
-    fake._handle_media_status(_media_status(playing=True, adjusted_current_time=30.0))
+    group._handle_media_status(_media_status(playing=True, adjusted_current_time=30.0))
 
-    assert child._attr_playback_state == PlaybackState.IDLE
-    assert child._attr_current_media is None
-    assert child._attr_elapsed_time == 0.0
-    assert child._attr_active_source == "previous_source"
-    child.update_state.assert_not_called()
+    assert speaker._attr_playback_state == PlaybackState.IDLE
+    assert speaker._attr_current_media is None
+    assert speaker._attr_elapsed_time == 0.0
+    assert speaker._attr_active_source == "previous_source"
+    speaker.update_state.assert_not_called()
 
 
 def test_an_unpowered_group_does_not_push_state_to_its_members() -> None:
     """A group that is off has no playback to hand out."""
-    fake = _fake_player(
-        player_type=PlayerType.GROUP, powered=False, group_members=["stereo_pair_1"]
-    )
-    child = _fake_group_member(multichannel=True)
-    fake.mass.players.get_player.return_value = child
+    group, _, stereo_pair = _fake_group_with_a_stereo_pair(powered=False)
 
-    fake._handle_media_status(_media_status(playing=True, adjusted_current_time=30.0))
+    group._handle_media_status(_media_status(playing=True, adjusted_current_time=30.0))
 
-    assert child._attr_playback_state == PlaybackState.IDLE
-    child.update_state.assert_not_called()
+    assert stereo_pair._attr_playback_state == PlaybackState.IDLE
+    stereo_pair.update_state.assert_not_called()
