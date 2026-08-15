@@ -693,11 +693,9 @@ class ChromecastPlayer(Player):
             # dropped so the metadata update below builds a fresh PlayerMedia instead of
             # merging the new track into the previous one, which only truthy fields replace
             self._attr_current_media = None
-            self._attr_active_source = None
         else:
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
-            self._attr_active_source = None
             if (
                 prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 and self.type != PlayerType.GROUP
