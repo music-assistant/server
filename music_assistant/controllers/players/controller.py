@@ -21,7 +21,7 @@ import contextlib
 import time
 import weakref
 from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager, suppress
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -871,7 +871,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # treat as normal player volume change
             await self.cmd_volume_set(player_id, volume_level)
             return
-        async with self._group_volume_lock(group_player):
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
             await self.set_group_volume(group_player, volume_level)
 
     @api_command("players/cmd/group_volume_up", required_scope=Scope.PLAYERS_CONTROL)
@@ -884,10 +884,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        # hold the lock across the read too, so a repeated nudge can not read a
-        # group volume that an earlier nudge has not applied yet
-        async with self._group_volume_lock(player):
-            cur_volume = player.state.group_volume
+        # step from the volume of the group as a whole, which is not the volume of the
+        # addressed player when the command is addressed to one of its synced members
+        group_player = self._resolve_group_volume_player(player) or player
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            cur_volume = group_player.state.group_volume
             if cur_volume is None:
                 return
             new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
@@ -903,8 +904,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        async with self._group_volume_lock(player):
-            cur_volume = player.state.group_volume
+        group_player = self._resolve_group_volume_player(player) or player
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            cur_volume = group_player.state.group_volume
             if cur_volume is None:
                 return
             new_volume = max(0, cur_volume - self._get_volume_step(cur_volume))
@@ -3548,10 +3550,15 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         Return the player whose group a group volume command applies to.
 
-        Returns None if the given player is not grouped at all.
+        Returns None if the given player is not grouped at all. Commands addressed to a
+        synced member and to its sync leader resolve to the same player, so they read
+        and guard one and the same group.
 
         :param player: The player the command was addressed to.
         """
+        # the group volume lock this resolves to may not share the VOLUME purpose:
+        # set_group_volume sets the volume of the members concurrently and a sync leader
+        # is a member of its own group, so a group command would wait on its own lock.
         if player.state.type == PlayerType.GROUP or player.state.group_members:
             # dedicated group player or sync leader
             return player
@@ -3559,21 +3566,6 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # a synced player follows its sync leader
             return self.get_player(player.state.synced_to)
         return None
-
-    def _group_volume_lock(self, player: Player) -> AbstractAsyncContextManager[None]:
-        """
-        Return the lock that guards the group volume of the given player's group.
-
-        A command addressed to a synced member and one addressed to its sync leader
-        adjust one and the same group, so both are guarded by the lock of the leader.
-
-        :param player: The player the command was addressed to.
-        """
-        # Group volume may not share the VOLUME purpose: set_group_volume sets the volume
-        # of the members concurrently and a sync leader is a member of its own group, so
-        # it would end up waiting on the lock its own group command holds.
-        group_player = self._resolve_group_volume_player(player) or player
-        return self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME)
 
     async def _set_member_volume(self, player_id: str, volume_level: int) -> None:
         """

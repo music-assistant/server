@@ -2306,15 +2306,20 @@ class TestGroupVolumeOrdering:
     """Group volume commands that overlap are handled one after the other."""
 
     def _make_synced_pair(
-        self, mock_mass: MagicMock, slow_device: SlowDevice | None = None
+        self,
+        mock_mass: MagicMock,
+        slow_device: SlowDevice | None = None,
+        volumes: dict[str, int] | None = None,
     ) -> tuple[PlayerController, dict[str, MockPlayer]]:
         """
-        Build a leader synced to one member, both at volume 50 and mute capable.
+        Build a mute capable leader synced to one member.
 
         :param slow_device: When given, the named player takes its time to answer its
             first volume command and reports as soon as it received that command.
+        :param volumes: Volume level per player, defaults to 50 for both.
         """
         controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(5)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         players: dict[str, MockPlayer] = {}
         for player_id in ("leader", "member"):
@@ -2323,7 +2328,7 @@ class TestGroupVolumeOrdering:
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
             }
-            player._attr_volume_level = 50
+            player._attr_volume_level = (volumes or {}).get(player_id, 50)
 
             # let the mocked native volume control behave like a real device, that may
             # take long enough to answer for a later command to overtake it
@@ -2403,6 +2408,21 @@ class TestGroupVolumeOrdering:
         for player in players.values():
             player.update_state()
             assert player.state.volume_level == 30
+
+    async def test_a_nudge_from_a_member_steps_the_volume_of_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group nudge addressed to a member steps the group, not the member itself."""
+        controller, players = self._make_synced_pair(mock_mass, volumes={"member": 40})
+        # the group sits at the volume of its loudest member, the member at its own
+        assert players["leader"].state.group_volume == 50
+        assert players["member"].state.group_volume == 40
+
+        await controller.cmd_group_volume_up("member")
+
+        for player in players.values():
+            player.update_state()
+        assert players["leader"].state.volume_level == 55
 
     async def test_an_individual_volume_command_waits_for_the_group(
         self, mock_mass: MagicMock
