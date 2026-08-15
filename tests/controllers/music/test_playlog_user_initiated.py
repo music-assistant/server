@@ -57,18 +57,21 @@ async def _add_track(mass: MusicAssistant, name: str) -> Track:
 
 
 async def _playlog_row(mass: MusicAssistant, track: Track, userid: str) -> dict[str, Any]:
-    """Read the track's playlog row for the given user."""
-    row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+    """Read the track's latest playlog row for the given user."""
+    rows = await mass.music.database.get_rows_from_query(
+        f"SELECT * FROM {DB_TABLE_PLAYLOG} "
+        "WHERE item_id = :item_id AND provider = :provider AND media_type = :media_type AND userid = :userid "
+        "ORDER BY timestamp DESC LIMIT 1",
         {
             "item_id": track.item_id,
             "provider": "library",
             "media_type": MediaType.TRACK.value,
             "userid": userid,
         },
+        limit=0,
     )
-    assert row is not None
-    return dict(row)
+    assert rows
+    return dict(rows[0])
 
 
 async def test_explicit_track_play_survives_later_autoplay(mass: MusicAssistant) -> None:
