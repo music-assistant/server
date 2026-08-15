@@ -331,6 +331,8 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     announcement = _make_announcement()
     render = _make_render(duration=0.01)
     player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    events: list[str] = []
+    player.volume_set = AsyncMock(side_effect=lambda level: events.append(f"volume={level}"))
 
     with (
         patch.object(announce, "AirPlayStreamSession") as session_cls,
@@ -338,7 +340,7 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     ):
         session = session_cls.return_value
         session.start = AsyncMock()
-        session.stop = AsyncMock()
+        session.stop = AsyncMock(side_effect=lambda: events.append("stop"))
         session.start_time = 0.0
         await announce.play_announcement(player, announcement, 60)
 
@@ -350,11 +352,36 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     )
     session.start.assert_awaited_once()
     session.stop.assert_awaited_once()
-    # announcement volume before the session, previous level restored after
-    assert [call.args for call in player.volume_set.await_args_list] == [(60,), (25,)]
+    # An AirPlay volume only reaches the receiver over a running stream, so the
+    # restore has to be sent before the session is stopped.
+    assert events == ["volume=60", "volume=25", "stop"]
     # the player ends idle without still showing media (like player.stop())
     assert player._attr_current_media is None
     player.update_state.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_session_path_restores_the_volume_when_the_session_fails() -> None:
+    """A session that never gets going still hands the speaker back its own volume."""
+    player = _make_player("solo")
+    player.playback_state = PlaybackState.IDLE
+    player.volume_level = 25
+    player._get_sync_clients = MagicMock(return_value=[player])
+    player._get_session_pcm_format = AsyncMock(return_value=AIRPLAY_PCM_FORMAT)
+    render = _make_render(duration=0.01)
+    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    events: list[str] = []
+    player.volume_set = AsyncMock(side_effect=lambda level: events.append(f"volume={level}"))
+
+    with patch.object(announce, "AirPlayStreamSession") as session_cls:
+        session = session_cls.return_value
+        session.start = AsyncMock(side_effect=RuntimeError("receiver refused the session"))
+        session.stop = AsyncMock(side_effect=lambda: events.append("stop"))
+        session.start_time = 0.0
+        with pytest.raises(RuntimeError):
+            await announce.play_announcement(player, _make_announcement(), 60)
+
+    assert events == ["volume=60", "volume=25", "stop"]
 
 
 @pytest.mark.asyncio
