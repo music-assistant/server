@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
     create_output_codec_config_entry,
 )
@@ -51,6 +52,10 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 
 class HomeAssistantPlayer(Player):
     """Home Assistant Player implementation."""
+
+    # the wrapped entity keeps reporting an abandoned external session as paused, and
+    # Home Assistant pushes no event when it goes stale.
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,

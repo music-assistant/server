@@ -194,7 +194,14 @@ class AirPlayStream:
         # clock_ready): either it projected when the clock becomes usable, or it
         # reported that there is nothing to wait for. The projected instant
         # (unix ms) stays 0 in the latter case, and the readiness below says
-        # which of the reasons it was.
+        # which of the reasons it was. Never re-armed: the binary restarts this
+        # reporting on every FLUSH and START, but the re-armed report waits on
+        # its audio loop, which the flush ack ordinarily beats, so a warm
+        # re-anchor plans against what the previous cycle latched here - which
+        # still holds, a flush leaving the receiver's own clock undisturbed.
+        # Clearing it per cycle would cost a silent receiver its stall verdict:
+        # the binary restarts a five-second stall window at each re-arm, so the
+        # wait below could only ever time out to UNREPORTED.
         self._clock_ready = asyncio.Event()
         self._clock_ready_at_unix_ms: int = 0
         self._clock_readiness: ClockReadiness = ClockReadiness.UNREPORTED
@@ -226,9 +233,10 @@ class AirPlayStream:
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
         # Minimum lead (ms) a warm commanded START needs for exact placement.
-        # Nonzero on the Apple splice timeline, where the receiver's queued
-        # audio plays out before the new content can begin; a warm group
-        # anchor must sit beyond the largest member value. 0 = no constraint.
+        # Nonzero on the splice timeline, the default for every native AirPlay 2
+        # session, where the receiver's queued audio plays out before the new
+        # content can begin; a warm group anchor must sit beyond the largest
+        # member value. 0 = no constraint.
         self.warm_lead_ms: int = 0
         # Audible instant (unix ms) of the delivery head frozen by the latest
         # warm flush, from the flushed ack (0 = none/no constraint). The warm
@@ -337,15 +345,23 @@ class AirPlayStream:
         # back audio rendering until they receive track metadata; deferring it
         # can keep them silent past the commanded start.
         await self._send_current_metadata(send_artwork=False)
-        # Send the mute-aware volume right away — audio can start within a
-        # second now that metadata goes out immediately — and repeat it after
-        # 2 seconds because some players ignore the first volume command
-        # (https://github.com/music-assistant/support/issues/3330). The repeat reads
-        # the level when it fires, so it never replays a value that changed since.
-        await self._send_current_volume()
-        self.mass.call_later(2, self._send_current_volume)
+        # An AirPlay volume command writes the receiver's own volume and persists there
+        # after the session ends, so it is only sent when nothing else owns this output's
+        # volume: otherwise the device keeps playing at the level its own app or remote is
+        # set to. A latched mute would start the stream silent, and a volume explicitly
+        # requested for this session (an announcement) is not an unsolicited push.
+        if (
+            self.player.owns_volume
+            or self.player.volume_muted
+            or (self.session is not None and self.session.requested_volume is not None)
+        ):
+            # Repeat after 2 seconds because some players ignore the first volume command
+            # (https://github.com/music-assistant/support/issues/3330). The repeat reads
+            # the level when it fires, so it never replays a value that changed since.
+            await self._send_current_volume()
+            self.mass.call_later(2, self._send_current_volume)
         # settle artwork and the position on top of the identity push above
-        self.player._on_player_media_updated()
+        self.player.on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
         """
@@ -422,9 +438,12 @@ class AirPlayStream:
         """
         Flush the live stream in place and wait for the binary's acknowledgement.
 
-        Sends ``ACTION=FLUSH`` — the binary stops sending audio, flushes the
-        receiver, discards its input ring and drains stdin, then reports
-        ``[STATUS] flushed`` while keeping the connection and stdin reader alive.
+        Sends ``ACTION=FLUSH`` — the binary stops sending content, discards its
+        input ring and drains stdin, then reports ``[STATUS] flushed`` while
+        keeping the connection and stdin reader alive. The receiver is not asked
+        to discard on the splice timeline: its queued audio plays out and the
+        next START splices onto the same line, so a warm anchor has to clear
+        :attr:`warm_lead_ms` and :attr:`flushed_head_unix_ms`.
         The caller must have stopped feeding old audio before calling this; what
         it already wrote is seen through to the binary here, and stdin is held
         quiet until the flush is acknowledged, so the drain removes exactly the
@@ -985,8 +1004,6 @@ class AirPlayStream:
             cli_binary,
             "--protocol",
             protocol_arg,
-            "--volume",
-            str(self.player.volume_level),
             "--dacp",
             prov.dacp_id,
             "--activeremote",

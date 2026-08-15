@@ -8,7 +8,7 @@ from wiim import PlayingStatus
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.wiim.constants import SOURCE_NETWORK
+from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX, SOURCE_NETWORK
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
 
 
@@ -247,6 +247,56 @@ class TestSupportedFeatures:
         """SELECT_SOURCE should be in supported features."""
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         assert PlayerFeature.SELECT_SOURCE in player._attr_supported_features
+
+
+class TestGroupMembers:
+    """Test group member state handling."""
+
+    def test_unmanaged_group_members_are_ignored(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Only group members registered in Music Assistant should be reported."""
+        managed_udn = "uuid:test-wiim-002"
+        unmanaged_udn = "uuid:test-linkplay-001"
+        leader_player_id = f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}"
+        managed_player_id = f"{PLAYER_ID_PREFIX}{managed_udn}"
+        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
+        snapshot.role = "leader"
+        snapshot.member_udns = (mock_wiim_device.udn, managed_udn, unmanaged_udn)
+        mock_provider.wiim_controller.get_group_members.side_effect = ValueError(
+            f"Device {unmanaged_udn} is not managed by the controller"
+        )
+        mock_provider.mass.players.get_player.side_effect = {managed_player_id: MagicMock()}.get
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=leader_player_id,
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_group_members == [leader_player_id, managed_player_id]
+        mock_provider.wiim_controller.get_group_members.assert_not_called()
+
+    def test_only_unmanaged_group_members_reports_no_group(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A group without any MA-managed followers should not be reported."""
+        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
+        snapshot.role = "leader"
+        snapshot.member_udns = (mock_wiim_device.udn, "uuid:test-linkplay-001")
+        mock_provider.mass.players.get_player.return_value = None
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_group_members == []
 
 
 class TestSourceList:

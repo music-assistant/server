@@ -173,9 +173,10 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
 # Margin added on top of a member's reported warm lead (the splice-timeline
-# queue depth on Apple receivers) when anchoring a warm re-start: covers the
-# command round-trips between the flush acks and the shared START so every
-# member's skip target lands beyond its queued audio.
+# queue depth; that timeline is the default for every native AirPlay 2 session)
+# when anchoring a warm re-start: covers the command round-trips between the
+# flush acks and the shared START so every member's skip target lands beyond
+# its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
 
 # Floor for the late-join PCM ring, which has to hold every sample between the
@@ -219,12 +220,12 @@ AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into
-# audio it has not delivered yet, and its span (warm_lead_ms on the Apple
-# splice timeline, the reported lead_ms otherwise) is how far its delivery
-# head runs ahead of the audible position - so the earliest instant EVERY
-# member can honor lies one max-span out. The margin covers fanning the
-# command out over the pipes and the per-member arm processing, so one shared
-# instant stays feasible for all members.
+# audio it has not delivered yet, and its span (warm_lead_ms on the splice
+# timeline, the reported lead_ms otherwise) is how far its delivery head runs
+# ahead of the audible position - so the earliest instant EVERY member can
+# honor lies one max-span out. The margin covers fanning the command out over
+# the pipes and the per-member arm processing, so one shared instant stays
+# feasible for all members.
 AIRPLAY_ANNOUNCE_AT_MARGIN_MS: Final[int] = 300
 # Span assumed for a member whose binary reported neither a warm lead nor a
 # device lead (both read 0 = unreported): the binary's own default playback

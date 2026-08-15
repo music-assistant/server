@@ -9,7 +9,6 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -429,17 +428,22 @@ class AirPlayPlayer(Player):
             self.update_state()
 
     async def play(self) -> None:
-        """Send PLAY (unpause) command to player."""
-        if self.group_members or self.synced_to:
+        """Handle PLAY (unpause) command on the player."""
+        session = self.stream.session if self.stream and self.stream.running else None
+        if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
-            # member cannot restart the group in sync. Resume via the queue
+            # member cannot restart the group in sync, and a parked member is
+            # held with nothing being fed until a re-anchor - which ACTION=PLAY
+            # does not carry, so it would report playback over silence. The park
+            # outlives the group, so a player left alone by an ungroup is keyed
+            # on the park itself, not on its membership. Resume via the queue
             # instead: play_media flushes and re-anchors every parked member at
             # one shared instant. The queue can belong to a linked native parent
             # (for example Sonos), so resolve it instead of using the AirPlay ID.
             active_queue = self.mass.players.get_active_queue(self)
             if active_queue is None:
                 raise PlayerCommandFailed(
-                    f"Cannot resume grouped AirPlay player {self.display_name} without an active queue"
+                    f"Cannot resume AirPlay player {self.display_name} without an active queue"
                 )
             await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
             return
@@ -512,7 +516,7 @@ class AirPlayPlayer(Player):
                     for member in self.stream.session.sync_clients:
                         self.mass.call_later(
                             1,
-                            member._on_player_media_updated,
+                            member.on_player_media_updated,
                             task_id=f"player_media_updated_{member.player_id}",
                         )
                     return
@@ -557,8 +561,8 @@ class AirPlayPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        # Record before sending: the connect-time volume resync reads this attribute,
-        # so a send that suspends first would let the resync push the stale level.
+        # Record before sending: the connect-time volume push reads this attribute,
+        # so a send that suspends first would let that push send the stale level.
         self._attr_volume_level = volume_level
         if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
@@ -598,12 +602,20 @@ class AirPlayPlayer(Player):
             # handle removals first
             if player_ids_to_remove:
                 if self.player_id in player_ids_to_remove:
-                    if stream_session and len(stream_session.sync_clients) > 1:
-                        # Other clients remain: remove only this leader client,
-                        # session continues for remaining players (dynamic leader switch)
+                    # Callers only ask for this leader alone or for the whole group at once.
+                    # A partial self+subset removal would need the other requested members
+                    # released here as well, instead of returning right after the leader.
+                    remaining_members = [
+                        member_id
+                        for member_id in self._attr_group_members
+                        if member_id != self.player_id and member_id not in player_ids_to_remove
+                    ]
+                    if stream_session and remaining_members:
+                        # Members stay behind: remove only this leader client,
+                        # the session continues for the remaining players
                         await stream_session.remove_client(self, reason="leader removed from group")
                     elif stream_session:
-                        # Last client, stop the whole session
+                        # The whole group is being removed, tear the session down
                         await stream_session.stop()
                     self._attr_group_members = []
                     self.update_state()
@@ -800,49 +812,39 @@ class AirPlayPlayer(Player):
             bit_depth=24,
         )
 
-    def sync_volume_level(self) -> None:
+    @property
+    def owns_volume(self) -> bool:
         """
-        Sync volume from parent player if needed.
+        Return True if this output is the resolved owner of its own volume.
 
-        AirPlay players only report their volume level when we are actually streaming to them
-        and we remember the last used/reported volume level in the player config by default
-        but if we have a parent player, that may know better about the current volume level,
-        so we try to sync from that parent player if possible. If another control owns
-        the parent's volume, we play at unity gain instead.
+        AirPlay volume is the receiver's own volume: setting it writes through to the
+        device and persists there after the session ends. It may therefore only be set
+        when no other control owns the volume of this output.
         """
-        if not self.protocol_parent_id:
+        if not (parent_id := self.protocol_parent_id):
+            # a standalone AirPlay player has no other interface to defer to
+            return True
+        if not (parent_player := self.mass.players.get_player(parent_id)):
+            return True
+        return self._control_routes_to_self(parent_player.volume_control_for_output(self.player_id))
+
+    def release_foreign_mute_latch(self) -> None:
+        """Clear our mute latch when another control owns the mute of this output."""
+        if not self._attr_volume_muted:
+            # nothing latched, so nothing that could silence this stream
             return
-        parent_player = self.mass.players.get_player(self.protocol_parent_id)
-        if not parent_player:
+        if not (parent_id := self.protocol_parent_id):
             return
-        volume_control = parent_player.volume_control
-        if volume_control == PLAYER_CONTROL_NATIVE:
-            # Native parent volume is on the receiver/amplifier scale.
-            # Keep the AirPlay child volume learned from DACP feedback instead.
+        if not (parent_player := self.mass.players.get_player(parent_id)):
             return
-        if not self._volume_control_routes_to_self(volume_control):
-            # Another control (e.g. DLNA/Chromecast hardware volume) owns the parent's
-            # volume; play at unity gain so we don't attenuate on top of it.
-            # Not persisted, so the last software volume survives a switch back.
-            if self._attr_volume_level != 100:
-                self._attr_volume_level = 100
-                self.update_state()
+        if self._control_routes_to_self(parent_player.mute_control_for_output(self.player_id)):
+            # our own mute, applied through the parent
             return
-        if parent_player.state.volume_level is None:
-            return
-        if parent_player.state.volume_level == 0:
-            # A parent volume of 0 usually means the (idle) sibling interface
-            # feeding the parent doesn't know the real device volume, e.g. the
-            # cast side of the same device reports 0 while in standby. Adopting
-            # it would start the stream hard muted, so keep our own last known
-            # volume instead.
-            return
-        if self._attr_volume_level == parent_player.state.volume_level:
-            return
-        self._attr_volume_level = parent_player.state.volume_level
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
-        )
+        # The mute belongs to a control that does not own this output (a sibling interface,
+        # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
+        # unmute clears, so leaving it set would report a mute we do not own and turn the
+        # next volume command into a silent one.
+        self._attr_volume_muted = False
         self.update_state()
 
     async def on_config_updated(self) -> None:
@@ -893,12 +895,22 @@ class AirPlayPlayer(Player):
         if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
             rejoin_task.cancel()
 
-    def _volume_control_routes_to_self(self, volume_control: str) -> bool:
-        """Return True if the given (resolved) volume control routes volume to this player."""
-        if volume_control == self.player_id:
+    def on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if not self.stream or not self.stream.running:
+            return
+        metadata = self.state.current_media
+        if not metadata:
+            return
+        progress = int(metadata.corrected_elapsed_time or 0)
+        self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
+    def _control_routes_to_self(self, control: str) -> bool:
+        """Return True if the given (resolved) control routes to this player."""
+        if control == self.player_id:
             return True
-        # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward volume here
-        if control_player := self.mass.players.get_player(volume_control):
+        # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward to us
+        if control_player := self.mass.players.get_player(control):
             return control_player.underlying_player_id == self.player_id
         return False
 
@@ -1198,16 +1210,6 @@ class AirPlayPlayer(Player):
             port=port,
             device_id=device_id,
         )
-
-    def _on_player_media_updated(self) -> None:
-        """Handle callback when the current media of the player is updated."""
-        if not self.stream or not self.stream.running:
-            return
-        metadata = self.state.current_media
-        if not metadata:
-            return
-        progress = int(metadata.corrected_elapsed_time or 0)
-        self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
     async def _get_session_pcm_format(
         self, sync_clients: list[AirPlayPlayer], media: PlayerMedia

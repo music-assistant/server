@@ -13,7 +13,7 @@ from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
@@ -42,6 +42,10 @@ PLAYER_FEATURES = {
 
 class HeosPlayer(Player):
     """HeosPlayer in Music Assistant."""
+
+    # HEOS keeps a source it loaded itself reported as paused once the app walked away,
+    # and pushes no event when that session goes stale.
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     _heos: Heos
     _heos_queue: Heos

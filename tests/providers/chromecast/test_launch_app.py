@@ -7,6 +7,9 @@ to an app that was not running. Playback never started and nothing was logged.
 
 A failed launch must be reported, and the configured receiver app must not be swapped
 for the other one.
+
+A launch is also needed when the receiver still reports our app while a release of it
+is already on the wire, since the LOAD would otherwise land in a dying session.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ def _fake_cast(
     launch_results: dict[str, bool | None],
     refusal_reason: str | None = None,
     app_id_after_launch: str | None = "same",
+    app_quit_sent: bool = False,
 ) -> MagicMock:
     """
     Build a MagicMock Cast whose receiver answers launches per app id.
@@ -45,6 +49,7 @@ def _fake_cast(
     :param refusal_reason: LAUNCH_ERROR reason reported by the receiver.
     :param app_id_after_launch: App the receiver reports running after accepting a
         launch. "same" means the app that was asked for.
+    :param app_quit_sent: Whether a release of the receiver app is already on the wire.
     """
     fake = MagicMock()
     # the launch runs in an executor and is acknowledged from that thread, so the real
@@ -52,6 +57,7 @@ def _fake_cast(
     fake.mass.loop = asyncio.get_running_loop()
     fake.display_name = "Fake Cast"
     fake.cc.app_id = running_app_id
+    fake.app_quit_sent = app_quit_sent
     fake.config.get_value = MagicMock(return_value=use_mass_app)
     fake.launch_attempts = []
     fake.cc.socket_client.receiver_controller.launch_failure.reason = refusal_reason
@@ -130,13 +136,92 @@ async def test_default_receiver_used_when_mass_app_disabled() -> None:
     assert fake.launch_attempts == [APP_MEDIA_RECEIVER]
 
 
-async def test_compatible_app_already_running_is_left_alone() -> None:
-    """No LAUNCH is sent when a compatible receiver app is already active."""
-    fake = _fake_cast(running_app_id=APP_MEDIA_RECEIVER, launch_results={MASS_APP_ID: True})
+async def test_configured_app_already_running_is_left_alone() -> None:
+    """No LAUNCH is sent when the configured receiver app is already active."""
+    fake = _fake_cast(running_app_id=MASS_APP_ID, launch_results={MASS_APP_ID: True})
 
     await _launch_app(fake)
 
     assert fake.launch_attempts == []
+
+
+async def test_app_that_is_being_quit_is_relaunched() -> None:
+    """A receiver still reporting our app is no proof of a usable session after a quit."""
+    fake = _fake_cast(
+        running_app_id=MASS_APP_ID,
+        launch_results={MASS_APP_ID: True},
+        app_quit_sent=True,
+    )
+
+    await _launch_app(fake)
+
+    assert fake.launch_attempts == [MASS_APP_ID]
+
+
+async def test_confirmed_launch_clears_the_pending_quit() -> None:
+    """The new session is not the one that was quit, so it is usable again."""
+    fake = _fake_cast(
+        running_app_id=MASS_APP_ID,
+        launch_results={MASS_APP_ID: True},
+        app_quit_sent=True,
+    )
+
+    await _launch_app(fake)
+
+    assert fake.app_quit_sent is False
+
+
+@pytest.mark.parametrize(
+    ("launch_results", "app_id_after_launch"),
+    [
+        ({MASS_APP_ID: False}, "same"),
+        ({MASS_APP_ID: None}, "same"),
+        ({MASS_APP_ID: True}, None),
+    ],
+    ids=["refused", "unanswered", "not_started"],
+)
+async def test_failed_launch_keeps_the_pending_quit(
+    launch_results: dict[str, bool | None], app_id_after_launch: str | None
+) -> None:
+    """No new session came up, so the one that was quit is still the doomed one."""
+    fake = _fake_cast(
+        running_app_id=MASS_APP_ID,
+        launch_results=launch_results,
+        app_id_after_launch=app_id_after_launch,
+        app_quit_sent=True,
+    )
+
+    with pytest.raises(PlayerUnavailableError):
+        await _launch_app(fake)
+
+    assert fake.app_quit_sent is True
+
+
+async def test_other_receiver_app_is_replaced_by_the_configured_one() -> None:
+    """
+    The other compatible receiver app is not accepted as-is.
+
+    Treating both receiver apps as interchangeable made the use_mass_app setting a
+    no-op for as long as the other app was running on the device.
+    """
+    fake = _fake_cast(running_app_id=APP_MEDIA_RECEIVER, launch_results={MASS_APP_ID: True})
+
+    await _launch_app(fake)
+
+    assert fake.launch_attempts == [MASS_APP_ID]
+
+
+async def test_disabled_mass_app_is_replaced_by_the_default_receiver() -> None:
+    """With the option disabled, a running MA app is replaced by the default receiver."""
+    fake = _fake_cast(
+        running_app_id=MASS_APP_ID,
+        use_mass_app=False,
+        launch_results={APP_MEDIA_RECEIVER: True},
+    )
+
+    await _launch_app(fake)
+
+    assert fake.launch_attempts == [APP_MEDIA_RECEIVER]
 
 
 async def test_refusal_reason_is_logged() -> None:

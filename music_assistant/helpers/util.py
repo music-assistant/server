@@ -2127,6 +2127,9 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             task_id=task_id,
             abort_existing=False,
             eager_start=True,
+            # every caller awaits the flight below and so sees the failure itself; the
+            # task's own exception log would report a handled error as an unhandled one
+            log_exceptions=False,
             **kwargs,
         )
         return await join_task(task)

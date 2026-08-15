@@ -52,14 +52,21 @@ def _fake_cast(
     fake.type = player_type
     fake.available = True
     fake.cc.app_id = running_app_id
+    fake.app_quit_sent = False
     fake._app_quit_task_id = "cast_quit_app_test"
     fake.cancel_pending_app_quit = partial(
         ChromecastPlayer.cancel_pending_app_quit, cast("ChromecastPlayer", fake)
     )
+    fake._schedule_app_release = partial(
+        ChromecastPlayer._schedule_app_release, cast("ChromecastPlayer", fake)
+    )
+    fake._quit_app = partial(ChromecastPlayer._quit_app, cast("ChromecastPlayer", fake))
     status = fake.cc.media_controller.status
+    status.player_state = player_state
     status.player_is_playing = player_state in ("PLAYING", "BUFFERING")
     status.player_is_paused = player_state == "PAUSED"
     status.media_session_id = media_session_id
+    fake._flow_stream_underrun.return_value = False
     return fake
 
 
@@ -93,6 +100,7 @@ async def test_stop_ends_a_foreign_cast_session_right_away(app_id: str | None) -
 
     fake.cc.quit_app.assert_called_once()
     fake.mass.call_later.assert_not_called()
+    assert fake.app_quit_sent is True
 
 
 async def test_stop_on_a_group_leaves_the_app_alone() -> None:
@@ -123,7 +131,10 @@ async def test_launching_an_app_cancels_a_pending_release() -> None:
 
     await ChromecastPlayer._launch_app(cast("ChromecastPlayer", fake))
 
+    # a timer that already fired is re-created as a task under the same id, so both
+    # have to be cancelled to reliably catch the release
     fake.mass.cancel_timer.assert_called_once_with(fake._app_quit_task_id)
+    fake.mass.cancel_task.assert_called_once_with(fake._app_quit_task_id)
 
 
 @pytest.mark.parametrize("app_id", [MASS_APP_ID, APP_MEDIA_RECEIVER])
@@ -163,3 +174,54 @@ async def test_receiver_app_in_use_is_not_quit(player_state: str) -> None:
     await _quit_app_when_unused(fake)
 
     fake.cc.quit_app.assert_not_called()
+
+
+async def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_is_quit() -> None:
+    """A device stuck buffering at flow EOF has no audio coming, so it is not in use."""
+    fake = _fake_cast(player_state="BUFFERING")
+    fake._flow_stream_underrun.return_value = True
+
+    await _quit_app_when_unused(fake)
+
+    fake.cc.quit_app.assert_called_once()
+
+
+async def test_a_sent_quit_is_recorded() -> None:
+    """A quit that is on the wire cannot be recalled, so the player has to remember it."""
+    fake = _fake_cast(player_state="IDLE")
+
+    await _quit_app_when_unused(fake)
+
+    assert fake.app_quit_sent is True
+
+
+@pytest.mark.parametrize(
+    ("available", "running_app_id", "player_state"),
+    [
+        (False, MASS_APP_ID, "IDLE"),
+        (True, SENDSPIN_CAST_APP_ID, "IDLE"),
+        (True, MASS_APP_ID, "PLAYING"),
+        (True, MASS_APP_ID, "PAUSED"),
+    ],
+    ids=["unavailable", "foreign_app", "playing", "paused"],
+)
+async def test_a_skipped_quit_is_not_recorded(
+    available: bool, running_app_id: str, player_state: str
+) -> None:
+    """Nothing was sent, so the Cast session is still fine to load into."""
+    fake = _fake_cast(running_app_id=running_app_id, player_state=player_state)
+    fake.available = available
+
+    await _quit_app_when_unused(fake)
+
+    assert fake.app_quit_sent is False
+
+
+async def test_powering_off_a_group_records_the_release() -> None:
+    """A receiver that never answers the quit keeps reporting the app for the full timeout."""
+    fake = _fake_cast(player_type=PlayerType.GROUP)
+
+    await ChromecastPlayer.power(cast("ChromecastPlayer", fake), False)
+
+    fake.cc.quit_app.assert_called_once()
+    assert fake.app_quit_sent is True

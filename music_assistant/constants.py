@@ -945,6 +945,7 @@ ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
+ATTR_VOLUME_TARGET: Final[str] = "volume_target"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
 ATTR_POWERED: Final[str] = "powered"
@@ -1030,6 +1031,13 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # audio overlay feature) at zero resource cost until actually used
     ("ambient_sounds", False),
 }
+
+# Seconds an external source may sit paused before we consider its session ended.
+# Devices keep a source like Spotify Connect loaded and paused indefinitely, also once
+# the app released the speaker, and offer nothing that tells an abandoned session apart
+# from a real pause - so time is the only signal left. Kept generous because this is
+# what a real pause is given before we stop presenting the source as resumable.
+EXTERNAL_PAUSE_IDLE_TIMEOUT: Final[int] = 60
 
 EXTERNAL_SOURCES: Final[set[str]] = {
     # list of sources that are definitely considered "external"

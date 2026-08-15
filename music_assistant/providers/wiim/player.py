@@ -12,7 +12,10 @@ from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 from wiim.models import WiimGroupRole
 
-from music_assistant.constants import create_sample_rates_config_entry
+from music_assistant.constants import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    create_sample_rates_config_entry,
+)
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -43,6 +46,10 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
+
+    # the device only pushes state changes, so a source it keeps reported as paused after
+    # the app released it is never corrected on its own.
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,
@@ -111,6 +118,7 @@ class WiimPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
         self.device.general_event_callback = None
         self.device.av_transport_event_callback = None
         self.device.rendering_control_event_callback = None
@@ -393,10 +401,15 @@ class WiimPlayer(Player):
             self._attr_playback_state = new_state
 
         # Group members
-        group_members = self._wiim_controller.get_group_members(self.device.udn)
-        self._attr_group_members = [
-            f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
+        managed_member_ids = [
+            f"{PLAYER_ID_PREFIX}{member_udn}"
+            for member_udn in snapshot.member_udns
+            if member_udn != self.device.udn
+            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
         ]
+        self._attr_group_members = (
+            [self.player_id, *managed_member_ids] if managed_member_ids else []
+        )
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
