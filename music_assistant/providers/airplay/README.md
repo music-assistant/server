@@ -112,16 +112,25 @@ to target) the same feature-bit test the binary uses is mirrored in
 `supports_airplay2()`: any device advertising AirPlay 2 gets AirPlay 2, RAOP is
 only used for devices that do not support it.
 
-### Force RAOP (escape hatch)
+### Streaming mode (escape hatch)
 
-The only user override is the advanced per-player `force_raop` boolean. It is
-offered **only** for AirPlay-2-capable non-Apple receivers that also advertise a
-RAOP service — an escape hatch for a device whose AirPlay 2 implementation
-misbehaves. When enabled, the stream is sent with `--protocol raop`.
+The only user override is the advanced per-player `streaming_mode` selector. It
+pins the protocol/timing lane for a device whose automatic route misbehaves, and
+each option is offered only when the device advertises the capability: the
+AirPlay 2 lanes (PTP timing, NTP timing, compatibility mode) need AirPlay 2
+support, legacy RAOP needs an advertised `_raop` service, and genuine Apple
+receivers get no entry at all (always native AirPlay 2 with PTP). The modes map
+onto the binary's `--protocol`/`--timing` arguments. Music Assistant writes the
+setting itself in exactly one case: a device that advertises PTP but is measured
+never answering a clock probe (AirPlay 2 video-class TVs) is switched to
+"AirPlay 2 - NTP timing" and playback restarts on it; setting it back to
+Automatic retries PTP.
 
-The toggle is deliberately not offered where it would be meaningless: genuine
-Apple devices (HomePod / Apple TV) are always AirPlay 2 (a stray persisted value
-is ignored), and RAOP-only / AirPlay-2-only devices have nothing to force.
+The selector is deliberately hidden where it would be meaningless: genuine
+Apple devices (HomePod / Apple TV) are always native AirPlay 2 with PTP, and a
+RAOP-only device has no alternative lane — for both, a stray persisted value is
+ignored. AirPlay-2-only devices DO get the entry (the AirPlay 2 lanes, without
+RAOP): they are the class the NTP escape exists for.
 
 ## Discovery and Player Setup
 
@@ -541,7 +550,7 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ## Configuration Options
 
 ### Protocol Selection
-- **`force_raop`**: Advanced per-player escape hatch to force the legacy RAOP protocol (default: off). Only offered for AirPlay 2-capable non-Apple devices that also advertise RAOP; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT)
+- **`streaming_mode`**: Advanced per-player pin of the protocol/timing lane (default: Automatic). Options are offered per advertised capability; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT). Auto-set to NTP timing when the device is measured never answering the PTP clock
 
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again

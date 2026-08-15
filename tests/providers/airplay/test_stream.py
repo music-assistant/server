@@ -26,6 +26,12 @@ from music_assistant.providers.airplay.constants import (
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
+    CONF_STREAMING_MODE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
+    STREAMING_MODE_AUTO,
+    STREAMING_MODE_RAOP,
     AirPlayRemoteCommand,
     ClockReadiness,
     StreamingProtocol,
@@ -69,6 +75,13 @@ def _make_player() -> MagicMock:
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.state.active_group = None
+    player.streaming_mode = STREAMING_MODE_AUTO
+    player.streaming_mode_options = [
+        MagicMock(value=STREAMING_MODE_AUTO),
+        MagicMock(value=STREAMING_MODE_AP2_NTP),
+    ]
+    player.synced_to = None
+    player.group_members = []
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -1901,6 +1914,90 @@ async def test_wait_announce_done_times_out() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cli_args_streaming_mode_lanes() -> None:
+    """
+    The streaming-mode pin maps onto the binary's protocol/timing arguments.
+
+    The timing lanes ride --timing on a forced airplay2 protocol, the compat
+    mode forces the auth-setup + RAOP flow, RAOP arrives through the protocol
+    override exactly as before, and Automatic leaves the route to the binary.
+    """
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_NTP
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "airplay2"
+    assert _arg_value(args, "--timing") == "ntp"
+
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_PTP
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "airplay2"
+    assert _arg_value(args, "--timing") == "ptp"
+
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_COMPAT
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "airplay2-compat"
+    assert "--timing" not in args
+
+    player = _make_player()
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "auto"
+    assert "--timing" not in args
+
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_RAOP
+    player.protocol_override = StreamingProtocol.RAOP
+    player.protocol = StreamingProtocol.RAOP
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "raop"
+    assert "--timing" not in args
+
+
+@pytest.mark.asyncio
+async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
+    """
+    A measured PTP stall on a solo Automatic player self-heals onto NTP.
+
+    The visible streaming-mode setting is written (so the user can see and
+    revert the decision) and a playback restart is scheduled; a synced member
+    or a pinned mode only gets the warning.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    mass = player.provider.mass
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_NTP
+    )
+    assert mass.create_task.called
+
+    # A grouped member is reported, never moved: restarting one member of a
+    # live sync group would desync it.
+    grouped_player = _make_player()
+    grouped_player.synced_to = "apleader"
+    grouped = AirPlayStream(grouped_player)
+    grouped._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    grouped_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+    # An explicitly pinned mode is the user's choice: warn only.
+    pinned_player = _make_player()
+    pinned_player.streaming_mode = STREAMING_MODE_AP2_PTP
+    pinned = AirPlayStream(pinned_player)
+    pinned._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_clock_ready_projection_resolves_the_wait() -> None:
     """A probing receiver reports when its clock becomes usable, from its first probe."""
     stream = AirPlayStream(_make_player())
@@ -1967,8 +2064,16 @@ async def test_wait_clock_ready_times_out_for_a_binary_that_never_reports() -> N
 
 @pytest.mark.asyncio
 async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFixture) -> None:
-    """A receiver that never answers our clock is reported loudly once and carries no projection."""
-    stream = AirPlayStream(_make_player())
+    """
+    A stalled receiver that cannot be self-healed is reported loudly, once.
+
+    A grouped member is never auto-switched (moving one member of a live sync
+    group would desync it), so it takes the warn-only path; the solo Automatic
+    self-heal has its own test.
+    """
+    grouped_player = _make_player()
+    grouped_player.synced_to = "apleader"
+    stream = AirPlayStream(grouped_player)
 
     with caplog.at_level(logging.DEBUG):
         ended = stream._handle_status_line(

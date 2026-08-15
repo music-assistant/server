@@ -58,9 +58,16 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
-# Advanced per-device escape hatch: force the legacy RAOP protocol on an
-# AirPlay-2-capable receiver whose AirPlay 2 implementation misbehaves.
-CONF_FORCE_RAOP: Final[str] = "force_raop"
+# Advanced per-device streaming mode: pins the protocol/timing lane for
+# receivers whose automatic route misbehaves. Options are offered per device
+# capability; Automatic is the default and the only value MA itself may write
+# away from (a receiver measured never answering PTP is switched to NTP).
+CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+STREAMING_MODE_AUTO: Final[str] = "auto"
+STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
+STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
+STREAMING_MODE_AP2_COMPAT: Final[str] = "ap2_compat"
+STREAMING_MODE_RAOP: Final[str] = "raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"

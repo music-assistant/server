@@ -40,7 +40,6 @@ from .constants import (
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
-    CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
     CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
@@ -49,11 +48,17 @@ from .constants import (
     CONF_PASSWORD_INVALID,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
+    CONF_STREAMING_MODE,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
     PASSWORD_BIT,
     PIN_REQUIRED,
     RAOP_DISCOVERY_TYPE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
+    STREAMING_MODE_AUTO,
+    STREAMING_MODE_RAOP,
     StreamingProtocol,
 )
 from .helpers import (
@@ -61,6 +66,7 @@ from .helpers import (
     get_decoded_property,
     is_apple_device,
     is_macos_device,
+    parse_airplay_features,
     player_id_to_mac_address,
     supports_airplay2,
 )
@@ -128,23 +134,68 @@ class AirPlayPlayer(Player):
     def protocol(self) -> StreamingProtocol:
         """Get the streaming protocol to use/prefer for this player."""
         # AirPlay 2 whenever the device can speak it and RAOP is not being forced;
-        # RAOP for legacy receivers (or when the force-RAOP escape hatch is set).
-        if self._is_airplay2_capable and not self._force_raop_active:
+        # RAOP for legacy receivers (or when the RAOP streaming mode is set).
+        if self._is_airplay2_capable and self.streaming_mode != STREAMING_MODE_RAOP:
             return StreamingProtocol.AIRPLAY2
         return StreamingProtocol.RAOP
+
+    @property
+    def streaming_mode(self) -> str:
+        """
+        Return the effective per-player streaming mode.
+
+        Automatic unless the (advanced) streaming-mode setting pins a lane the
+        device actually offers; a stored value the device no longer advertises
+        falls back to Automatic rather than forcing an impossible route.
+        """
+        value = str(self.config.get_value(CONF_STREAMING_MODE, STREAMING_MODE_AUTO))
+        offered = {option.value for option in self.streaming_mode_options}
+        return value if value in offered else STREAMING_MODE_AUTO
+
+    @property
+    def streaming_mode_options(self) -> list[ConfigValueOption]:
+        """
+        Return the streaming-mode options this device can actually offer.
+
+        Every option is an escape from the automatic AirPlay 2 route, gated on
+        the device's own advertisements: the AirPlay 2 lanes need AirPlay 2
+        capability (PTP timing additionally needs the SupportsPTP bit), and
+        legacy RAOP needs an advertised _raop service to fall back to. A
+        RAOP-only device has no alternative lane, and genuine Apple receivers
+        are always native AirPlay 2 with PTP — both get Automatic only, which
+        hides the entry entirely.
+        """
+        options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
+        if not self._is_airplay2_capable or is_apple_device(
+            self.device_info.manufacturer, self.device_info.model
+        ):
+            return options
+        features = parse_airplay_features(self._advertised_features)
+        if (features >> 41) & 1:
+            options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
+        options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
+        options.append(
+            ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
+        )
+        if self.raop_discovery_info is not None:
+            options.append(ConfigValueOption(STREAMING_MODE_RAOP, "AirPlay 1 (RAOP)"))
+        return options
 
     @property
     def protocol_override(self) -> StreamingProtocol | None:
         """
         Return the user-forced streaming protocol, or None for automatic selection.
 
-        The only override a user can set is the "force RAOP" escape hatch (offered
-        for AirPlay-2-capable non-Apple receivers whose AirPlay 2 implementation
-        misbehaves). Otherwise the cliairplay binary resolves the route itself from
-        the mDNS TXT records (--protocol auto) and the ``protocol`` property above
-        only reflects MA's own planning heuristic (timing, ports).
+        Only the RAOP streaming mode forces the protocol outright; the AirPlay 2
+        modes stay on the AirPlay 2 protocol and pin the flow/timing through the
+        binary's --protocol/--timing arguments instead. Otherwise the cliairplay
+        binary resolves the route itself from the mDNS TXT records (--protocol
+        auto) and the ``protocol`` property above only reflects MA's own planning
+        heuristic (timing, ports).
         """
-        return StreamingProtocol.RAOP if self._force_raop_active else None
+        if self.streaming_mode == STREAMING_MODE_RAOP:
+            return StreamingProtocol.RAOP
+        return None
 
     @property
     def hires_playback_enabled(self) -> bool:
@@ -310,19 +361,22 @@ class AirPlayPlayer(Player):
         # interactive setup flow (run_setup_flow) and stored in the player's setup_data.
         base_entries: list[ConfigEntry] = []
 
-        # Effective RAOP state from the current (stored) force-RAOP setting, so the
+        # Effective RAOP state from the current (stored) streaming mode, so the
         # RAOP-only entries show/hide consistently with it.
-        is_raop = self._force_raop_active or not self._is_airplay2_capable
+        is_raop = self.protocol == StreamingProtocol.RAOP
 
-        # "Force RAOP" escape hatch: only for AirPlay-2-capable non-Apple receivers
-        # (see _force_raop_available). Framed as a per-device workaround for a
-        # misbehaving AirPlay 2 implementation, not a general protocol choice.
-        if self._force_raop_available:
+        # Streaming-mode escape hatch: a per-device pin of the protocol/timing
+        # lane for receivers whose automatic route misbehaves. Only offered
+        # when the device actually has a lane to choose (Apple receivers are
+        # always native AirPlay 2 with PTP and get no entry).
+        mode_options = self.streaming_mode_options
+        if len(mode_options) > 1:
             base_entries.append(
                 ConfigEntry(
-                    key=CONF_FORCE_RAOP,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
+                    key=CONF_STREAMING_MODE,
+                    type=ConfigEntryType.STRING,
+                    options=mode_options,
+                    default_value=STREAMING_MODE_AUTO,
                     category="protocol_generic",
                     advanced=True,
                 )
@@ -972,26 +1026,6 @@ class AirPlayPlayer(Player):
         if not self.airplay_discovery_info:
             return False
         return supports_airplay2(self._advertised_features) or not self.raop_discovery_info
-
-    @property
-    def _force_raop_available(self) -> bool:
-        """
-        Return whether the "force RAOP" escape hatch applies to this device.
-
-        Offered only for AirPlay-2-capable non-Apple receivers that also advertise
-        a RAOP service to fall back to. Genuine Apple devices are always AirPlay 2,
-        while RAOP-only and AirPlay-2-only devices have nothing to force.
-        """
-        return (
-            self._is_airplay2_capable
-            and self.raop_discovery_info is not None
-            and not is_apple_device(self.device_info.manufacturer, self.device_info.model)
-        )
-
-    @property
-    def _force_raop_active(self) -> bool:
-        """Return whether RAOP is being forced through the escape-hatch toggle."""
-        return self._force_raop_available and bool(self.config.get_value(CONF_FORCE_RAOP, False))
 
     async def _run_streaming_pairing(
         self, session: SetupSession, collected: dict[str, ConfigValueType]
