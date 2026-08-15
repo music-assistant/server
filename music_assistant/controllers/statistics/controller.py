@@ -555,6 +555,14 @@ class StatisticsController(CoreController):
         }
 
         rows = await self.mass.music.database.get_rows_from_query(query, params)
+
+        # Filter by user's allowed provider instances
+        if user.provider_filter:
+            return {
+                (row["provider"], row["item_id"])
+                for row in rows
+                if row["provider"] in user.provider_filter
+            }
         return {(row["provider"], row["item_id"]) for row in rows}
 
     def _get_period_cutoff(self, period: str) -> float:
