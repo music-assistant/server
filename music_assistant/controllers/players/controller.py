@@ -2186,7 +2186,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # if the PlayerQueue was playing, restart playback
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             requires_restart = any(
-                v for v in config.values.values() if v.key in changed_keys and v.requires_reload
+                v.requires_reload
+                for v in config.values.values()
+                if f"values/{v.key}" in changed_keys
             )
             if requires_restart:
                 # always stop first to ensure the player uses the new config
