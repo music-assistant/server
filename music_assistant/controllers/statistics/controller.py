@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType, MediaType
@@ -458,21 +458,53 @@ class StatisticsController(CoreController):
         """
         Get paginated play history with optional time range filtering.
 
-        Delegates to music.recently_played().
+        Shows complete user history without provider availability filtering.
 
         :param limit: Maximum number of items to return (default 50).
         :param media_types: Optional list of media types to filter by.
         :param played_after_timestamp: Optional timestamp to filter items played after.
         """
         user = get_current_user()
-        userid = user.user_id if user else None
+        if not user:
+            return []
+        user_id = user.user_id
 
-        return await self.mass.music.recently_played(
-            limit=limit,
-            media_types=media_types,
-            userid=userid,
-            played_after_timestamp=played_after_timestamp,
-        )
+        if media_types is None:
+            media_types = MediaType.ALL
+        media_types_str = "(" + ",".join(f'"{x.value}"' for x in media_types) + ")"
+
+        query = f"""
+            SELECT *
+            FROM {DB_TABLE_PLAYLOG}
+            WHERE userid = :user_id
+                AND media_type IN {media_types_str}
+        """
+
+        params: dict[str, Any] = {"user_id": user_id}
+
+        if played_after_timestamp is not None:
+            query += " AND timestamp >= :played_after_timestamp"
+            params["played_after_timestamp"] = played_after_timestamp
+
+        query += " ORDER BY timestamp DESC"
+
+        db_rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+
+        available_providers = ("library", *get_global_cache_value("available_providers", []))
+
+        return [
+            ItemMapping.from_dict(
+                {
+                    "item_id": db_row["item_id"],
+                    "provider": db_row["provider"],
+                    "media_type": db_row["media_type"],
+                    "name": db_row["name"],
+                    "image": json_loads(db_row["image"]) if db_row["image"] else None,
+                    "available": db_row["provider"] in available_providers,
+                }
+            )
+            for db_row in db_rows
+        ]
 
     @api_command("statistics/play_count", required_scope=Scope.LIBRARY_READ)
     async def get_play_count(
