@@ -223,11 +223,13 @@ AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS: Final[int] = 2000
 # and out itself. <= -60 mutes the music entirely. -18 dB puts the music
 # clearly in the background under speech (-12 was field-judged too shallow).
 AIRPLAY_ANNOUNCE_DUCK_DB: Final[int] = -18
-# Silence appended to every announcement clip file. The binary holds the duck
-# for the whole file, so this keeps the music ducked past the announcement -
-# the volume restore lands inside this cushion instead of racing the duck's
-# 200 ms tail ramp (a restore that lands after the ramp plays a moment of
-# full-level music at the still-bumped device volume).
+# Silence appended to every announcement clip, so the volume restore has a
+# cushion to land in. Mixed over live playback the binary holds the duck for
+# the whole clip, so the restore lands while the music is still ducked instead
+# of racing the duck's 200 ms tail ramp (a restore that lands after the ramp
+# plays a moment of full-level music at the still-bumped device volume). On a
+# dedicated announcement session it keeps the stream alive past the clip, which
+# is what a volume command needs to reach the receiver at all.
 AIRPLAY_ANNOUNCE_DUCK_TAIL_S: Final[float] = 1.0
 # On top of the lead to the commanded instant: how long to wait for a member's
 # announce_started before treating that member as not announcing. An outdated
