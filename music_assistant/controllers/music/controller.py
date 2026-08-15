@@ -2661,6 +2661,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # For completed plays, always insert a new row to preserve history
         if entry.get("fully_played"):
+            # Before inserting the completed play, retire any outstanding incomplete rows
+            # for this item/user to prevent them from appearing in in_progress_items()
+            conflict_params = {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
+            await self.database.execute_write(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET fully_played = 1 "
+                f"WHERE fully_played = 0 "
+                f"AND {' AND '.join(f'{key} = :{key}' for key in PLAYLOG_CONFLICT_KEYS)}",
+                conflict_params,
+            )
+            # Now insert the completed play
             await self.database.execute_write(
                 f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
                 f"VALUES ({', '.join(f':{column}' for column in columns)})",
