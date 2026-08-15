@@ -523,7 +523,6 @@ class StatisticsController(CoreController):
     async def get_played_item_ids(
         self,
         media_type: MediaType,
-        user_id: str,
         since_timestamp: float,
     ) -> set[str]:
         """
@@ -532,9 +531,9 @@ class StatisticsController(CoreController):
         Used for temporal filters in smart playlists and recommendations.
 
         :param media_type: The media type to filter by.
-        :param user_id: The user ID to filter by.
         :param since_timestamp: Unix timestamp to filter items played after.
         """
+        user_id = get_current_user()
         query = f"""
             SELECT DISTINCT item_id
             FROM {DB_TABLE_PLAYLOG}
