@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from wiim import PlayingStatus
-from wiim.exceptions import WiimDeviceException, WiimRequestException
+from wiim.exceptions import (
+    WiimDeviceException,
+    WiimInvalidDataException,
+    WiimRequestException,
+)
 
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX, SOURCE_NETWORK
@@ -37,6 +41,7 @@ def mock_wiim_device() -> MagicMock:
     device.async_set_mute = AsyncMock()
     device.async_set_play_mode = AsyncMock()
     device.sync_device_duration_and_position = AsyncMock()
+    device.async_update_http_status = AsyncMock()
     device.disconnect = AsyncMock()
     device.ensure_subscriptions = AsyncMock()
     device.general_event_callback = None
@@ -369,6 +374,32 @@ class TestErrorHandling:
         player.update_state.assert_called()
 
     @pytest.mark.asyncio
+    async def test_volume_set_survives_invalid_data_from_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A speaker answering a volume command with something other than OK must not throw."""
+        mock_wiim_device._http_command_ok = AsyncMock(
+            side_effect=WiimInvalidDataException("did not return 'OK'")
+        )
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        await player.volume_set(42)
+        assert player._attr_available is True
+
+    @pytest.mark.asyncio
+    async def test_select_source_survives_invalid_data_from_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A speaker rejecting a source change must not throw out of the command."""
+        mock_wiim_device.async_set_play_mode = AsyncMock(
+            side_effect=WiimInvalidDataException("did not return 'OK'")
+        )
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        await player.select_source("bluetooth")
+        assert player._attr_available is True
+
+    @pytest.mark.asyncio
     async def test_stop_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
@@ -566,3 +597,67 @@ class TestStalePositionOnNewStream:
 
         assert player._attr_elapsed_time == 42
         assert player._attr_elapsed_time_last_updated > 1000.0
+
+
+class TestPollRefreshesTransportState:
+    """Polling must correct state the device stopped pushing events for."""
+
+    def _make_player(self, provider: MagicMock, device: MagicMock) -> WiimPlayer:
+        player = WiimPlayer(provider=provider, player_id="uuid:test", device=device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        return player
+
+    @pytest.mark.asyncio
+    async def test_poll_fetches_device_status(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A poll must ask the device for its transport state, not just its position."""
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.poll()
+
+        mock_wiim_device.async_update_http_status.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_applies_stop_reported_after_missed_events(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device that went to stop while events were lost must no longer read as paused."""
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.PAUSED
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+
+        async def _report_stopped() -> None:
+            mock_wiim_device.playing_status = PlayingStatus.STOPPED
+
+        mock_wiim_device.async_update_http_status = AsyncMock(side_effect=_report_stopped)
+
+        await player.poll()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_poll_survives_invalid_data_from_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A 'Failed' or unparsable status response must not escape the poll."""
+        mock_wiim_device.async_update_http_status = AsyncMock(
+            side_effect=WiimInvalidDataException("Command getStatusEx returned 'Failed'")
+        )
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.poll()
+
+        mock_wiim_device.sync_device_duration_and_position.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_skips_status_of_unavailable_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device the SDK already gave up on must not be queried again by the poll."""
+        mock_wiim_device.available = False
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.poll()
+
+        mock_wiim_device.async_update_http_status.assert_not_awaited()
