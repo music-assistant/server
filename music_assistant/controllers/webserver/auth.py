@@ -122,6 +122,8 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        # Serialises the read-modify-write of the user access filters
+        self._user_filter_lock = asyncio.Lock()
         self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
@@ -1958,37 +1960,40 @@ class AuthenticationManager:
         """Rewrite the access filters of all users, dropping the entries that are not kept."""
         if keep_provider is None and keep_player is None:
             return
-        for row in await self.database.get_rows("users", limit=0):
-            updates: dict[str, str] = {}
-            for column, keep_func in (
-                ("provider_filter", keep_provider),
-                ("player_filter", keep_player),
-            ):
-                if keep_func is None:
-                    continue
-                current: list[str] = json_loads(row[column])
-                remaining = [x for x in current if keep_func(x)]
-                if remaining == current:
-                    continue
-                updates[column] = json_dumps(remaining)
-                dropped = ", ".join(x for x in current if x not in remaining)
-                if remaining:
-                    self.logger.info(
-                        "Removed %s from the %s of user '%s'", dropped, column, row["username"]
-                    )
-                else:
-                    # An empty filter means unrestricted. A user whose entries are all gone is
-                    # deliberately left unrestricted, the alternative being an account that
-                    # can see nothing at all.
-                    self.logger.warning(
-                        "Removed the last entries (%s) from the %s of user '%s'. "
-                        "This user is no longer restricted, adjust the access settings if needed.",
-                        dropped,
-                        column,
-                        row["username"],
-                    )
-            if updates:
-                await self.database.update("users", {"user_id": row["user_id"]}, updates)
+        # removing a provider wipes the config of its players one by one, so without the lock
+        # those rewrites would read the same filter and each undo the other's removal
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                updates: dict[str, str] = {}
+                for column, keep_func in (
+                    ("provider_filter", keep_provider),
+                    ("player_filter", keep_player),
+                ):
+                    if keep_func is None:
+                        continue
+                    current: list[str] = json_loads(row[column])
+                    remaining = [x for x in current if keep_func(x)]
+                    if remaining == current:
+                        continue
+                    updates[column] = json_dumps(remaining)
+                    dropped = ", ".join(x for x in current if x not in remaining)
+                    if remaining:
+                        self.logger.info(
+                            "Removed %s from the %s of user '%s'", dropped, column, row["username"]
+                        )
+                    else:
+                        # An empty filter means unrestricted. A user whose entries are all gone is
+                        # deliberately left unrestricted, the alternative being an account that
+                        # can see nothing at all.
+                        self.logger.warning(
+                            "Removed the last entries (%s) from the %s of user '%s'. This user is "
+                            "no longer restricted, adjust the access settings if needed.",
+                            dropped,
+                            column,
+                            row["username"],
+                        )
+                if updates:
+                    await self.database.update("users", {"user_id": row["user_id"]}, updates)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """

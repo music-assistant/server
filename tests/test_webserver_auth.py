@@ -2474,6 +2474,25 @@ async def test_remove_from_user_filters_lifts_restriction(
     assert "no longer restricted" in caplog.text
 
 
+async def test_remove_from_user_filters_in_parallel(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that removals running at the same time do not undo each other.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="twoplayers", player_filter=["player_one", "player_two"]
+    )
+
+    # removing a player provider wipes the config of each of its players on its own
+    await asyncio.gather(
+        auth_manager.remove_from_user_filters(player_ids=["player_one"]),
+        auth_manager.remove_from_user_filters(player_ids=["player_two"]),
+    )
+
+    assert await _get_filters(auth_manager, user.user_id) == ([], [])
+
+
 async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
     """
     Test that filter entries pointing at unknown providers/players are cleaned up on startup.
