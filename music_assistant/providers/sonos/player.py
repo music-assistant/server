@@ -246,7 +246,20 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PLAY command: Player is synced to another player.")
             return
-        await self.group_controller.play()
+        try:
+            await self.group_controller.play()
+        except FailedCommand as err:
+            if self._attr_active_source is None:
+                raise
+            # the loaded source refused to resume, so it is not merely paused after all
+            self.logger.debug(
+                "Source %s on Sonos player %s can not be resumed: %s",
+                self._attr_active_source,
+                self.player_id,
+                err,
+            )
+            self._mark_external_source_ended()
+            self.update_state()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -878,8 +891,17 @@ class SonosPlayer(Player):
                 task_id=f"sonos_external_pause_{self.player_id}",
             )
             return
-        if (time.time() - self._external_pause_since) < EXTERNAL_PAUSE_IDLE_TIMEOUT:
-            return
+        if (time.time() - self._external_pause_since) >= EXTERNAL_PAUSE_IDLE_TIMEOUT:
+            self._mark_external_source_ended()
+
+    def _mark_external_source_ended(self) -> None:
+        """
+        Stop presenting the source Sonos has loaded as something that can be resumed.
+
+        Backdating the pause is what makes this stick: the updates that follow rebuild the
+        state from Sonos, which keeps reporting the very same source as paused.
+        """
+        self._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_active_source = None
         self._attr_current_media = None
