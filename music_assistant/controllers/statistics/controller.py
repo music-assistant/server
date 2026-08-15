@@ -6,13 +6,18 @@ import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.media_items.metadata import MediaItemImage
-from music_assistant_models.statistics import TopItemResult
+from music_assistant_models.statistics import DistributionItem, TopItemResult
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PLAYLOG,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import SerializableType, json_loads
@@ -141,6 +146,345 @@ class StatisticsController(CoreController):
             )
 
         return result
+
+    @api_command("statistics/genre_distribution", required_scope=Scope.LIBRARY_READ)
+    async def get_genre_distribution(
+        self,
+        period: str = "week",
+        user_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, str | int]]:
+        """
+        Get genre distribution (play counts by genre).
+
+        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param user_id: Optional user ID to filter by. Defaults to current session user.
+        :param limit: Maximum number of genres to return (default 10).
+        """
+        # TODO: Implement genre extraction from playlog
+        # For now, return empty list - requires genre metadata in playlog
+        return []
+
+    @api_command("statistics/artist_distribution", required_scope=Scope.LIBRARY_READ)
+    async def get_artist_distribution(
+        self,
+        period: str = "week",
+        user_id: str | None = None,
+        limit: int = 10,
+    ) -> list[TopItemResult]:
+        """
+        Get artist distribution based on track plays (play counts by artist).
+
+        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param user_id: Optional user ID to filter by. Defaults to current session user.
+        :param limit: Maximum number of artists to return (default 10).
+        """
+        if user_id is None:
+            user = get_current_user()
+            user_id = user.user_id if user else None
+
+        if not user_id:
+            return []
+
+        cutoff_timestamp = self._get_period_cutoff(period)
+
+        # Extract artists from track plays and join with artists table for images
+        # Each track can have multiple artists, so we use json_each to expand the array
+        query = f"""
+            WITH artist_plays AS (
+                SELECT
+                    json_extract(artist_data.value, '$.item_id') as item_id,
+                    json_extract(artist_data.value, '$.provider') as provider,
+                    json_extract(artist_data.value, '$.name') as name
+                FROM {DB_TABLE_PLAYLOG},
+                     json_each(artists) as artist_data
+                WHERE userid = :user_id
+                    AND media_type = :media_type
+                    AND timestamp >= :cutoff_timestamp
+                    AND artists IS NOT NULL
+            )
+            SELECT
+                ap.item_id,
+                ap.provider,
+                ap.name,
+                a.item_id as library_item_id,
+                a.metadata as metadata,
+                COUNT(*) as play_count
+            FROM artist_plays ap
+            LEFT JOIN {DB_TABLE_ARTISTS} a ON LOWER(a.name) = LOWER(ap.name)
+            GROUP BY ap.name
+            ORDER BY play_count DESC
+        """
+
+        params = {
+            "user_id": user_id,
+            "media_type": MediaType.TRACK.value,
+            "cutoff_timestamp": cutoff_timestamp,
+        }
+
+        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+
+        available_providers = ("library", *get_global_cache_value("available_providers", []))
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+
+        result: list[TopItemResult] = []
+
+        for row in rows:
+            provider = row["provider"]
+            if user_provider_filter and provider not in user_provider_filter:
+                continue
+
+            # If artist exists in library, use library ID and provider
+            if row["library_item_id"]:
+                item_id = str(row["library_item_id"])
+                provider = "library"
+            else:
+                item_id = row["item_id"]
+
+            # Extract image from artist metadata
+            image = None
+            if row["metadata"]:
+                metadata_dict = json_loads(row["metadata"])
+                if metadata_dict and "images" in metadata_dict and metadata_dict["images"]:
+                    # Get first thumb image from metadata
+                    for img in metadata_dict["images"]:
+                        if img.get("type") == ImageType.THUMB.value:
+                            image_dict = img.copy()
+                            if "provider" in image_dict and "--" in image_dict["provider"]:
+                                image_dict["provider"] = image_dict["provider"].split("--")[0]
+                            image = MediaItemImage.from_dict(image_dict)
+                            break
+
+            # For non-library artists without metadata, create imageproxy path
+            if not image and provider != "library":
+                image = MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=f"{provider}/{item_id}",
+                    provider=provider,
+                    remotely_accessible=False,
+                )
+
+            item_mapping = ItemMapping(
+                item_id=item_id,
+                provider=provider,
+                media_type=MediaType.ARTIST,
+                name=row["name"],
+                image=image,
+                available=provider in available_providers,
+            )
+
+            result.append(
+                TopItemResult(
+                    item=item_mapping,
+                    play_count=row["play_count"],
+                )
+            )
+
+        return result
+
+    @api_command("statistics/plays_over_time", required_scope=Scope.LIBRARY_READ)
+    async def get_plays_over_time(
+        self,
+        period: str = "week",
+        user_id: str | None = None,
+        granularity: str = "day",
+    ) -> list[dict[str, str | int]]:
+        """
+        Get play counts over time (time series data).
+
+        :param period: Time period - 'today', 'week', 'month', 'year'.
+        :param user_id: Optional user ID to filter by. Defaults to current session user.
+        :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
+        """
+        if user_id is None:
+            user = get_current_user()
+            user_id = user.user_id if user else None
+
+        if not user_id:
+            return []
+
+        cutoff_timestamp = self._get_period_cutoff(period)
+
+        # SQLite date formatting based on granularity
+        date_format = {
+            "hour": "%Y-%m-%d %H:00:00",
+            "day": "%Y-%m-%d",
+            "week": "%Y-W%W",
+            "month": "%Y-%m",
+        }.get(granularity, "%Y-%m-%d")
+
+        query = f"""
+            SELECT
+                strftime('{date_format}', datetime(timestamp, 'unixepoch')) as time_bucket,
+                COUNT(*) as play_count
+            FROM {DB_TABLE_PLAYLOG}
+            WHERE userid = :user_id
+                AND timestamp >= :cutoff_timestamp
+            GROUP BY time_bucket
+            ORDER BY time_bucket ASC
+        """
+
+        params = {
+            "user_id": user_id,
+            "cutoff_timestamp": cutoff_timestamp,
+        }
+
+        rows = await self.mass.music.database.get_rows_from_query(query, params)
+
+        return [{"timestamp": row["time_bucket"], "value": row["play_count"]} for row in rows]
+
+    @api_command("statistics/listening_activity", required_scope=Scope.LIBRARY_READ)
+    async def get_listening_activity(
+        self,
+        period: str = "week",
+        user_id: str | None = None,
+    ) -> list[dict[str, int]]:
+        """
+        Get listening activity heatmap (plays by hour of day and weekday).
+
+        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param user_id: Optional user ID to filter by. Defaults to current session user.
+        """
+        if user_id is None:
+            user = get_current_user()
+            user_id = user.user_id if user else None
+
+        if not user_id:
+            return []
+
+        cutoff_timestamp = self._get_period_cutoff(period)
+
+        query = f"""
+            SELECT
+                CAST(strftime('%H', datetime(timestamp, 'unixepoch')) AS INTEGER) as hour,
+                CAST(strftime('%w', datetime(timestamp, 'unixepoch')) AS INTEGER) as weekday,
+                COUNT(*) as play_count
+            FROM {DB_TABLE_PLAYLOG}
+            WHERE userid = :user_id
+                AND timestamp >= :cutoff_timestamp
+            GROUP BY hour, weekday
+            ORDER BY weekday, hour
+        """
+
+        params = {
+            "user_id": user_id,
+            "cutoff_timestamp": cutoff_timestamp,
+        }
+
+        rows = await self.mass.music.database.get_rows_from_query(query, params)
+
+        return [
+            {"hour": row["hour"], "weekday": row["weekday"], "value": row["play_count"]}
+            for row in rows
+        ]
+
+    @api_command("statistics/listening_time", required_scope=Scope.LIBRARY_READ)
+    async def get_listening_time(
+        self,
+        period: str = "week",
+        user_id: str | None = None,
+        group_by: str = "artist",
+        limit: int = 10,
+    ) -> list[dict[str, str | float]]:
+        """
+        Get total listening time grouped by artist or genre.
+
+        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param user_id: Optional user ID to filter by. Defaults to current session user.
+        :param group_by: Group by 'artist' or 'genre' (default 'artist').
+        :param limit: Maximum number of items to return (default 10).
+        """
+        if user_id is None:
+            user = get_current_user()
+            user_id = user.user_id if user else None
+
+        if not user_id:
+            return []
+
+        cutoff_timestamp = self._get_period_cutoff(period)
+
+        # Group by artist using artist plays
+        # Estimate listening time: each artist play ≈ 3 minutes (180 seconds)
+        if group_by != "artist":
+            # Only artist grouping supported for now
+            return []
+
+        query = f"""
+            SELECT
+                name,
+                COUNT(*) * 180 as estimated_seconds
+            FROM {DB_TABLE_PLAYLOG}
+            WHERE userid = :user_id
+                AND media_type = :media_type
+                AND timestamp >= :cutoff_timestamp
+            GROUP BY name
+            ORDER BY estimated_seconds DESC
+        """
+
+        params = {
+            "user_id": user_id,
+            "media_type": MediaType.ARTIST.value,
+            "cutoff_timestamp": cutoff_timestamp,
+        }
+
+        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+
+        return [
+            {"name": row["name"], "minutes": round(row["estimated_seconds"] / 60, 1)}
+            for row in rows
+            if row["estimated_seconds"] is not None and row["estimated_seconds"] > 0
+        ]
+
+    @api_command("statistics/decade_distribution", required_scope=Scope.LIBRARY_READ)
+    async def get_decade_distribution(
+        self,
+        period: str = "all_time",
+        limit: int = 10,
+        user_id: str | None = None,
+    ) -> list[DistributionItem]:
+        """
+        Get play counts grouped by decade.
+
+        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param limit: Maximum number of decades to return.
+        :param user_id: Optional user ID to filter by. Defaults to current session user.
+        """
+        if user_id is None:
+            user = get_current_user()
+            user_id = user.user_id if user else None
+
+        if not user_id:
+            return []
+
+        cutoff_timestamp = self._get_period_cutoff(period)
+
+        query = f"""
+            SELECT
+                (albums.year / 10) * 10 as decade,
+                COUNT(*) as play_count
+            FROM {DB_TABLE_PLAYLOG} as playlog
+            INNER JOIN {DB_TABLE_ALBUM_TRACKS} as album_tracks
+                ON playlog.item_id = album_tracks.track_id
+            INNER JOIN {DB_TABLE_ALBUMS} as albums
+                ON album_tracks.album_id = albums.item_id
+            WHERE playlog.userid = :user_id
+                AND playlog.media_type = :media_type
+                AND playlog.timestamp >= :cutoff_timestamp
+                AND albums.year IS NOT NULL
+            GROUP BY decade
+            ORDER BY decade DESC
+        """
+
+        params = {
+            "user_id": user_id,
+            "media_type": MediaType.TRACK.value,
+            "cutoff_timestamp": cutoff_timestamp,
+        }
+
+        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+
+        return [{"name": f"{int(row['decade'])}s", "value": row["play_count"]} for row in rows]
 
     @api_command("statistics/play_history", required_scope=Scope.LIBRARY_READ)
     async def get_play_history(
