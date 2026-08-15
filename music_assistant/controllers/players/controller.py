@@ -850,7 +850,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.GROUP_VOLUME)
     async def cmd_group_volume(
         self,
         player_id: str,
@@ -864,6 +864,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param player_id: Player ID of group player or syncleader to handle the command.
         :param volume_level: Volume level (0..100) to set to the group.
         """
+        # Group volume gets a lock purpose of its own so that a live volume drag lands
+        # its commands in order. It may not share the VOLUME purpose: the fan-out below
+        # sets the volume of the members concurrently, and a sync leader is a member of
+        # its own group, so it would end up waiting on the lock its group command holds.
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
         if player.state.type == PlayerType.GROUP or player.state.group_members:
@@ -878,7 +882,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         await self.cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/group_volume_up", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.GROUP_VOLUME)
     async def cmd_group_volume_up(self, player_id: str) -> None:
         """
         Send VOLUME_UP command to given playergroup.
@@ -894,7 +898,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_down", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.GROUP_VOLUME)
     async def cmd_group_volume_down(self, player_id: str) -> None:
         """
         Send VOLUME_DOWN command to given playergroup.

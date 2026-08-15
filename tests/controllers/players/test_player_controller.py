@@ -2295,6 +2295,91 @@ class TestVolumeStep:
         assert entry.range == (0, 10)
 
 
+class TestGroupVolumeOrdering:
+    """Group volume commands that overlap are handled one after the other."""
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, delays: list[float] | None = None
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader synced to one member, both at volume 50 and mute capable.
+
+        :param delays: Response time of the mocked device for each volume command it
+            receives, in order. A command beyond the list is answered instantly.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = 50
+            response_times = iter(delays or [])
+
+            # let the mocked native volume control behave like a real device that takes
+            # its time, so a slow command can land after a faster one issued later
+            async def _volume_set(
+                volume: int,
+                _player: MockPlayer = player,
+                _response_times: Iterator[float] = response_times,
+            ) -> None:
+                await asyncio.sleep(next(_response_times, 0))
+                _player._attr_volume_level = volume
+
+            player.volume_set = AsyncMock(side_effect=_volume_set)  # type: ignore[method-assign]
+            player.volume_mute = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda muted, _player=player: setattr(
+                    _player, "_attr_volume_muted", muted
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second, forced pass so the leader derives its group volume from the member
+        for player in players.values():
+            player.update_state(force_update=True, signal_event=False)
+        return controller, players
+
+    async def test_the_last_command_decides_the_group_volume(self, mock_mass: MagicMock) -> None:
+        """A slow command may not overrule the volume of a later, faster one."""
+        controller, players = self._make_synced_pair(mock_mass, [0.2, 0.01])
+
+        first = asyncio.create_task(controller.cmd_group_volume("leader", 80))
+        await asyncio.sleep(0.02)
+        second = asyncio.create_task(controller.cmd_group_volume("leader", 30))
+        await asyncio.gather(first, second)
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 30
+
+    async def test_a_muted_leader_does_not_wait_on_its_own_group_command(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A muted sync leader is unmuted by a group volume change without blocking."""
+        controller, players = self._make_synced_pair(mock_mass)
+        players["leader"]._attr_volume_muted = True
+        players["leader"].update_state(force_update=True, signal_event=False)
+
+        # a sync leader is a member of its own group, so the fan-out sets the volume
+        # (and unmutes) the very player the group command is running for
+        async with asyncio.timeout(5):
+            await controller.cmd_group_volume("leader", 30)
+
+        players["leader"].update_state()
+        assert players["leader"].state.volume_muted is False
+        assert players["leader"].state.volume_level == 30
+
+
 class TestFakeMuteInGroup:
     """A fake muted player in a group follows the mute lock, just like a native mute."""
 
