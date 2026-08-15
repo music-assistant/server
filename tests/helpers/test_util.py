@@ -71,8 +71,12 @@ LEGACY_CUES = {
     "cp1252": _cue_sheet("Björk", "Homogenic", "Jóga"),
     # the dotless i is what a detector has to get right to tell cp1254 from cp1252
     "cp1254": _cue_sheet("Barış Manço", "Mağusa'da", "Gülpembe"),  # noqa: RUF001
+    "cp1253": _cue_sheet("Μίκης Θεοδωράκης", "Άξιον Εστί", "Ένα το χελιδόνι"),
     "cp1255": _cue_sheet("עידן רייכל", "הפרויקט של עידן רייכל", "בואי"),
     "cp1257": _cue_sheet("Prāta Vētra", "Lupatkājis", "Jūra"),
+    # a multi-byte charset, where a wrong guess costs whole characters rather than
+    # single letters
+    "gbk": _cue_sheet("周杰伦", "叶惠美", "东风破"),
 }
 
 
