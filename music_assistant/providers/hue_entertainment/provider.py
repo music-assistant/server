@@ -213,8 +213,13 @@ class HueEntertainmentProvider(PluginProvider):
         Settings like brightness/color_mode can be updated
         without a full provider reload.
         """
-        settings_keys = {CONF_BRIGHTNESS, CONF_COLOR_MODE, CONF_HUE_LATENCY_MS}
-        if changed_keys & settings_keys and self._bridge_manager:
+        # changed_keys arrive namespaced as 'values/<key>'; only skip the reload when
+        # every changed key can be applied in place (anything else, including the
+        # log level, still needs the base implementation).
+        settings_keys = {
+            f"values/{key}" for key in (CONF_BRIGHTNESS, CONF_COLOR_MODE, CONF_HUE_LATENCY_MS)
+        }
+        if changed_keys and changed_keys <= settings_keys and self._bridge_manager:
             self._bridge_manager.update_settings(
                 color_mode=str(config.get_value(CONF_COLOR_MODE) or "smooth"),
                 brightness=int(float(str(config.get_value(CONF_BRIGHTNESS) or 100))),
