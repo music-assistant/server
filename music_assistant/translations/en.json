@@ -891,6 +891,7 @@
   "provider.airplay.config_entries.verbose_ptp_logging.description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second.",
   "provider.airplay.config_entries.verbose_ptp_logging.label": "Verbose PTP daemon logging",
   "provider.airplay.errors.authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+  "provider.airplay.errors.connection_refused": "The device refused the connection. Run the setup for this player to pair it again.",
   "provider.airplay.errors.invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
   "provider.airplay.errors.pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
   "provider.airplay.errors.pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
