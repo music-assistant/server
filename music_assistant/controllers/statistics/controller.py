@@ -58,7 +58,6 @@ class StatisticsController(CoreController):
         self,
         media_type: MediaType,
         period: str = "week",
-        user_id: str | None = None,
         limit: int = 50,
     ) -> list[TopItemResult]:
         """
@@ -69,12 +68,10 @@ class StatisticsController(CoreController):
 
         :param media_type: The type of media to get top items for.
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         :param limit: Maximum number of items to return (default 50).
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return []
@@ -151,14 +148,12 @@ class StatisticsController(CoreController):
     async def get_genre_distribution(
         self,
         period: str = "week",
-        user_id: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, str | int]]:
         """
         Get genre distribution (play counts by genre).
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         :param limit: Maximum number of genres to return (default 10).
         """
         # TODO: Implement genre extraction from playlog
@@ -169,19 +164,16 @@ class StatisticsController(CoreController):
     async def get_artist_distribution(
         self,
         period: str = "week",
-        user_id: str | None = None,
         limit: int = 10,
     ) -> list[TopItemResult]:
         """
         Get artist distribution based on track plays (play counts by artist).
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         :param limit: Maximum number of artists to return (default 10).
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return []
@@ -212,7 +204,7 @@ class StatisticsController(CoreController):
                 COUNT(*) as play_count
             FROM artist_plays ap
             LEFT JOIN {DB_TABLE_ARTISTS} a ON LOWER(a.name) = LOWER(ap.name)
-            GROUP BY ap.name
+            GROUP BY ap.item_id, ap.provider
             ORDER BY play_count DESC
         """
 
@@ -250,20 +242,8 @@ class StatisticsController(CoreController):
                     # Get first thumb image from metadata
                     for img in metadata_dict["images"]:
                         if img.get("type") == ImageType.THUMB.value:
-                            image_dict = img.copy()
-                            if "provider" in image_dict and "--" in image_dict["provider"]:
-                                image_dict["provider"] = image_dict["provider"].split("--")[0]
-                            image = MediaItemImage.from_dict(image_dict)
+                            image = MediaItemImage.from_dict(img)
                             break
-
-            # For non-library artists without metadata, create imageproxy path
-            if not image and provider != "library":
-                image = MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=f"{provider}/{item_id}",
-                    provider=provider,
-                    remotely_accessible=False,
-                )
 
             item_mapping = ItemMapping(
                 item_id=item_id,
@@ -287,19 +267,16 @@ class StatisticsController(CoreController):
     async def get_plays_over_time(
         self,
         period: str = "week",
-        user_id: str | None = None,
         granularity: str = "day",
     ) -> list[dict[str, str | int]]:
         """
         Get play counts over time (time series data).
 
         :param period: Time period - 'today', 'week', 'month', 'year'.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return []
@@ -338,17 +315,14 @@ class StatisticsController(CoreController):
     async def get_listening_activity(
         self,
         period: str = "week",
-        user_id: str | None = None,
     ) -> list[dict[str, int]]:
         """
         Get listening activity heatmap (plays by hour of day and weekday).
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return []
@@ -383,7 +357,6 @@ class StatisticsController(CoreController):
     async def get_listening_time(
         self,
         period: str = "week",
-        user_id: str | None = None,
         group_by: str = "artist",
         limit: int = 10,
     ) -> list[dict[str, str | float]]:
@@ -391,13 +364,11 @@ class StatisticsController(CoreController):
         Get total listening time grouped by artist or genre.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         :param group_by: Group by 'artist' or 'genre' (default 'artist').
         :param limit: Maximum number of items to return (default 10).
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return []
@@ -441,18 +412,15 @@ class StatisticsController(CoreController):
         self,
         period: str = "all_time",
         limit: int = 10,
-        user_id: str | None = None,
     ) -> list[DistributionItem]:
         """
         Get play counts grouped by decade.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of decades to return.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return []
@@ -491,7 +459,6 @@ class StatisticsController(CoreController):
         self,
         limit: int = 50,
         media_types: list[MediaType] | None = None,
-        userid: str | None = None,
         played_after_timestamp: int | None = None,
     ) -> list[ItemMapping]:
         """
@@ -501,9 +468,11 @@ class StatisticsController(CoreController):
 
         :param limit: Maximum number of items to return (default 50).
         :param media_types: Optional list of media types to filter by.
-        :param userid: Optional user ID to filter by. Defaults to current session user.
         :param played_after_timestamp: Optional timestamp to filter items played after.
         """
+        user = get_current_user()
+        userid = user.user_id if user else None
+
         return await self.mass.music.recently_played(
             limit=limit,
             media_types=media_types,
@@ -517,7 +486,6 @@ class StatisticsController(CoreController):
         item_id: str,
         provider: str,
         media_type: MediaType,
-        user_id: str | None = None,
     ) -> int:
         """
         Get play count for a specific item.
@@ -525,11 +493,9 @@ class StatisticsController(CoreController):
         :param item_id: The item ID to get play count for.
         :param provider: The provider ID.
         :param media_type: The media type.
-        :param user_id: Optional user ID to filter by. Defaults to current session user.
         """
-        if user_id is None:
-            user = get_current_user()
-            user_id = user.user_id if user else None
+        user = get_current_user()
+        user_id = user.user_id if user else None
 
         if not user_id:
             return 0
@@ -593,10 +559,11 @@ class StatisticsController(CoreController):
         :param period: Time period string ('today', 'week', 'month', 'year', 'all_time').
         :return: Unix timestamp for the start of the period.
         """
+        # TODO: Use user timezone instead of UTC for accurate "today"/calendar boundaries
         now = time.time()
 
         if period == "today":
-            # Start of today (midnight) - calculate seconds since midnight
+            # Start of today (midnight UTC) - calculate seconds since midnight
             seconds_since_midnight = now % 86400
             return now - seconds_since_midnight
         if period == "week":
