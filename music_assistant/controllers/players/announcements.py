@@ -843,7 +843,11 @@ class AnnouncementsMixin:
         :param announce_player: The player (or linked protocol) that plays the announcement.
         """
         volume_control = player.volume_control_for_output(announce_player.player_id)
-        if volume_control in (PLAYER_CONTROL_NATIVE, announce_player.player_id):
+        if volume_control == PLAYER_CONTROL_NATIVE:
+            # A native volume lives on the player itself, so only its own output can
+            # apply it: a linked protocol rendering the audio has no way to reach it.
+            return announce_player.player_id == player.player_id
+        if volume_control == announce_player.player_id:
             # the volume lives on the device the announcing output talks to
             return True
         # a bridge player riding on the announcing output forwards its volume to it

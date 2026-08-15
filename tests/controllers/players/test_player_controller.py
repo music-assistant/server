@@ -3422,14 +3422,41 @@ class TestNativeAnnouncementVolumeRouting:
         setup.volume_set.assert_not_awaited()
         setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
 
-    async def test_native_volume_keeps_the_announcement_volume(self, mock_mass: MagicMock) -> None:
-        """Native parent volume lives on the device the output talks to, so it applies it."""
+    async def test_native_volume_is_applied_through_the_parent(self, mock_mass: MagicMock) -> None:
+        """
+        A native volume lives on the parent, so the parent applies and restores it.
+
+        The rendering output has no way to reach a native parent volume, and its own
+        idea of the level can be stale, so routing through the parent keeps both the
+        announcement level and the restore on the control that actually knows it.
+        """
         setup = self._make_setup(mock_mass, PLAYER_CONTROL_NATIVE)
+        setup.parent._attr_volume_level = 20
+        setup.parent._cache.clear()
+        setup.parent.update_state(signal_event=False)
 
         await self._announce(setup)
 
+        assert setup.volume_set.await_args_list == [
+            call("parent", self.ANNOUNCE_VOLUME),
+            call("parent", 20),
+        ]
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+    async def test_native_volume_on_its_own_output_is_kept_by_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player announcing on its own output can apply its native volume itself."""
+        setup = self._make_setup(mock_mass, PLAYER_CONTROL_NATIVE)
+        play_announcement = AsyncMock()
+        setup.parent.play_announcement = play_announcement  # type: ignore[method-assign]
+
+        await setup.controller._play_native_announcement(
+            setup.parent, setup.parent, _announcement(), self.ANNOUNCE_VOLUME
+        )
+
         setup.volume_set.assert_not_awaited()
-        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+        play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
 
     async def test_without_volume_control_no_volume_is_applied(self, mock_mass: MagicMock) -> None:
         """Nothing in the signal path can set a volume, so the announcement plays as-is."""
