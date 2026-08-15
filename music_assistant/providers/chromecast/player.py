@@ -590,7 +590,12 @@ class ChromecastPlayer(Player):
 
         # update player status
         self._attr_name = self.cast_info.friendly_name
-        self._attr_volume_level = round(status.volume_level * 100)
+        # A device with no cast app running can report volume 0 while its real volume is
+        # set through another interface (combo devices expose a cast endpoint next to
+        # their own protocol), so keep that unknown instead of reporting a hard mute.
+        volume_level = round(status.volume_level * 100)
+        cast_idle = self.cc.app_id in (None, IDLE_APP_ID)
+        self._attr_volume_level = None if cast_idle and volume_level == 0 else volume_level
         self._attr_volume_muted = status.volume_muted
         self.update_state()
         if self.on_app_status_changed is not None:
