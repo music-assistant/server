@@ -110,26 +110,14 @@ AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # Default receiver buffer depth per device family: (manufacturer wildcard,
 # model wildcard, firmware wildcard) -> depth in ms, matched case-insensitively
 # in order, first match wins; unmatched devices stay on Automatic (the binary's
-# stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
-# behind a perfectly healthy session - so their queue is deepened, at the cost
-# of slower warm seeks (the depth IS the audible latency of a seek or skip) and,
-# past ~2 s of effective depth, of the binary's post-commit clock verification,
-# which stops arming once the depth plus 500 ms outruns a late joiner's anchor.
-# Extend the table as field reports identify more starving devices.
-AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
-    # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
-    # 1750 ms is what a WiiM needs once it is also master of a native multiroom
-    # group.
-    ("linkplay*", "*", "*", 1750),
-    # The older LinkPlay platform ships under OEM brands (Edifier, ...) but
-    # marks the platform in its firmware string. It starves far deeper: an
-    # Edifier MS50A stays silent at 2250 ms and renders from 2500 ms, which is
-    # the 2250 ms pipeline the same device declares as its RAOP latency plus the
-    # binary's delivery margin. Every shallower value - including the 1750 ms
-    # this row used to inherit from the row above - is below what the device
-    # itself asks for.
-    ("*", "*", "p20.linkplay.*", 2500),
-)
+# stock depth). The table is EMPTY since the buffered (type 103) stream became
+# the auto-route for the receivers that used to need a deepened queue: the
+# LinkPlay pipelines that starved on the realtime stream (WiiM at 1750 ms,
+# Edifier MS50A silent below 2500 ms) manage their own buffer on the buffered
+# stream and play fine on Automatic. The per-player depth setting remains as
+# an advanced override; extend the table only for devices that starve on the
+# route they actually take.
+AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = ()
 # Per-player override of the splice receiver-queue depth in ms (0 = automatic).
 CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
