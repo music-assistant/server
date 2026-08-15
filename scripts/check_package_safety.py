@@ -31,6 +31,32 @@ COMPATIBLE_LICENSES = {
     "CC0",
 }
 
+# SPDX identifiers accepted in a PEP 639 `license_expression`
+COMPATIBLE_SPDX_LICENSES = {
+    "0BSD",
+    "APACHE-2.0",
+    "BSD-2-CLAUSE",
+    "BSD-3-CLAUSE",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "LGPL-2.1-ONLY",
+    "LGPL-2.1-OR-LATER",
+    "LGPL-3.0-ONLY",
+    "LGPL-3.0-OR-LATER",
+    "MIT",
+    "MIT-0",
+    "MIT-CMU",
+    "MPL-2.0",
+    "PSF-2.0",
+    "PYTHON-2.0",
+    "UNLICENSE",
+    "ZLIB",
+}
+
+# License families that are incompatible with the project (LGPL excluded)
+PROBLEMATIC_LICENSES = ("GPL", "AGPL", "SSPL")
+
 # Common packages to check for typosquatting (popular Python packages)
 POPULAR_PACKAGES = {
     "requests",
@@ -91,6 +117,29 @@ def check_typosquatting(package_name: str) -> str | None:
     return None
 
 
+def get_package_license(info: dict[str, Any]) -> str:
+    """
+    Resolve the license of a package from its PyPI metadata.
+
+    :param info: The `info` section of the PyPI JSON response.
+    """
+    # packages that adopted PEP 639 declare an SPDX expression, which is more precise than the
+    # free-form field and the classifiers, and is usually the only license metadata they carry
+    if license_expression := (info.get("license_expression") or "").strip():
+        return license_expression
+
+    if license_str := (info.get("license") or "").strip():
+        return license_str
+
+    for classifier in info.get("classifiers") or []:
+        # the license itself is the last segment, e.g. "License :: OSI Approved :: MIT License"
+        parts = [part.strip() for part in classifier.split("::")]
+        if parts[0] == "License" and len(parts) > 2:
+            return parts[-1]
+
+    return "Unknown"
+
+
 def check_license_compatibility(license_str: str) -> tuple[bool, str]:
     """
     Check if license is compatible with the project.
@@ -101,15 +150,22 @@ def check_license_compatibility(license_str: str) -> tuple[bool, str]:
         return False, "No license information"
 
     license_upper = license_str.upper()
+    spdx_compatible = _evaluate_spdx_expression(license_str)
 
-    # Check against compatible licenses
-    for compatible in COMPATIBLE_LICENSES:
-        if compatible.upper() in license_upper:
-            return True, f"Compatible ({license_str})"
+    if spdx_compatible:
+        return True, f"Compatible ({license_str})"
+
+    # only fall back to plain substring matching when the string is not an SPDX expression we
+    # understand, so a copyleft term cannot be masked by a permissive one elsewhere in it
+    if spdx_compatible is None:
+        # ignore punctuation so spelling variants such as "MPL 2.0" match "MPL-2.0"
+        squashed = re.sub(r"[^A-Z0-9]", "", license_upper)
+        for compatible in COMPATIBLE_LICENSES:
+            if re.sub(r"[^A-Z0-9]", "", compatible.upper()) in squashed:
+                return True, f"Compatible ({license_str})"
 
     # Check for problematic licenses
-    problematic = ["GPL", "AGPL", "SSPL"]
-    for problem in problematic:
+    for problem in PROBLEMATIC_LICENSES:
         if problem in license_upper and "LGPL" not in license_upper:
             return False, f"Incompatible copyleft license ({license_str})"
 
@@ -202,7 +258,8 @@ def check_package(package_name: str) -> dict[str, Any]:
 
     # Run automated security checks
     typosquat_check = check_typosquatting(package_name)
-    license_compatible, license_status = check_license_compatibility(info.get("license", "Unknown"))
+    package_license = get_package_license(info)
+    license_compatible, license_status = check_license_compatibility(package_license)
 
     checks = {
         "name": package_name,
@@ -212,7 +269,7 @@ def check_package(package_name: str) -> dict[str, Any]:
         "has_homepage": bool(homepage),
         "has_source": bool(source),
         "author": info.get("author") or info.get("maintainer") or "Unknown",
-        "license": info.get("license") or "Unknown",
+        "license": package_license,
         "summary": info.get("summary", "No description"),
         "warnings": [],
         "info_items": [],
@@ -401,6 +458,94 @@ def main() -> int:
 
     print("\n✅ All packages passed basic safety checks.")
     return 0
+
+
+def _evaluate_spdx_expression(license_str: str) -> bool | None:
+    """
+    Check an SPDX license expression (PEP 639) against the allow list.
+
+    Returns None when the string is not an SPDX expression or holds an identifier that is
+    neither known-compatible nor known-problematic.
+
+    :param license_str: The license string to evaluate, e.g. "MIT OR Apache-2.0".
+    """
+    tokens = re.findall(r"\(|\)|[^\s()]+", license_str)
+    if not tokens:
+        return None
+    result = _evaluate_spdx_tokens(tokens)
+    # anything left over means we did not understand the string as a whole
+    return None if tokens else result
+
+
+def _evaluate_spdx_tokens(tokens: list[str]) -> bool | None:
+    """
+    Evaluate the leading SPDX expression, consuming the tokens it covers.
+
+    Any alternative that is compatible makes the whole expression compatible.
+
+    :param tokens: The remaining tokens of the expression.
+    """
+    result = _evaluate_spdx_term(tokens)
+    while tokens and tokens[0].upper() == "OR":
+        tokens.pop(0)
+        term = _evaluate_spdx_term(tokens)
+        if True in (result, term):
+            result = True
+        elif None in (result, term):
+            result = None
+    return result
+
+
+def _evaluate_spdx_term(tokens: list[str]) -> bool | None:
+    """
+    Evaluate the leading "AND" sequence, which binds tighter than "OR" in SPDX.
+
+    Every operand of the sequence has to be compatible on its own.
+
+    :param tokens: The remaining tokens of the expression.
+    """
+    result = _evaluate_spdx_operand(tokens)
+    while tokens and tokens[0].upper() == "AND":
+        tokens.pop(0)
+        operand = _evaluate_spdx_operand(tokens)
+        if False in (result, operand):
+            result = False
+        elif None in (result, operand):
+            result = None
+    return result
+
+
+def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
+    """
+    Evaluate a single SPDX operand: a parenthesised expression or a license identifier.
+
+    :param tokens: The remaining tokens of the expression.
+    """
+    if not tokens:
+        return None
+
+    if tokens[0] == "(":
+        tokens.pop(0)
+        result = _evaluate_spdx_tokens(tokens)
+        if not tokens or tokens.pop(0) != ")":
+            return None
+        return result
+
+    identifier = tokens.pop(0).rstrip("+").upper()
+    # a "WITH <exception>" suffix only grants extra permissions, so the identifier decides
+    if tokens and tokens[0].upper() == "WITH":
+        tokens.pop(0)
+        if not tokens:
+            return None
+        tokens.pop(0)
+
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]*", identifier):
+        return None
+    if identifier in COMPATIBLE_SPDX_LICENSES:
+        return True
+    if "LGPL" not in identifier and any(prob in identifier for prob in PROBLEMATIC_LICENSES):
+        return False
+    return None
 
 
 if __name__ == "__main__":
