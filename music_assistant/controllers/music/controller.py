@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
@@ -2659,23 +2660,69 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         columns = list(entry)
 
-        # For completed plays, always insert a new row to preserve history
+        # For completed plays, check if this is truly a new play or just a provider state sync
         if entry.get("fully_played"):
-            # Before inserting the completed play, retire any outstanding incomplete rows
-            # for this item/user to prevent them from appearing in in_progress_items()
             conflict_params = {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
+
+            # Retire any outstanding incomplete rows for this item/user
             await self.database.execute_write(
                 f"UPDATE {DB_TABLE_PLAYLOG} SET fully_played = 1 "
                 f"WHERE fully_played = 0 "
                 f"AND {' AND '.join(f'{key} = :{key}' for key in PLAYLOG_CONFLICT_KEYS)}",
                 conflict_params,
             )
-            # Now insert the completed play
-            await self.database.execute_write(
-                f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
-                f"VALUES ({', '.join(f':{column}' for column in columns)})",
-                entry,
+
+            # Check for recent completed play (within 5 minutes) to avoid duplicates from provider syncs
+            recent_threshold = int(time.time()) - 300
+            recent_completed = await self.database.get_rows_from_query(
+                f"SELECT id, user_initiated, timestamp FROM {DB_TABLE_PLAYLOG} WHERE "
+                + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                + f" AND fully_played = 1 AND timestamp >= {recent_threshold} "
+                + "ORDER BY timestamp DESC LIMIT 1",
+                conflict_params,
+                limit=0,
             )
+
+            if recent_completed:
+                # Update the recent completed play instead of inserting a duplicate
+                latest_row = recent_completed[0]
+                # Preserve user_initiated=1 if ever set (sticky logic)
+                if latest_row["user_initiated"] == 1:
+                    entry["user_initiated"] = 1
+
+                set_clauses = []
+                for column in columns:
+                    if column == "id":
+                        continue
+                    if column == "user_initiated" and latest_row["user_initiated"] == 1:
+                        # Don't downgrade user_initiated from 1 to 0
+                        continue
+                    set_clauses.append(f"{column} = :{column}")
+
+                if set_clauses:
+                    await self.database.execute_write(
+                        f"UPDATE {DB_TABLE_PLAYLOG} SET {', '.join(set_clauses)} "
+                        f"WHERE id = {latest_row['id']}",
+                        entry,
+                    )
+            else:
+                # No recent completed play found - check if any previous row had user_initiated=1
+                existing_rows = await self.database.get_rows_from_query(
+                    f"SELECT user_initiated FROM {DB_TABLE_PLAYLOG} WHERE "
+                    + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                    + " AND user_initiated = 1 LIMIT 1",
+                    conflict_params,
+                    limit=0,
+                )
+                if existing_rows:
+                    entry["user_initiated"] = 1
+
+                # Insert new completed play
+                await self.database.execute_write(
+                    f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+                    f"VALUES ({', '.join(f':{column}' for column in columns)})",
+                    entry,
+                )
         else:
             # For resume-state updates, update the most recent row for this item/user
             # First, get the id of the latest row
