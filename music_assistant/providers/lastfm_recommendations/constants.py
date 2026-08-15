@@ -68,7 +68,7 @@ TOP_ARTISTS_LIMIT = 5
 TOP_TRACKS_LIMIT = 20
 
 # Recent-listening window (days) for personalized seeds. Seeds are drawn from plays in this
-# window so they track current listening; the playlog is pruned at 90 days.
+# window so they track current listening; the playlog is pruned at 365 days.
 RECENT_PLAYS_WINDOW_DAYS = 30
 
 # Maximum number of recent play events to scan when ranking seeds.

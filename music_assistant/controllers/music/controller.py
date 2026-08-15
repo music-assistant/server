@@ -1700,7 +1700,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params["userid"] = userid
         elif user:
             params["userid"] = user.user_id
-        if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
+        # Get the most recent playlog entry for this item/user
+        db_rows = await self.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE "
+            + " AND ".join(f"{key} = :{key}" for key in params)
+            + " ORDER BY timestamp DESC LIMIT 1",
+            params,
+        )
+        if db_rows:
+            db_entry = db_rows[0]
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             # fully_played is a nullable column; treat an unknown (NULL) value as not played
             ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
@@ -1733,8 +1741,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else:
                 # the speed is stored per user; without one we can't scope the lookup
                 return 1.0
-        db_entry = await self.database.get_row(
-            DB_TABLE_PLAYLOG,
+        # Get the most recent playlog entry for this item/user
+        db_rows = await self.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE "
+            "item_id = :item_id AND provider = :provider AND media_type = :media_type AND userid = :userid "
+            "ORDER BY timestamp DESC LIMIT 1",
             {
                 "item_id": media_item.item_id,
                 "provider": media_item.provider,
@@ -1742,6 +1753,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "userid": userid,
             },
         )
+        db_entry = db_rows[0] if db_rows else None
         if db_entry and (stored_speed := db_entry["playback_speed"]) is not None:
             return float(stored_speed)
         return 1.0
@@ -2611,35 +2623,63 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
-        Write a playlog row, updating the existing row for the item/user if there is one.
+        Write a playlog entry.
 
-        Columns left out of the entry keep whatever the existing row holds, and
+        For completed plays (fully_played=True), inserts a new row to preserve play history.
+        For resume-state updates (fully_played=False), updates the latest existing row for
+        the item/user to maintain current playback position.
+
         `user_initiated` is sticky: once a play was explicitly user-initiated it stays that
-        way for the lifetime of the row, so a later side-effect credit (an autoplay replay,
-        or a track crediting its album/artist) can never demote it and drop the item out of
-        the "recently played" recommendations.
+        way, so a later side-effect credit (an autoplay replay, or a track crediting its
+        album/artist) can never demote it and drop the item out of the "recently played"
+        recommendations.
 
-        The generic `database.upsert()` cannot express either half of that: the sticky OR is
-        playlog-specific, and it needs an explicit conflict target because the playlog carries
-        more than one unique constraint.
-
-        :param entry: The playlog column values to write, including all of
-            `PLAYLOG_CONFLICT_KEYS`.
+        :param entry: The playlog column values to write.
         """
         columns = list(entry)
-        updates = [
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
-            if column == "user_initiated"
-            else f"{column} = excluded.{column}"
-            for column in columns
-            if column not in PLAYLOG_CONFLICT_KEYS
-        ]
-        await self.database.execute_write(
-            f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
-            f"VALUES ({', '.join(f':{column}' for column in columns)}) "
-            f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
-            entry,
-        )
+
+        # For completed plays, always insert a new row to preserve history
+        if entry.get("fully_played"):
+            await self.database.execute_write(
+                f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+                f"VALUES ({', '.join(f':{column}' for column in columns)})",
+                entry,
+            )
+        else:
+            # For resume-state updates, update the most recent row for this item/user
+            # First, get the id of the latest row
+            conflict_params = {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
+            latest_rows = await self.database.get_rows_from_query(
+                f"SELECT id FROM {DB_TABLE_PLAYLOG} WHERE "
+                + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                + " ORDER BY timestamp DESC LIMIT 1",
+                conflict_params,
+            )
+
+            if latest_rows:
+                latest_row = latest_rows[0]
+                # Update existing row with sticky user_initiated logic
+                set_clauses = []
+                for column in columns:
+                    if column == "id":
+                        continue
+                    if column == "user_initiated":
+                        set_clauses.append(f"{column} = {DB_TABLE_PLAYLOG}.{column} OR :{column}")
+                    else:
+                        set_clauses.append(f"{column} = :{column}")
+
+                await self.database.execute_write(
+                    f"UPDATE {DB_TABLE_PLAYLOG} SET {', '.join(set_clauses)} "
+                    f"WHERE id = {latest_row['id']}",
+                    entry,
+                )
+            else:
+                # No existing row, insert new one
+                await self.database.execute_write(
+                    f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+                    f"VALUES ({', '.join(f':{column}' for column in columns)})",
+                    entry,
+                )
 
     async def _credit_artist_plays(
         self,

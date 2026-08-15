@@ -115,9 +115,9 @@ class MusicDatabaseSetupMixin:
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
         update_current_task_progress_text("Cleaning old playlog entries")
-        # Remove playlog entries older than 90 days
+        # Remove playlog entries older than 365 days
         await self.database.delete_where_query(
-            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
+            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 365}"
         )
         # db tables cleanup
         for ctrl in (
@@ -268,8 +268,8 @@ class MusicDatabaseSetupMixin:
                 [userid] TEXT NOT NULL,
                 [queue_id] TEXT,
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
-                [playback_speed] REAL NOT NULL DEFAULT 1.0,
-                UNIQUE(item_id, provider, media_type, userid));"""
+                [playback_speed] REAL NOT NULL DEFAULT 1.0
+            );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
@@ -682,11 +682,6 @@ class MusicDatabaseSetupMixin:
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
             f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
-        )
-        # unique index on playlog table
-        await self.database.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
-            f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
         )
         # speed up recency lookups (smart shuffle / dedup) by user and time window
         await self.database.execute(
