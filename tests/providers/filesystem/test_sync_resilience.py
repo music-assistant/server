@@ -252,6 +252,10 @@ async def test_unload_stops_checking() -> None:
     cast("MagicMock", provider.mass.cancel_timer).assert_called_once_with(
         provider._availability_probe_id
     )
+    # a check that already started is a task under the same id, and must stop too
+    cast("MagicMock", provider.mass.cancel_task).assert_called_once_with(
+        provider._availability_probe_id
+    )
 
 
 async def test_probe_does_not_rearm_after_the_provider_is_unloaded() -> None:

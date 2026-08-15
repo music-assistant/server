@@ -266,6 +266,9 @@ class LocalFileSystemProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         self._cancel_availability_probe()
+        # a check that already started runs as a task under the same id, and it would
+        # otherwise keep talking to storage this unload is in the middle of tearing down
+        self.mass.cancel_task(self._availability_probe_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
