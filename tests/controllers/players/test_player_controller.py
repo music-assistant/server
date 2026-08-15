@@ -2741,6 +2741,152 @@ class TestVolumeNudgeTarget:
         assert device.commands == [55, 55, 60, 60]
 
 
+class TestGroupVolumeReference:
+    """A group volume adjustment interpolates from the levels its members are really at."""
+
+    def _make_group(
+        self, mock_mass: MagicMock, first_volume: int = 50, second_volume: int = 50
+    ) -> tuple[PlayerController, dict[str, MockPlayer], dict[str, list[int]]]:
+        """
+        Build a group player with two members, at the given volumes.
+
+        :param first_volume: Volume level the first member starts at.
+        :param second_volume: Volume level the second member starts at.
+        :return: The controller, the players by id and the volumes commanded per member.
+        """
+        controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(5)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        commands: dict[str, list[int]] = {}
+        members: dict[str, MockPlayer] = {}
+        for player_id, volume in (("member_1", first_volume), ("member_2", second_volume)):
+            member = MockPlayer(provider, player_id, player_id.title())
+            member._attr_volume_level = volume
+            commands[player_id] = []
+
+            async def _volume_set(volume: int, _recorded: list[int] = commands[player_id]) -> None:
+                _recorded.append(volume)
+
+            member.volume_set = AsyncMock(side_effect=_volume_set)  # type: ignore[method-assign]
+            members[player_id] = member
+        group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        group._attr_group_members = list(members)
+        players = {"group": group, **members}
+        controller._players = dict(players)
+        provider.players = list(players.values())
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second, forced pass so the group derives its group volume from the members
+        for player in players.values():
+            player.update_state(force_update=True, signal_event=False)
+        return controller, players, commands
+
+    def _report(self, player: MockPlayer, volume: int) -> None:
+        """Let the player report the given volume level, the way its provider would."""
+        player._attr_volume_level = volume
+        player._cache.clear()
+        player.update_state(force_update=True)
+
+    async def test_a_member_turned_down_on_the_device_keeps_its_level(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group nudge up may not undo a member that was turned down on the device."""
+        controller, players, commands = self._make_group(mock_mass)
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_1"], 55)
+        self._report(players["member_2"], 55)
+
+        with patch.object(players_controller, "VOLUME_TARGET_EXPIRY", 0):
+            # the member is turned down on the device itself, well after that command
+            self._report(players["member_2"], 20)
+            await controller.cmd_group_volume_up("group")
+
+        # the group steps from 55 to 60, and the member keeps its (much lower) share
+        assert commands["member_1"] == [55, 60]
+        assert commands["member_2"] == [55, 29]
+
+    async def test_a_member_reporting_the_level_it_was_given_keeps_the_balance(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Members confirming a group nudge may not become the reference themselves."""
+        controller, players, commands = self._make_group(mock_mass)
+        await controller.cmd_volume_set("member_2", 20)
+        self._report(players["member_2"], 20)
+
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_1"], 55)
+        self._report(players["member_2"], 28)
+        await controller.cmd_group_volume_down("group")
+
+        # stepping back down to where the group started restores the balance it had
+        assert commands["member_1"] == [55, 50]
+        assert commands["member_2"] == [20, 28, 20]
+
+    async def test_a_member_that_dropped_off_no_longer_sets_the_reference(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group nudge up may not turn the group down over an unreachable member."""
+        controller, players, commands = self._make_group(
+            mock_mass, first_volume=30, second_volume=80
+        )
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_1"], 48)
+        self._report(players["member_2"], 85)
+
+        # the loudest member drops off the network; a permanent group keeps it as a member
+        players["member_2"]._attr_available = False
+        players["member_2"]._cache.clear()
+        players["member_2"].update_state(force_update=True)
+        await controller.cmd_group_volume_up("group")
+
+        assert commands["member_1"] == [48, 53]
+        assert commands["member_2"] == [85]
+
+    async def test_a_group_reporting_its_own_volume_keeps_the_balance(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group that reports a volume of its own may not reset its own reference."""
+        controller, players, commands = self._make_group(
+            mock_mass, first_volume=50, second_volume=20
+        )
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_1"], 55)
+        self._report(players["member_2"], 28)
+        # a cast group reports the volume of its members as its own
+        self._report(players["group"], 55)
+        await controller.cmd_group_volume_down("group")
+
+        assert commands["member_1"] == [55, 50]
+        assert commands["member_2"] == [28, 20]
+
+    async def test_a_member_clamped_to_its_volume_limit_keeps_that_level(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Correcting a volume that ran past its limit is not a level the group commanded."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub(min_volume=20)
+        )
+        use_real_create_task(mock_mass)
+        # with a min volume of 20 the members report device volumes of 20-100 for 0-100
+        controller, players, commands = self._make_group(
+            mock_mass, first_volume=60, second_volume=60
+        )
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_1"], 64)
+        self._report(players["member_2"], 64)
+
+        # the member is turned below its own minimum, so it is corrected back up to 0
+        self._report(players["member_2"], 10)
+        await controller.cmd_group_volume_up("group")
+
+        assert commands["member_1"] == [64, 68]
+        assert commands["member_2"] == [64, 20, 28]
+
+
 class TestFakeMuteInGroup:
     """A fake muted player in a group follows the mute lock, just like a native mute."""
 
