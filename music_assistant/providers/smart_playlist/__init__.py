@@ -80,6 +80,8 @@ FETCH_LIMIT = 2000
 CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
 DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still served via SWR
 
+EVENT_RECOMMENDATIONS_UPDATED = "recommendations_updated"
+
 CONF_AI_DESCRIPTIONS = "ai_descriptions"
 CONF_AI_ENGINE = "ai_engine"
 DESCRIPTION_PREFIX = "[Smart Playlist] "
@@ -449,7 +451,7 @@ class SmartPlaylistProvider(PluginProvider):
                 self._descriptions_store.pop(prov_id, None)
                 await self._invalidate_dynamic_sample_cache(prov_id)
                 await self._flush_rules_to_disk()
-                self.signal_provider_event({"event": "recommendations_updated"})
+                self.signal_provider_event({"event": EVENT_RECOMMENDATIONS_UPDATED})
                 break
 
     async def _on_media_item_updated(self, event: MassEvent) -> None:
@@ -502,7 +504,7 @@ class SmartPlaylistProvider(PluginProvider):
         library_playlist = await self.mass.music.playlists.add_item_to_library(playlist)
         self.mass.metadata.schedule_update_metadata(library_playlist)
         self._schedule_ai_description_refresh(playlist_id)
-        self.signal_provider_event({"event": "recommendations_updated"})
+        self.signal_provider_event({"event": EVENT_RECOMMENDATIONS_UPDATED})
         return library_playlist
 
     async def generate_playlist(
