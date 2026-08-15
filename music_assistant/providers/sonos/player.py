@@ -884,25 +884,24 @@ class SonosPlayer(Player):
             return
         if self._external_pause_since is None:
             self._external_pause_since = time.time()
-            # nothing changes on the Sonos side when the session goes stale, so there is no
-            # event to react to: re-evaluate our own state once the grace period has passed
-            self.mass.call_later(
-                EXTERNAL_PAUSE_IDLE_TIMEOUT + 1,
-                self.on_player_event,
-                None,
-                task_id=f"sonos_external_pause_{self.player_id}",
-            )
-            return
-        if (time.time() - self._external_pause_since) >= EXTERNAL_PAUSE_IDLE_TIMEOUT:
+        elif (time.time() - self._external_pause_since) >= EXTERNAL_PAUSE_IDLE_TIMEOUT:
             self._mark_external_source_ended()
+            return
+        # nothing changes on the Sonos side when the session goes stale, so there is no event
+        # to react to. Keep the check armed rather than relying on a single timer: an update
+        # that bails out early (a reconnect, a group parent we do not know yet) would
+        # otherwise consume it and leave the source paused for good.
+        self.mass.call_later(
+            EXTERNAL_PAUSE_IDLE_TIMEOUT + 1,
+            self.on_player_event,
+            None,
+            task_id=f"sonos_external_pause_{self.player_id}",
+        )
 
     def _mark_external_source_ended(self) -> None:
-        """
-        Stop presenting the source Sonos has loaded as something that can be resumed.
-
-        Backdating the pause is what makes this stick: the updates that follow rebuild the
-        state from Sonos, which keeps reporting the very same source as paused.
-        """
+        """Stop presenting the source Sonos has loaded as something that can be resumed."""
+        # the updates that follow rebuild the state from Sonos, which keeps reporting the very
+        # same source as paused, so backdating the pause is what keeps this applied
         self._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_active_source = None
