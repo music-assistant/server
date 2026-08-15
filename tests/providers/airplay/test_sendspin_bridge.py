@@ -545,7 +545,7 @@ async def test_a_fresh_process_releases_a_foreign_mute_latch_before_it_connects(
     stream = _make_anchor_stream()
     order: list[str] = []
     cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch = MagicMock(
-        side_effect=lambda: order.append("sync")
+        side_effect=lambda: order.append("release_mute")
     )
     stream.connect = AsyncMock(side_effect=lambda *_a, **_kw: order.append("connect"))
 
@@ -561,7 +561,7 @@ async def test_a_fresh_process_releases_a_foreign_mute_latch_before_it_connects(
     ):
         await bridge._start_protocol_from_chunk()
 
-    assert order == ["sync", "connect"]
+    assert order == ["release_mute", "connect"]
 
 
 async def test_a_kept_process_keeps_a_mute_latch_owned_by_another_control() -> None:

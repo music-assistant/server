@@ -561,8 +561,8 @@ class AirPlayPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        # Record before sending: the connect-time volume resync reads this attribute,
-        # so a send that suspends first would let the resync push the stale level.
+        # Record before sending: the connect-time volume push reads this attribute,
+        # so a send that suspends first would let that push send the stale level.
         self._attr_volume_level = volume_level
         if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
@@ -842,8 +842,8 @@ class AirPlayPlayer(Player):
             return
         # The mute belongs to a control that does not own this output (a sibling interface,
         # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
-        # unmute clears, so leaving it set would start the stream silent and swallow every
-        # volume command after it.
+        # unmute clears, so leaving it set would report a mute we do not own and turn the
+        # next volume command into a silent one.
         self._attr_volume_muted = False
         self.update_state()
 

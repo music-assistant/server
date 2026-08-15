@@ -76,7 +76,7 @@ class AirPlayStreamSession:
         :param media: Queue media that owns the stream session.
         :param requested_volume: Volume level explicitly requested for this session (an
             announcement volume), already applied to its members. Omit for a regular
-            stream, which leaves the receiver at the volume it is already set to.
+            stream, which only carries a volume when this output owns it.
         """
         assert sync_clients
         self.prov = airplay_provider

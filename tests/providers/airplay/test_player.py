@@ -757,6 +757,8 @@ def test_owns_volume_true_when_parent_control_is_self(airplay_player: AirPlayPla
     airplay_player.set_protocol_parent_id("parent")
 
     assert airplay_player.owns_volume is True
+    # the control must be resolved against this player as the rendering output
+    parent.volume_control_for_output.assert_called_once_with(airplay_player.player_id)
 
 
 def test_owns_volume_true_when_parent_control_is_bridge_on_self(
@@ -840,6 +842,8 @@ def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
 
     assert airplay_player._attr_volume_muted is False
     mock_update.assert_called_once()
+    # the control must be resolved against this player as the rendering output
+    parent.mute_control_for_output.assert_called_once_with(airplay_player.player_id)
 
 
 def test_release_foreign_mute_latch_keeps_mute_owned_by_this_output(

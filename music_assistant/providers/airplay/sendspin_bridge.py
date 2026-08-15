@@ -751,9 +751,8 @@ class SendspinAirPlayBridge:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
             self._use_shared_ptp = self._resolve_shared_ptp()
-            # Connecting is what re-sends VOLUME= to the device, so this is the one
-            # place the mute release belongs: a kept process never reaches here and
-            # would otherwise stay silenced by a latch another control owns.
+            # A cold connect is the only path that can still act on the latch, so the
+            # release belongs here: a kept process never reaches this point.
             self.airplay_player.release_foreign_mute_latch()
             await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
