@@ -149,8 +149,37 @@ class AirPlayPlayer(Player):
         falls back to Automatic rather than forcing an impossible route.
         """
         value = str(self.config.get_value(CONF_STREAMING_MODE, STREAMING_MODE_AUTO))
-        offered = {option.value for option in self._streaming_mode_options}
+        offered = {option.value for option in self.streaming_mode_options}
         return value if value in offered else STREAMING_MODE_AUTO
+
+    @property
+    def streaming_mode_options(self) -> list[ConfigValueOption]:
+        """
+        Return the streaming-mode options this device can actually offer.
+
+        Every option is an escape from the automatic AirPlay 2 route, gated on
+        the device's own advertisements: the AirPlay 2 lanes need AirPlay 2
+        capability (PTP timing additionally needs the SupportsPTP bit), and
+        legacy RAOP needs an advertised _raop service to fall back to. A
+        RAOP-only device has no alternative lane, and genuine Apple receivers
+        are always native AirPlay 2 with PTP — both get Automatic only, which
+        hides the entry entirely.
+        """
+        options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
+        if not self._is_airplay2_capable or is_apple_device(
+            self.device_info.manufacturer, self.device_info.model
+        ):
+            return options
+        features = parse_airplay_features(self._advertised_features)
+        if (features >> 41) & 1:
+            options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
+        options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
+        options.append(
+            ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
+        )
+        if self.raop_discovery_info is not None:
+            options.append(ConfigValueOption(STREAMING_MODE_RAOP, "AirPlay 1 (RAOP)"))
+        return options
 
     @property
     def protocol_override(self) -> StreamingProtocol | None:
@@ -340,7 +369,7 @@ class AirPlayPlayer(Player):
         # lane for receivers whose automatic route misbehaves. Only offered
         # when the device actually has a lane to choose (Apple receivers are
         # always native AirPlay 2 with PTP and get no entry).
-        mode_options = self._streaming_mode_options
+        mode_options = self.streaming_mode_options
         if len(mode_options) > 1:
             base_entries.append(
                 ConfigEntry(
@@ -997,35 +1026,6 @@ class AirPlayPlayer(Player):
         if not self.airplay_discovery_info:
             return False
         return supports_airplay2(self._advertised_features) or not self.raop_discovery_info
-
-    @property
-    def _streaming_mode_options(self) -> list[ConfigValueOption]:
-        """
-        Return the streaming-mode options this device can actually offer.
-
-        Every option is an escape from the automatic AirPlay 2 route, gated on
-        the device's own advertisements: the AirPlay 2 lanes need AirPlay 2
-        capability (PTP timing additionally needs the SupportsPTP bit), and
-        legacy RAOP needs an advertised _raop service to fall back to. A
-        RAOP-only device has no alternative lane, and genuine Apple receivers
-        are always native AirPlay 2 with PTP — both get Automatic only, which
-        hides the entry entirely.
-        """
-        options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
-        if not self._is_airplay2_capable or is_apple_device(
-            self.device_info.manufacturer, self.device_info.model
-        ):
-            return options
-        features = parse_airplay_features(self._advertised_features)
-        if (features >> 41) & 1:
-            options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
-        options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
-        options.append(
-            ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
-        )
-        if self.raop_discovery_info is not None:
-            options.append(ConfigValueOption(STREAMING_MODE_RAOP, "AirPlay 1 (RAOP)"))
-        return options
 
     async def _run_streaming_pairing(
         self, session: SetupSession, collected: dict[str, ConfigValueType]

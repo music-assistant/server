@@ -76,6 +76,10 @@ def _make_player() -> MagicMock:
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.state.active_group = None
     player.streaming_mode = STREAMING_MODE_AUTO
+    player.streaming_mode_options = [
+        MagicMock(value=STREAMING_MODE_AUTO),
+        MagicMock(value=STREAMING_MODE_AP2_NTP),
+    ]
     player.synced_to = None
     player.group_members = []
 

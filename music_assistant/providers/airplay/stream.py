@@ -1692,7 +1692,14 @@ class AirPlayStream:
         """
         try:
             queue = self.mass.player_queues.get_active_queue(self.player.player_id)
-            await self.stop(force=True)
+            # Tear the whole owning session down, not just this stream: the
+            # session holds the audio source and ffmpeg feed, and a plain
+            # play_index would warm-replace onto the still-running (PTP)
+            # binary instead of cold-starting with the new timing.
+            if self.session is not None:
+                await self.session.stop()
+            else:
+                await self.stop(force=True)
             if queue is None or queue.current_index is None:
                 return
             await self.mass.player_queues.play_index(queue.queue_id, queue.current_index)
@@ -2032,8 +2039,13 @@ class AirPlayStream:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True
+            ntp_offered = any(
+                option.value == STREAMING_MODE_AP2_NTP
+                for option in self.player.streaming_mode_options
+            )
             if (
                 self.player.streaming_mode == STREAMING_MODE_AUTO
+                and ntp_offered
                 and not self.player.synced_to
                 and not self.player.group_members
             ):
