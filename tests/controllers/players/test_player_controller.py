@@ -63,7 +63,7 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
-from music_assistant.models.player import LinkedOutputProtocol
+from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
@@ -2295,17 +2295,24 @@ class TestVolumeStep:
         assert entry.range == (0, 10)
 
 
+class SlowDevice(NamedTuple):
+    """A mocked device that takes its time to answer its first volume command."""
+
+    player_id: str
+    reached: asyncio.Event
+
+
 class TestGroupVolumeOrdering:
     """Group volume commands that overlap are handled one after the other."""
 
     def _make_synced_pair(
-        self, mock_mass: MagicMock, slow_leader: asyncio.Event | None = None
+        self, mock_mass: MagicMock, slow_device: SlowDevice | None = None
     ) -> tuple[PlayerController, dict[str, MockPlayer]]:
         """
         Build a leader synced to one member, both at volume 50 and mute capable.
 
-        :param slow_leader: When given, the leader takes its time to answer its first
-            volume command and sets this event as soon as it receives that command.
+        :param slow_device: When given, the named player takes its time to answer its
+            first volume command and reports as soon as it received that command.
         """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -2322,11 +2329,11 @@ class TestGroupVolumeOrdering:
             # take long enough to answer for a later command to overtake it
             async def _volume_set(volume: int, _player: MockPlayer = player) -> None:
                 if (
-                    slow_leader is not None
-                    and _player.player_id == "leader"
-                    and not slow_leader.is_set()
+                    slow_device is not None
+                    and slow_device.player_id == _player.player_id
+                    and not slow_device.reached.is_set()
                 ):
-                    slow_leader.set()
+                    slow_device.reached.set()
                     await asyncio.sleep(0.2)
                 _player._attr_volume_level = volume
 
@@ -2352,18 +2359,67 @@ class TestGroupVolumeOrdering:
 
     async def test_the_last_command_decides_the_group_volume(self, mock_mass: MagicMock) -> None:
         """A slow command may not overrule the volume of a later, faster one."""
-        slow_leader = asyncio.Event()
+        slow_leader = SlowDevice("leader", asyncio.Event())
         controller, players = self._make_synced_pair(mock_mass, slow_leader)
 
         first = asyncio.create_task(controller.cmd_group_volume("leader", 80))
         # only send the second command once the first one reached the device
-        await slow_leader.wait()
+        await slow_leader.reached.wait()
         second = asyncio.create_task(controller.cmd_group_volume("leader", 30))
         await asyncio.gather(first, second)
 
         for player in players.values():
             player.update_state()
             assert player.state.volume_level == 30
+
+    async def test_a_command_for_a_member_waits_for_one_for_its_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Addressing the same group by member or by leader may not overlap."""
+        slow_leader = SlowDevice("leader", asyncio.Event())
+        controller, players = self._make_synced_pair(mock_mass, slow_leader)
+        in_flight = 0
+        overlapped = False
+        set_group_volume = controller.set_group_volume
+
+        async def _track_overlap(group_player: Player, volume_level: int) -> None:
+            nonlocal in_flight, overlapped
+            in_flight += 1
+            overlapped = overlapped or in_flight > 1
+            try:
+                await set_group_volume(group_player, volume_level)
+            finally:
+                in_flight -= 1
+
+        controller.set_group_volume = _track_overlap  # type: ignore[method-assign]
+
+        first = asyncio.create_task(controller.cmd_group_volume("leader", 80))
+        await slow_leader.reached.wait()
+        # a synced member adjusts the very same group as its leader
+        second = asyncio.create_task(controller.cmd_group_volume("member", 30))
+        await asyncio.gather(first, second)
+
+        assert overlapped is False
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 30
+
+    async def test_an_individual_volume_command_waits_for_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member's own volume command may not be overtaken by a group change."""
+        slow_member = SlowDevice("member", asyncio.Event())
+        controller, players = self._make_synced_pair(mock_mass, slow_member)
+
+        group = asyncio.create_task(controller.cmd_group_volume("leader", 80))
+        await slow_member.reached.wait()
+        individual = asyncio.create_task(controller.cmd_volume_set("member", 10))
+        await asyncio.gather(group, individual)
+
+        for player in players.values():
+            player.update_state()
+        assert players["member"].state.volume_level == 10
+        assert players["leader"].state.volume_level == 80
 
     async def test_a_muted_leader_does_not_wait_on_its_own_group_command(
         self, mock_mass: MagicMock
