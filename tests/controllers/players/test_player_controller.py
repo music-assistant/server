@@ -50,6 +50,7 @@ from music_assistant.constants import (
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ICON,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
@@ -4340,7 +4341,7 @@ class TestConfigChangeRestartsPlayback:
 
     @staticmethod
     def _prepare(mock_mass: MagicMock, queue_state: PlaybackState) -> PlayerController:
-        """Register a playing player whose queue is in the given state."""
+        """Register a player whose active queue is in the given state."""
         controller = PlayerController(mock_mass)
         player = MagicMock()
         player.state.active_source = "player_1"
@@ -4372,6 +4373,19 @@ class TestConfigChangeRestartsPlayback:
 
         await controller.on_player_config_change(
             self._config(requires_reload=False), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
+
+    async def test_untouched_reload_setting_does_not_restart_playback(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that only a changed reload-requiring setting restarts playback."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_ICON}"}
         )
 
         mock_mass.player_queues.stop.assert_not_awaited()
