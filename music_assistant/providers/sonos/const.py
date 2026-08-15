@@ -74,6 +74,12 @@ PLAYER_SOURCE_MAP = {
     ),
 }
 
+# Seconds an external source may sit paused before we consider its session ended.
+# Sonos keeps a source like Spotify Connect loaded and paused indefinitely, also once the
+# app released the speaker, and offers nothing to tell an abandoned session apart from a
+# real pause - so the only signal left is how long it has been sitting there.
+EXTERNAL_PAUSE_IDLE_TIMEOUT = 15
+
 UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
     "Play:1",

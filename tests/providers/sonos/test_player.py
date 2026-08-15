@@ -2,13 +2,20 @@
 
 import asyncio
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
 from aiosonos.exceptions import CannotConnect
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.sonos.const import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    SOURCE_SPOTIFY,
+)
 from music_assistant.providers.sonos.player import SonosPlayer
 
 
@@ -229,4 +236,94 @@ async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistan
     await player.on_unload()
 
     assert player.connected is False
+    assert timer_mass._tracked_timers == {}
+
+
+def _make_externally_paused_player() -> tuple[SonosPlayer, MagicMock]:
+    """Create a player reporting a paused external source, as Sonos does for Spotify Connect."""
+    player, mass = _make_player()
+    player._external_pause_since = None
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = SOURCE_SPOTIFY
+    player._attr_current_media = PlayerMedia(uri="spotify:track:1", title="Shout")
+    return player, mass
+
+
+def test_a_paused_external_source_is_left_alone_at_first() -> None:
+    """Test a source that just paused stays resumable, so a real pause still works."""
+    player, mass = _make_externally_paused_player()
+
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+    # Sonos reports nothing when the session goes stale, so we must come back to it ourselves
+    assert mass.call_later.call_args.kwargs["task_id"] == "sonos_external_pause_sonos_player"
+
+
+def test_a_source_paused_within_the_grace_period_stays_resumable() -> None:
+    """Test a genuine pause can still be resumed from MA for as long as the grace period lasts."""
+    player, _ = _make_externally_paused_player()
+    player._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT + 5
+
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+    assert player._attr_current_media is not None
+
+
+def test_an_external_source_paused_for_too_long_is_reported_as_idle() -> None:
+    """Test an abandoned session stops looking resumable, so play starts our own queue."""
+    player, _ = _make_externally_paused_player()
+    player._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT - 1
+
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
+
+
+def test_the_pause_clock_only_runs_while_the_player_reports_paused() -> None:
+    """Test resuming the source clears the clock, so a later pause gets the full grace period."""
+    player, _ = _make_externally_paused_player()
+    player._expire_stale_external_pause()
+    assert player._external_pause_since is not None
+
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._expire_stale_external_pause()
+
+    assert player._external_pause_since is None
+
+
+def test_playback_that_is_not_paused_is_never_expired() -> None:
+    """Test our own playback (already mapped to idle by Sonos) never starts the clock."""
+    player, mass = _make_player()
+    player._external_pause_since = None
+    player._attr_playback_state = PlaybackState.IDLE
+    player._attr_active_source = None
+    player._attr_current_media = None
+
+    player._expire_stale_external_pause()
+
+    assert player._external_pause_since is None
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_a_pending_external_pause_check(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test unloading a player leaves no timer behind to re-evaluate a paused source."""
+    player, _ = _bind_player(timer_mass)
+    player._external_pause_since = None
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = SOURCE_SPOTIFY
+    player._attr_current_media = None
+    player._expire_stale_external_pause()
+    assert timer_mass._tracked_timers != {}
+
+    await player.on_unload()
+
     assert timer_mass._tracked_timers == {}

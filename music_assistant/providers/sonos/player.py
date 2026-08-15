@@ -38,6 +38,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
@@ -91,6 +92,7 @@ class SonosPlayer(Player):
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self.sonos_queue: SonosQueue = SonosQueue()
+        self._external_pause_since: float | None = None
 
     @property
     def group_controller(self) -> SonosGroup:
@@ -203,6 +205,7 @@ class SonosPlayer(Player):
         for task_id in (
             f"sonos_reconnect_{self.player_id}",
             f"restore_airplay_group_{self.player_id}",
+            f"sonos_external_pause_{self.player_id}",
         ):
             # a timer that already fired lives on as a task under the same id,
             # so both are needed to cover the pending and the running case
@@ -654,6 +657,7 @@ class SonosPlayer(Player):
                 current_media.uri = container["id"]["objectId"]
 
         self._attr_current_media = current_media
+        self._expire_stale_external_pause()
 
     async def on_protocol_playback(
         self,
@@ -857,6 +861,28 @@ class SonosPlayer(Player):
             self.player_id,
             [x.title for x in self.sonos_queue.items],
         )
+
+    def _expire_stale_external_pause(self) -> None:
+        """Report an external source that has been paused for a while as no longer active."""
+        if self._attr_playback_state != PlaybackState.PAUSED:
+            self._external_pause_since = None
+            return
+        if self._external_pause_since is None:
+            self._external_pause_since = time.time()
+            # nothing changes on the Sonos side when the session goes stale, so there is no
+            # event to react to: re-evaluate our own state once the grace period has passed
+            self.mass.call_later(
+                EXTERNAL_PAUSE_IDLE_TIMEOUT + 1,
+                self.on_player_event,
+                None,
+                task_id=f"sonos_external_pause_{self.player_id}",
+            )
+            return
+        if (time.time() - self._external_pause_since) < EXTERNAL_PAUSE_IDLE_TIMEOUT:
+            return
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
 
     def _extract_mac_from_player_id(self) -> str | None:
         """
