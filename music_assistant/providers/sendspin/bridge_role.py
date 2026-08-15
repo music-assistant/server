@@ -178,9 +178,8 @@ class BridgePlayerRole(Role):
         """
         Set volume and notify bridge.
 
-        The level is on the scale the role reports, which is the one the bridge
-        seeded it with and keeps current through update_player_state, so it is
-        handed to the callback unchanged.
+        The level is on the scale the role reports, and is stored, announced to
+        the client and handed to the bridge unchanged.
         """
         self._volume = volume
         self._emit_volume_changed()

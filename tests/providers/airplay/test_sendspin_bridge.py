@@ -3187,11 +3187,9 @@ def test_a_volume_from_the_role_is_not_resolved_a_second_time() -> None:
     """
     A volume the role delivers reaches the speaker as-is, not via the controller.
 
-    The role is the parent's volume control while the bridge streams, so the level
-    has already been scaled into the parent's min/max range on its way here. Sending
-    it back through the controller would scale it again and arrive back over the
-    same route, so a speaker limited to 60 would keep stepping down instead of
-    landing on the level that was asked for.
+    The level arrives on the device's own scale, already resolved and scaled where
+    it came from Music Assistant, so sending it back through the controller would
+    resolve it a second time and return over the same route.
     """
     bridge, role = _make_bridge_with_role(volume=40)
     player = cast("MagicMock", bridge.airplay_player)
