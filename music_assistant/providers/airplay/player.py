@@ -934,15 +934,21 @@ class AirPlayPlayer(Player):
             # it would start the stream hard muted, so keep our own last known
             # volume instead.
             return False
-        # The parent's state volume is logical (0-100), while a volume command reaches
-        # this player already scaled into the parent's min/max range - which is what
-        # the level we hold has to stay on for the two to agree.
-        parent_volume = self.mass.players.scale_volume_to_device(
-            parent_player.player_id, parent_player.state.volume_level
-        )
-        if self._attr_volume_level == parent_volume:
+        # The parent's state volume is logical (0-100) while a volume command reaches
+        # this player already scaled into the parent's min/max range, so the two are
+        # compared on the parent's scale: a level that already reads back as the
+        # parent's is left alone rather than re-derived, which for a range that does
+        # not divide evenly would round it a step further away on every stream.
+        parent_id = parent_player.player_id
+        if (
+            self._attr_volume_level is not None
+            and self.mass.players.scale_volume_from_device(parent_id, self._attr_volume_level)
+            == parent_player.state.volume_level
+        ):
             return False
-        self._attr_volume_level = parent_volume
+        self._attr_volume_level = self.mass.players.scale_volume_to_device(
+            parent_id, parent_player.state.volume_level
+        )
         self.mass.config.set_raw_player_config_value(
             self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
         )
