@@ -2704,6 +2704,30 @@ class TestVolumeNudgeTarget:
 
         assert device.commands == [45, 45, 40, 40, 35, 35]
 
+    async def test_a_group_nudge_after_a_member_was_set_on_its_own_keeps_the_step(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Setting one member does not send the group back to the level it reports."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        await controller.cmd_group_volume_up("leader")
+        await controller.cmd_volume_set("member", 10)
+        await controller.cmd_group_volume_up("leader")
+
+        # the loudest member was commanded to 55, so the group steps from there
+        assert device.commands == [55, 55, 10, 60, 60]
+
+    async def test_a_group_volume_beyond_the_range_does_not_pin_the_next_nudge(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An out of range group volume leaves the members at 100, not above it."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        await controller.cmd_group_volume("leader", 200)
+        await controller.cmd_group_volume_down("leader")
+
+        assert device.commands == [100, 100, 95, 95]
+
     async def test_a_group_nudge_from_a_member_shares_the_target_of_its_leader(
         self, mock_mass: MagicMock
     ) -> None:

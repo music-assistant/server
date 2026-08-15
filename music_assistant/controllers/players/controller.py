@@ -68,7 +68,6 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_GROUP_VOLUME_SNAPSHOT,
-    ATTR_GROUP_VOLUME_TARGET,
     ATTR_LAST_POLL,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
@@ -822,8 +821,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # skip for group players since _handle_cmd_volume_set redirects those to
         # set_group_volume which creates/uses the snapshot itself
         if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
-            self._record_volume_target(player, ATTR_VOLUME_TARGET, volume_level)
-            self._invalidate_group_volume_state(player_id)
+            self._record_volume_target(player, volume_level)
+            self._invalidate_group_volume_snapshot(player_id)
         async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
             await self._handle_cmd_volume_set(player_id, volume_level)
 
@@ -1976,7 +1975,6 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             group_player.extra_data[ATTR_GROUP_VOLUME_SNAPSHOT] = snapshot
 
         base_group = max(snapshot.values())
-        self._record_volume_target(group_player, ATTR_GROUP_VOLUME_TARGET, volume_level)
 
         coros = []
         for child_player in children:
@@ -2578,31 +2576,25 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
                     protocol_player.on_protocol_parent_updated(player, changed_values)
 
-    def _invalidate_group_volume_state(self, player_id: str) -> None:
-        """Clear the cached group volume state for all groups this player belongs to."""
-        if not (player := self.get_player(player_id)):
+    def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
+        """Clear the cached group volume snapshot for all groups this player belongs to."""
+        player = self.get_player(player_id)
+        if not player:
             return
         if player.state.group_members:
-            self._clear_group_volume_state(player)
+            player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         for group_player in self._get_player_groups(player):
-            self._clear_group_volume_state(group_player)
+            group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         if player.state.synced_to and (leader := self.get_player(player.state.synced_to)):
-            self._clear_group_volume_state(leader)
+            leader.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
 
-    def _clear_group_volume_state(self, group_player: Player) -> None:
-        """Drop the cached interpolation snapshot and volume target of a group player."""
-        # both describe the group as it was last set as a whole, so a change to a single
-        # member or to the membership invalidates them together
-        group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
-        group_player.extra_data.pop(ATTR_GROUP_VOLUME_TARGET, None)
-
-    def _record_volume_target(self, player: Player, key: str, volume_level: int) -> None:
+    def _record_volume_target(self, player: Player, volume_level: int) -> None:
         """Remember the volume level just commanded, as the base for the next nudge."""
-        player.extra_data[key] = (volume_level, time.monotonic())
+        player.extra_data[ATTR_VOLUME_TARGET] = (volume_level, time.monotonic())
 
     def _volume_nudge_base(self, player: Player) -> int | None:
         """Return the volume level a volume nudge for the given player steps from."""
-        target = self._unexpired_volume_target(player, ATTR_VOLUME_TARGET)
+        target = self._unexpired_volume_target(player)
         if target is not None:
             return target
         return player.state.volume_level
@@ -2613,19 +2605,29 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # an ungrouped player is stepped through its own volume, so it is that
             # volume the command lands on and that a following nudge steps from
             return self._volume_nudge_base(group_player)
-        target = self._unexpired_volume_target(group_player, ATTR_GROUP_VOLUME_TARGET)
-        if target is not None:
-            return target
-        return group_player.state.group_volume
+        # mirrors Player.group_volume, but steps from the level last commanded to each
+        # member instead of the level it reports, so the group is not held back by a
+        # member that has not confirmed the previous nudge yet
+        base: int | None = None
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, exclude_self=group_player.type != PlayerType.PLAYER
+        ):
+            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            if (child_volume := self._volume_nudge_base(child_player)) is None:
+                continue
+            if base is None or child_volume > base:
+                base = child_volume
+        return base
 
-    def _unexpired_volume_target(self, player: Player, key: str) -> int | None:
+    def _unexpired_volume_target(self, player: Player) -> int | None:
         """Return the volume level last commanded, or None once it is too old to trust."""
-        if (target := player.extra_data.get(key)) is None:
+        if (target := player.extra_data.get(ATTR_VOLUME_TARGET)) is None:
             return None
         volume_level, issued_at = target
         if time.monotonic() - issued_at < VOLUME_TARGET_EXPIRY:
             return cast("int", volume_level)
-        del player.extra_data[key]
+        del player.extra_data[ATTR_VOLUME_TARGET]
         return None
 
     def _dispatch_state_update_subscribers(
@@ -2905,8 +2907,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]
     ) -> None:
         """Handle DSP reload when group membership changes."""
-        # reset cached group volume state since membership changed
-        self._clear_group_volume_state(player)
+        # reset cached group volume snapshot since membership changed
+        player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         prev_child_count = len(prev_group_members)
         new_child_count = len(new_group_members)
         is_player_group = player.state.type == PlayerType.GROUP
@@ -3627,7 +3629,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         # record before waiting for the lock, for the same reason as cmd_volume_set
         if member := self.get_player(player_id):
-            self._record_volume_target(member, ATTR_VOLUME_TARGET, volume_level)
+            self._record_volume_target(member, volume_level)
         # take the volume lock of the member itself, so a group volume change and an
         # individual volume command for that member can not overtake one another
         async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
