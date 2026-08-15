@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType, MediaType
@@ -27,6 +30,44 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
+
+# Statistics cache TTL: 5 minutes
+STATISTICS_CACHE_TTL = 300
+
+T = TypeVar("T")
+
+
+def cache_statistics(
+    ttl: int = STATISTICS_CACHE_TTL,
+) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
+    """Cache decorator for statistics methods with TTL."""
+
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+        cache: dict[str, tuple[float, Any]] = {}
+
+        @functools.wraps(func)
+        async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
+            user = get_current_user()
+            user_id = user.user_id if user else "anonymous"
+
+            cache_key_parts = [func.__name__, user_id, *args]
+            for key in sorted(kwargs.keys()):
+                cache_key_parts.append(f"{key}={kwargs[key]}")
+            cache_key = hashlib.md5("|".join(str(p) for p in cache_key_parts).encode()).hexdigest()
+
+            now = time.time()
+            if cache_key in cache:
+                cached_time, cached_value = cache[cache_key]
+                if now - cached_time < ttl:
+                    return cast("T", cached_value)
+
+            result = await func(self, *args, **kwargs)
+            cache[cache_key] = (now, result)
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 class StatisticsController(CoreController):
@@ -53,6 +94,7 @@ class StatisticsController(CoreController):
             "playlog_entries": await self.mass.music.database.get_count(DB_TABLE_PLAYLOG),
         }
 
+    @cache_statistics()
     @api_command("statistics/top_items", required_scope=Scope.LIBRARY_READ)
     async def get_top_items(
         self,
@@ -140,6 +182,7 @@ class StatisticsController(CoreController):
 
         return result
 
+    @cache_statistics()
     @api_command("statistics/genre_distribution", required_scope=Scope.LIBRARY_READ)
     async def get_genre_distribution(
         self,
@@ -156,6 +199,7 @@ class StatisticsController(CoreController):
         # For now, return empty list - requires genre metadata in playlog
         return []
 
+    @cache_statistics()
     @api_command("statistics/artist_distribution", required_scope=Scope.LIBRARY_READ)
     async def get_artist_distribution(
         self,
@@ -255,6 +299,7 @@ class StatisticsController(CoreController):
 
         return result
 
+    @cache_statistics()
     @api_command("statistics/plays_over_time", required_scope=Scope.LIBRARY_READ)
     async def get_plays_over_time(
         self,
@@ -303,6 +348,7 @@ class StatisticsController(CoreController):
 
         return [{"timestamp": row["time_bucket"], "value": row["play_count"]} for row in rows]
 
+    @cache_statistics()
     @api_command("statistics/listening_activity", required_scope=Scope.LIBRARY_READ)
     async def get_listening_activity(
         self,
@@ -345,6 +391,7 @@ class StatisticsController(CoreController):
             for row in rows
         ]
 
+    @cache_statistics()
     @api_command("statistics/listening_time", required_scope=Scope.LIBRARY_READ)
     async def get_listening_time(
         self,
@@ -401,6 +448,7 @@ class StatisticsController(CoreController):
             if row["estimated_seconds"] is not None and row["estimated_seconds"] > 0
         ]
 
+    @cache_statistics()
     @api_command("statistics/decade_distribution", required_scope=Scope.LIBRARY_READ)
     async def get_decade_distribution(
         self,
@@ -448,6 +496,7 @@ class StatisticsController(CoreController):
 
         return [{"name": f"{int(row['decade'])}s", "value": row["play_count"]} for row in rows]
 
+    @cache_statistics()
     @api_command("statistics/play_history", required_scope=Scope.LIBRARY_READ)
     async def get_play_history(
         self,
@@ -506,6 +555,7 @@ class StatisticsController(CoreController):
             for db_row in db_rows
         ]
 
+    @cache_statistics()
     @api_command("statistics/play_count", required_scope=Scope.LIBRARY_READ)
     async def get_play_count(
         self,
@@ -545,6 +595,7 @@ class StatisticsController(CoreController):
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=1)
         return int(rows[0]["count"]) if rows else 0
 
+    @cache_statistics()
     @api_command("statistics/played_item_ids", required_scope=Scope.LIBRARY_READ)
     async def get_played_item_ids(
         self,
