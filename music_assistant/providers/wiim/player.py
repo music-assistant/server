@@ -401,14 +401,15 @@ class WiimPlayer(Player):
             self._attr_playback_state = new_state
 
         # Group members
-        group_member_ids = (
+        managed_member_ids = [
             f"{PLAYER_ID_PREFIX}{member_udn}"
             for member_udn in snapshot.member_udns
             if member_udn != self.device.udn
-        )
-        self._attr_group_members = [
-            member_id for member_id in group_member_ids if self.mass.players.get_player(member_id)
+            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
         ]
+        self._attr_group_members = (
+            [self.player_id, *managed_member_ids] if managed_member_ids else []
+        )
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id

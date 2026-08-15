@@ -258,6 +258,7 @@ class TestGroupMembers:
         """Only group members registered in Music Assistant should be reported."""
         managed_udn = "uuid:test-wiim-002"
         unmanaged_udn = "uuid:test-linkplay-001"
+        leader_player_id = f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}"
         managed_player_id = f"{PLAYER_ID_PREFIX}{managed_udn}"
         snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
         snapshot.role = "leader"
@@ -268,15 +269,34 @@ class TestGroupMembers:
         mock_provider.mass.players.get_player.side_effect = {managed_player_id: MagicMock()}.get
         player = WiimPlayer(
             provider=mock_provider,
-            player_id="uuid:test",
+            player_id=leader_player_id,
             device=mock_wiim_device,
         )
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
 
         player._update_ma_state_from_sdk_cache()
 
-        assert player._attr_group_members == [managed_player_id]
+        assert player._attr_group_members == [leader_player_id, managed_player_id]
         mock_provider.wiim_controller.get_group_members.assert_not_called()
+
+    def test_only_unmanaged_group_members_reports_no_group(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A group without any MA-managed followers should not be reported."""
+        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
+        snapshot.role = "leader"
+        snapshot.member_udns = (mock_wiim_device.udn, "uuid:test-linkplay-001")
+        mock_provider.mass.players.get_player.return_value = None
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_group_members == []
 
 
 class TestSourceList:
