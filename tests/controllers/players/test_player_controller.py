@@ -1737,6 +1737,35 @@ class TestVolumeScalingOnRedirect:
         protocol.volume_set.assert_awaited_once_with(50)
 
     @pytest.mark.asyncio
+    async def test_protocol_redirect_applies_the_limits_only_once(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Limits configured on the protocol player do not scale the command a second time."""
+
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                # both players carry a limit; only the addressed one may apply
+                return 50
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+        protocol = self._volume_player("protocol_player", PLAYER_CONTROL_NATIVE)
+        user = self._volume_player("user_player", "protocol_player")
+        players = {"user_player": user, "protocol_player": protocol}
+
+        with (
+            patch.object(controller, "get_player", side_effect=players.get),
+            patch.object(controller, "_get_active_audio_source", return_value=None),
+        ):
+            controller._controls = {}
+            await controller._handle_cmd_volume_set("user_player", 100)
+
+        protocol.volume_set.assert_awaited_once_with(50)
+
+    @pytest.mark.asyncio
     async def test_external_control_redirect_forwards_scaled_volume(
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:

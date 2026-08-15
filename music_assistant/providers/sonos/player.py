@@ -234,12 +234,7 @@ class SonosPlayer(Player):
 
         :param muted: bool if player should be muted.
         """
-        if not muted and self.volume_level:
-            # when Sonos is playing via Airplay and is muted, we will need to explicitly
-            # send the volume level after unmute as the Airplay cli is still at volume 0
-            await self.client.player.set_volume(volume=self.volume_level, muted=muted)
-        else:
-            await self.client.player.set_volume(muted=muted)
+        await self.client.player.set_volume(muted=muted)
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
