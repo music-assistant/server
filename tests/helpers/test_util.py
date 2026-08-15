@@ -112,6 +112,17 @@ class TestDetectCharset:
         """Bytes that hold no readable text at all fall back to the given charset."""
         assert await detect_charset(b"\xff\x00\xff", fallback="cp1257") == "cp1257"
 
+    async def test_declared_charset_wins_over_detection(self) -> None:
+        """A charset the source declares itself beats guessing at the bytes."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        assert await detect_charset(raw, preferred="cp1251") == "cp1251"
+
+    async def test_unknown_declared_charset_is_ignored(self) -> None:
+        """A charset name Python has no codec for must not reach decode()."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred="utf8mb4")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
 
 class TestGetSourceIpForTarget:
     """get_source_ip_for_target reports the interface the routing table egresses from."""
