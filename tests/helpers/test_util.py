@@ -67,7 +67,7 @@ def _cue_sheet(performer: str, title: str, track: str) -> str:
 LEGACY_CUES = {
     "cp1251": CYRILLIC_CUE,
     "koi8-r": _cue_sheet("Аквариум", "Русский альбом", "Никита Рязанский"),
-    "cp1250": _cue_sheet("Kabát", "Go Satane Go", "Šaman"),
+    "cp1250": _cue_sheet("Kabát", "Šťastný člověk", "Zůstaň"),
     "cp1252": _cue_sheet("Björk", "Homogenic", "Jóga"),
     # the dotless i is what a detector has to get right to tell cp1254 from cp1252
     "cp1254": _cue_sheet("Barış Manço", "Mağusa'da", "Gülpembe"),  # noqa: RUF001
@@ -106,7 +106,7 @@ class TestDetectCharset:
 
     async def test_undetectable_data_uses_the_fallback(self) -> None:
         """Bytes that hold no readable text at all fall back to the given charset."""
-        assert await detect_charset(b"\xff\x00\xff", fallback="cp1252") == "cp1252"
+        assert await detect_charset(b"\xff\x00\xff", fallback="cp1257") == "cp1257"
 
 
 class TestGetSourceIpForTarget:
