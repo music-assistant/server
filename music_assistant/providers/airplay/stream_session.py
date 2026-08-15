@@ -75,8 +75,8 @@ class AirPlayStreamSession:
         :param pcm_format: PCM format of the input stream.
         :param media: Queue media that owns the stream session.
         :param requested_volume: Volume level explicitly requested for this session (an
-            announcement volume), already applied to its members. Omit to let the members
-            take their level from their parent player as usual.
+            announcement volume), already applied to its members. Omit for a regular
+            stream, which leaves the receiver at the volume it is already set to.
         """
         assert sync_clients
         self.prov = airplay_provider
@@ -1023,10 +1023,7 @@ class AirPlayStreamSession:
         """
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
-        # sync volume/mute from parent player if needed. A volume requested for this session
-        # is already applied to its members, so the parent's level must not replace it:
-        # the level held here is what the connecting stream hands to the receiver.
-        airplay_player.sync_volume_state(adopt_parent_volume=self.requested_volume is None)
+        airplay_player.release_foreign_mute_latch()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)

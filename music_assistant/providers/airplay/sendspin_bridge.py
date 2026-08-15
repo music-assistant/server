@@ -752,9 +752,9 @@ class SendspinAirPlayBridge:
             # starting together cannot both find their group still undecided.
             self._use_shared_ptp = self._resolve_shared_ptp()
             # Connecting is what re-sends VOLUME= to the device, so this is the one
-            # place the sync belongs: a kept process never reaches here and would
-            # otherwise be left playing at a volume nobody told it about.
-            self.airplay_player.sync_volume_state()
+            # place the mute release belongs: a kept process never reaches here and
+            # would otherwise stay silenced by a latch another control owns.
+            self.airplay_player.release_foreign_mute_latch()
             await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:

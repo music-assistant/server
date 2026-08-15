@@ -9,7 +9,6 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -813,35 +812,40 @@ class AirPlayPlayer(Player):
             bit_depth=24,
         )
 
-    def sync_volume_state(self, *, adopt_parent_volume: bool = True) -> None:
+    @property
+    def owns_volume(self) -> bool:
         """
-        Sync volume and mute from the parent player if needed.
+        Return True if this output is the resolved owner of its own volume.
 
-        AirPlay players only report their volume level when we are actually streaming to them
-        and we remember the last used/reported volume level in the player config by default
-        but if we have a parent player, that may know better about the current volume level,
-        so we try to sync from that parent player if possible. If another control owns
-        the parent's volume, we play at unity gain instead.
-
-        Both controls are resolved against this player as the rendering output, so which
-        control is deemed to own them does not depend on the parent already pointing at us.
-
-        :param adopt_parent_volume: Set to False when the volume of the stream about to start
-            was explicitly requested by the caller, so the parent's level does not overwrite
-            it. The mute release always runs: a latch left behind by another control would
-            silence the stream regardless of the level it plays at.
+        AirPlay volume is the receiver's own volume: setting it writes through to the
+        device and persists there after the session ends. It may therefore only be set
+        when no other control owns the volume of this output.
         """
-        if not self.protocol_parent_id:
+        if not (parent_id := self.protocol_parent_id):
+            # a standalone AirPlay player has no other interface to defer to
+            return True
+        if not (parent_player := self.mass.players.get_player(parent_id)):
+            return True
+        return self._control_routes_to_self(parent_player.volume_control_for_output(self.player_id))
+
+    def release_foreign_mute_latch(self) -> None:
+        """Clear our mute latch when another control owns the mute of this output."""
+        if not self._attr_volume_muted:
+            # nothing latched, so nothing that could silence this stream
             return
-        parent_player = self.mass.players.get_player(self.protocol_parent_id)
-        if not parent_player:
+        if not (parent_id := self.protocol_parent_id):
             return
-        volume_changed = self._sync_volume_level(
-            parent_player, adopt_parent_volume=adopt_parent_volume
-        )
-        mute_changed = self._sync_mute_state(parent_player)
-        if volume_changed or mute_changed:
-            self.update_state()
+        if not (parent_player := self.mass.players.get_player(parent_id)):
+            return
+        if self._control_routes_to_self(parent_player.mute_control_for_output(self.player_id)):
+            # our own mute, applied through the parent
+            return
+        # The mute belongs to a control that does not own this output (a sibling interface,
+        # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
+        # unmute clears, so leaving it set would start the stream silent and swallow every
+        # volume command after it.
+        self._attr_volume_muted = False
+        self.update_state()
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player config is updated."""
@@ -900,76 +904,6 @@ class AirPlayPlayer(Player):
             return
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
-
-    def _sync_volume_level(self, parent_player: Player, *, adopt_parent_volume: bool) -> bool:
-        """
-        Adopt the parent's volume level if it owns this output, return True if changed.
-
-        :param parent_player: The parent player to resolve the volume control against.
-        :param adopt_parent_volume: False to keep our own level where we would otherwise
-            adopt the parent's. The unity gain reset still applies: a control that owns
-            the volume of this output attenuates on the device itself.
-        """
-        volume_control = parent_player.volume_control_for_output(self.player_id)
-        if volume_control == PLAYER_CONTROL_NATIVE:
-            # Native parent volume is on the receiver/amplifier scale.
-            # Keep the AirPlay child volume learned from DACP feedback instead.
-            return False
-        if not self._control_routes_to_self(volume_control):
-            # Another control (e.g. DLNA/Chromecast hardware volume) owns the parent's
-            # volume; play at unity gain so we don't attenuate on top of it.
-            # Not persisted, so the last software volume survives a switch back.
-            if self._attr_volume_level == 100:
-                return False
-            self._attr_volume_level = 100
-            return True
-        if not adopt_parent_volume:
-            return False
-        if parent_player.state.volume_level is None:
-            return False
-        if parent_player.state.volume_level == 0:
-            # A parent volume of 0 usually means the (idle) sibling interface
-            # feeding the parent doesn't know the real device volume, e.g. the
-            # cast side of the same device reports 0 while in standby. Adopting
-            # it would start the stream hard muted, so keep our own last known
-            # volume instead.
-            return False
-        # The parent's state volume is logical (0-100) while a volume command reaches
-        # this player already scaled into the parent's min/max range, so the two are
-        # compared on the parent's scale: a level that already reads back as the
-        # parent's is left alone rather than re-derived, which for a range that does
-        # not divide evenly would round it a step further away on every stream.
-        parent_id = parent_player.player_id
-        if (
-            self._attr_volume_level is not None
-            and self.mass.players.scale_volume_from_device(parent_id, self._attr_volume_level)
-            == parent_player.state.volume_level
-        ):
-            return False
-        self._attr_volume_level = self.mass.players.scale_volume_to_device(
-            parent_id, parent_player.state.volume_level
-        )
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
-        )
-        return True
-
-    def _sync_mute_state(self, parent_player: Player) -> bool:
-        """Release a mute owned by another control, return True if changed."""
-        if not self._attr_volume_muted:
-            # nothing latched, so nothing that could silence this stream
-            return False
-        if self._control_routes_to_self(parent_player.mute_control_for_output(self.player_id)):
-            # our own mute, applied through the parent
-            return False
-        # The mute belongs to a control that does not own this output (a sibling interface,
-        # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
-        # unmute clears, so leaving it set would start the stream silent and swallow every
-        # volume command after it. The parent's mute state is deliberately not adopted here:
-        # it is resolved through the ambient control, which is the very thing that may be
-        # pointing at another interface.
-        self._attr_volume_muted = False
-        return True
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control routes to this player."""
