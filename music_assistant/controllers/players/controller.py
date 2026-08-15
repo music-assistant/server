@@ -3664,24 +3664,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             await self.cmd_group_volume(player_id, volume_level)
             return
 
-        # Check if player has mute lock (set when individually muted in a group)
-        # If locked, don't auto-unmute when volume changes
-        has_mute_lock = self._has_active_mute_lock(player)
-        if (
-            not has_mute_lock
-            # the live value is what cmd_volume_mute checks, so a control change that
-            # has not reached the player state yet may not send us into a failing unmute
-            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
-            and player.state.volume_muted
-        ):
-            # if player is muted and not locked, we unmute it first
-            # skip this for fake mute since it uses volume to simulate mute
-            self.logger.debug(
-                "Unmuting player %s before setting volume",
-                player.state.name,
-            )
-            await self.cmd_volume_mute(player_id, False)
-
+        # A muted player stays muted: only an explicit unmute lifts it, and the level
+        # set here is the one it plays at once that happens. Fake mute is the exception,
+        # because it is simulated with the volume itself.
         if self._stays_silent_on_volume_change(player):
             # a locked player stays silent, the volume it holds is the one
             # that gets restored once it is unmuted again
@@ -3690,7 +3675,6 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # for, which is then not the level this player ends up at
             record_target = True
         else:
-            # always reset fake mute when controlling volume
             player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
         if record_target:

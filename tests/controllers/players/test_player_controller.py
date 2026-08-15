@@ -2471,21 +2471,22 @@ class TestGroupVolumeOrdering:
         assert players["member"].state.volume_level == 10
         assert players["leader"].state.volume_level == 80
 
-    async def test_a_muted_leader_does_not_wait_on_its_own_group_command(
+    async def test_a_muted_leader_keeps_its_mute_on_a_group_volume_change(
         self, mock_mass: MagicMock
     ) -> None:
-        """A muted sync leader is unmuted by a group volume change without blocking."""
+        """A muted sync leader keeps its mute through a group volume change without blocking."""
         controller, players = self._make_synced_pair(mock_mass)
         players["leader"]._attr_volume_muted = True
         players["leader"].update_state(force_update=True, signal_event=False)
 
         # a sync leader is a member of its own group, so the fan-out sets the volume
-        # (and unmutes) the very player the group command is running for
+        # of the very player the group command is running for. This must not deadlock
+        # on a nested cmd_volume_mute call under the group's own volume lock.
         async with asyncio.timeout(5):
             await controller.cmd_group_volume("leader", 30)
 
         players["leader"].update_state()
-        assert players["leader"].state.volume_muted is False
+        assert players["leader"].state.volume_muted is True
         assert players["leader"].state.volume_level == 30
 
 
@@ -3271,7 +3272,12 @@ class TestGroupMuteOnNonGroupPlayer:
 
 
 class TestMuteLockAfterUngroup:
-    """A mute lock is only honored while the player it belongs to is still grouped."""
+    """
+    Mute persistence across a volume-set command.
+
+    A native mute is never lifted by a volume command, grouped or not. A fake mute
+    lock is honored only while the player it belongs to is still grouped.
+    """
 
     def _make_synced_pair(
         self, mock_mass: MagicMock, member_mute_control: str
@@ -3328,8 +3334,10 @@ class TestMuteLockAfterUngroup:
         assert players["member"].state.volume_level == 70
         assert players["member"].state.volume_muted is False
 
-    async def test_natively_muted_player_is_unmuted_again(self, mock_mass: MagicMock) -> None:
-        """A natively muted player is auto-unmuted by a volume change once its group is gone."""
+    async def test_natively_muted_player_keeps_its_mute_after_ungroup(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A natively muted player keeps its mute on a volume change, group gone or not."""
         controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
         mute = AsyncMock(
             side_effect=lambda muted: setattr(players["member"], "_attr_volume_muted", muted)
@@ -3340,10 +3348,10 @@ class TestMuteLockAfterUngroup:
 
         await controller.cmd_volume_set("member", 70)
 
-        assert mute.await_args_list == [call(True), call(False)]
+        mute.assert_awaited_once_with(True)
         players["member"].update_state()
         assert players["member"].state.volume_level == 70
-        assert players["member"].state.volume_muted is False
+        assert players["member"].state.volume_muted is True
 
     async def test_still_grouped_player_keeps_its_lock(self, mock_mass: MagicMock) -> None:
         """A muted player that is still grouped stays silent on a volume change."""
@@ -3360,7 +3368,7 @@ class TestMuteLockAfterUngroup:
         self, mock_mass: MagicMock
     ) -> None:
         """A protocol player inherits the lock of the parent it renders for, group and all."""
-        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_FAKE)
         member = players["member"]
         protocol_player = MockPlayer(
             MockProvider("sendspin", instance_id="sendspin", mass=mock_mass),
@@ -3372,13 +3380,11 @@ class TestMuteLockAfterUngroup:
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
         }
-        protocol_player._attr_volume_muted = True
+        protocol_player._attr_volume_level = 50
+        protocol_player.volume_set = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda volume: setattr(protocol_player, "_attr_volume_level", volume)
+        )
         protocol_player.set_protocol_parent_id("member")
-        # an unmute on a protocol player is redirected to the parent it renders for
-        mute = AsyncMock()
-        member.volume_mute = mute  # type: ignore[method-assign]
-        protocol_player.volume_mute = AsyncMock()  # type: ignore[method-assign]
-        protocol_player.volume_set = AsyncMock()  # type: ignore[method-assign]
         controller._players["proto_member"] = protocol_player
         member.set_linked_output_protocols(
             [
@@ -3392,16 +3398,25 @@ class TestMuteLockAfterUngroup:
         protocol_player.set_initialized()
         protocol_player.update_state(signal_event=False)
         member.refresh_state(signal_event=False)
-        member.extra_data[ATTR_MUTE_LOCK] = True
 
-        # a group volume change reaches the protocol player through the internal handler
+        # the lock is earned by the parent while it is still grouped. The internal
+        # handler is used to fake-mute the protocol player itself, bypassing the
+        # public command's auto-resolve to its parent, so the fake-mute flag ends
+        # up on the protocol player and the fake-mute volume path applies to it
+        await controller.cmd_volume_mute("member", True)
+        await controller._handle_cmd_volume_mute(protocol_player, PLAYER_CONTROL_FAKE, True)
+
+        # while the parent holds the lock, a volume command for the protocol player
+        # is forced to 0 (stays silent) instead of releasing its fake mute
         await controller._handle_cmd_volume_set("proto_member", 70)
-        mute.assert_not_awaited()
+        protocol_player.update_state()
+        assert protocol_player.state.volume_level == 0
 
         self._dissolve_group(players)
         await controller._handle_cmd_volume_set("proto_member", 70)
 
-        mute.assert_awaited_once_with(False)
+        protocol_player.update_state()
+        assert protocol_player.state.volume_level == 70
 
 
 class TestCurrentMediaTimeUpdates:
