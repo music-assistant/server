@@ -110,6 +110,8 @@ class HomeAssistantPlayer(Player):
 
         self.extra_data["hass_supported_features"] = hass_supported_features
         self._hass_attributes: dict[str, Any] = {}
+        self._ma_playback_active = False
+        self._reports_stream_url = False
 
         # Add External source to support next/prev commands when playing external content
         self._attr_source_list.append(
@@ -212,6 +214,7 @@ class HomeAssistantPlayer(Player):
             if PlayerFeature.PAUSE in self.supported_features:
                 await self.pause()
         finally:
+            self._ma_playback_active = False
             self._attr_current_media = None
             self.update_state()
 
@@ -296,6 +299,7 @@ class HomeAssistantPlayer(Player):
         )
 
         # Optimistically update state
+        self._ma_playback_active = True
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -358,6 +362,9 @@ class HomeAssistantPlayer(Player):
             self._attr_available = state["s"] not in UNAVAILABLE_STATES
             if PlayerFeature.POWER in self.supported_features:
                 self._attr_powered = state["s"] not in OFF_STATES
+            if self._attr_playback_state == PlaybackState.IDLE:
+                # the entity stopped playing, so our session ended with it
+                self._ma_playback_active = False
         if "a" in state:
             self._update_attributes(state["a"])
         self.update_state()
@@ -432,15 +439,23 @@ class HomeAssistantPlayer(Player):
                 self._update_hass_features(hass_supported_features)
 
         # Check for external playback (not from Music Assistant).
-        # Without media_content_id we cannot reliably determine the source,
-        # so we later only react to state updates that include it.
+        # Not every integration echoes the stream URL we handed it back in
+        # media_content_id; some report device or cloud provided metadata instead. Only
+        # entities that were seen echoing it can be judged by it - for the others the
+        # play command we issued is the only thing that tells the two sources apart.
+        # Without either signal we cannot determine the source, so we later only react
+        # to state updates that include a media_content_id.
         media_content_id = self._hass_attributes.get("media_content_id", "")
-        is_ma_playback = media_content_id.startswith(self.mass.streams.base_url)
+        if media_content_id.startswith(self.mass.streams.base_url):
+            self._reports_stream_url = True
+            is_ma_playback = True
+        else:
+            is_ma_playback = not self._reports_stream_url and self._ma_playback_active
         media_title = self._hass_attributes.get("media_title")
 
-        if media_content_id and is_ma_playback:
-            # MA playback - ensure active_source points to player_id for queue lookup.
-            # The actual current_media will be set by MA's queue controller.
+        if is_ma_playback:
+            # MA playback - the queue controller resolves the active source and
+            # provides the actual current_media.
             self._attr_active_source = None
         elif (
             media_content_id
