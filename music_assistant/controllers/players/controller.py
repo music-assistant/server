@@ -3673,15 +3673,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             await player_control.volume_set(device_volume)
             return
         if protocol_player := self.get_player(player.state.volume_control):
-            # redirect to protocol player volume control.
-            # forward the already-scaled device volume so the min/max limits configured
-            # on this (user-facing) player are honored; the protocol player has no
-            # limits of its own, so its scaling is an identity pass-through.
+            # forward the already-scaled device volume: the limits configured on this
+            # (user-facing) player are the only ones that apply to the command
             self.logger.debug(
                 "Redirecting volume command to protocol player %s",
                 protocol_player.provider.manifest.name,
             )
-            await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
+            await protocol_player.volume_set(device_volume)
             return
 
     @staticmethod
