@@ -658,7 +658,7 @@ class OpenHomePlayer(Player):
         logger.info("Received PLAY_MEDIA command on player %s", self.display_name)
 
         if self.profile is None:
-            logger.warning("Play_media has no profile available on %s", self.display_name)
+            logger.warning("play_media - no profile available for %s", self.display_name)
             return
 
         # always clear MA queue (by sending stop) first
@@ -670,17 +670,21 @@ class OpenHomePlayer(Player):
         didl_metadata = create_didl_metadata(media)
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
 
+        logger.warning("play_media - url: %s", url)
+        logger.warning("play_media - didl_metadata: %s", didl_metadata)
+
         self.set_current_media(uri=url, clear_all=True)
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = -1
 
         logger.warning("CONF_USE_DEVICE_RADIO_AS_SOURCE: %s", self.config.get_value(CONF_USE_DEVICE_RADIO_AS_SOURCE))
+        logger.warning("has_source_type: %s", self.profile.has_source_type(ProductSourceType.RADIO))
         if self.profile.has_source_type(ProductSourceType.RADIO) and self.config.get_value(
                 CONF_USE_DEVICE_RADIO_AS_SOURCE):
             # Radio service offers an API to allow arbitrary URLs to be played.
             # Default to this if available because device Playlist is not altered
             # Override in advanced config if desired
-
+            logger.warning("play_media - async_radio_play")
             # flip source to Playlist to avoid buffering problem
             await self.profile.async_product_set_source_index(0)
             await self.profile.async_radio_set_channel(url, didl_metadata)
@@ -688,7 +692,7 @@ class OpenHomePlayer(Player):
             await self.profile.async_radio_play()
         else: # self.profile.has_source_type(ProductSourceType.PLAYLIST):
             # if not Radio then revert to Playlist
-            logger.warning("Play Media - PlayList")
+            logger.warning("play_media - use playlist")
             last_id = await self.profile.async_playlist_last_id()
             new_id = (await self.profile.async_playlist_insert(last_id, url, didl_metadata)).get("NewId")
             if new_id is not None:

@@ -1,6 +1,6 @@
 """Constants for the Linn / OpenHome Media Provider."""
 
-CONF_NETWORK_SCAN = "True"
+CONF_NETWORK_SCAN: bool = True
 CONF_USE_DEVICE_RADIO_AS_SOURCE: str = "use_source_radio" # otherwise use Playlist as source
 CONF_USE_DEVICE_PLAYLIST_AS_QUEUE: str = "use_device_playlist" # will force Playlist as source
 

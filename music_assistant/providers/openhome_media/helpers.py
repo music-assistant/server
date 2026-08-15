@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import defusedxml.ElementTree as DET
 import html
 from typing import TYPE_CHECKING
 
@@ -11,7 +12,6 @@ from async_upnp_client.event_handler import UpnpEventHandler, UpnpNotifyServer
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpRequester
-
     from music_assistant import MusicAssistant
 
 from .constants import CALLBACK_URL
@@ -53,9 +53,9 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
 
         try:
             status = await self.event_handler.handle_notify(http_request)
-        except ET.ParseError as err:
+        except DET.ParseError as err:
             self.mass.logger.debug(
-                "Ignoring malformed XML in DLNA notify from %s: %s",
+                "Ignoring malformed XML in OpenHome Media notify from %s: %s",
                 request.remote,
                 err,
             )
