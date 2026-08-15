@@ -714,7 +714,9 @@ def test_lost_mrp_connection_keeps_streaming_state() -> None:
     device = MagicMock(spec=AppleTV)
     player._mrp_device = device
     player._attr_playback_state = PlaybackState.PLAYING
-    player._attr_active_source = "airplay"
+    player._attr_active_source = "com.netflix.Netflix"
+    media = MagicMock()
+    player._attr_current_media = media
 
     with (
         patch.object(player, "update_state"),
@@ -723,7 +725,27 @@ def test_lost_mrp_connection_keeps_streaming_state() -> None:
         player._handle_connection_closed("mrp", device)
 
     assert player.playback_state == PlaybackState.PLAYING
-    assert player.active_source == "airplay"
+    assert player.active_source == "com.netflix.Netflix"
+    assert player.current_media is media
+
+
+def test_lost_companion_connection_keeps_external_state() -> None:
+    """External playback comes from MRP only, so a Companion drop leaves it alone."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._companion_device = device
+    player._mrp_device = MagicMock(spec=AppleTV)
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed("companion", device)
+
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player.active_source == "com.netflix.Netflix"
 
 
 async def test_mrp_retry_does_not_recycle_connected_companion() -> None:

@@ -1217,9 +1217,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # Without a live connection the snapshot can no longer be updated, and the
         # last one is typically an app held at paused: leaving it in place keeps
         # transport commands aimed at that app instead of the Music Assistant queue.
-        self._attr_playback_state = PlaybackState.IDLE
-        self._attr_active_source = None
-        self._attr_current_media = None
+        self.mark_external_source_ended()
         self.update_state()
 
     def _notify_companion_state_change(self) -> None:
