@@ -4,9 +4,10 @@ import asyncio
 import logging
 import time
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -27,9 +28,6 @@ from music_assistant.providers.airplay.sendspin_bridge import (
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 from music_assistant.providers.airplay_receiver import airplay_receiver_port
-
-if TYPE_CHECKING:
-    import pytest
 
 INSTANCE_ID = "airplay"
 START_UNIX_MS = 1_750_000_000_000
@@ -1052,3 +1050,19 @@ async def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
 
     config.set_raw_player_config_value.assert_not_called()
     config.get_player_configs.assert_not_called()
+
+
+async def test_a_failed_review_is_retried_on_the_next_load() -> None:
+    """
+    A review that dies part-way leaves nothing behind claiming it ran.
+
+    Marking it done regardless would strand exactly the players it never reached,
+    which is the state this review exists to undo.
+    """
+    prov, config = _password_marker_provider(reviewed=False, markers={"ap_latched": True})
+    config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
+
+    with pytest.raises(RuntimeError):
+        await prov._drop_unverified_password_markers()
+
+    config.set_raw_provider_config_value.assert_not_called()

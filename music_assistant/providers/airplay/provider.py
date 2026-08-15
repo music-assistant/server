@@ -1189,9 +1189,6 @@ class AirPlayProvider(PlayerProvider):
             self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
         ):
             return
-        self.mass.config.set_raw_provider_config_value(
-            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
-        )
         for player_config in await self.mass.config.get_player_configs(self.instance_id):
             if not self.mass.config.get_raw_player_config_value(
                 player_config.player_id, CONF_PASSWORD_INVALID, False
@@ -1203,3 +1200,8 @@ class AirPlayProvider(PlayerProvider):
             self.mass.config.set_raw_player_config_value(
                 player_config.player_id, CONF_PASSWORD_INVALID, False
             )
+        # last, so a failure part-way through leaves the review to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
+        )
