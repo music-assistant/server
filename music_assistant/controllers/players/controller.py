@@ -1969,9 +1969,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # this ensures the relative balance is preserved and all children converge
         # to 0 and 100 at the extremes. the snapshot is invalidated when a child's
         # individual volume changes or group membership changes.
+        # the levels a nudge steps from are the ones the members were last commanded, so
+        # the snapshot has to read the same source, or a change a member has not confirmed
+        # yet puts the reference above the level being set and turns a step up into one down
         snapshot: dict[str, int] | None = group_player.extra_data.get(ATTR_GROUP_VOLUME_SNAPSHOT)
         if snapshot is None or not all(c.player_id in snapshot for c in children):
-            snapshot = {c.player_id: c.state.volume_level or 0 for c in children}
+            snapshot = {c.player_id: self._volume_nudge_base(c) or 0 for c in children}
             group_player.extra_data[ATTR_GROUP_VOLUME_SNAPSHOT] = snapshot
 
         base_group = max(snapshot.values())
@@ -2590,6 +2593,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     def _record_volume_target(self, player: Player, volume_level: int) -> None:
         """Remember the volume level just commanded, as the base for the next nudge."""
+        if self._stays_silent_on_volume_change(player):
+            volume_level = 0
         player.extra_data[ATTR_VOLUME_TARGET] = (volume_level, time.monotonic())
 
     def _volume_nudge_base(self, player: Player) -> int | None:
@@ -3673,11 +3678,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
             await self.cmd_volume_mute(player_id, False)
 
-        if (
-            has_mute_lock
-            and player.mute_control == PLAYER_CONTROL_FAKE
-            and player.extra_data.get(ATTR_FAKE_MUTE)
-        ):
+        if self._stays_silent_on_volume_change(player):
             # a locked player stays silent, the volume it holds is the one
             # that gets restored once it is unmuted again
             volume_level = 0
@@ -3761,6 +3762,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         if player.protocol_parent_id and (parent := self.get_player(player.protocol_parent_id)):
             return bool(parent.extra_data.get(ATTR_MUTE_LOCK)) and self._is_in_group(parent.state)
         return False
+
+    def _stays_silent_on_volume_change(self, player: Player) -> bool:
+        """Check if a volume command for the given player lands at 0 to keep it silent."""
+        return (
+            self._has_active_mute_lock(player)
+            and player.mute_control == PLAYER_CONTROL_FAKE
+            and bool(player.extra_data.get(ATTR_FAKE_MUTE))
+        )
 
     async def _mute_group_members(self, group_player: Player, muted: bool) -> None:
         """

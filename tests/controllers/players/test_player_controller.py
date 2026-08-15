@@ -2627,22 +2627,21 @@ class TestVolumeNudgeTarget:
 
         assert device.commands == [55, 60, 65, 70]
 
-    async def test_a_member_command_does_not_undo_a_later_group_nudge(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """A member's own command may not drop the level a later group nudge claimed."""
-        controller, _players, device = self._make_synced_pair(mock_mass, command_delay=0.05)
-        # this one holds the volume lock of the member while the group nudges run
-        individual = asyncio.create_task(controller.cmd_volume_set("member", 10))
-        await asyncio.sleep(0)
+    async def test_a_group_nudge_moves_every_member_up(self, mock_mass: MagicMock) -> None:
+        """A group nudge up may not send a member the other way."""
+        controller, players, device = self._make_synced_pair(mock_mass)
+        # the loudest member is the one that was just turned down on its own, so the
+        # level it still reports sits above the level the group is being stepped to
+        players["member"]._attr_volume_level = 80
+        for _ in range(3):
+            for player in players.values():
+                player._cache.clear()
+                player.update_state(force_update=True, signal_event=False)
 
-        await controller.cmd_group_volume_up("leader")
-        await individual
+        await controller.cmd_volume_set("member", 40)
         await controller.cmd_group_volume_up("leader")
 
-        # the second group nudge steps from the 55 the first one claimed, not from the
-        # 50 both players still report
-        assert device.commands[-2:] == [60, 60]
+        assert device.commands == [40, 55, 46]
 
     async def test_a_group_nudge_on_an_ungrouped_player_steps_its_own_volume(
         self, mock_mass: MagicMock
@@ -2714,8 +2713,9 @@ class TestVolumeNudgeTarget:
         await controller.cmd_volume_set("member", 10)
         await controller.cmd_group_volume_up("leader")
 
-        # the loudest member was commanded to 55, so the group steps from there
-        assert device.commands == [55, 55, 10, 60, 60]
+        # the loudest member was commanded to 55, so the group steps from there, and the
+        # member that was just turned down keeps its share of the group volume
+        assert device.commands == [55, 55, 10, 60, 20]
 
     async def test_a_group_volume_beyond_the_range_does_not_pin_the_next_nudge(
         self, mock_mass: MagicMock
@@ -2801,6 +2801,23 @@ class TestFakeMuteInGroup:
             player.update_state()
             assert player.state.volume_muted is True
             assert player.state.volume_level == 0
+
+    async def test_a_muted_member_does_not_inflate_a_group_nudge(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A volume level a muted member never receives may not step the group."""
+        controller, players = self._make_synced_pair(mock_mass)
+        controller.config = _volume_step_config(5)
+        await controller.cmd_volume_mute("member", True)
+        # let the group volume of the leader account for the muted member
+        players["leader"].update_state(signal_event=False)
+        # the member is held silent, so this level never reaches it
+        await controller.cmd_volume_set("member", 60)
+
+        await controller.cmd_group_volume_up("leader")
+
+        players["leader"].update_state()
+        assert players["leader"].state.volume_level == 55
 
     async def test_group_volume_down_keeps_a_muted_member_muted(self, mock_mass: MagicMock) -> None:
         """Turning a group down leaves a single muted member silent, at its own volume."""
