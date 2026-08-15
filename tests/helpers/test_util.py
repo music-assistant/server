@@ -1,6 +1,7 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import codecs
 import contextlib
 import gc
 import logging
@@ -18,6 +19,7 @@ from music_assistant_models.media_items import Album, ItemMapping, ProviderMappi
 
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
+    detect_charset,
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
@@ -32,6 +34,50 @@ from music_assistant.models.music_provider import MusicProvider
 from tests.common import collect_loop_errors
 
 GUARDED_PROVIDER_ID = "test_guarded_prov"
+
+# a CUE sheet as Russian rips ship them: ASCII keywords with only the titles in
+# the local ANSI codepage (support #6093)
+CYRILLIC_CUE = """REM GENRE "Punk Rock"
+REM DATE 2002
+PERFORMER "Король и Шут"
+TITLE "Как в старой сказке"
+FILE "CDImage.ape" WAVE
+  TRACK 01 AUDIO
+    TITLE "Проклятый старый дом"
+    INDEX 01 00:00:00
+"""
+
+
+class TestDetectCharset:
+    """detect_charset names the charset raw text has to be decoded with."""
+
+    async def test_ascii_and_utf8_are_taken_as_utf8(self) -> None:
+        """Anything that is already valid UTF-8 needs no detection."""
+        assert await detect_charset(b'TITLE "Greatest Hits"') == "utf-8"
+        assert await detect_charset(CYRILLIC_CUE.encode()) == "utf-8"
+
+    async def test_byte_order_mark_is_stripped(self) -> None:
+        """A UTF-8 BOM must not survive into the decoded text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw)
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    @pytest.mark.parametrize("charset", ["cp1251", "cp1252"])
+    async def test_legacy_charsets_survive_a_round_trip(self, charset: str) -> None:
+        """
+        Text in a legacy charset comes back readable instead of as replacement chars.
+
+        Mostly-ASCII files such as CUE sheets hold very little non-ASCII text, so the
+        charset has to be resolved from a thin sample rather than given up on and
+        decoded as UTF-8 (support #6093).
+        """
+        source = CYRILLIC_CUE if charset != "cp1252" else 'TITLE "Müller"\n'
+        raw = source.encode(charset)
+        assert raw.decode(await detect_charset(raw)) == source
+
+    async def test_undetectable_data_uses_the_fallback(self) -> None:
+        """Bytes that hold no readable text at all fall back to the given charset."""
+        assert await detect_charset(b"\xff\xfe\x00", fallback="cp1252") == "cp1252"
 
 
 class TestGetSourceIpForTarget:
