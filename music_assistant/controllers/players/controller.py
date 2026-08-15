@@ -865,8 +865,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param volume_level: Volume level (0..100) to set to the group.
         """
         # Group volume gets a lock purpose of its own so that a live volume drag lands
-        # its commands in order. It may not share the VOLUME purpose: the fan-out below
-        # sets the volume of the members concurrently, and a sync leader is a member of
+        # its commands in order. It may not share the VOLUME purpose: set_group_volume
+        # sets the volume of the members concurrently and a sync leader is a member of
         # its own group, so it would end up waiting on the lock its group command holds.
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker

@@ -2299,13 +2299,13 @@ class TestGroupVolumeOrdering:
     """Group volume commands that overlap are handled one after the other."""
 
     def _make_synced_pair(
-        self, mock_mass: MagicMock, delays: list[float] | None = None
+        self, mock_mass: MagicMock, slow_leader: asyncio.Event | None = None
     ) -> tuple[PlayerController, dict[str, MockPlayer]]:
         """
         Build a leader synced to one member, both at volume 50 and mute capable.
 
-        :param delays: Response time of the mocked device for each volume command it
-            receives, in order. A command beyond the list is answered instantly.
+        :param slow_leader: When given, the leader takes its time to answer its first
+            volume command and sets this event as soon as it receives that command.
         """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -2317,16 +2317,17 @@ class TestGroupVolumeOrdering:
                 PlayerFeature.VOLUME_MUTE,
             }
             player._attr_volume_level = 50
-            response_times = iter(delays or [])
 
-            # let the mocked native volume control behave like a real device that takes
-            # its time, so a slow command can land after a faster one issued later
-            async def _volume_set(
-                volume: int,
-                _player: MockPlayer = player,
-                _response_times: Iterator[float] = response_times,
-            ) -> None:
-                await asyncio.sleep(next(_response_times, 0))
+            # let the mocked native volume control behave like a real device, that may
+            # take long enough to answer for a later command to overtake it
+            async def _volume_set(volume: int, _player: MockPlayer = player) -> None:
+                if (
+                    slow_leader is not None
+                    and _player.player_id == "leader"
+                    and not slow_leader.is_set()
+                ):
+                    slow_leader.set()
+                    await asyncio.sleep(0.2)
                 _player._attr_volume_level = volume
 
             player.volume_set = AsyncMock(side_effect=_volume_set)  # type: ignore[method-assign]
@@ -2351,10 +2352,12 @@ class TestGroupVolumeOrdering:
 
     async def test_the_last_command_decides_the_group_volume(self, mock_mass: MagicMock) -> None:
         """A slow command may not overrule the volume of a later, faster one."""
-        controller, players = self._make_synced_pair(mock_mass, [0.2, 0.01])
+        slow_leader = asyncio.Event()
+        controller, players = self._make_synced_pair(mock_mass, slow_leader)
 
         first = asyncio.create_task(controller.cmd_group_volume("leader", 80))
-        await asyncio.sleep(0.02)
+        # only send the second command once the first one reached the device
+        await slow_leader.wait()
         second = asyncio.create_task(controller.cmd_group_volume("leader", 30))
         await asyncio.gather(first, second)
 
