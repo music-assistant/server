@@ -306,6 +306,9 @@ class HomeAssistantPlayer(Player):
         # the entity may still be reporting the previous session, so our stream only
         # counts as started once it is seen playing
         self._ma_playback_started = False
+        # a source the entity played before is over, and it may never report an
+        # attribute change to tell us so
+        self._attr_active_source = None
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -444,7 +447,9 @@ class HomeAssistantPlayer(Player):
 
         if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             # the media attributes describe the announcement instead of the source that
-            # is restored afterwards, so they tell us nothing about who owns playback
+            # is restored afterwards, so they tell us nothing about who owns playback.
+            # Drop the announcement's id so a later partial update can not judge by it.
+            self._hass_attributes.pop("media_content_id", None)
             return
 
         # Check for external playback (not from Music Assistant).

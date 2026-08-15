@@ -122,6 +122,19 @@ async def test_play_media_starts_the_ma_session() -> None:
     assert player._ma_playback_active is True
 
 
+async def test_play_media_takes_over_from_an_external_source() -> None:
+    """Starting MA playback drops the external source without waiting for the entity."""
+    player = _make_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._update_attributes(_external_attributes())
+    assert player._attr_active_source == "External"
+
+    # the entity may never report an attribute change to announce the handover
+    await player.play_media(PlayerMedia(uri="library://track/1", title="MA Track"))
+
+    assert player._attr_active_source is None
+
+
 async def test_late_idle_of_previous_session_is_ignored() -> None:
     """An entity reporting the stop of the previous track late keeps our session ours."""
     player = _make_player()
@@ -167,6 +180,12 @@ async def test_announcement_does_not_disturb_source_detection() -> None:
 
     assert player._reports_stream_url is False
     assert player._attr_active_source == "External"
+
+    # an unrelated update after the announcement may not pick the announcement up either
+    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+    player.update_from_compressed_state({"s": "playing", "a": {"volume_level": 0.5}})
+
+    assert player._reports_stream_url is False
 
 
 async def test_stop_ends_the_ma_session() -> None:
