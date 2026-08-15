@@ -351,6 +351,17 @@ async def test_enumerate_root_error_aborts() -> None:
     assert scan_errors.fatal is not None
 
 
+async def test_is_reachable_asks_the_api_for_the_root() -> None:
+    """Cloud storage has no local path to stat, so reachability is a live root listing."""
+    provider = _make_provider()
+
+    assert await provider._is_reachable() is True
+
+    provider.fail_list = {ROOT_ID}
+    with pytest.raises(ProviderUnavailableError):
+        await provider._is_reachable()
+
+
 async def test_enumerate_stops_on_directory_cycle() -> None:
     """A path re-appearing during the walk must be visited only once."""
     provider = _make_provider()

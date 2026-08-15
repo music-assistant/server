@@ -625,23 +625,40 @@ class SpotifyProvider(MusicProvider):
             await self.get_playlist(prov_playlist_id)
             use_global = await self._playlist_requires_global_token(prov_playlist_id)
 
-        result: list[Track] = []
         page_size = 50
         offset = page * page_size
+        known_global = use_global
 
-        meta = await self._get_playlist_pagination_meta(uri, page, use_global)
-        cache_checksum = meta["etag"]
-        total = meta["total"]
+        while True:
+            try:
+                meta = await self._get_playlist_pagination_meta(uri, page, use_global)
+                cache_checksum = meta["etag"]
+                total = meta["total"]
 
-        # Spotify has started returning 5xx for offset >= total on some
-        # playlists (notably algorithmic ones like Daily Mix). The retry
-        # storm that follows surfaces as "No playable items found".
-        if total and offset >= total:
-            return result
+                # Spotify has started returning 5xx for offset >= total on some
+                # playlists (notably algorithmic ones like Daily Mix). The retry
+                # storm that follows surfaces as "No playable items found".
+                if total and offset >= total:
+                    spotify_result = {"total": total, "items": []}
+                else:
+                    spotify_result = await self._get_data_with_caching(
+                        uri,
+                        cache_checksum,
+                        limit=page_size,
+                        offset=offset,
+                        use_global_session=use_global,
+                    )
+                break
+            except MediaNotFoundError:
+                if use_global or not self.dev_session_active:
+                    raise
+                # Development Mode exposes metadata but restricts items for non-owned playlists.
+                use_global = True
 
-        spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
-        )
+        if use_global and not known_global:
+            await self._set_playlist_requires_global_token(prov_playlist_id)
+
+        result: list[Track] = []
         total = spotify_result.get("total", 0)
         items = spotify_result.get("items", [])
         # playlists/{id}/items is transitioning from item["track"] to item["item"]

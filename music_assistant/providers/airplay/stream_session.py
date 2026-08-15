@@ -40,17 +40,20 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
 
-# What each readiness outcome means for the join anchor: only a projection moves
-# it, every other outcome leaves the join floor carrying it alone, so the note
-# says which of the two happened and why. STALLED has no note because it never
+# What each readiness outcome means for the join anchor: a projection only moves
+# it when it clears the join floor, which otherwise carries the anchor alone, so
+# the note says which bound the outcome set. STALLED has no note because it never
 # reaches a join anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
-    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
+    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring no earlier than that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
     "anchoring on the join floor",
     ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
     "receiver that never answered); anchoring on the join floor",
 }
+# A locked clock projects an instant that has already passed - the common case,
+# since only a cold receiver is still probing - so its note reads back in time.
+_CLOCK_LOCKED_NOTE = "became usable {ago:.2f}s ago; anchoring on the join floor"
 
 
 class AirPlayStreamSession:
@@ -62,6 +65,7 @@ class AirPlayStreamSession:
         sync_clients: list[AirPlayPlayer],
         pcm_format: AudioFormat,
         media: PlayerMedia,
+        requested_volume: int | None = None,
     ) -> None:
         """
         Initialize AirPlayStreamSession.
@@ -70,12 +74,16 @@ class AirPlayStreamSession:
         :param sync_clients: List of AirPlay players to stream to.
         :param pcm_format: PCM format of the input stream.
         :param media: Queue media that owns the stream session.
+        :param requested_volume: Volume level explicitly requested for this session (an
+            announcement volume), already applied to its members. Omit for a regular
+            stream, which only carries a volume when this output owns it.
         """
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
         self.pcm_format = pcm_format
         self.media = media
+        self.requested_volume = requested_volume
         self.sync_clients = sync_clients
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
@@ -582,13 +590,18 @@ class AirPlayStreamSession:
             return anchor_at, due, prime_slice, skip
 
         now = time.time()
+        clock_out = ready_at_unix_ms / 1000 - now
+        if readiness is ClockReadiness.PROJECTED and clock_out <= 0:
+            clock_note = _CLOCK_LOCKED_NOTE.format(ago=abs(clock_out))
+        else:
+            clock_note = _CLOCK_READINESS_NOTES.get(readiness, "").format(
+                out=clock_out,
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
+            )
         self.prov.logger.debug(
             "Late joiner %s: receiver clock %s",
             airplay_player.player_id,
-            _CLOCK_READINESS_NOTES.get(readiness, "").format(
-                out=ready_at_unix_ms / 1000 - now,
-                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
-            ),
+            clock_note,
         )
         async with self._lock:
             if not self._session_is_live():
@@ -1010,8 +1023,7 @@ class AirPlayStreamSession:
         """
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
-        # sync volume from parent player if needed
-        airplay_player.sync_volume_level()
+        airplay_player.release_foreign_mute_latch()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)

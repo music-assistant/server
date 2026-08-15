@@ -64,6 +64,19 @@ async def test_root_html_sendspin_urls_escaped(http_client: TestClient[Any, Any]
     assert "&sendspin_url=http%3A%2F%2F" not in body
 
 
+async def test_root_html_uses_sendspin_server_port_constant(
+    http_client: TestClient[Any, Any],
+) -> None:
+    """Generated Sendspin links must follow the core server port constant."""
+    with patch("music_assistant.providers.msx_bridge.http_server.SENDSPIN_SERVER_PORT", 12345):
+        resp = await http_client.get("/")
+
+    assert resp.status == 200
+    body = await resp.text()
+    assert "sendspin_url=http%3A%2F%2F" in body
+    assert "%3A12345" in body
+
+
 async def test_start_json(http_client: TestClient[Any, Any]) -> None:
     """GET /msx/start.json should return launcher menu config."""
     resp = await http_client.get("/msx/start.json")

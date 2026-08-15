@@ -312,30 +312,26 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
+async def test_cli_args_no_family_buffer_defaults() -> None:
     """
-    LinkPlay-family devices get the deep receiver queue from the family table.
+    Every device family stays on Automatic depth: no --latency by default.
 
-    Both platform generations must match - the newer names Linkplay as
-    manufacturer, the older only marks the platform in fv under OEM brands -
-    and they starve at different depths, so each generation carries its own
-    value rather than the older one inheriting the newer one's.
+    The LinkPlay generations that used to get a deepened realtime queue from
+    the family table manage their own buffer on the buffered stream, so the
+    table ships empty and only the per-player setting adds the argument.
     """
     player = _make_player()
     player.device_info.manufacturer = "Linkplay Technology Inc."
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "1750"
+    assert "--latency" not in args
     assert "--ptp-shared" in args
 
-    # Old platform: OEM brand, the Linkplay token only in fv. Starves far
-    # deeper than the newer platform above.
     player = _make_player()
     player.device_info.manufacturer = "Edifier Inc"
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "2500"
+    assert "--latency" not in args
 
-    # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()
     args = await _build_args(player)
     assert "--latency" not in args
@@ -2248,6 +2244,87 @@ async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
         await deferred()
 
     send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_when_player_owns_it() -> None:
+    """The initial volume push is sent when this output owns its own volume."""
+    player = _make_player()
+    player.owns_volume = True
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_skips_volume_when_another_control_owns_it() -> None:
+    """No unsolicited volume push when another control owns this output's volume."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -> None:
+    """A latched mute is still pushed even when another control owns the volume."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = True
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_for_a_requested_session_volume() -> None:
+    """A volume explicitly requested for the session is pushed, even without ownership."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream.session = MagicMock(requested_volume=85)
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
 
 
 @pytest.mark.asyncio

@@ -160,6 +160,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
+        await super().unload(is_removed)
         await unmount(self.mount_path, self.logger)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:

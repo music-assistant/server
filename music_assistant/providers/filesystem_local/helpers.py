@@ -14,6 +14,7 @@ from pathlib import Path
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.json import make_utf8_safe
 from music_assistant.helpers.security import is_safe_path
 
 logger = logging.getLogger(__name__)
@@ -405,7 +406,11 @@ def recursive_iter(
                 log.warning("Error while scanning directory %s: %s", path, err)
                 _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
                 return
-            if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
+            if (
+                item.name in IGNORE_DIRS
+                or item.name.startswith((".", "_"))
+                or _skip_undecodable_name(item.name, log)
+            ):
                 continue
             try:
                 is_dir = item.is_dir(follow_symlinks=False)
@@ -488,6 +493,12 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
         raise
     with entries:
         for entry in entries:
+            if (
+                entry.name in IGNORE_DIRS
+                or entry.name.startswith(".")
+                or _skip_undecodable_name(entry.name, logger)
+            ):
+                continue
             try:
                 is_dir = entry.is_dir(follow_symlinks=False)
                 is_file = entry.is_file(follow_symlinks=False)
@@ -499,8 +510,6 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
                     )
                 continue
             if not (is_dir or is_file):
-                continue
-            if entry.name in IGNORE_DIRS or entry.name.startswith("."):
                 continue
             try:
                 items.append(FileSystemItem.from_dir_entry(entry, base_path))
@@ -521,6 +530,24 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
             key=lambda x: nat_key(x.name),
         )
     return items
+
+
+def _skip_undecodable_name(name: str, log: logging.Logger) -> bool:
+    """
+    Return True if the given filename is not valid UTF-8 and must be skipped.
+
+    A skipped name is logged in escaped form, so the caller only has to skip it.
+
+    :param name: Name of the file or directory, as returned by the os module.
+    :param log: Logger to report a skipped name on.
+    """
+    # such a path can be neither stored in the database nor sent to a client
+    if name.isascii():
+        return False
+    if (safe_name := make_utf8_safe(name)) == name:
+        return False
+    log.warning("Skipping '%s' - filename is not valid UTF-8", safe_name)
+    return True
 
 
 def _record_entry_failure(
