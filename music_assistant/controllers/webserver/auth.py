@@ -1958,7 +1958,7 @@ class AuthenticationManager:
         """Rewrite the access filters of all users, dropping the entries that are not kept."""
         if keep_provider is None and keep_player is None:
             return
-        for row in await self.database.get_rows("users", limit=1000):
+        for row in await self.database.get_rows("users", limit=0):
             updates: dict[str, str] = {}
             for column, keep_func in (
                 ("provider_filter", keep_provider),
