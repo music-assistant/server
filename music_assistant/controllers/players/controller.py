@@ -807,7 +807,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
+    @handle_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send VOLUME_SET command to given player.
@@ -815,12 +815,17 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
         """
-        await self._handle_cmd_volume_set(player_id, volume_level)
-        # individual child volume change invalidates the cached group volume state
+        volume_level = max(0, min(100, volume_level))
+        # record the level and invalidate the group volume state up front, before waiting
+        # for the volume lock: a command that is still queued would otherwise undo what a
+        # command issued after it already recorded.
         # skip for group players since _handle_cmd_volume_set redirects those to
         # set_group_volume which creates/uses the snapshot itself
         if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
+            self._record_volume_target(player, ATTR_VOLUME_TARGET, volume_level)
             self._invalidate_group_volume_state(player_id)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
+            await self._handle_cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -837,10 +842,6 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
         current_volume = self._volume_nudge_base(player) or 0
         new_volume = min(100, current_volume + self._get_volume_step(current_volume))
-        # claim the new level before handing the command on: cmd_volume_set may have to
-        # wait for the volume lock, and a nudge arriving meanwhile must not step from
-        # the level this one is already on its way to
-        self._record_volume_target(player, ATTR_VOLUME_TARGET, new_volume)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down", required_scope=Scope.PLAYERS_CONTROL)
@@ -858,7 +859,6 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
         current_volume = self._volume_nudge_base(player) or 0
         new_volume = max(0, current_volume - self._get_volume_step(current_volume))
-        self._record_volume_target(player, ATTR_VOLUME_TARGET, new_volume)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume", required_scope=Scope.PLAYERS_CONTROL)
@@ -3625,6 +3625,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param player_id: player_id of the member to handle the command.
         :param volume_level: logical volume level (0..100) to set on the member.
         """
+        # record before waiting for the lock, for the same reason as cmd_volume_set
+        if member := self.get_player(player_id):
+            self._record_volume_target(member, ATTR_VOLUME_TARGET, volume_level)
         # take the volume lock of the member itself, so a group volume change and an
         # individual volume command for that member can not overtake one another
         async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
@@ -3679,10 +3682,6 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         else:
             # always reset fake mute when controlling volume
             player.extra_data.pop(ATTR_FAKE_MUTE, None)
-
-        # a player that reports its volume back asynchronously still holds the old level
-        # right after this command, so remember what it was asked for
-        self._record_volume_target(player, ATTR_VOLUME_TARGET, volume_level)
 
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)

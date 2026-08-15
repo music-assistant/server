@@ -2549,13 +2549,17 @@ class TestVolumeNudgeTarget:
         return controller, player, device
 
     def _make_synced_pair(
-        self, mock_mass: MagicMock
+        self, mock_mass: MagicMock, command_delay: float = 0
     ) -> tuple[PlayerController, dict[str, MockPlayer], LateReportingDevice]:
-        """Build a leader synced to one member, both at volume 50, both late reporting."""
+        """
+        Build a leader synced to one member, both at volume 50, both late reporting.
+
+        :param command_delay: Seconds a single volume command takes to reach the device.
+        """
         controller = PlayerController(mock_mass)
         controller.config = _volume_step_config(5)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-        device = LateReportingDevice()
+        device = LateReportingDevice(command_delay)
         players: dict[str, MockPlayer] = {}
         for player_id in ("leader", "member"):
             player = MockPlayer(provider, player_id, player_id.title())
@@ -2604,6 +2608,41 @@ class TestVolumeNudgeTarget:
         await asyncio.gather(*(controller.cmd_volume_up("player_1") for _ in range(3)))
 
         assert device.commands == [55, 60, 65]
+
+    async def test_a_queued_nudge_does_not_undo_the_level_a_later_one_claimed(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A nudge waiting for the volume lock may not take the level back down."""
+        controller, _player, device = self._make_player(mock_mass, command_delay=0.05)
+        tasks = [asyncio.create_task(controller.cmd_volume_up("player_1")) for _ in range(3)]
+        # let all three claim their level; the second and third then queue on the lock
+        await asyncio.sleep(0)
+        # wait for the second one to reach the device, so a nudge sent now reads whatever
+        # that (by then oldest) command left behind
+        while len(device.commands) < 2:
+            await asyncio.sleep(0.005)
+        tasks.append(asyncio.create_task(controller.cmd_volume_up("player_1")))
+
+        await asyncio.gather(*tasks)
+
+        assert device.commands == [55, 60, 65, 70]
+
+    async def test_a_member_command_does_not_undo_a_later_group_nudge(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member's own command may not drop the level a later group nudge claimed."""
+        controller, _players, device = self._make_synced_pair(mock_mass, command_delay=0.05)
+        # this one holds the volume lock of the member while the group nudges run
+        individual = asyncio.create_task(controller.cmd_volume_set("member", 10))
+        await asyncio.sleep(0)
+
+        await controller.cmd_group_volume_up("leader")
+        await individual
+        await controller.cmd_group_volume_up("leader")
+
+        # the second group nudge steps from the 55 the first one claimed, not from the
+        # 50 both players still report
+        assert device.commands[-2:] == [60, 60]
 
     async def test_a_group_nudge_on_an_ungrouped_player_steps_its_own_volume(
         self, mock_mass: MagicMock
