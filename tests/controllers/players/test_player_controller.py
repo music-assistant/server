@@ -15,12 +15,12 @@ import contextlib
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.config_entries import ConfigEntry, CoreConfig
+from music_assistant_models.config_entries import ConfigEntry, CoreConfig, PlayerConfig
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -36,26 +36,34 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    MusicAssistantError,
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
+from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
     ATTR_FAKE_MUTE,
     ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ICON,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
+    CONF_OUTPUT_CODEC,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
 )
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
+from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
@@ -1579,9 +1587,8 @@ class TestProtocolOutputPlayPause:
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="proto_1",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
                 )
@@ -2282,9 +2289,7 @@ class TestVolumeStep:
         """get_config_entries returns the volume_step entry with its default and range."""
         entries = await controller.get_config_entries()
 
-        assert len(entries) == 1
-        entry = entries[0]
-        assert entry.key == CONF_VOLUME_STEP
+        entry = next(entry for entry in entries if entry.key == CONF_VOLUME_STEP)
         assert entry.type == ConfigEntryType.INTEGER
         assert entry.default_value == 0
         assert entry.range == (0, 10)
@@ -2898,9 +2903,8 @@ class TestMuteLockAfterUngroup:
         controller._players["proto_member"] = protocol_player
         member.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="proto_member",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
                 )
@@ -3115,6 +3119,587 @@ class TestPlayAnnouncementCleanup:
         # the length is resolved downstream while it plays
         render.wait_ready.assert_awaited_once()
         render.wait_finished.assert_not_awaited()
+
+
+class _AnnounceSetup(NamedTuple):
+    """A player announcing through a linked protocol output, with the calls it makes mocked."""
+
+    controller: PlayerController
+    parent: MockPlayer
+    output: MockPlayer
+    volume_set: AsyncMock
+    play_announcement: AsyncMock
+
+
+@pytest.mark.usefixtures("running_background_tasks")
+class TestNativeAnnouncementVolumeRouting:
+    """The announcement volume is applied through the control that owns it."""
+
+    ANNOUNCE_VOLUME = 45
+
+    def _make_setup(self, mock_mass: MagicMock, volume_control: str) -> _AnnounceSetup:
+        """
+        Create a player announcing through a linked protocol output.
+
+        The parent holds a sibling interface and a bridge riding on the announcing
+        output, so any of them can be named as its volume control.
+
+        :param volume_control: Value of the parent's volume control config entry.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = MockPlayer(provider, "parent", "Parent")
+        output = MockPlayer(provider, "output", "Output")
+        output._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        output._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        sibling = MockPlayer(provider, "sibling", "Sibling")
+        sibling._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        sibling._attr_volume_level = 20
+        bridge = MockPlayer(provider, "bridge", "Bridge")
+        bridge._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        bridge._attr_underlying_player_id = "output"
+        bridge._attr_volume_level = 20
+        controller._players = {
+            "parent": parent,
+            "output": output,
+            "sibling": sibling,
+            "bridge": bridge,
+        }
+        # an external control (e.g. a Home Assistant volume entity) is not a player
+        controller._controls = {
+            "ha_volume": PlayerControl(
+                id="ha_volume",
+                provider="hass",
+                name="Amplifier volume",
+                supports_volume=True,
+                volume_level=20,
+            )
+        }
+        mock_mass.players = controller
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_VOLUME_CONTROL: volume_control})
+        )
+        for player in controller._players.values():
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        play_announcement = AsyncMock()
+        volume_set = AsyncMock()
+        output.play_announcement = play_announcement  # type: ignore[method-assign]
+        controller._handle_cmd_volume_set = volume_set  # type: ignore[method-assign]
+        return _AnnounceSetup(controller, parent, output, volume_set, play_announcement)
+
+    async def _announce(self, setup: _AnnounceSetup) -> None:
+        """Play an announcement on the parent, rendered by the linked output."""
+        await setup.controller._play_native_announcement(
+            setup.parent, setup.output, _announcement(), self.ANNOUNCE_VOLUME
+        )
+
+    async def test_external_control_applies_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A sibling interface owning the volume gets the announcement volume, not the output."""
+        setup = self._make_setup(mock_mass, "sibling")
+
+        await self._announce(setup)
+
+        # the output cannot attenuate what another control is already attenuating,
+        # so the level goes through that control and the output announces at unity
+        assert setup.volume_set.await_args_list == [
+            call("parent", self.ANNOUNCE_VOLUME),
+            call("parent", 20),
+        ]
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+    async def test_player_control_applies_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player control owning the volume (e.g. an HA entity) gets the announcement volume."""
+        setup = self._make_setup(mock_mass, "ha_volume")
+
+        await self._announce(setup)
+
+        assert setup.volume_set.await_args_list == [
+            call("parent", self.ANNOUNCE_VOLUME),
+            call("parent", 20),
+        ]
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+    async def test_external_control_volume_restored_when_the_announcement_fails(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The temporary volume is restored even when the announcement itself fails."""
+        setup = self._make_setup(mock_mass, "sibling")
+        setup.play_announcement.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            await self._announce(setup)
+
+        assert setup.volume_set.await_args_list[-1] == call("parent", 20)
+
+    async def test_announcing_output_keeps_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An output that owns the volume applies the announcement volume itself."""
+        setup = self._make_setup(mock_mass, "output")
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+
+    async def test_bridge_on_the_announcing_output_keeps_the_announcement_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A bridge riding on the announcing output forwards the volume to it."""
+        setup = self._make_setup(mock_mass, "bridge")
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+
+    async def test_native_volume_keeps_the_announcement_volume(self, mock_mass: MagicMock) -> None:
+        """Native parent volume lives on the device the output talks to, so it applies it."""
+        setup = self._make_setup(mock_mass, PLAYER_CONTROL_NATIVE)
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+
+    async def test_without_volume_control_no_volume_is_applied(self, mock_mass: MagicMock) -> None:
+        """Nothing in the signal path can set a volume, so the announcement plays as-is."""
+        setup = self._make_setup(mock_mass, PLAYER_CONTROL_NONE)
+
+        await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+
+class TestPlayAnnouncementMessage:
+    """A spoken message is rendered by a TTS engine and then announced like any other audio."""
+
+    ANNOUNCE_MODULE = "music_assistant.controllers.players.announcements"
+
+    def _make_engine(self, path: str = "http://speech/spoken.mp3") -> MagicMock:
+        """Create a TTS engine that renders every message to the given path."""
+        engine = MagicMock()
+        engine.uid = "tts_plugin/voice"
+        engine.id = "voice"
+        engine.provider.get_tts_message = AsyncMock(return_value=SimpleNamespace(path=path))
+        return engine
+
+    def _make_player(
+        self, mock_mass: MagicMock, announcements: dict[str, object]
+    ) -> tuple[PlayerController, AsyncMock]:
+        """Create a controller and a player with native announcement support."""
+        controller, player, _render = TestPlayAnnouncementCleanup()._make_player(
+            mock_mass, announcements
+        )
+        announce = AsyncMock()
+        player.play_announcement = announce  # type: ignore[method-assign]
+        return controller, announce
+
+    async def test_message_is_spoken_by_the_configured_engine(self, mock_mass: MagicMock) -> None:
+        """A message is rendered by the default engine and announced as the rendered audio."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement("player_1", message="dinner is ready")
+
+        # no language is sent, so the engine speaks in the language it is configured for
+        engine.provider.get_tts_message.assert_awaited_once_with(
+            "dinner is ready", language=None, engine_id="voice", options=None
+        )
+        registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
+        assert registered["announcement_url"] == "http://speech/spoken.mp3"
+        announce.assert_awaited_once()
+
+    async def test_an_explicit_language_reaches_the_engine(self, mock_mass: MagicMock) -> None:
+        """A message can name the language to speak it in."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement(
+                "player_1", message="het eten is klaar", language="nl-NL"
+            )
+
+        engine.provider.get_tts_message.assert_awaited_once_with(
+            "het eten is klaar", language="nl-NL", engine_id="voice", options=None
+        )
+
+    async def test_a_rejected_language_is_retried_without_it(self, mock_mass: MagicMock) -> None:
+        """An engine that rejects the language speaks the message in its default voice."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        engine.provider.get_tts_message = AsyncMock(
+            side_effect=[
+                RuntimeError("unsupported language"),
+                SimpleNamespace(path="http://speech/spoken.mp3"),
+            ]
+        )
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement(
+                "player_1", message="dinner is ready", language="en-US"
+            )
+
+        first_call, second_call = engine.provider.get_tts_message.await_args_list
+        assert first_call.kwargs["language"] == "en-US"
+        assert second_call.kwargs["language"] is None
+        registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
+        assert registered["announcement_url"] == "http://speech/spoken.mp3"
+        announce.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "error", [TimeoutError(), MusicAssistantError("engine did not respond within 30s")]
+    )
+    async def test_a_failure_that_is_not_a_language_rejection_is_not_retried(
+        self, mock_mass: MagicMock, error: Exception
+    ) -> None:
+        """A timeout or a structured failure is no language rejection, so it is not retried."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        engine.provider.get_tts_message = AsyncMock(side_effect=error)
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            pytest.raises(MusicAssistantError),
+        ):
+            await controller.play_announcement("player_1", message="dinner is ready")
+
+        engine.provider.get_tts_message.assert_awaited_once()
+        announce.assert_not_awaited()
+
+    async def test_an_explicit_engine_is_used(self, mock_mass: MagicMock) -> None:
+        """A message names the engine to speak it, overriding the configured default."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+
+        with (
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine", AsyncMock(return_value=engine)
+            ) as resolve,
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock()) as select,
+        ):
+            await controller.play_announcement(
+                "player_1", message="hello", tts_engine="tts_plugin/voice"
+            )
+
+        resolve.assert_awaited_once_with(mock_mass, "tts_plugin/voice")
+        select.assert_not_awaited()
+
+    async def test_pre_announce_follows_the_player_config(self, mock_mass: MagicMock) -> None:
+        """A spoken message uses the player's pre-announce setting without sniffing the url."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                True if key == CONF_ENTRY_TTS_PRE_ANNOUNCE.key else default
+            )
+        )
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement("player_1", message="dinner is ready")
+
+        registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
+        assert registered["pre_announce"] is True
+
+    async def test_the_engine_gets_the_shorter_announcement_timeout(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The engine is capped well below the background default, it holds the player lock."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        query = AsyncMock(return_value=SimpleNamespace(path="http://speech/spoken.mp3"))
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(f"{self.ANNOUNCE_MODULE}.query_tts_engine_with_language_fallback", query),
+        ):
+            await controller.play_announcement("player_1", message="hello")
+
+        assert query.call_args.kwargs["timeout"] == ANNOUNCEMENT_TTS_TIMEOUT
+        assert ANNOUNCEMENT_TTS_TIMEOUT < TTS_QUERY_TIMEOUT_SECONDS
+
+    async def test_an_engine_without_a_message_is_rejected(self, mock_mass: MagicMock) -> None:
+        """Naming an engine for a url announcement is rejected instead of silently ignored."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with pytest.raises(PlayerCommandFailed, match="only be used to speak a message"):
+            await controller.play_announcement(
+                "player_1", url="http://test/clip.mp3", tts_engine="tts_plugin/voice"
+            )
+
+    async def test_a_language_without_a_message_is_rejected(self, mock_mass: MagicMock) -> None:
+        """Naming a language for a url announcement is rejected instead of silently ignored."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with pytest.raises(PlayerCommandFailed, match="A language can only be used"):
+            await controller.play_announcement(
+                "player_1", url="http://test/clip.mp3", language="nl-NL"
+            )
+
+    async def test_a_failing_engine_surfaces_its_error(self, mock_mass: MagicMock) -> None:
+        """An engine that fails to speak the message fails the announcement."""
+        announcements: dict[str, object] = {}
+        controller, announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine()
+        engine.provider.get_tts_message = AsyncMock(side_effect=RuntimeError("engine down"))
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            pytest.raises(PlayerCommandFailed),
+        ):
+            await controller.play_announcement("player_1", message="hello")
+
+        announce.assert_not_awaited()
+        mock_mass.streams.announcement_renderer.register.assert_not_called()
+
+    async def test_a_url_or_a_message_is_required(self, mock_mass: MagicMock) -> None:
+        """An announcement with neither a url nor a message is rejected."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with pytest.raises(PlayerCommandFailed, match="Either a url or a message"):
+            await controller.play_announcement("player_1")
+
+    async def test_a_url_and_a_message_are_mutually_exclusive(self, mock_mass: MagicMock) -> None:
+        """An announcement carrying both a url and a message is rejected."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with pytest.raises(PlayerCommandFailed, match="not both"):
+            await controller.play_announcement(
+                "player_1", url="http://test/clip.mp3", message="hello"
+            )
+
+    async def test_unknown_engine_is_rejected(self, mock_mass: MagicMock) -> None:
+        """A message naming an engine that does not exist fails instead of using another."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.resolve_tts_engine", AsyncMock(return_value=None)),
+            pytest.raises(PlayerCommandFailed, match="is not available"),
+        ):
+            await controller.play_announcement("player_1", message="hello", tts_engine="gone")
+
+    async def test_no_engine_available_is_rejected(self, mock_mass: MagicMock) -> None:
+        """A message fails clearly when no TTS engine is set up at all."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=None)),
+            pytest.raises(PlayerCommandFailed, match="No text-to-speech engine"),
+        ):
+            await controller.play_announcement("player_1", message="hello")
+
+    async def test_audio_that_can_not_be_fetched_is_rejected(self, mock_mass: MagicMock) -> None:
+        """An engine that only rendered to disk fails, since an announcement is fetched by url."""
+        announcements: dict[str, object] = {}
+        controller, _announce = self._make_player(mock_mass, announcements)
+        engine = self._make_engine(path=str(ANNOUNCE_ALERT_FILE))
+
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            pytest.raises(PlayerCommandFailed, match="rendered the message to a local file"),
+        ):
+            await controller.play_announcement("player_1", message="hello")
+
+    async def test_group_members_play_the_rendered_audio(self, mock_mass: MagicMock) -> None:
+        """The message is spoken once and every group member announces the resulting audio."""
+        announcements: dict[str, object] = {}
+        use_real_create_task(mock_mass)
+        controller, _announce = self._make_player(mock_mass, announcements)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
+        group._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        group._attr_group_members = ["player_1"]
+        group._cache.clear()
+        controller._players["group_1"] = group
+        group.update_state(signal_event=False)
+        engine = self._make_engine()
+
+        with patch(
+            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        ):
+            await controller.play_announcement("group_1", message="dinner is ready")
+
+        # rendered once for the group, then handed to the member as plain audio
+        engine.provider.get_tts_message.assert_awaited_once()
+        member_call = next(
+            call_args
+            for call_args in mock_mass.streams.announcement_renderer.register.call_args_list
+            if call_args.args[0] == "player_1"
+        )
+        assert member_call.args[1]["announcement_url"] == "http://speech/spoken.mp3"
+
+
+class TestNativeAnnouncementRouting:
+    """Announcement routing respects the player's own support and its active output."""
+
+    def _make_player_with_linked_child(
+        self,
+        mock_mass: MagicMock,
+        playback_state: PlaybackState,
+        *,
+        parent_supports_announce: bool = False,
+        active_protocol: str | None = None,
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer, AsyncMock, AsyncMock]:
+        """Create a controller, a player, its linked protocol child and the two path mocks."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_playback_state = playback_state
+        if parent_supports_announce:
+            player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        proto_provider = MockProvider("airplay", mass=mock_mass)
+        proto = MockPlayer(
+            proto_provider, "proto_1", "AirPlay Child", player_type=PlayerType.PROTOCOL
+        )
+        proto._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        controller._players = {"player_1": player, "proto_1": proto}
+        mock_mass.players = controller
+        player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="proto_1",
+                    protocol_domain="airplay",
+                    priority=40,
+                )
+            ]
+        )
+        if active_protocol is not None:
+            player.set_active_output_protocol(active_protocol)
+        render = MagicMock()
+        render.wait_ready = AsyncMock(return_value=True)
+        renderer = mock_mass.streams.announcement_renderer
+        renderer.register = MagicMock(return_value=render)
+        renderer.unregister = AsyncMock()
+        mock_mass.streams.get_announcement_url = MagicMock(
+            side_effect=lambda player_id, **_kwargs: f"http://ma/announcement/{player_id}.mp3"
+        )
+        proto.update_state(signal_event=False)
+        player.update_state(signal_event=False)
+        native_path = AsyncMock()
+        generic_path = AsyncMock()
+        controller._play_native_announcement = native_path  # type: ignore[method-assign]
+        controller._play_announcement = generic_path  # type: ignore[method-assign]
+        return controller, player, proto, native_path, generic_path
+
+    async def test_playing_player_does_not_route_to_an_idle_linked_child(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A player rendering through one output must not announce through another.
+
+        E.g. a WiiM playing natively with an idle linked AirPlay child: routing
+        the announcement to the child would seize the device from the native
+        output, with nothing restoring that playback afterwards.
+        """
+        controller, _player, _proto, native_path, generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass, PlaybackState.PLAYING, active_protocol="native"
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_not_awaited()
+        generic_path.assert_awaited_once()
+
+    async def test_idle_player_routes_to_the_linked_child(self, mock_mass: MagicMock) -> None:
+        """An idle player announces natively through any capable linked protocol."""
+        controller, _player, proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(mock_mass, PlaybackState.IDLE)
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+
+    async def test_active_protocol_child_beats_own_native_support(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        The output that is actively rendering wins over the player's own support.
+
+        E.g. a Sonos playing through its AirPlay child: the announcement rides
+        the same audio path as the music (mixed into the live stream, in sync
+        with the rest of a group) instead of a second mechanism firing beside
+        the playback.
+        """
+        controller, _player, proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.PLAYING,
+                parent_supports_announce=True,
+                active_protocol="proto_1",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+
+    async def test_own_native_support_wins_when_playing_natively(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player rendering through its own native output announces natively."""
+        controller, player, _proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.PLAYING,
+                parent_supports_announce=True,
+                active_protocol="native",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is player
+
+    async def test_idle_player_prefers_its_own_support_over_a_linked_child(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Without active playback the player's own announcement support wins."""
+        controller, player, _proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.IDLE,
+                parent_supports_announce=True,
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is player
 
 
 @pytest.mark.usefixtures("running_background_tasks")
@@ -3732,6 +4317,90 @@ class TestUnregisterTeardown:
 
         assert "boom" not in controller._players
         assert player.unloaded
+
+
+class TestConfigChangeRestartsPlayback:
+    """Test that a changed player setting which needs a reload restarts playback."""
+
+    @staticmethod
+    def _config(*, requires_reload: bool) -> PlayerConfig:
+        """Build a PlayerConfig holding a single output codec entry."""
+        return PlayerConfig(
+            provider="test_prov",
+            player_id="player_1",
+            values={
+                CONF_OUTPUT_CODEC: ConfigEntry(
+                    key=CONF_OUTPUT_CODEC,
+                    type=ConfigEntryType.STRING,
+                    label="Output codec",
+                    value="flac",
+                    requires_reload=requires_reload,
+                )
+            },
+        )
+
+    @staticmethod
+    def _prepare(mock_mass: MagicMock, queue_state: PlaybackState) -> PlayerController:
+        """Register a player whose active queue is in the given state."""
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.state.active_source = "player_1"
+        player.on_config_updated = AsyncMock()
+        controller._players = {"player_1": player}
+        queue = MagicMock()
+        queue.queue_id = "player_1"
+        queue.state = queue_state
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        mock_mass.player_queues.stop = AsyncMock()
+        return controller
+
+    async def test_reload_setting_restarts_playback(self, mock_mass: MagicMock) -> None:
+        """Test that changing a reload-requiring setting stops and resumes the queue."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_awaited_once_with("player_1")
+        mock_mass.call_later.assert_called_once_with(
+            1, mock_mass.player_queues.resume, "player_1", False
+        )
+
+    async def test_plain_setting_does_not_restart_playback(self, mock_mass: MagicMock) -> None:
+        """Test that a setting which applies on the fly leaves playback alone."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=False), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
+
+    async def test_untouched_reload_setting_does_not_restart_playback(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that only a changed reload-requiring setting restarts playback."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_ICON}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
+
+    async def test_idle_queue_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """Test that a reload-requiring change does not start playback on an idle queue."""
+        controller = self._prepare(mock_mass, PlaybackState.IDLE)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
 
 
 if __name__ == "__main__":

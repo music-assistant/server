@@ -35,7 +35,7 @@ from aiosendspin.noise.pairing import (
     PairingTimeoutError,
 )
 from aiosendspin.noise.pairing_token import decode_token
-from aiosendspin.noise.trust_store import FileServerPairingStore
+from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientConnectedEvent,
@@ -45,6 +45,7 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -54,7 +55,11 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
 )
-from music_assistant_models.errors import AlreadyRegisteredError, SetupFailedError
+from music_assistant_models.errors import (
+    AlreadyRegisteredError,
+    InvalidCommand,
+    SetupFailedError,
+)
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -64,6 +69,13 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.guest_access import (
+    credential_owner,
+    credential_owner_user_id,
+    credential_owners_for_user_id,
+    is_session_scoped_owner,
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
@@ -77,7 +89,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
-    CONF_ALLOW_UNENCRYPTED,
+    CONF_ALLOW_LEGACY_CLIENTS,
     CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
@@ -87,12 +99,14 @@ from music_assistant.providers.sendspin.constants import (
 from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
+    error_alert,
     negotiated_pin_length,
     pair_method_descriptor,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
+    SendspinSourcePlayer,
     SendspinVisualizerPlayer,
 )
 from music_assistant.providers.sendspin.security import (
@@ -108,13 +122,16 @@ if TYPE_CHECKING:
         ManagementResultData,
         ManagementSetPairingConfigPayload,
     )
+    from aiosendspin.noise.trust_store import ServerPairingStore
     from aiosendspin.server.client import SendspinClient
     from aiosendspin.server.connection import SendspinConnection
     from aiosendspin.server.server import ExternalStreamStartRequest
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
@@ -123,6 +140,9 @@ DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
 VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
 VIRTUAL_PLAYER_CLEANUP_TIMEOUT = 2.0
+WEB_PLAYER_CONNECT_TIMEOUT = 10.0
+# Grace period so a network blip keeps the pairing record.
+SESSION_PAIRING_EVICTION_GRACE = 120.0
 
 PIN_REQUEST_FEEDBACK_TIMEOUT = 2
 PIN_RETRY_IDLE_TIMEOUT = 300
@@ -217,6 +237,23 @@ class ManagementSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+async def _poll_until[T](check: Callable[[], T | None], timeout: float) -> T | None:
+    """Poll ``check`` every 0.1s until it returns a value, or ``None`` once ``timeout`` lapses."""
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                if (result := check()) is not None:
+                    return result
+                await asyncio.sleep(0.1)
+    except TimeoutError:
+        return None
+
+
+def _evict_session_pairing_task_id(client_id: str) -> str:
+    """Task id for a client's delayed session-scoped pairing eviction."""
+    return f"sendspin_evict_session_pairing_{client_id}"
+
+
 def _pin_idle_task_id(client_id: str) -> str:
     """Timer/task id for a client's pairing-retry idle timeout."""
     return f"sendspin_pin_idle_{client_id}"
@@ -244,6 +281,43 @@ def _check_management_result(result: ManagementResult) -> None:
     if alert_key is None:
         raise SecurityActionError("management_error_generic", detail=result.value)
     raise SecurityActionError(alert_key)
+
+
+async def _evict_stale_pairings(
+    pairing_store: ServerPairingStore, auth: AuthenticationManager
+) -> tuple[int, int]:
+    """
+    Remove the pairing records whose owning authorization is gone.
+
+    Session-scoped pairings live only as long as their client's connection, and no
+    connection survives a restart. Account-bound ones do survive a restart, but not an
+    account that was deleted or disabled while this provider was not there to hear it.
+
+    :return: How many session-scoped and how many account-bound records were removed.
+    """
+    session_scoped = 0
+    orphaned = 0
+    for record in await pairing_store.list_records():
+        if record.owner is None:
+            continue
+        if is_session_scoped_owner(record.owner):
+            session_scoped += 1
+        else:
+            if await _owner_has_access(record.owner, auth):
+                continue
+            orphaned += 1
+        await pairing_store.remove_record(record.client_id)
+    return session_scoped, orphaned
+
+
+async def _owner_has_access(owner: str, auth: AuthenticationManager) -> bool:
+    """Return whether the account an owner id is bound to still has access."""
+    user_id = credential_owner_user_id(owner)
+    if user_id is None:
+        # another kind of owner, whose lifetime is not ours to judge
+        return True
+    # get_user answers None for a deleted as well as a disabled account
+    return await auth.get_user(user_id) is not None
 
 
 def _manual_client_url(address: str) -> str:
@@ -315,6 +389,8 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts = {}
         self._virtual_players = {}
         self._pin_sessions: dict[str, PinPairingSession] = {}
+        self._pending_pairing_evictions: set[str] = set()
+        self._running_pairing_evictions: set[asyncio.Task[None]] = set()
         self._management_sessions: dict[str, ManagementSession] = {}
         self._pairing_config_snapshots: dict[
             str, tuple[SendspinConnection, ManagementResultData]
@@ -328,7 +404,7 @@ class SendspinProvider(PlayerProvider):
         return (
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
             ConfigEntry(
-                key=CONF_ALLOW_UNENCRYPTED,
+                key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
             ),
@@ -374,13 +450,24 @@ class SendspinProvider(PlayerProvider):
                 "file-access problem and reload; do not delete the file or all pairings will be "
                 "lost."
             ) from err
+        session_scoped, orphaned = await _evict_stale_pairings(
+            pairing_store, self.mass.webserver.auth
+        )
+        if session_scoped:
+            self.logger.info(
+                "Removed %d session-scoped pairing(s) from a previous run", session_scoped
+            )
+        if orphaned:
+            self.logger.info("Removed %d pairing(s) of a deleted or disabled account", orphaned)
+        allow_legacy_clients = cast("bool", self.config.get_value(CONF_ALLOW_LEGACY_CLIENTS, True))
         self.server_api = SendspinServer(
             self.mass.loop,
             identity,
             "Music Assistant",
             self.mass.http_session,
             pairing_store=pairing_store,
-            allow_unencrypted=cast("bool", self.config.get_value(CONF_ALLOW_UNENCRYPTED, True)),
+            allow_unencrypted=allow_legacy_clients,
+            allow_noncompliant_clients=allow_legacy_clients,
             min_pin_length=cast(
                 "int", self.config.get_value(CONF_MIN_PIN_LENGTH, DEFAULT_MIN_PIN_LENGTH)
             ),
@@ -420,8 +507,14 @@ class SendspinProvider(PlayerProvider):
             # Transport lifecycle events, implemented in another PR.
             case ClientConnectedEvent():
                 pass
-            case ClientDisconnectedEvent():
-                pass
+            case ClientDisconnectedEvent(client_id):
+                self._pending_pairing_evictions.add(client_id)
+                self.mass.call_later(
+                    SESSION_PAIRING_EVICTION_GRACE,
+                    self._evict_session_pairing,
+                    client_id,
+                    task_id=_evict_session_pairing_task_id(client_id),
+                )
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
@@ -757,8 +850,17 @@ class SendspinProvider(PlayerProvider):
             self.exit_management(client_id)
         await self._refresh_player(client_id)
 
-    async def pair_with_token(self, client_id: str, token_value: str) -> None:
-        """Pair a connected client using its pasted pairing token."""
+    async def pair_with_token(
+        self, client_id: str, token_value: str, owner: str | None = None
+    ) -> None:
+        """
+        Pair a connected client using its pasted pairing token.
+
+        :param client_id: The connected client to pair.
+        :param token_value: The client's pairing token.
+        :param owner: Application-defined authorization id to bind the pairing to;
+            ``None`` is a standalone pairing.
+        """
         session = self._pin_sessions.get(client_id)
         if session is not None and session.attempt_running:
             raise SecurityActionError("pairing_error_concurrent")
@@ -771,7 +873,7 @@ class SendspinProvider(PlayerProvider):
         try:
             await self.server_api.initiate_pairing(
                 client_id,
-                PairingAttempt(PairMethod.PAIRING_PSK, pairing_psk=token.pairing_psk),
+                PairingAttempt(PairMethod.PAIRING_PSK, pairing_psk=token.pairing_psk, owner=owner),
             )
         except PairingAbortError:
             # Token pairing is single-shot; unpark the connection before surfacing the failure.
@@ -797,6 +899,66 @@ class SendspinProvider(PlayerProvider):
         else:
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
+
+    async def pair_web_player(self, pairing_token: str) -> None:
+        """
+        Pair the built-in web player that minted the given pairing token.
+
+        :param pairing_token: The calling web player's version 0 pairing token.
+        """
+        # The token names the client it belongs to, so this works on every transport,
+        # including Ingress where the session carries no client id at all.
+        try:
+            client_id = decode_token(pairing_token).client_id
+        except ValueError as err:
+            raise InvalidCommand(
+                "The pairing token is not valid",
+                translation_key="pairing_error_token_invalid",
+                translation_owner=self.translation_owner,
+            ) from err
+        player = await self._await_connected_client(client_id)
+        if not player.is_web_player:
+            raise InvalidCommand(f"Client {client_id} is not a built-in web player")
+        security = player.api.connection_security
+        # An unencrypted client cannot hold a pairing, same as the setup flow refuses it
+        if security is None:
+            return
+        record = await self.server_api.pairing_store.record_by_client_id(client_id)
+        # The pairing is bound to the caller's account: a guest's ends with their
+        # session or access, a full user's with their account. Only pairings made
+        # through the settings/setup flow are standalone.
+        user = get_current_user()
+        owner = credential_owner(user) if user is not None else None
+        # We already paired this web player so no action needed. A record on its own is not
+        # enough: the client can have lost its half, leaving a record it cannot authenticate.
+        # A record bound to another account is re-paired instead (a browser keeps its
+        # identity across logins), so the lifetime always follows the current caller.
+        if (
+            security.psk_category is PskCategory.LONG_TERM
+            and record is not None
+            and (record.owner is None or record.owner == owner)
+        ):
+            return
+        try:
+            await self.pair_with_token(client_id, pairing_token, owner=owner)
+        except (
+            SecurityActionError,
+            PairingError,
+            HandshakeAbortedError,
+            TimeoutError,
+            OSError,
+        ) as err:
+            # Report the reason without the request, which carries the pairing token.
+            alert = error_alert(err)
+            raise InvalidCommand(
+                f"Cannot pair web player {client_id}",
+                translation_key=alert.key,
+                translation_args=alert.params,
+                translation_owner=self.translation_owner,
+            ) from err
+        # The handshake takes a moment, in which an eviction can have missed this record.
+        if owner is not None and not await _owner_has_access(owner, self.mass.webserver.auth):
+            await self._evict_pairings_for_owner(owner)
 
     def get_management_session(self, client_id: str) -> ManagementSession | None:
         """Return the client's management session, dropping one whose connection is gone."""
@@ -891,6 +1053,19 @@ class SendspinProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
+        self.unregister_cbs.append(
+            self.mass.register_api_command(
+                "sendspin/pair_web_player",
+                self.pair_web_player,
+                # Guests pair their own web player too, since party mode plays through Sendspin.
+                required_scope=Scope.PLAYERS_CONTROL,
+            )
+        )
+        # Pairings bound to a user's access must not outlive it (guest access switched
+        # off, account deleted, all sessions revoked).
+        self.unregister_cbs.append(
+            self.mass.webserver.auth.subscribe_user_access_revoked(self._on_user_access_revoked)
+        )
         self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
@@ -929,10 +1104,15 @@ class SendspinProvider(PlayerProvider):
                 session.task.cancel()
             self._cancel_pin_idle_timeout(session.client_id)
         self._pin_sessions.clear()
+        for client_id in self._pending_pairing_evictions:
+            self.mass.cancel_timer(_evict_session_pairing_task_id(client_id))
+        self._pending_pairing_evictions.clear()
         for management_session in self._management_sessions.values():
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
+        if self._running_pairing_evictions:
+            await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]
         # Stop the Sendspin server
         await self.server_api.close()
@@ -1044,7 +1224,8 @@ class SendspinProvider(PlayerProvider):
         Create the appropriate player class based on client roles.
 
         Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
-        visualizer role -> VISUALIZER. Bridge-registered type overrides the default.
+        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer.
+        Bridge-registered type overrides the default.
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
@@ -1074,6 +1255,10 @@ class SendspinProvider(PlayerProvider):
             viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
             viz_player._attr_type = bridge_player_type or default_type
             player = viz_player
+        elif "source" in negotiated_families:
+            # Capture-only device: a SendspinPlayer here would advertise playback it
+            # cannot do. It only needs a settings page.
+            player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
             if isinstance(existing_player, SendspinPlayer):
@@ -1293,6 +1478,70 @@ class SendspinProvider(PlayerProvider):
         await player.on_config_updated()
         player.update_state()
 
+    def _on_user_access_revoked(self, user: User) -> None:
+        """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
+        # Both owner forms, so the match cannot depend on the user's role at mint time.
+        for owner in credential_owners_for_user_id(user.user_id):
+            task = self.mass.create_task(self._evict_pairings_for_owner(owner))
+            self._running_pairing_evictions.add(task)
+            task.add_done_callback(self._running_pairing_evictions.discard)
+
+    async def _evict_pairings_for_owner(self, owner: str) -> None:
+        """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
+        if self._unloading:
+            return
+        pairing_store = self.server_api.pairing_store
+        for record in await pairing_store.records_by_owner(owner):
+            # records_by_owner was read once: only withdraw what this owner still holds.
+            current = await pairing_store.record_by_client_id(record.client_id)
+            if current is None or current.owner != owner:
+                continue
+            try:
+                await self.server_api.unpair(record.client_id)
+            except ValueError:
+                # Not connected: there is no client half to notify, drop only our record.
+                await pairing_store.remove_record(record.client_id)
+            self.logger.info(
+                "Removed the pairing of client %s: its owner's access was revoked",
+                record.client_id,
+            )
+            await self._refresh_player(record.client_id)
+
+    async def _evict_session_pairing(self, client_id: str) -> None:
+        """Drop a disconnected client's session-scoped pairing (a no-op for durable ones)."""
+        self._pending_pairing_evictions.discard(client_id)
+        if self._unloading:
+            return
+        client = self.server_api.get_client(client_id)
+        if client is not None and client.is_connected:
+            # Already reconnected: the pairing lives until the connection truly ends.
+            return
+        record = await self.server_api.pairing_store.record_by_client_id(client_id)
+        if record is None or record.owner is None or not is_session_scoped_owner(record.owner):
+            return
+        await self.server_api.pairing_store.remove_record(client_id)
+        self.logger.info("Removed the session-scoped pairing of client %s on disconnect", client_id)
+        await self._refresh_player(client_id)
+
+    async def _await_connected_client(self, client_id: str) -> SendspinBasePlayer:
+        """Return a client's fully registered player, waiting for its connection to land first."""
+
+        # A web player asks to be paired a beat before its Sendspin handshake lands, and
+        # the pairing refresh needs a fully registered player to re-apply config onto.
+        def _registered_player() -> SendspinBasePlayer | None:
+            client = self.server_api.get_client(client_id)
+            if client is None or not client.is_connected:
+                return None
+            player = self.mass.players.get_player(client_id)
+            if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+                return player
+            return None
+
+        player = await _poll_until(_registered_player, WEB_PLAYER_CONNECT_TIMEOUT)
+        if player is None:
+            raise InvalidCommand(f"Client {client_id} did not register")
+        return player
+
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
@@ -1486,15 +1735,17 @@ class SendspinProvider(PlayerProvider):
 
     async def _wait_for_virtual_player(self, player_id: str) -> None:
         """Wait until the virtual player is registered in MA with its queue."""
-        deadline = self.mass.loop.time() + VIRTUAL_PLAYER_REGISTER_TIMEOUT
-        while self.mass.loop.time() < deadline:
+
+        def _registered() -> bool | None:
             if (
                 self.mass.players.get_player(player_id) is not None
                 and self.mass.player_queues.get(player_id) is not None
             ):
-                return
-            await asyncio.sleep(0.1)
-        raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
+                return True
+            return None
+
+        if await _poll_until(_registered, VIRTUAL_PLAYER_REGISTER_TIMEOUT) is None:
+            raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
 
     async def _cleanup_failed_virtual_player_creation(self, player_id: str) -> None:
         """

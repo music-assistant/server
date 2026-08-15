@@ -25,6 +25,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
+    _migrate_unrenamed_player_names,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
@@ -1178,3 +1179,23 @@ def test_migrate_orphaned_disabled_protocol_configs_tolerates_malformed_data() -
     }
     assert _migrate_orphaned_disabled_protocol_configs(data) is False
     assert len(data["players"]) == 3
+
+
+def test_migrate_unrenamed_player_names() -> None:
+    """A stored name that merely repeats the default name is cleared, real renames stay."""
+    data: dict[str, Any] = {
+        "players": {
+            "never_renamed": {"name": "Living Room", "default_name": "Living Room"},
+            "user_renamed": {"name": "Bathroom", "default_name": "solarium-bath-sl"},
+            # without a default name, clearing the name would leave no name at all
+            "without_default_name": {"name": "Kitchen"},
+            "not_a_dict": "malformed",
+        }
+    }
+
+    assert _migrate_unrenamed_player_names(data) is True
+    assert data["players"]["never_renamed"]["name"] is None
+    assert data["players"]["user_renamed"]["name"] == "Bathroom"
+    assert data["players"]["without_default_name"]["name"] == "Kitchen"
+    # the cleared name must not be picked up again on the next start
+    assert _migrate_unrenamed_player_names(data) is False

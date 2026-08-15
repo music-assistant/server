@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import struct
 import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -52,6 +51,7 @@ from music_assistant.constants import (
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -88,8 +88,13 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
     get_available_buffer_sizes,
 )
+from music_assistant.controllers.streams.live_announcements import (
+    LIVE_ANNOUNCEMENT_STREAM_PATH,
+    LiveAnnouncementManager,
+)
 from music_assistant.helpers.audio import (
     calculate_content_length,
+    create_streaming_wave_header,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
@@ -130,33 +135,11 @@ if TYPE_CHECKING:
 isfile = wrap(os.path.isfile)
 
 
-def _streaming_wav_header(output_format: AudioFormat) -> bytes:
-    """Build a WAV header with open-ended (0xFFFFFFFF) RIFF/data sizes for live streams."""
-    channels = output_format.channels
-    sample_rate = output_format.sample_rate
-    bits_per_sample = output_format.bit_depth
-    byte_rate = sample_rate * channels * (bits_per_sample // 8)
-    block_align = channels * (bits_per_sample // 8)
-    # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
-    # length fields don't cut the stream off (default header hardcodes ~6.7h).
-    return (
-        b"RIFF"
-        + struct.pack("<L", 0xFFFFFFFF)
-        + b"WAVE"
-        + b"fmt "
-        + struct.pack(
-            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
-        )
-        + b"data"
-        + struct.pack("<L", 0xFFFFFFFF)
-    )
-
-
 async def _wav_passthrough_stream(
     audio_input: AsyncGenerator[bytes], output_format: AudioFormat
 ) -> AsyncGenerator[bytes]:
     """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
-    yield _streaming_wav_header(output_format)
+    yield create_streaming_wave_header(output_format)
     async for chunk in audio_input:
         yield chunk
 
@@ -200,6 +183,7 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcement_renderer = AnnouncementRenderer()
+        self.live_announcements = LiveAnnouncementManager(mass, self.logger)
         self._bind_ip: str = "0.0.0.0"
         self._base_url: str = ""
         self._configured_publish_ip: str | None = None
@@ -233,6 +217,7 @@ class StreamsController(CoreController):
             "active_output_streams": self._active_output_streams,
             "active_announcements": self.announcement_renderer.active_announcements,
             "active_announcement_renders": self.announcement_renderer.active_renders,
+            "active_live_announcements": self.live_announcements.active_sessions,
             "publish_ip_configured": self._configured_publish_ip is not None,
         }
 
@@ -470,6 +455,11 @@ class StreamsController(CoreController):
                 ),
                 ("*", "/command/{queue_id}/{command}.mp3", self.serve_command_request),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
+                (
+                    "GET",
+                    LIVE_ANNOUNCEMENT_STREAM_PATH,
+                    self.live_announcements.serve_stream,
+                ),
             ],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
@@ -492,9 +482,16 @@ class StreamsController(CoreController):
         )
         await self._reload_network_dependent_providers()
 
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+        # the inbound half of a live announcement rides on the webserver: it is the only
+        # one of the two servers that authenticates (and that browsers reach over https)
+        self.live_announcements.setup()
+
     async def close(self) -> None:
         """Cleanup on exit."""
         await self._audio_analysis.close()
+        await self.live_announcements.close()
         await self._server.close()
 
     async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
@@ -508,19 +505,25 @@ class StreamsController(CoreController):
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         protocol_player = self.mass.players.get_player(player_id)
-        # AudioSource is realtime: serve as WAV (PCM + header) so the encode
-        # step is a no-op passthrough — drops a whole ffmpeg from the
-        # consumer-side pipeline and the latency that comes with it.
-        if media.media_type == MediaType.AUDIO_SOURCE:
-            output_codec = ContentType.WAV
-        else:
-            conf_output_codec = cast(
-                "str",
-                protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
-                if protocol_player
-                else "flac",
+        conf_output_codec = cast(
+            "str",
+            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
+            if protocol_player
+            else "flac",
+        )
+        prefer_wav_for_live_sources = (
+            media.media_type == MediaType.AUDIO_SOURCE
+            and protocol_player is not None
+            and cast(
+                "bool",
+                protocol_player.config.get_value(CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False),
             )
-            output_codec = ContentType.try_parse(conf_output_codec)
+        )
+        output_codec = (
+            ContentType.WAV
+            if prefer_wav_for_live_sources
+            else ContentType.try_parse(conf_output_codec)
+        )
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:

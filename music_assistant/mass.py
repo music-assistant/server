@@ -28,6 +28,10 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InvalidToken,
+    LoginFailed,
     MusicAssistantError,
     SetupFailedError,
     UnsupportedSystemError,
@@ -700,6 +704,7 @@ class MusicAssistant:
         task_id: str | None = None,
         abort_existing: bool = False,
         eager_start: bool = True,
+        log_exceptions: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """
@@ -714,6 +719,9 @@ class MusicAssistant:
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
                            when creating multiple tasks in sequence.
+        :param log_exceptions: Set to False when the caller awaits the task and reports
+                               its failures itself; the task then logs at debug level
+                               instead of warning.
         :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
@@ -756,7 +764,11 @@ class MusicAssistant:
             # "Task exception was never retrieved" error at garbage collection time
             if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
-                LOGGER.warning(
+                # a failure the waiters report themselves is demoted rather than dropped:
+                # work that outlives every waiter (join_task keeps it running) would
+                # otherwise fail without a trace anywhere
+                LOGGER.log(
+                    logging.WARNING if log_exceptions else logging.DEBUG,
                     "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
@@ -987,7 +999,14 @@ class MusicAssistant:
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
-            will_retry = allow_retry and isinstance(exc, MusicAssistantError)
+            will_retry = (
+                allow_retry
+                and isinstance(exc, MusicAssistantError)
+                and not isinstance(
+                    exc,
+                    (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
+                )
+            )
             if will_retry:
                 self.call_later(
                     120,

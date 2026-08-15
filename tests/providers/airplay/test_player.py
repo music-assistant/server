@@ -35,6 +35,8 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
+from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -55,11 +57,23 @@ def _stub_raw_config(provider: MagicMock, stored: dict[str, object] | None = Non
     )
 
 
+def _stub_volume_scaling(provider: MagicMock, min_volume: int = 0, max_volume: int = 100) -> None:
+    """Apply the controller's real min/max volume scaling instead of a mock."""
+    identity = (min_volume, max_volume) == (0, 100)
+    provider.mass.players.scale_volume_to_device.side_effect = lambda _player_id, logical: (
+        logical if identity else min_volume + (logical * (max_volume - min_volume)) // 100
+    )
+    provider.mass.players.scale_volume_from_device.side_effect = lambda _player_id, device: (
+        device if identity else ((device - min_volume) * 100) // (max_volume - min_volume)
+    )
+
+
 @pytest.fixture
 def airplay_player() -> AirPlayPlayer:
     """Create a basic AirPlayPlayer with mock defaults."""
     provider = MagicMock()
     _stub_raw_config(provider)
+    _stub_volume_scaling(provider)
     return AirPlayPlayer(
         provider=provider,
         player_id="test_player",
@@ -628,6 +642,8 @@ def _setup_running_stream(player: AirPlayPlayer) -> AsyncMock:
     """Attach a mock running stream to the player and return the send_cli_command mock."""
     stream = MagicMock()
     stream.running = True
+    # every streaming player has a session; this one is playing, not parked
+    stream.session = MagicMock(parked=False)
     send_cmd = AsyncMock()
     stream.send_cli_command = send_cmd
     player.stream = stream
@@ -720,19 +736,20 @@ async def test_volume_mute_no_stream(airplay_player: AirPlayPlayer) -> None:
         mock_update.assert_called_once()
 
 
-def test_sync_volume_level_keeps_stored_volume_for_native_parent(
+def test_sync_volume_state_keeps_stored_volume_for_native_parent(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """Keep the child AirPlay volume when the parent uses native volume control."""
     parent = MagicMock()
     parent.state.volume_level = 36
-    parent.volume_control = PLAYER_CONTROL_NATIVE
+    parent.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.sync_volume_level()
+        airplay_player.sync_volume_state()
 
     assert airplay_player._attr_volume_level == 48
     airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
@@ -762,19 +779,20 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     mock_update.assert_called_once()
 
 
-def test_sync_volume_level_uses_parent_volume_when_control_is_self(
+def test_sync_volume_state_uses_parent_volume_when_control_is_self(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """Pull the parent volume when the parent's volume control is this player."""
     parent = MagicMock()
     parent.state.volume_level = 42
-    parent.volume_control = "test_player"
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.sync_volume_level()
+        airplay_player.sync_volume_state()
 
     assert airplay_player._attr_volume_level == 42
     airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
@@ -785,13 +803,14 @@ def test_sync_volume_level_uses_parent_volume_when_control_is_self(
     mock_update.assert_called_once()
 
 
-def test_sync_volume_level_uses_parent_volume_via_bridge_control(
+def test_sync_volume_state_uses_parent_volume_via_bridge_control(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """Pull the parent volume when the volume control is a bridge riding on this player."""
     parent = MagicMock()
     parent.state.volume_level = 42
-    parent.volume_control = "sendspin_bridge"
+    parent.volume_control_for_output.return_value = "sendspin_bridge"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
     bridge = MagicMock()
     bridge.underlying_player_id = "test_player"
     airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
@@ -802,7 +821,7 @@ def test_sync_volume_level_uses_parent_volume_via_bridge_control(
     airplay_player._attr_volume_level = 48
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.sync_volume_level()
+        airplay_player.sync_volume_state()
 
     assert airplay_player._attr_volume_level == 42
     airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
@@ -813,13 +832,69 @@ def test_sync_volume_level_uses_parent_volume_via_bridge_control(
     mock_update.assert_called_once()
 
 
-def test_sync_volume_level_unity_gain_when_other_control_owns_volume(
+def test_sync_volume_state_adopts_parent_volume_on_the_parents_scale(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A volume limit on the parent leaves the adopted level on the same scale as a command.
+
+    Volume commands arrive here already scaled into the parent's range, so adopting
+    the parent's logical level as-is would play the speaker louder than asked and
+    read back as a volume outside the range on the next state update.
+    """
+    _stub_volume_scaling(cast("MagicMock", airplay_player.provider), max_volume=50)
+    parent = MagicMock()
+    parent.player_id = "parent"
+    parent.state.volume_level = 60
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state"):
+        airplay_player.sync_volume_state()
+
+    assert airplay_player._attr_volume_level == 30
+
+
+def test_sync_volume_state_keeps_a_level_already_on_the_parents_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the parent already reports is left alone, whatever the limits round to.
+
+    A range that does not divide evenly cannot map every level back and forth
+    exactly, so re-deriving one that already agrees would walk the speaker a step
+    further down on every stream it starts.
+    """
+    _stub_volume_scaling(cast("MagicMock", airplay_player.provider), max_volume=99)
+    parent = MagicMock()
+    parent.player_id = "parent"
+    # what the parent reports for a player sitting at device level 98
+    parent.state.volume_level = 98
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 98
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state()
+
+    assert airplay_player._attr_volume_level == 98
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
+def test_sync_volume_state_unity_gain_when_other_control_owns_volume(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """Play at unity gain when the parent volume is owned by another (hardware) control."""
     parent = MagicMock()
     parent.state.volume_level = 30
-    parent.volume_control = "dlna_player"
+    parent.volume_control_for_output.return_value = "dlna_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
     dlna_player = MagicMock()
     dlna_player.underlying_player_id = None
     airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
@@ -830,14 +905,14 @@ def test_sync_volume_level_unity_gain_when_other_control_owns_volume(
     airplay_player._attr_volume_level = 48
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.sync_volume_level()
+        airplay_player.sync_volume_state()
 
     assert airplay_player._attr_volume_level == 100
     airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
     mock_update.assert_called_once()
 
 
-def test_sync_volume_level_ignores_parent_volume_zero(
+def test_sync_volume_state_ignores_parent_volume_zero(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
@@ -849,17 +924,196 @@ def test_sync_volume_level_ignores_parent_volume_zero(
     """
     parent = MagicMock()
     parent.state.volume_level = 0
-    parent.volume_control = "test_player"
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 48
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.sync_volume_level()
+        airplay_player.sync_volume_state()
 
     assert airplay_player._attr_volume_level == 48
     airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
     mock_update.assert_not_called()
+
+
+def test_sync_volume_state_clears_mute_latch_owned_by_other_control(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Clear our mute when it is owned by a control that doesn't render this stream.
+
+    The mute is a latch that only an explicit unmute clears, so a mute applied while
+    a sibling interface owned the parent would otherwise start this stream silent and
+    swallow every volume command after it.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.state.volume_muted = False
+    parent.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    parent.mute_control_for_output.return_value = "cast_player"
+    cast_player = MagicMock()
+    cast_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "cast_player": cast_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_muted = True
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state()
+
+    assert airplay_player._attr_volume_muted is False
+    mock_update.assert_called_once()
+
+
+def test_sync_volume_state_keeps_mute_owned_by_this_output(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Keep our own mute when this player owns the parent's mute."""
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.state.volume_muted = True
+    parent.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    parent.mute_control_for_output.return_value = "test_player"
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_muted = True
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state()
+
+    assert airplay_player._attr_volume_muted is True
+    mock_update.assert_not_called()
+
+
+def test_sync_volume_state_leaves_unknown_mute_untouched(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Never having latched a mute is not the same as being unmuted."""
+    parent = MagicMock()
+    parent.state.volume_level = 48
+    parent.state.volume_muted = False
+    parent.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    parent.mute_control_for_output.return_value = "cast_player"
+    cast_player = MagicMock()
+    cast_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "cast_player": cast_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_muted = None
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state()
+
+    assert airplay_player._attr_volume_muted is None
+    mock_update.assert_not_called()
+
+
+def test_sync_volume_state_resolves_against_this_output(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Both controls are resolved for this player as the rendering output."""
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.state.volume_muted = False
+    parent.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_muted = True
+
+    airplay_player.sync_volume_state()
+
+    parent.volume_control_for_output.assert_called_once_with("test_player")
+    parent.mute_control_for_output.assert_called_once_with("test_player")
+
+
+def test_sync_volume_state_keeps_explicitly_requested_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Keep a volume that was explicitly requested for the stream about to start.
+
+    An announcement volume is resolved and applied before the session starts, so the
+    parent's level (which on a multi-interface device may come from an idle sibling)
+    must not replace it - the level held here is what reaches the receiver.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 85
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state(adopt_parent_volume=False)
+
+    assert airplay_player._attr_volume_level == 85
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
+def test_sync_volume_state_keeps_unity_gain_for_explicitly_requested_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Reset to unity gain even for an explicitly requested volume.
+
+    A control that owns the volume of this output attenuates on the device itself, so
+    the requested level would land on top of it.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.volume_control_for_output.return_value = "cast_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    cast_player = MagicMock()
+    cast_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "cast_player": cast_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 85
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state(adopt_parent_volume=False)
+
+    assert airplay_player._attr_volume_level == 100
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_called_once()
+
+
+def test_sync_volume_state_clears_mute_latch_without_adopting_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A stream with an explicitly requested volume still gets its mute latch released."""
+    parent = MagicMock()
+    parent.state.volume_level = 40
+    parent.state.volume_muted = False
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = "cast_player"
+    cast_player = MagicMock()
+    cast_player.underlying_player_id = None
+    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
+        "parent": parent,
+        "cast_player": cast_player,
+    }.get
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 85
+    airplay_player._attr_volume_muted = True
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_state(adopt_parent_volume=False)
+
+    assert airplay_player._attr_volume_muted is False
+    assert airplay_player._attr_volume_level == 85
+    mock_update.assert_called_once()
 
 
 # --- Pause / stop dispatch tests ---
@@ -879,6 +1133,33 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     # sync leader: still advertises PAUSE
     airplay_player._attr_group_members = ["test_player", "child"]
     assert PlayerFeature.PAUSE in airplay_player.supported_features
+
+
+def test_bridged_player_advertises_announcements_only_while_streaming(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A Sendspin-bridged player advertises PLAY_ANNOUNCEMENT only while streaming.
+
+    The bridge's live stream is a regular AirPlayStream the clip mixes into, so
+    the feature stays available then. An idle bridged player must not advertise
+    it - a dedicated announcement session would fight the bridge for the
+    device, so those announcements keep their existing routing.
+    """
+    bridge_manager = cast("AirPlayProvider", airplay_player.provider).bridge_manager
+    with patch.object(bridge_manager, "get_bridge", return_value=None):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    streaming_bridge = MagicMock(owns_airplay_stream=True)
+    with patch.object(bridge_manager, "get_bridge", return_value=streaming_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    idle_bridge = MagicMock(owns_airplay_stream=False)
+    with patch.object(bridge_manager, "get_bridge", return_value=idle_bridge):
+        assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+        # ... but a configured-yet-idle bridge never hides the feature while the
+        # player runs its own session-backed stream (playing over AirPlay itself)
+        airplay_player.stream = MagicMock(running=True, session=MagicMock())
+        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+        airplay_player.stream = None
 
 
 @pytest.mark.asyncio
@@ -1028,7 +1309,7 @@ def _make_playing_leader(player_id: str = "leader") -> AirPlayPlayer:
     leader._attr_playback_state = PlaybackState.PLAYING
     stream = MagicMock()
     stream.running = True
-    stream.session = MagicMock()
+    stream.session = MagicMock(parked=False)
     leader.stream = stream
     return leader
 
@@ -1042,7 +1323,7 @@ def _attach_running_session(player: AirPlayPlayer, sync_clients: list[AirPlayPla
     """Attach a mock running stream whose session carries the given members."""
     stream = MagicMock()
     stream.running = True
-    stream.session = MagicMock()
+    stream.session = MagicMock(parked=False)
     stream.session.sync_clients = sync_clients
     player.stream = stream
 
@@ -1361,6 +1642,26 @@ async def test_set_members_adds_the_child_to_the_running_session() -> None:
     assert leader.group_members == ["leader", "child"]
 
 
+def test_live_session_members_reports_who_the_session_actually_feeds() -> None:
+    """Group membership outlives the session, so only the session itself can answer."""
+    leader = _make_playing_leader()
+    leader._attr_group_members = ["leader", "child"]
+    # the session dropped the child (e.g. its receiver never answered our clock)
+    _attach_running_session(leader, [leader])
+
+    assert leader.live_session_members == ["leader"]
+
+    # no session means nobody is being rendered with, whatever the group says
+    stream = cast("MagicMock", leader.stream)
+    stream.running = False
+    assert leader.live_session_members == []
+    stream.running = True
+    stream.session = None
+    assert leader.live_session_members == []
+    leader.stream = None
+    assert leader.live_session_members == []
+
+
 @pytest.mark.asyncio
 async def test_set_members_warns_when_the_leader_has_no_session(
     caplog: pytest.LogCaptureFixture,
@@ -1378,6 +1679,124 @@ async def test_set_members_warns_when_the_leader_has_no_session(
 
     assert leader.group_members == ["leader", "child"]
     assert "no stream session to join" in caplog.text
+
+
+def _attach_live_stream(player: AirPlayPlayer, session: AirPlayStreamSession) -> MagicMock:
+    """Attach a mock stream that is connected and fed by the given session."""
+    stream = MagicMock()
+    stream.running = True
+    stream.connected = True
+    stream.session = session
+    stream.send_cli_command = AsyncMock(return_value=True)
+    stream.stop = AsyncMock()
+    player.stream = stream
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_play_after_ungrouping_a_parked_group_resumes_via_the_queue() -> None:
+    """
+    Breaking a parked group up leaves the remaining player alone with the park.
+
+    Its binary is held at standby with nothing being fed, so the resume still has
+    to re-anchor through the queue: ACTION=PLAY carries no anchor and would
+    report playback over silence.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    players = _players_mock(leader)
+    players.get_player.side_effect = lambda player_id: {"leader": leader, "child": child}.get(
+        player_id
+    )
+    players.get_active_queue.return_value = MagicMock(queue_id="leader")
+    resume_queue = AsyncMock()
+    cast("MagicMock", leader.mass).player_queues.resume = resume_queue
+
+    await leader.pause()
+    await leader.set_members(player_ids_to_remove=["child"])
+    leader_stream.send_cli_command.reset_mock()
+    await leader.play()
+
+    # the removal stops only the child; the leader keeps its parked session
+    child_stream.stop.assert_awaited_once()
+    leader_stream.stop.assert_not_awaited()
+    assert leader.group_members == []
+    assert session.sync_clients == [leader]
+    assert session.parked is True
+    resume_queue.assert_awaited_once_with("leader", fade_in=False)
+    leader_stream.send_cli_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_leader_stepping_out_alone_keeps_the_session_for_the_others() -> None:
+    """
+    A leader that only removes itself hands the live session to the members left behind.
+
+    The leader is not asked to take the others with it, so tearing the session
+    down here would cut off members that are still supposed to be playing.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    leader._attr_playback_state = PlaybackState.PLAYING
+    child._attr_playback_state = PlaybackState.PLAYING
+    lookup = {"leader": leader, "child": child}
+    for player in (leader, child):
+        players = _players_mock(player)
+        players.get_player.side_effect = lookup.get
+        players.iter_players.return_value = [leader, child]
+
+    await leader.set_members(player_ids_to_remove=["leader"])
+
+    leader_stream.stop.assert_awaited_once()
+    child_stream.stop.assert_not_awaited()
+    assert session.sync_clients == [child]
+    assert leader.group_members == []
+    # nothing claims the remaining member anymore: its caller picks the new leader
+    assert child.synced_to is None
+
+
+@pytest.mark.asyncio
+async def test_ungroup_on_a_sync_leader_dissolves_the_whole_group() -> None:
+    """
+    Ungrouping a sync leader must release its members, not just the leader itself.
+
+    A leader lists itself in group_members, so the default ungroup asks to remove
+    the leader AND every member in one call.
+    """
+    leader = _make_idle_player("leader")
+    child = _make_idle_player("child")
+    session = AirPlayStreamSession(
+        MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
+    )
+    leader_stream = _attach_live_stream(leader, session)
+    child_stream = _attach_live_stream(child, session)
+    leader._attr_group_members = ["leader", "child"]
+    leader._attr_playback_state = PlaybackState.PLAYING
+    child._attr_playback_state = PlaybackState.PLAYING
+    lookup = {"leader": leader, "child": child}
+    for player in (leader, child):
+        players = _players_mock(player)
+        players.get_player.side_effect = lookup.get
+        players.iter_players.return_value = [leader, child]
+
+    await leader.ungroup()
+
+    assert leader.group_members == []
+    leader_stream.stop.assert_awaited_once()
+    child_stream.stop.assert_awaited_once()
+    assert session.sync_clients == []
 
 
 # --- Device password ---

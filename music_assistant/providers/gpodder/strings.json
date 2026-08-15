@@ -34,9 +34,6 @@
         "gpodder": "gpodder / opodsync server",
         "nextcloud": "Nextcloud (nextcloud-gpodder)"
       }
-    },
-    "nc_approve": {
-      "label": "Open the link, log in to Nextcloud and grant access to Music Assistant, then continue. This page waits for your approval."
     }
   },
   "setup_flow": {

@@ -32,6 +32,28 @@ def test_send_show_dashboard_happy_path() -> None:
         DASHBOARD_NAMESPACE,
         {"type": "show_dashboard", "url": "https://mass.example.com?path=%2Fparty"},
     )
+    # a running session is reused by default, so the device does not chime again
+    launch_app = chromecast.socket_client.receiver_controller.launch_app
+    assert launch_app.call_args.kwargs["force_launch"] is False
+
+
+def test_send_show_dashboard_forwards_force_launch() -> None:
+    """A forced launch starts a new session even when the receiver reports the app running."""
+    chromecast = MagicMock()
+    chromecast.name = "Living Room TV"
+    chromecast.socket_client.app_namespaces = {DASHBOARD_NAMESPACE}
+
+    def _launch_app(
+        _app_id: str, *, callback_function: Callable[[bool, Any], None], **_kwargs: Any
+    ) -> None:
+        callback_function(True, None)
+
+    chromecast.socket_client.receiver_controller.launch_app.side_effect = _launch_app
+
+    send_show_dashboard(chromecast, "https://mass.example.com?path=%2Fparty", force_launch=True)
+
+    launch_app = chromecast.socket_client.receiver_controller.launch_app
+    assert launch_app.call_args.kwargs["force_launch"] is True
 
 
 def test_send_show_dashboard_launch_failure_raises() -> None:

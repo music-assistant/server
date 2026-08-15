@@ -223,6 +223,13 @@ class AirPlayProvider(PlayerProvider):
         self._set_pyatv_log_level()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+        # Shared audible instants for in-flight announcements, keyed by
+        # (group-or-leader player id, render key) -> unix ms. The controller
+        # forwards a group-entity announcement to every member concurrently;
+        # each call arms its own member and reuses the instant the first call
+        # planned, so all rooms render the clip in sync (managed by
+        # announce.py, pruned as plans pass).
+        self._announce_plans: dict[tuple[str, str], int] = {}
 
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)

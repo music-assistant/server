@@ -265,6 +265,54 @@ Remote access enables users to connect to their Music Assistant instance from an
    - Responses and events sent back through data channel
    - Authentication and authorization work identically to local WebSocket
 
+### Data Channels
+
+A single remote session multiplexes several WebRTC data channels over one peer connection.
+The gateway routes each incoming channel by its label through a label -> handler table, with
+two kinds of handlers:
+
+- **Bridged**: the channel is pumped both ways to a local WebSocket
+  - `sendspin`: the built-in Sendspin server (web player)
+  - `live_announcement`: the live announcement route on the local webserver
+- **Served in-process**: handled by the gateway itself, without a local WebSocket
+  - `http_proxy`: proxied HTTP requests (album art and other assets)
+
+When one of these channels or its local WebSocket closes, only that channel is torn down and
+the session stays up.
+
+The client's own API channel has no fixed label: the **first** channel with a label the server
+does not recognise becomes the API channel (the frontend labels it `ma-api`) and is bridged to
+`/ws`. Any **later** unrecognised label is refused, since taking it for a second API channel
+would replace the live bridge and break the session. The API channel shares its lifetime with
+the session: when it or its local WebSocket closes, the whole session is torn down.
+
+Proxied HTTP requests are answered on the channel they arrived on. That is what keeps older
+clients working: they send `http-proxy-request` over `ma-api` and get the response back there,
+so the gateway needs no version negotiation of its own.
+
+The reply is framed to suit that channel. On `ma-api` it is one JSON message with the body
+hex-encoded, which costs about 2.7x the image once the oversized-message chunking below is
+applied on top. `http_proxy` carries nothing else, so there the reply is a JSON header
+(`type`, `id`, `status`, `headers`, `size`) followed by the body as raw binary messages — the
+image costs its own size and no more. Those binary messages carry no request id, so the
+gateway holds the channel for a whole reply: replies go out one at a time rather than
+interleaving, which a channel that sends one message at a time would do anyway.
+
+`ma-api` and `http_proxy` size their bulk frames to the channel's `max_message_size`, the lower of
+our own 256 KiB ceiling and what the peer advertises in its SDP — and libdatachannel assumes
+only 64 KiB when it advertises nothing. On `http_proxy` that bounds the binary body frames. On
+`ma-api` any message over 64 KiB — or over the cap, whichever is lower — is split into
+`__chunk__` frames (`id`, `seq`, `count`, `b64`) the client reassembles by group id. A client
+therefore has to expect chunking well before the cap: pieces are 64 KiB by preference, sized
+down only when the cap cannot fit that much base64 plus the frame's JSON envelope.
+
+**Adding a new label** is not backwards compatible by itself: servers from before the routing
+table mistake an unknown label for the API channel, which breaks the entire remote session
+instead of just the new feature. A client must therefore feature-detect on `schema_version`
+from `server_info` before opening one: `http_proxy` requires `API_SCHEMA_VERSION >= 49`. Bump
+`API_SCHEMA_VERSION` ([constants.py](../../constants.py)) when adding a label and gate the
+client on the new value.
+
 ### ICE Servers (STUN/TURN)
 
 NAT traversal is critical for WebRTC connections. Music Assistant uses:

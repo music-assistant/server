@@ -13,9 +13,10 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
     ProviderUnavailableError,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import create_safe_string
-from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary
+from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.controllers.tasks.context import (
@@ -68,6 +69,11 @@ class RadioController(MediaControllerBase[Radio]):
             f"music/{api_base}/radio_versions", self.versions, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
+            f"music/{api_base}/radio_tracks",
+            self.radio_tracks,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/export_radios", self.export_radios, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
@@ -82,10 +88,39 @@ class RadioController(MediaControllerBase[Radio]):
         query = f"""
         SELECT
             {self._summary_base_columns()},
+            {self.db_table}.is_dynamic,
             json_extract({self.db_table}.metadata, '$.description') AS description,
             {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table}"""
         return query, {}
+
+    async def radio_tracks(self, item_id: str, provider_instance_id_or_domain: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station.
+
+        :param item_id: The provider (or library) item id of the station.
+        :param provider_instance_id_or_domain: The provider instance id or domain the
+            item id belongs to ("library" for a library item).
+        """
+        radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        return await self.dynamic_tracks(radio)
+
+    async def dynamic_tracks(self, radio: Radio) -> list[Track]:
+        """
+        Return a fresh batch of tracks for an already resolved dynamic radio station.
+
+        :param radio: The dynamic station to fetch the next batch for.
+        """
+        if not radio.is_dynamic:
+            raise UnsupportedFeaturedException(f"{radio.name} is not a dynamic radio station")
+        provider_instance_id_or_domain, item_id = (
+            self._select_provider_id(radio)
+            if radio.provider == "library"
+            else (radio.provider, radio.item_id)
+        )
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
+        return await cast("MusicProvider", provider).get_dynamic_radio_tracks(item_id)
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
@@ -136,6 +171,9 @@ class RadioController(MediaControllerBase[Radio]):
     ) -> list[Radio]:
         """Return all versions of a radio station we can find on all providers."""
         radio = await self.get(item_id, provider_instance_id_or_domain)
+        if radio.is_dynamic:
+            # a dynamic station is its provider's own, so a same-named station is a different one
+            return []
         # perform a search on all provider(types) to collect all versions/variants
         all_versions = {
             prov_item.item_id: prov_item
@@ -201,6 +239,9 @@ class RadioController(MediaControllerBase[Radio]):
         """
         if db_radio.provider != "library":
             return  # Matching only supported for database items
+        if db_radio.is_dynamic:
+            # matching a dynamic station by name would link an unrelated radio stream to it
+            return
 
         # try to find match on all providers
         cur_provider_domains = {x.provider_domain for x in db_radio.provider_mappings}
@@ -234,6 +275,7 @@ class RadioController(MediaControllerBase[Radio]):
                     item.sort_name if item.sort_name is not None else "", True, True
                 ),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "is_dynamic": item.is_dynamic,
             },
         )
         # update/set external id lookup table
@@ -268,6 +310,7 @@ class RadioController(MediaControllerBase[Radio]):
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
+                "is_dynamic": update.is_dynamic,
             },
         )
         # update/set external id lookup table
@@ -286,6 +329,7 @@ class RadioController(MediaControllerBase[Radio]):
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
         """Parse a raw summary db row into a RadioSummary object."""
         item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item.is_dynamic = bool(db_row["is_dynamic"])
         item.metadata.description = db_row["description"]
         return item
 

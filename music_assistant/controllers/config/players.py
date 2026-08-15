@@ -50,6 +50,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_EXPOSE_PLAYER_TO_HA,
@@ -581,14 +582,16 @@ class PlayerConfigMixin:
             # Player.__init__ where the type can still be a transient class default.
             # Genuine type changes are persisted by update_state after registration.
             return
-        # config does not yet exist, create a default one
+        # config does not yet exist, create a default one.
+        # the name is stored as the default name only: a stored (custom) name means
+        # the user renamed the player and must keep shadowing the default name.
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
             values={},
             provider=provider,
             player_id=player_id,
             enabled=enabled,
-            name=name,
+            name=None,
             default_name=name,
             player_type=player_type,
         )
@@ -655,6 +658,7 @@ class PlayerConfigMixin:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
                     CONF_ENTRY_OUTPUT_CODEC,
+                    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]

@@ -623,6 +623,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_orphaned_disabled_protocol_configs(data):
         changed = True
 
+    # Clear the stored name of players that were never renamed, so an updated default
+    # name is no longer shadowed by the auto-generated name stored at creation time.
+    # TODO: remove after 2.12 release
+    if _migrate_unrenamed_player_names(data):
+        changed = True
+
     return changed
 
 
@@ -1413,6 +1419,31 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
             changed = True
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_unrenamed_player_names(data: dict[str, Any]) -> bool:
+    """
+    Clear the stored name of player configs that hold the default name verbatim.
+
+    Player configs used to store the name a player was created with as both the custom
+    and the default name, which makes a never-renamed player indistinguishable from a
+    renamed one and lets the creation-time name shadow every later default name.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        # a config without a default name would be left without any name at all
+        if not (default_name := player_cfg.get("default_name")):
+            continue
+        if player_cfg.get("name") != default_name:
+            continue
+        player_cfg["name"] = None
+        changed = True
     return changed
 
 

@@ -21,7 +21,7 @@ import asyncio
 import time
 from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
@@ -91,10 +91,10 @@ BRIDGE_COLD_CONNECT_BUDGET_MS: int = 2000
 
 # Lead (ms) reported to Sendspin so it schedules the first chunk that far ahead
 # of the instant it wants audible. It has to cover getting the transport ready
-# plus the binary's own clock-verification floor, which the anchor can never
-# undercut -- a shorter lead makes the anchor land past the first chunks and
-# their audio is dropped. A cold start adds its connect budget on top; a kept,
-# already-connected CLI pays no connect, leaving only the floor.
+# plus the join floor the anchor can never undercut -- a shorter lead makes the
+# anchor land past the first chunks and their audio is dropped. A cold start
+# adds its connect budget on top; a kept, already-connected CLI pays no connect,
+# leaving only the floor.
 BRIDGE_COLD_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS + BRIDGE_COLD_CONNECT_BUDGET_MS
 BRIDGE_WARM_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
 
@@ -140,6 +140,10 @@ BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
 # which is typically absent from mDNS for far longer than the first. Once they
 # run out the player stays out and idle.
 BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
+
+# Player state fields that mean the AirPlay side moved the volume or the mute, so
+# the bridge role's copy of it has to follow.
+_VOLUME_STATE_FIELDS: frozenset[str] = frozenset({"volume_level", "volume_muted"})
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -428,6 +432,7 @@ class SendspinAirPlayBridge:
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
                 initial_volume=self.airplay_player.volume_level or 25,
+                initial_muted=bool(self.airplay_player.volume_muted),
             )
             self._bridge_role.setup_audio_requirements()
             self._refresh_bridge_timing()
@@ -450,6 +455,22 @@ class SendspinAirPlayBridge:
                 self._bridge_role = None
 
         self.logger.debug("Sendspin bridge stopped for %s", self.airplay_player.display_name)
+
+    def sync_role_volume_state(self) -> None:
+        """
+        Adopt the AirPlay player's volume and mute into the bridge role.
+
+        The role is what the visible Sendspin player reports, so without this a
+        change made on the AirPlay side -- the device's own volume feedback, or a
+        mute released when a stream starts -- would leave the parent showing a
+        level and mute state the speaker is not at.
+        """
+        if not self._bridge_role:
+            return
+        self._bridge_role.update_player_state(
+            volume=self.airplay_player.volume_level,
+            muted=bool(self.airplay_player.volume_muted),
+        )
 
     def stop_streaming(self) -> None:
         """
@@ -653,7 +674,6 @@ class SendspinAirPlayBridge:
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        self.airplay_player.sync_volume_level()
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
             "Bridge writer started for %s, awaiting first chunk",
@@ -731,6 +751,10 @@ class SendspinAirPlayBridge:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
             self._use_shared_ptp = self._resolve_shared_ptp()
+            # Connecting is what re-sends VOLUME= to the device, so this is the one
+            # place the sync belongs: a kept process never reaches here and would
+            # otherwise be left playing at a volume nobody told it about.
+            self.airplay_player.sync_volume_state()
             await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:
@@ -760,10 +784,11 @@ class SendspinAirPlayBridge:
         """
         Flush a kept, still-connected stream and resume it on the new track.
 
-        The stream is flushed in place (receiver + ring + stdin drained) while
-        its connection stays alive, then the new PCM is fed into the SAME cli
-        stdin and re-anchored with a single START. Returns True once resumed; any
-        failure returns False so the caller falls back to a cold restart.
+        The stream is flushed in place (the binary's input ring and stdin
+        drained) while its connection stays alive, then the new PCM is fed into
+        the SAME cli stdin and re-anchored with a single START. Returns True once
+        resumed; any failure returns False so the caller falls back to a cold
+        restart.
 
         :param stream: The kept AirPlayStream to flush and resume.
         """
@@ -802,9 +827,13 @@ class SendspinAirPlayBridge:
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
         if readiness is ClockReadiness.STALLED:
-            # A bridged device that never answered our clock renders silence,
-            # and unlike a group member it is the whole playback: say so where
-            # the anchor is decided rather than letting it look anchored.
+            # Anchored anyway, like a group start and unlike a late joiner: a
+            # joiner is dropped because the session plays on without it, while
+            # here it would stop the speaker - and a stall is not evidence
+            # enough for that. The binary reports it as a diagnosis rather than
+            # a verdict (a receiver that begins probing late still comes good)
+            # and re-arms that reporting per cycle, so a warm re-anchor is
+            # reading the cycle before it.
             self.logger.warning(
                 "%s never answered the server's PTP clock, so this stream will be silent "
                 "until it does; anchoring anyway",
@@ -861,8 +890,9 @@ class SendspinAirPlayBridge:
             )
 
         # Always a join: the Sendspin timeline is the group's, never the bridge's
-        # to set, so the binary must hold its ack until the receiver clock
-        # verification resolves and report the instant it really scheduled.
+        # to set, so the binary reports the instant it really scheduled - holding
+        # its ack until the receiver clock verification resolves whenever that
+        # verification is armed.
         acked_adjusted = await stream.start(commanded_ms, join=True)
 
         # The ack can be held for seconds, so re-check ownership before touching
@@ -1493,6 +1523,17 @@ class SendspinAirPlayBridge:
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     """Manages Sendspin bridges for all AirPlay players."""
 
+    def __init__(self, provider: AirPlayProvider) -> None:
+        """
+        Initialize the bridge manager.
+
+        :param provider: The AirPlay provider owning the bridged players.
+        """
+        super().__init__(provider)
+        self._unsubs.append(
+            self.mass.players.subscribe_player_state_update(self._on_player_state_updated)
+        )
+
     def resolve_shared_ptp(self, bridge: SendspinAirPlayBridge) -> bool:
         """
         Return whether a bridge's next cli process attaches to the shared PTP clock.
@@ -1588,3 +1629,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     def _should_have_bridge(self, player: Player) -> bool:
         """Return whether an AirPlay player should have a Sendspin bridge."""
         return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
+
+    def _on_player_state_updated(
+        self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Feed an AirPlay player's own volume/mute changes back into its bridge role."""
+        if not changed_values.keys() & _VOLUME_STATE_FIELDS:
+            return
+        if bridge := self._bridges.get(updated_player.player_id):
+            bridge.sync_role_volume_state()

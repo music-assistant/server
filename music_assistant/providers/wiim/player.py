@@ -89,6 +89,7 @@ class WiimPlayer(Player):
 
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
+        self._ma_stream_uri: str | None = None
 
     # --- Lifecycle ---
 
@@ -148,9 +149,14 @@ class WiimPlayer(Player):
             source_id=media.source_id,
             clear_all=True,
         )
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+        self._ma_stream_uri = stream_url
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except (WiimDeviceException, WiimRequestException) as err:
+            # The device never took our stream, so the guard must not outlive the attempt.
+            self._ma_stream_uri = None
             self._handle_command_error("play_media", err)
             return
         self._update_ma_state_from_sdk_cache()
@@ -197,6 +203,7 @@ class WiimPlayer(Player):
         """Stop command."""
         self._attr_active_source = None
         self._attr_current_media = None
+        self._ma_stream_uri = None
         try:
             await self.device.async_stop()
         except (WiimDeviceException, WiimRequestException) as err:
@@ -501,7 +508,12 @@ class WiimPlayer(Player):
         except (WiimDeviceException, WiimRequestException) as err:
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
-        if (media := self.device.current_media) is not None and media.position is not None:
+        media = self.device.current_media
+        device_uri = media.uri if media else None
+        if device_uri and device_uri == self._ma_stream_uri:
+            self._ma_stream_uri = None
+        # The device reports its previous content's position until it loads our stream URI.
+        if self._ma_stream_uri is None and media is not None and media.position is not None:
             self._attr_elapsed_time = media.position
             self._attr_elapsed_time_last_updated = time.time()
         self._update_ma_state_from_sdk_cache()
