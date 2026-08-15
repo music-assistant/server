@@ -362,3 +362,11 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return authenticated WebDAV URL for a chapter file."""
         return self._build_authenticated_url(relative_path)
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the WebDAV server can be reached."""
+        # base_path is the server url here, so the parent's directory stat cannot answer this
+        await webdav_test_connection(
+            self._session, self.base_url, self.username, self.password, timeout=10
+        )
+        return True
