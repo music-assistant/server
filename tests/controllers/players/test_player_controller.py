@@ -2819,6 +2819,23 @@ class TestFakeMuteInGroup:
         players["leader"].update_state()
         assert players["leader"].state.volume_level == 55
 
+    async def test_a_nudge_after_unmuting_steps_from_the_restored_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Unmuting hands the next nudge the volume it restored, not the muted 0."""
+        controller, players = self._make_synced_pair(mock_mass)
+        controller.config = _volume_step_config(5)
+        await controller.cmd_volume_mute("member", True)
+        players["leader"].update_state(signal_event=False)
+        # a level set while muted never reaches the member
+        await controller.cmd_volume_set("member", 60)
+
+        await controller.cmd_volume_mute("member", False)
+        await controller.cmd_volume_up("member")
+
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 55
+
     async def test_group_volume_down_keeps_a_muted_member_muted(self, mock_mass: MagicMock) -> None:
         """Turning a group down leaves a single muted member silent, at its own volume."""
         controller, players = self._make_synced_pair(mock_mass)

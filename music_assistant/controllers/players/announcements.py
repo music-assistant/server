@@ -126,7 +126,9 @@ class AnnouncementsMixin:
 
         async def _handle_cmd_stop(self, player_id: str) -> None: ...
 
-        async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None: ...
+        async def _handle_cmd_volume_set(
+            self, player_id: str, volume_level: int, *, record_target: bool = True
+        ) -> None: ...
 
         async def _handle_cmd_volume_mute(
             self, player: Player, mute_control: str, muted: bool

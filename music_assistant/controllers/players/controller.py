@@ -824,7 +824,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             self._record_volume_target(player, volume_level)
             self._invalidate_group_volume_snapshot(player_id)
         async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
-            await self._handle_cmd_volume_set(player_id, volume_level)
+            await self._handle_cmd_volume_set(player_id, volume_level, record_target=False)
 
     @api_command("players/cmd/volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -3638,9 +3638,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # take the volume lock of the member itself, so a group volume change and an
         # individual volume command for that member can not overtake one another
         async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
-            await self._handle_cmd_volume_set(player_id, volume_level)
+            await self._handle_cmd_volume_set(player_id, volume_level, record_target=False)
 
-    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+    async def _handle_cmd_volume_set(
+        self, player_id: str, volume_level: int, *, record_target: bool = True
+    ) -> None:
         """
         Handle Player volume set command.
 
@@ -3648,6 +3650,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         :param player_id: player_id of the player to handle the command.
         :param volume_level: logical volume level (0..100) to set on the player.
+        :param record_target: Set to False when the caller already recorded the level as
+            the base for the next volume nudge, before it waited for the volume lock.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
@@ -3685,6 +3689,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         else:
             # always reset fake mute when controlling volume
             player.extra_data.pop(ATTR_FAKE_MUTE, None)
+
+        if record_target:
+            self._record_volume_target(player, volume_level)
 
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)
