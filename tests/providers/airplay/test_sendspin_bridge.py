@@ -3181,3 +3181,24 @@ def test_a_volume_set_through_the_bridge_settles_in_one_pass() -> None:
 
     assert role.get_player_volume() == 70
     client._signal_event.assert_not_called()
+
+
+def test_a_volume_from_the_role_is_not_resolved_a_second_time() -> None:
+    """
+    A volume the role delivers reaches the speaker as-is, not via the controller.
+
+    The level arrives on the device's own scale, already resolved and scaled where
+    it came from Music Assistant, so sending it back through the controller would
+    resolve it a second time and return over the same route.
+    """
+    bridge, role = _make_bridge_with_role(volume=40)
+    player = cast("MagicMock", bridge.airplay_player)
+    players_ctrl = cast("MagicMock", bridge.mass).players
+
+    role.set_player_volume(60)
+    role.set_player_mute(True)
+
+    player.volume_set.assert_called_once_with(60)
+    player.volume_mute.assert_called_once_with(True)
+    players_ctrl.cmd_volume_set.assert_not_called()
+    players_ctrl.cmd_volume_mute.assert_not_called()

@@ -175,7 +175,12 @@ class BridgePlayerRole(Role):
         return self._muted
 
     def set_player_volume(self, volume: int) -> None:
-        """Set volume and notify bridge."""
+        """
+        Set volume and notify bridge.
+
+        The level is on the scale the role reports, and is stored, announced to
+        the client and handed to the bridge unchanged.
+        """
         self._volume = volume
         self._emit_volume_changed()
         if self._on_volume_change_cb:
