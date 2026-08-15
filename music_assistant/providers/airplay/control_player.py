@@ -1187,6 +1187,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._mrp_device = None
             self._mrp_state_listener = None
             self._mrp_push_listener = None
+            self._clear_external_state()
         else:
             return
         if exception:
@@ -1206,7 +1207,20 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_state_listener = None
         self._mrp_push_listener = None
         device.close()
+        self._clear_external_state()
         self._schedule_connection()
+
+    def _clear_external_state(self) -> None:
+        """Drop the playback snapshot observed over a closed MRP connection."""
+        if self._external_state_blocked or self._attr_active_source is None:
+            return
+        # Without a live connection the snapshot can no longer be updated, and the
+        # last one is typically an app held at paused: leaving it in place keeps
+        # transport commands aimed at that app instead of the Music Assistant queue.
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
+        self.update_state()
 
     def _notify_companion_state_change(self) -> None:
         """Notify a wired-up observer that the Companion connection state changed."""
