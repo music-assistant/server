@@ -50,6 +50,7 @@ from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.providers.sync_group.constants import CONF_ALLOWED_MEMBERS
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
 from music_assistant.providers.universal_player.constants import (
+    CONF_CREATED_AT,
     CONF_DEVICE_IDENTIFIERS,
     CONF_DEVICE_INFO,
 )
@@ -63,8 +64,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 # Config value keys that are bookkeeping of the universal player wrapper itself
-# (protocol links and device-identity caches) and must never be carried over
-# when a native player replaces a universal player.
+# (protocol links, device-identity caches and its creation moment) and must never
+# be carried over when a native player replaces a universal player, or when one
+# universal player absorbs another.
 UNIVERSAL_PLAYER_INTERNAL_CONF_KEYS = (
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PROTOCOL_PARENT_ID,
@@ -73,6 +75,7 @@ UNIVERSAL_PLAYER_INTERNAL_CONF_KEYS = (
     CONF_DEVICE_INFO,
     CONF_CACHED_ARP_MAC,
     CONF_REPORTED_MAC,
+    CONF_CREATED_AT,
 )
 
 
@@ -548,7 +551,7 @@ class ProtocolLinkingMixin:
     def _find_matching_universal_player(self, protocol_player: Player) -> Player | None:
         """Find an existing universal player that matches this protocol player."""
         for player in self._players.values():
-            if player.provider.domain != "universal_player":
+            if not isinstance(player, UniversalPlayer):
                 continue
             if self._identifiers_match(protocol_player, player, ""):
                 return player
@@ -730,8 +733,8 @@ class ProtocolLinkingMixin:
         from a different protocol (e.g., DLNA-based universal player now matches
         AirPlay-based universal player because they share the same MAC address).
 
-        The universal player with more protocol links absorbs the other one. Only one merge
-        is performed per call; re-evaluation will catch cascading merges.
+        The oldest universal player absorbs the other one. Only one merge is performed
+        per call; re-evaluation will catch cascading merges.
         """
         if not (match := self._find_mergeable_universal_player(universal_player)):
             return
@@ -798,25 +801,37 @@ class ProtocolLinkingMixin:
         """
         Return which of the two universal players absorbs the other, as (keeper, absorbed).
 
-        The player with the most protocol links wins.
+        The oldest player wins, on a tie the one with the most protocol links.
 
         :param universal_player: The universal player the merge was triggered for.
         :param other_player: The universal player it matched with.
         """
-        len_u = len(universal_player.linked_output_protocols)
-        len_p = len(other_player.linked_output_protocols)
-        if len_u > len_p:
-            return universal_player, other_player
-        if len_u < len_p:
-            return other_player, universal_player
-        # On ties, fall back to a deterministic tiebreaker on player_id so the merge outcome
-        # is stable across server restarts. Without this, which UniversalPlayer "wins" depends
-        # on iteration order of self._players.values(), which can shift between runs and causes
-        # downstream player_id reshuffling (and broken entity bindings in consumers like the
-        # Home Assistant MA integration).
-        if universal_player.player_id < other_player.player_id:
+        # The outcome must be stable across server restarts. Without that, which
+        # UniversalPlayer "wins" depends on iteration order of self._players.values(),
+        # which can shift between runs and causes downstream player_id reshuffling
+        # (and broken entity bindings in consumers like the Home Assistant MA integration).
+        if self._merge_rank(universal_player) <= self._merge_rank(other_player):
             return universal_player, other_player
         return other_player, universal_player
+
+    def _merge_rank(self, universal_player: Player) -> tuple[int, int, str]:
+        """
+        Return the sort key of a universal player in a merge, lowest wins.
+
+        Age comes first because the keeper's player id is the one that survives, and the
+        oldest player is the one API consumers have been bound to the longest. The links
+        of the absorbed player move over either way, so nothing is lost by keeping the
+        smaller one. A player from before player ids were minted has no stored moment and
+        counts as the oldest, which is exactly what it is.
+        """
+        created_at = self.mass.config.get(
+            f"{CONF_PLAYERS}/{universal_player.player_id}/values/{CONF_CREATED_AT}", 0
+        )
+        return (
+            created_at if isinstance(created_at, int) else 0,
+            -len(universal_player.linked_output_protocols),
+            universal_player.player_id,
+        )
 
     def _merge_universal_players(self, keep: UniversalPlayer, remove: UniversalPlayer) -> None:
         """
@@ -913,33 +928,24 @@ class ProtocolLinkingMixin:
             return
 
         # Delegate to provider - it handles locking, create/update decision, etc.
-        universal_player = await universal_provider.ensure_universal_player_for_protocols(
+        # It reports which universal player each protocol player belongs to, as a
+        # device with several instances of one protocol domain gets more than one.
+        assignments = await universal_provider.ensure_universal_players_for_protocols(
             protocol_players
         )
 
-        if not universal_player:
-            return
+        # Link the protocols to their universal player (the controller manages
+        # cross-provider state), skipping players that were linked in the meantime.
+        by_universal_player: dict[str, list[Player]] = {}
+        for player in protocol_players:
+            if player.protocol_parent_id:
+                continue
+            if universal_player := assignments.get(player.player_id):
+                by_universal_player.setdefault(universal_player.player_id, []).append(player)
 
-        # Link the protocols to the universal player (controller manages cross-provider state)
-        # Filter out players that were already linked
-        # (e.g., via _add_protocol_to_existing_universal)
-        unlinked_players = [p for p in protocol_players if not p.protocol_parent_id]
-
-        # Split unlinked players: those that can join the main universal player
-        # vs those that got separate universal players (domain-duplicates)
-        for player in list(unlinked_players):
-            # Check if a separate universal player was created for this player
-            fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
-            separate_id = f"up{fallback_key}"
-            if separate_up := self.get_player(separate_id):
-                # Link to the separate universal player instead
-                self._add_protocol_link(separate_up, player, player.provider.domain)
-                player.refresh_state()
-                separate_up.refresh_state()
-                unlinked_players.remove(player)
-
-        self._link_protocols_to_universal(universal_player, unlinked_players)
-        universal_player.refresh_state()
+        for universal_player_id, players in by_universal_player.items():
+            if universal_player := self.get_player(universal_player_id):
+                self._link_protocols_to_universal(universal_player, players)
 
     def _try_link_protocols_to_native(self, native_player: Player) -> None:
         """Try to link protocol players to a native player."""
@@ -1097,7 +1103,7 @@ class ProtocolLinkingMixin:
 
         # only carry an actual user rename, not the auto-generated default name;
         # likewise a name on the native player only counts as a user override when
-        # it differs from the default name (fresh configs store name == default_name)
+        # it differs from the default name
         custom_name = source_raw.get("name")
         target_name = target_raw.get("name")
         target_has_custom_name = bool(target_name) and target_name != target_raw.get("default_name")
@@ -1542,13 +1548,17 @@ class ProtocolLinkingMixin:
                         parent_player.provider.domain == "universal_player"
                         and len(parent_player.linked_output_protocols) == 0
                     ):
-                        # No protocols left - remove universal player
+                        # No protocols left - the universal player has nothing to play
+                        # on. Its config is deliberately kept: the player id is opaque
+                        # and cannot be recreated, so deleting it here would orphan the
+                        # entities API consumers bound to it. Only an explicit removal
+                        # by the user deletes a universal player for good.
                         self.logger.info(
-                            "Universal player %s has no protocols left, removing",
+                            "Universal player %s has no protocols left",
                             parent_id,
                         )
                         self.mass.create_task(
-                            self.mass.players.unregister(parent_id, permanent=True)
+                            self.mass.players.unregister(parent_id, permanent=False)
                         )
                     else:
                         parent_player.refresh_state()
