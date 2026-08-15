@@ -2628,7 +2628,6 @@ class Player(ABC):
             return self.mass.players.scale_volume_from_device(
                 self.player_id, player_control.volume_level
             )
-        # the configured control is not (yet) registered, so its level is unknown
         return None
 
     @cached_property
@@ -2648,7 +2647,6 @@ class Player(ABC):
         # handle player control for mute if set
         if player_control := self.mass.players.get_player_control(mute_control):
             return player_control.volume_muted
-        # the configured control is not (yet) registered, so its state is unknown
         return None
 
     @cached_property
