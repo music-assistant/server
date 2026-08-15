@@ -50,13 +50,15 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
         run: |
+          # the Accept header must not end in "+json": gh then runs the response
+          # through its JSON handling, which fails on the binary client_id.bin
           mkdir -p widevine_cdm
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             "repos/music-assistant/appvars/contents/widevine_cdm_client/private_key.pem" \
             > widevine_cdm/private_key.pem
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             "repos/music-assistant/appvars/contents/widevine_cdm_client/client_id.bin" \
             > widevine_cdm/client_id.bin
       - name: Log in to the GitHub container registry
