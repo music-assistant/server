@@ -34,7 +34,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_NETWORK_SCAN
+from .constants import CONF_NETWORK_SCAN, CALLBACK_URL
 from .helpers import OpenHomeNotifyServer
 from .player import OpenHomePlayer
 
@@ -106,7 +106,7 @@ class OpenHomePlayerProvider(PlayerProvider):
         # relevant or leave out completely if not needed.
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
-        self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
+        self.mass.streams.unregister_dynamic_route(path = CALLBACK_URL, method = "NOTIFY")
         async with TaskManager(self.mass) as tg:
             for openhome_player in self.openhome_players.values():
                 tg.create_task(self._device_disconnect(openhome_player))

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
 
+from .constants import CALLBACK_URL
 
 class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
     """Notify server for async_upnp_client which uses the MA webserver."""
@@ -26,12 +27,12 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
         """Initialize."""
         self.mass = mass
         self.event_handler = UpnpEventHandler(self, requester)
-        self.mass.streams.register_dynamic_route("/notify", self._handle_request, method="NOTIFY")
+        self.mass.streams.register_dynamic_route(path=CALLBACK_URL, handler=self._handle_request, method="NOTIFY")
 
     @property
     def callback_url(self) -> str:
         """Return callback URL on which we are callable."""
-        return f"{self.mass.streams.base_url}/notify"
+        return f"{self.mass.streams.base_url}{CALLBACK_URL}"
 
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
