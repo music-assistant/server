@@ -390,8 +390,11 @@ async def _announce_with_session(
     finally:
         player._transitioning = False
         try:
-            # Whatever the wait above did not reach (a failed or cancelled
-            # announcement) still has to be restored while the session is up.
+            # Whatever the wait above did not reach (a cancelled announcement)
+            # still has to be restored while the session is up. A session that
+            # failed to START has already stopped itself, so there the restore
+            # only settles our own state and the device is corrected by the
+            # volume the next stream pushes.
             await _restore_member_volumes(prev_volumes)
         finally:
             if session is not None:
@@ -630,13 +633,14 @@ async def _restore_member_volumes(prev_volumes: dict[AirPlayPlayer, int]) -> Non
     afterwards it would just update our own state and leave the speaker at the
     announcement level until the next stream pushes the remembered one.
 
-    The mapping is consumed, so calling this again restores nothing.
+    An entry is dropped only once its member is restored, so a later call
+    covers exactly what this one did not reach.
 
     :param prev_volumes: The level each member carried before the announcement.
     """
-    while prev_volumes:
-        member, prev_volume = prev_volumes.popitem()
-        await member.volume_set(prev_volume)
+    for member in list(prev_volumes):
+        await member.volume_set(prev_volumes[member])
+        del prev_volumes[member]
 
 
 async def _no_announce_ack() -> tuple[int, int] | None:

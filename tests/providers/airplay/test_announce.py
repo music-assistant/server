@@ -361,26 +361,34 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_path_restores_the_volume_when_the_session_fails() -> None:
-    """A session that never gets going still hands the speaker back its own volume."""
+async def test_session_path_restores_the_volume_when_the_clip_is_cut_short() -> None:
+    """An announcement cancelled mid-clip hands the speaker back its own volume."""
     player = _make_player("solo")
     player.playback_state = PlaybackState.IDLE
     player.volume_level = 25
     player._get_sync_clients = MagicMock(return_value=[player])
     player._get_session_pcm_format = AsyncMock(return_value=AIRPLAY_PCM_FORMAT)
-    render = _make_render(duration=0.01)
+    render = _make_render(duration=30)
     player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
     events: list[str] = []
     player.volume_set = AsyncMock(side_effect=lambda level: events.append(f"volume={level}"))
 
     with patch.object(announce, "AirPlayStreamSession") as session_cls:
+        started = asyncio.Event()
         session = session_cls.return_value
-        session.start = AsyncMock(side_effect=RuntimeError("receiver refused the session"))
+        session.start = AsyncMock(side_effect=lambda _source: started.set())
         session.stop = AsyncMock(side_effect=lambda: events.append("stop"))
         session.start_time = 0.0
-        with pytest.raises(RuntimeError):
-            await announce.play_announcement(player, _make_announcement(), 60)
+        announcing = asyncio.create_task(
+            announce.play_announcement(player, _make_announcement(), 60)
+        )
+        # the session is up; the cancel lands in the clip wait that follows
+        await started.wait()
+        announcing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await announcing
 
+    # the session is still up here, so the restore reaches the receiver
     assert events == ["volume=60", "volume=25", "stop"]
 
 
