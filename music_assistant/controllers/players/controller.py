@@ -3686,6 +3686,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # a locked player stays silent, the volume it holds is the one
             # that gets restored once it is unmuted again
             volume_level = 0
+            # the lock may have been earned after the caller recorded the level it asked
+            # for, which is then not the level this player ends up at
+            record_target = True
         else:
             # always reset fake mute when controlling volume
             player.extra_data.pop(ATTR_FAKE_MUTE, None)
