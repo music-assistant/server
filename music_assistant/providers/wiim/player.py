@@ -12,7 +12,10 @@ from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 from wiim.models import WiimGroupRole
 
-from music_assistant.constants import create_sample_rates_config_entry
+from music_assistant.constants import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    create_sample_rates_config_entry,
+)
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -43,6 +46,10 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
+
+    # the device only pushes state changes, so a source it keeps reported as paused after
+    # the app released it is never corrected on its own.
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,

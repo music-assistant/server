@@ -1031,6 +1031,11 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("ambient_sounds", False),
 }
 
+# Seconds an external source may sit paused before we consider its session ended.
+# Kept generous because this is what a real pause is given before we stop presenting
+# the source as something the user can resume.
+EXTERNAL_PAUSE_IDLE_TIMEOUT: Final[int] = 60
+
 EXTERNAL_SOURCES: Final[set[str]] = {
     # list of sources that are definitely considered "external"
     # values are matched case-insensitive against the player's active_source

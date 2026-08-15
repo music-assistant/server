@@ -387,6 +387,12 @@ class Player(ABC):
     _attr_setup_reason: str | None = None
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
     _attr_underlying_player_id: str | None = None
+    # Seconds an external source may sit paused before its session is considered ended.
+    # Set this on players whose device keeps a source such as Spotify Connect loaded and
+    # paused after the app released it, offering nothing that tells an abandoned session
+    # apart from a real pause - time is then the only signal left. Leave at None for
+    # devices that report a source they no longer play as stopped by themselves.
+    _attr_external_pause_idle_timeout: int | None = None
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -417,6 +423,7 @@ class Player(ABC):
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.__active_mass_source: str | None = None
+        self.__external_pause_since: float | None = None
         self.__initialized = asyncio.Event()
         # Change-tracking internals for update_state:
         # - state_dirty forces a recalculation (state derived from other
@@ -1157,6 +1164,11 @@ class Player(ABC):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        if self._attr_external_pause_idle_timeout is not None:
+            # a timer that already fired lives on as a task under the same id,
+            # so both are needed to cover the pending and the running case
+            self.mass.cancel_timer(f"external_pause_{self.player_id}")
+            self.mass.cancel_task(f"external_pause_{self.player_id}")
         for callback in self._on_unload_callbacks:
             try:
                 callback()
@@ -1921,6 +1933,7 @@ class Player(ABC):
         for key in list(self._cache):
             if key not in _CONFIG_CACHED_PROPS:
                 del self._cache[key]
+        self.__expire_stale_external_pause()
         new_snapshot = self.__collect_input_snapshot()
         if (
             not force_update
@@ -1972,6 +1985,23 @@ class Player(ABC):
             self.mass.players.signal_player_state_update(
                 self, changed_values, media_position_jumped=media_position_jumped
             )
+
+    @final
+    def mark_external_source_ended(self) -> None:
+        """
+        Stop presenting the external source the device has loaded as something to resume.
+
+        Call this when the device makes clear that the session is gone, for example when
+        it refuses to resume playback. Normal queue handling takes over from there.
+        """
+        if (timeout := self._attr_external_pause_idle_timeout) is not None:
+            # the updates that follow rebuild the state from the device, which keeps
+            # reporting the very same source as paused, so backdating the pause is what
+            # keeps this applied
+            self.__external_pause_since = time.time() - timeout
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
 
     @final
     def set_current_media(  # noqa: PLR0913
@@ -3261,6 +3291,43 @@ class Player(ABC):
     def __ne__(self, other: object) -> bool:
         """Check inequality of two Player objects."""
         return not self.__eq__(other)
+
+    @final
+    def __external_source_active(self) -> bool:
+        """Return whether the source the player reports for itself is an external one."""
+        source = self._attr_active_source
+        if source is None or source == self.player_id:
+            return False
+        return self.mass.player_queues.get(source) is None
+
+    @final
+    def __expire_stale_external_pause(self) -> None:
+        """Report an external source that has been paused for a while as no longer active."""
+        if (timeout := self._attr_external_pause_idle_timeout) is None:
+            return
+        if (
+            self._attr_playback_state != PlaybackState.PAUSED
+            # while an output protocol renders the audio, MA owns playback and the
+            # source the device reports for itself is overruled anyway
+            or self.active_output_protocol not in (None, "native")
+            or not self.__external_source_active()
+        ):
+            self.__external_pause_since = None
+            return
+        if self.__external_pause_since is None:
+            self.__external_pause_since = time.time()
+        elif (time.time() - self.__external_pause_since) >= timeout:
+            self.mark_external_source_ended()
+            return
+        # nothing changes on the device side when the session goes stale, so there is no
+        # event to react to. Keep the check armed rather than relying on a single timer:
+        # an update that bails out early would otherwise consume it and leave the source
+        # paused for good.
+        self.mass.call_later(
+            timeout + 1,
+            self.update_state,
+            task_id=f"external_pause_{self.player_id}",
+        )
 
 
 __all__ = [
