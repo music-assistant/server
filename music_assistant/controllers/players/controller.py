@@ -816,11 +816,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param volume_level: volume level (0..100) to set on the player.
         """
         await self._handle_cmd_volume_set(player_id, volume_level)
-        # individual child volume change invalidates any cached group volume snapshot
+        # individual child volume change invalidates the cached group volume state
         # skip for group players since _handle_cmd_volume_set redirects those to
         # set_group_volume which creates/uses the snapshot itself
         if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
-            self._invalidate_group_volume_snapshot(player_id)
+            self._invalidate_group_volume_state(player_id)
 
     @api_command("players/cmd/volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -837,6 +837,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
         current_volume = self._volume_nudge_base(player) or 0
         new_volume = min(100, current_volume + self._get_volume_step(current_volume))
+        # claim the new level before handing the command on: cmd_volume_set may have to
+        # wait for the volume lock, and a nudge arriving meanwhile must not step from
+        # the level this one is already on its way to
+        self._record_volume_target(player, ATTR_VOLUME_TARGET, new_volume)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down", required_scope=Scope.PLAYERS_CONTROL)
@@ -854,6 +858,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
         current_volume = self._volume_nudge_base(player) or 0
         new_volume = max(0, current_volume - self._get_volume_step(current_volume))
+        self._record_volume_target(player, ATTR_VOLUME_TARGET, new_volume)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume", required_scope=Scope.PLAYERS_CONTROL)
@@ -2573,7 +2578,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
                     protocol_player.on_protocol_parent_updated(player, changed_values)
 
-    def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
+    def _invalidate_group_volume_state(self, player_id: str) -> None:
         """Clear the cached group volume state for all groups this player belongs to."""
         if not (player := self.get_player(player_id)):
             return
@@ -2597,19 +2602,24 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     def _volume_nudge_base(self, player: Player) -> int | None:
         """Return the volume level a volume nudge for the given player steps from."""
-        if (target := self._unexpired_volume_target(player, ATTR_VOLUME_TARGET)) is not None:
+        target = self._unexpired_volume_target(player, ATTR_VOLUME_TARGET)
+        if target is not None:
             return target
         return player.state.volume_level
 
     def _group_volume_nudge_base(self, group_player: Player) -> int | None:
         """Return the volume level a group volume nudge for the given group steps from."""
+        if not group_player.state.group_members:
+            # an ungrouped player is stepped through its own volume, so it is that
+            # volume the command lands on and that a following nudge steps from
+            return self._volume_nudge_base(group_player)
         target = self._unexpired_volume_target(group_player, ATTR_GROUP_VOLUME_TARGET)
         if target is not None:
             return target
         return group_player.state.group_volume
 
     def _unexpired_volume_target(self, player: Player, key: str) -> int | None:
-        """Return the volume level of a recent command, or None if there is no such command."""
+        """Return the volume level last commanded, or None once it is too old to trust."""
         if (target := player.extra_data.get(key)) is None:
             return None
         volume_level, issued_at = target
