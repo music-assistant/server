@@ -72,6 +72,10 @@ if TYPE_CHECKING:
 # and only the pending ack is answered with a failure.
 CLI_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
 CLI_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+# A receiver that wants a password challenges with 401. A 403 is a flat refusal
+# of the pairing handshake itself, which no password can satisfy, so it must not
+# be read as a verdict on one.
+CLI_STATUS_REFUSED: Final[int] = 403
 CLI_ERROR_START_FAILED: Final[str] = "start_failed"
 CLI_ERROR_FLUSH_FAILED: Final[str] = "flush_failed"
 CLI_ERROR_ANNOUNCE_FAILED: Final[str] = "announce_failed"
@@ -1817,6 +1821,8 @@ class AirPlayStream:
         timeout the callers already handle.
         """
         error = self._connect_error
+        if error and error.http_status == CLI_STATUS_REFUSED:
+            return self._connection_refused_error()
         if error and error.code == CLI_ERROR_AUTH_REQUIRED:
             return self._password_required_error()
         if error and error.code == CLI_ERROR_AUTH_FAILED:
@@ -1835,6 +1841,15 @@ class AirPlayStream:
             f"{self.player.display_name} requires a password. "
             "Run the setup for this player to enter it.",
             translation_key="password_required",
+        )
+
+    def _connection_refused_error(self) -> PlayerCommandFailed:
+        """Return the error for a device that declined the handshake outright."""
+        return PlayerCommandFailed(
+            f"{self.player.display_name} refused the connection. "
+            "Run the setup for this player to pair it again.",
+            translation_key="connection_refused",
+            translation_owner=self.player.translation_owner,
         )
 
     def _parse_error_status(self, line: str) -> None:
@@ -1874,13 +1889,20 @@ class AirPlayStream:
             self._announce_done.set()
             return
         self._connect_error = error
-        if error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED):
+        if (
+            error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED)
+            and error.http_status != CLI_STATUS_REFUSED
+        ):
             # The stored password is wrong, or the device demanded one we could
             # not supply (devices can enforce a password without announcing it -
             # e.g. an Apple TV with stale TXT records after the password was
             # enabled). Persist that so the player keeps offering its setup
             # action (across restarts) until a working password is entered,
             # instead of only failing at the next play attempt.
+            # A refusal is excluded: the binary reports one as an auth failure
+            # because it happens on the pairing leg, but the device turned the
+            # handshake away rather than judging a secret, and a player with no
+            # password would otherwise be left demanding one forever.
             self.player.set_password_invalid(True)
 
     def _parse_anchor_corrected(self, line: str) -> None:

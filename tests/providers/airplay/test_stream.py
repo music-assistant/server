@@ -3491,6 +3491,41 @@ async def test_auth_failed_surfaces_authentication_failed_error() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["auth_required", "auth_failed"])
+async def test_refused_connection_is_not_reported_as_a_password_problem(code: str) -> None:
+    """A device that turns the handshake away points at pairing, not at a password."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line(f'[STATUS] error code={code} http=403 detail="refused"')
+    stream._process_ended.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        pytest.raises(PlayerCommandFailed) as err,
+    ):
+        await stream.wait_for_connection()
+
+    assert err.value.translation_key == "connection_refused"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["auth_required", "auth_failed"])
+async def test_refused_connection_never_marks_the_password_invalid(code: str) -> None:
+    """
+    A refusal must not leave a player demanding a password it may not even have.
+
+    tvOS 26 answers the pairing handshake with 403 for reasons unrelated to any
+    secret, and the marker persists across restarts - so latching it there would
+    strand the player in a setup flow no password can complete.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line(f'[STATUS] error code={code} http=403 detail="refused"')
+
+    player.set_password_invalid.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_generic_connect_failure_keeps_the_timeout_semantics() -> None:
     """A non-auth failure keeps raising the plain timeout its callers already handle."""
     stream = AirPlayStream(_make_player())
