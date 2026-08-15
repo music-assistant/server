@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
-from wiim.exceptions import WiimDeviceException, WiimRequestException
+from wiim.exceptions import WiimException
 from wiim.models import WiimGroupRole
 
 from music_assistant.constants import (
@@ -47,8 +47,8 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
 
-    # the device only pushes state changes, so a source it keeps reported as paused after
-    # the app released it is never corrected on its own.
+    # the device reports a source the app released as plain 'paused', indistinguishable
+    # from a real pause, so only the grace period can tell us the session is over.
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
@@ -112,8 +112,9 @@ class WiimPlayer(Player):
         self._attr_poll_interval = 5
 
     async def poll(self) -> None:
-        """Poll player for state updates to prevent position drift."""
+        """Poll player for transport state and position updates."""
         await self._sync_position()
+        await self._refresh_device_status()
         self._attr_poll_interval = 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     async def on_unload(self) -> None:
@@ -162,7 +163,7 @@ class WiimPlayer(Player):
         self._ma_stream_uri = stream_url
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             # The device never took our stream, so the guard must not outlive the attempt.
             self._ma_stream_uri = None
             self._handle_command_error("play_media", err)
@@ -186,14 +187,14 @@ class WiimPlayer(Player):
                 NextURI=stream_url,
                 NextURIMetaData=didl_metadata,
             )
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self.logger.warning("Enqueue failed on %s: %s", self._attr_name, err)
 
     async def play(self) -> None:
         """Play command."""
         try:
             await self.device.async_play()
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("play", err)
             return
         await self._sync_position()
@@ -202,7 +203,7 @@ class WiimPlayer(Player):
         """Pause command."""
         try:
             await self.device.async_pause()
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("pause", err)
             return
         await self._sync_position()
@@ -214,7 +215,7 @@ class WiimPlayer(Player):
         self._ma_stream_uri = None
         try:
             await self.device.async_stop()
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("stop", err)
             return
         self._update_ma_state_from_sdk_cache()
@@ -223,7 +224,7 @@ class WiimPlayer(Player):
         """Seek to position in seconds."""
         try:
             await self.device.async_seek(position)
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("seek", err)
 
     async def volume_set(self, volume_level: int) -> None:
@@ -237,7 +238,7 @@ class WiimPlayer(Player):
             volume_level = max(0, min(100, volume_level))
             await self.device._http_command_ok("setPlayerCmd:vol:{}", str(volume_level))
             self.device.volume = volume_level
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("volume_set", err)
             return
         self._update_ma_state_from_sdk_cache()
@@ -246,7 +247,7 @@ class WiimPlayer(Player):
         """Handle VOLUME MUTE command on the player."""
         try:
             await self.device.async_set_mute(muted)
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("volume_mute", err)
             return
         self._update_ma_state_from_sdk_cache()
@@ -263,7 +264,7 @@ class WiimPlayer(Player):
             return
         try:
             await self.device.async_set_play_mode(sdk_mode)
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("select_source", err)
             return
         self._update_ma_state_from_sdk_cache()
@@ -307,7 +308,7 @@ class WiimPlayer(Player):
                         await self._wiim_controller.async_ungroup_device(
                             cast("WiimPlayer", member).device.udn
                         )
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self._handle_command_error("set_members", err)
         finally:
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
@@ -510,15 +511,28 @@ class WiimPlayer(Player):
         """Re-subscribe to UPnP events and update state."""
         try:
             await self.device.ensure_subscriptions()
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self.logger.warning("Failed to re-subscribe for %s: %s", self._attr_name, err)
+        self._update_ma_state_from_sdk_cache()
+
+    async def _refresh_device_status(self) -> None:
+        """Fetch fresh transport state, play mode and volume from the device."""
+        if not self.device.available:
+            # the SDK owns availability detection and recovery; querying a device it
+            # already gave up on only holds up the poll of every other player.
+            return
+        try:
+            await self.device.async_update_http_status()
+        except WiimException as err:
+            self.logger.debug("Failed to refresh status for %s: %s", self._attr_name, err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def _sync_position(self) -> None:
         """Fetch fresh position from the device and update state."""
         try:
             await self.device.sync_device_duration_and_position()
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
         media = self.device.current_media
@@ -535,15 +549,13 @@ class WiimPlayer(Player):
         """Refresh multiroom status from devices, then update all WiiM players."""
         try:
             await self._wiim_controller.async_update_all_multiroom_status()
-        except (WiimDeviceException, WiimRequestException) as err:
+        except WiimException as err:
             self.logger.debug("Failed to refresh multiroom status: %s", err)
         for player in self.provider.players:
             if isinstance(player, WiimPlayer):
                 player._update_ma_state_from_sdk_cache()
 
-    def _handle_command_error(
-        self, action: str, err: WiimDeviceException | WiimRequestException
-    ) -> None:
+    def _handle_command_error(self, action: str, err: WiimException) -> None:
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
