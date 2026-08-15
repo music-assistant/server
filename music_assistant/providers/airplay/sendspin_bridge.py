@@ -467,6 +467,9 @@ class SendspinAirPlayBridge:
         """
         if not self._bridge_role:
             return
+        # The level goes in on the same scale a volume command comes out on, which
+        # is what lets a command the role just sent read back equal instead of
+        # bouncing between the two.
         self._bridge_role.update_player_state(
             volume=self.airplay_player.volume_level,
             muted=bool(self.airplay_player.volume_muted),
@@ -954,10 +957,21 @@ class SendspinAirPlayBridge:
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward volume changes to the AirPlay player."""
+        # The role is the parent's volume control while the bridge streams, so a
+        # volume from Music Assistant arrives here having already passed control
+        # resolution and been scaled into the parent's min/max range - this is the
+        # last leg of that command, not a new one. Sending it back through the
+        # controller would scale it a second time and return here over the same
+        # route, walking the speaker down a step on every pass. A volume a Sendspin
+        # controller set instead never passed the parent, which makes it an
+        # externally changed volume like any other: the limits are enforced on the
+        # parent's state update once this lands.
         self.mass.create_task(self.airplay_player.volume_set(volume))
 
     def _on_mute_change(self, muted: bool) -> None:
         """Forward mute changes to the AirPlay player."""
+        # Resolved through the parent like the volume above, so it is applied here
+        # rather than sent back around the controller.
         self.mass.create_task(self.airplay_player.volume_mute(muted))
 
     def _on_bridge_stream_end(self) -> None:
