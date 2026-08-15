@@ -57,11 +57,21 @@ def _stub_raw_config(provider: MagicMock, stored: dict[str, object] | None = Non
     )
 
 
+def _stub_volume_scaling(provider: MagicMock, min_volume: int = 0, max_volume: int = 100) -> None:
+    """Apply the controller's real min/max volume scaling instead of a mock."""
+    provider.mass.players.scale_volume_to_device.side_effect = lambda _player_id, logical: (
+        logical
+        if (min_volume, max_volume) == (0, 100)
+        else min_volume + (logical * (max_volume - min_volume)) // 100
+    )
+
+
 @pytest.fixture
 def airplay_player() -> AirPlayPlayer:
     """Create a basic AirPlayPlayer with mock defaults."""
     provider = MagicMock()
     _stub_raw_config(provider)
+    _stub_volume_scaling(provider)
     return AirPlayPlayer(
         provider=provider,
         player_id="test_player",
@@ -818,6 +828,32 @@ def test_sync_volume_state_uses_parent_volume_via_bridge_control(
         42,
     )
     mock_update.assert_called_once()
+
+
+def test_sync_volume_state_adopts_parent_volume_on_the_parents_scale(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A volume limit on the parent leaves the adopted level on the same scale as a command.
+
+    Volume commands arrive here already scaled into the parent's range, so adopting
+    the parent's logical level as-is would play the speaker louder than asked and
+    read back as a volume outside the range on the next state update.
+    """
+    _stub_volume_scaling(cast("MagicMock", airplay_player.provider), max_volume=50)
+    parent = MagicMock()
+    parent.player_id = "parent"
+    parent.state.volume_level = 60
+    parent.volume_control_for_output.return_value = "test_player"
+    parent.mute_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state"):
+        airplay_player.sync_volume_state()
+
+    assert airplay_player._attr_volume_level == 30
 
 
 def test_sync_volume_state_unity_gain_when_other_control_owns_volume(

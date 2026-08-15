@@ -3134,10 +3134,50 @@ def test_state_updates_without_a_volume_change_leave_the_role_alone() -> None:
 
 
 def test_a_player_without_a_bridge_is_ignored() -> None:
-    """A volume change on a player this manager knows nothing about is a no-op."""
-    bridge, _ = _make_bridge_with_role()
+    """A volume change on a player this manager knows nothing about leaves bridges alone."""
+    bridge, role = _make_bridge_with_role(volume=40)
     manager = _bridge_manager_for(bridge)
     other_player = MagicMock()
     other_player.player_id = "ap0011223344ff"
+    other_player.volume_level = 55
 
     manager._on_player_state_updated(other_player, {"volume_level": (40, 55)})
+
+    assert role.get_player_volume() == 40
+
+
+def test_the_manager_listens_for_the_state_updates_it_routes() -> None:
+    """
+    The bridged AirPlay players are watched for the whole life of the manager.
+
+    A protocol player emits no PLAYER_UPDATED event, so the controller's internal
+    state-update subscription is the only way their volume changes are seen.
+    """
+    manager = SendspinBridgeManager(MagicMock())
+
+    cast("MagicMock", manager.mass).players.subscribe_player_state_update.assert_called_once_with(
+        manager._on_player_state_updated
+    )
+
+
+def test_a_volume_set_through_the_bridge_settles_in_one_pass() -> None:
+    """
+    A volume coming down from Sendspin is not announced again on its way back.
+
+    The player ends up holding what the role handed it, so reading that state back
+    has to compare equal - otherwise every command would bounce between the two.
+    """
+    bridge, role = _make_bridge_with_role(volume=40)
+    player = cast("MagicMock", bridge.airplay_player)
+    client = cast("MagicMock", role._client)
+
+    role.set_player_volume(70)
+    player.volume_set.assert_called_once_with(70)
+    # the AirPlay player records the level it was handed
+    player.volume_level = 70
+    client.reset_mock()
+
+    bridge.sync_role_volume_state()
+
+    assert role.get_player_volume() == 70
+    client._signal_event.assert_not_called()
