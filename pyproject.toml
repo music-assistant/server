@@ -22,7 +22,7 @@ dependencies = [
   "colorlog==6.12.0",
   "modern_colorthief==0.2.1",
   "cryptography==50.0.0",
-  "chardet>=5.2.0",
+  "charset-normalizer>=3.4.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",

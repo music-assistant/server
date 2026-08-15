@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import functools
 import html
 import importlib
@@ -50,7 +51,6 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from chardet.resultdict import ResultDict
     from music_assistant_models.player import DeviceInfo
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -1605,16 +1605,29 @@ async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
 
 
 async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
-    """Detect charset of raw data."""
-    # imported here to keep chardet (~18MB) out of the idle import footprint:
-    # it is only needed on the rarely-hit playlist/radio charset fallback path
-    import chardet  # noqa: PLC0415
+    """
+    Detect the charset to decode the given raw text with.
+
+    :param data: The raw text bytes to inspect.
+    :param fallback: Charset to return when the charset can not be determined.
+    """
+    if data.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+    try:
+        data.decode()
+    except UnicodeDecodeError:
+        pass
+    else:
+        # valid UTF-8 is never a legacy charset by accident, so skip detection
+        return "utf-8"
+
+    # imported here to keep the detector out of the idle import footprint:
+    # it is only needed for the rare text that is not UTF-8
+    from charset_normalizer import from_bytes  # noqa: PLC0415
 
     try:
-        detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
-        if detected and detected["encoding"] and detected["confidence"] > 0.75:
-            assert isinstance(detected["encoding"], str)  # for type checking
-            return detected["encoding"]
+        if match := (await asyncio.to_thread(from_bytes, data)).best():
+            return match.encoding
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
     return fallback
