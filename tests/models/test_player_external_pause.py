@@ -89,13 +89,44 @@ def test_an_ended_source_is_not_picked_back_up_from_what_the_device_reports(
 ) -> None:
     """Test the next update does not resurrect the source the device still reports as paused."""
     player.mark_external_source_ended()
+    player.update_state()
+    assert player.state.playback_state is PlaybackState.IDLE
 
+    # the device keeps reporting the very same paused source on every update that follows
     player._attr_playback_state = PlaybackState.PAUSED
     player._attr_active_source = EXTERNAL_SOURCE
     player.update_state()
 
     assert player.state.playback_state is PlaybackState.IDLE
     assert player.state.active_source == player.player_id
+
+
+def test_a_source_that_starts_playing_again_is_given_a_fresh_start(player: MockPlayer) -> None:
+    """Test a source we gave up on is trusted again once the device really plays it."""
+    player.mark_external_source_ended()
+    player.update_state()
+
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = EXTERNAL_SOURCE
+    player.update_state()
+    player._attr_playback_state = PlaybackState.PAUSED
+    player.update_state()
+
+    assert player.state.playback_state is PlaybackState.PAUSED
+    assert player.state.active_source == EXTERNAL_SOURCE
+
+
+def test_another_source_is_not_tarred_with_the_same_brush(player: MockPlayer) -> None:
+    """Test giving up on one source does not shorten the grace period of the next."""
+    player.mark_external_source_ended()
+    player.update_state()
+
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "tidal"
+    player.update_state()
+
+    assert player.state.playback_state is PlaybackState.PAUSED
+    assert player.state.active_source == "tidal"
 
 
 def test_resuming_the_source_gives_a_later_pause_the_full_grace_period(
@@ -169,7 +200,6 @@ async def test_unloading_leaves_no_pending_check_behind(
     await player.on_unload()
 
     mock_mass.cancel_timer.assert_any_call("external_pause_player_1")
-    mock_mass.cancel_task.assert_any_call("external_pause_player_1")
 
 
 @pytest.mark.asyncio
@@ -183,4 +213,3 @@ async def test_unloading_a_player_that_does_not_opt_in_cancels_nothing(
     await player.on_unload()
 
     mock_mass.cancel_timer.assert_not_called()
-    mock_mass.cancel_task.assert_not_called()

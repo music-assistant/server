@@ -424,6 +424,7 @@ class Player(ABC):
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.__active_mass_source: str | None = None
         self.__external_pause_since: float | None = None
+        self.__ended_external_source: str | None = None
         self.__initialized = asyncio.Event()
         # Change-tracking internals for update_state:
         # - state_dirty forces a recalculation (state derived from other
@@ -1165,10 +1166,7 @@ class Player(ABC):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         if self._attr_external_pause_idle_timeout is not None:
-            # a timer that already fired lives on as a task under the same id,
-            # so both are needed to cover the pending and the running case
             self.mass.cancel_timer(f"external_pause_{self.player_id}")
-            self.mass.cancel_task(f"external_pause_{self.player_id}")
         for callback in self._on_unload_callbacks:
             try:
                 callback()
@@ -1993,12 +1991,14 @@ class Player(ABC):
 
         Call this when the device makes clear that the session is gone, for example when
         it refuses to resume playback. Normal queue handling takes over from there.
+        Call :meth:`update_state` afterwards to publish the change.
         """
-        if (timeout := self._attr_external_pause_idle_timeout) is not None:
+        if self._attr_active_source is not None:
             # the updates that follow rebuild the state from the device, which keeps
-            # reporting the very same source as paused, so backdating the pause is what
-            # keeps this applied
-            self.__external_pause_since = time.time() - timeout
+            # reporting the very same source as paused, so remembering which source we
+            # gave up on is what keeps this applied
+            self.__ended_external_source = self._attr_active_source
+        self.__external_pause_since = None
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_active_source = None
         self._attr_current_media = None
@@ -3295,6 +3295,9 @@ class Player(ABC):
     @final
     def __external_source_active(self) -> bool:
         """Return whether the source the player reports for itself is an external one."""
+        # deliberately the raw source rather than the resolved one of
+        # _has_external_source_active: what has to expire is what the device itself keeps
+        # reporting, not what the group or protocol it belongs to resolves that to
         source = self._attr_active_source
         if source is None or source == self.player_id:
             return False
@@ -3313,7 +3316,16 @@ class Player(ABC):
             or not self.__external_source_active()
         ):
             self.__external_pause_since = None
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                # the device plays again, so the source we gave up on is live once more
+                self.__ended_external_source = None
             return
+        if self._attr_active_source == self.__ended_external_source:
+            # the device keeps handing us the source we already gave up on
+            self.mark_external_source_ended()
+            return
+        # any other source is a session of its own and gets the full grace period
+        self.__ended_external_source = None
         if self.__external_pause_since is None:
             self.__external_pause_since = time.time()
         elif (time.time() - self.__external_pause_since) >= timeout:

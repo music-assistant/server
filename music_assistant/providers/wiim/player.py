@@ -118,6 +118,7 @@ class WiimPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
         self.device.general_event_callback = None
         self.device.av_transport_event_callback = None
         self.device.rendering_control_event_callback = None

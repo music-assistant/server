@@ -319,14 +319,15 @@ def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
     return player, mass
 
 
-def test_a_paused_connect_session_is_reported_as_a_paused_spotify_source() -> None:
-    """Test what the speaker reports for Spotify Connect becomes a resumable source."""
+def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
+    """Test what the speaker reports for Spotify Connect reaches the shared grace period."""
     player, _ = _speaker_reporting_paused_spotify()
 
-    player.update_attributes()
+    player.on_player_event(None)
 
     assert player._attr_playback_state is PlaybackState.PAUSED
     assert player._attr_active_source == SOURCE_SPOTIFY
-    # giving up on such a source once it goes stale is handled for every player alike,
-    # so the speaker only has to opt in
+    # giving up on such a source is handled for every player alike, from update_state,
+    # so the speaker only has to opt in and let the state calculation see it
     assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]

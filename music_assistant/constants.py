@@ -1032,8 +1032,10 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
 }
 
 # Seconds an external source may sit paused before we consider its session ended.
-# Kept generous because this is what a real pause is given before we stop presenting
-# the source as something the user can resume.
+# Devices keep a source like Spotify Connect loaded and paused indefinitely, also once
+# the app released the speaker, and offer nothing that tells an abandoned session apart
+# from a real pause - so time is the only signal left. Kept generous because this is
+# what a real pause is given before we stop presenting the source as resumable.
 EXTERNAL_PAUSE_IDLE_TIMEOUT: Final[int] = 60
 
 EXTERNAL_SOURCES: Final[set[str]] = {
