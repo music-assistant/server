@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    CUSTOM_IMAGES_DIRNAME,
     GENRE_ICONS_DIR_NAME,
     MASS_LOGO,
     PLAYLIST_MEDIA_TYPES,
@@ -754,6 +755,15 @@ class BuiltinProvider(MusicProvider):
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
+        if path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
+            file_name = path[len(CUSTOM_IMAGES_DIRNAME) + 1 :]
+            images_base = os.path.join(self.mass.storage_path, CUSTOM_IMAGES_DIRNAME)
+            if not is_safe_path(file_name, images_base):
+                raise FileNotFoundError(f"Invalid custom image reference: {path}")
+            # return raw bytes (instead of the local path) so the format is not
+            # restricted by the extension allowlist of the local file handling
+            async with aiofiles.open(os.path.join(images_base, file_name), "rb") as imgfile:
+                return cast("bytes", await imgfile.read())
         return path
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:

@@ -18,13 +18,14 @@ from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ImageType, ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
 from music_assistant.helpers import images
 from music_assistant.helpers.images import (
     _SOURCE_CACHE_TTL,
+    MAX_CUSTOM_IMAGE_BYTES,
     create_thumb_hash,
     detect_provider_icons,
     get_image_data,
@@ -32,6 +33,7 @@ from music_assistant.helpers.images import (
     get_image_thumb_path,
     invalidate_cached_image,
     load_provider_icon,
+    validate_custom_image,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -715,3 +717,43 @@ async def test_detect_provider_icons_png_and_variants(tmp_path: Path) -> None:
 async def test_detect_provider_icons_none(tmp_path: Path) -> None:
     """Test detecting icons in an empty directory returns empty dict."""
     assert await detect_provider_icons(str(tmp_path)) == {}
+
+
+def _raster_bytes(image_format: str) -> bytes:
+    """Return a minimal valid raster image in the given Pillow format."""
+    buf = BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buf, format=image_format)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("image_format", "expected_ext"),
+    [("PNG", "png"), ("JPEG", "jpg"), ("WEBP", "webp"), ("GIF", "gif"), ("BMP", "bmp")],
+)
+def test_validate_custom_image_accepts_raster(image_format: str, expected_ext: str) -> None:
+    """Any Pillow-decodable raster format validates and maps to its canonical extension."""
+    assert validate_custom_image(_raster_bytes(image_format)) == expected_ext
+
+
+def test_validate_custom_image_rejects_svg() -> None:
+    """SVG uploads are rejected with a clear error."""
+    with pytest.raises(InvalidDataError, match="SVG"):
+        validate_custom_image(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>")
+
+
+def test_validate_custom_image_rejects_garbage() -> None:
+    """Random bytes are not a valid image."""
+    with pytest.raises(InvalidDataError, match="not a valid image"):
+        validate_custom_image(b"certainly not an image")
+
+
+def test_validate_custom_image_rejects_oversized() -> None:
+    """Uploads over the byte limit are rejected before decoding."""
+    with pytest.raises(InvalidDataError, match="size limit"):
+        validate_custom_image(b"x" * (MAX_CUSTOM_IMAGE_BYTES + 1))
+
+
+def test_validate_custom_image_rejects_truncated() -> None:
+    """A truncated raster file fails validation."""
+    with pytest.raises(InvalidDataError):
+        validate_custom_image(_raster_bytes("PNG")[:20])

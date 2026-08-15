@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
+import os
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
@@ -12,6 +15,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 
+import aiofiles
+import shortuuid
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     EventType,
@@ -23,6 +28,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
@@ -42,6 +48,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    CUSTOM_IMAGES_DIRNAME,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -58,7 +65,9 @@ from music_assistant.helpers.collections import (
 )
 from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.images import MAX_CUSTOM_IMAGE_BYTES, validate_custom_image
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 
 if TYPE_CHECKING:
@@ -210,7 +219,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.remove_item_from_library,
             required_scope=Scope.LIBRARY_MANAGE,
         )
+        self.mass.register_api_command(
+            f"music/{api_base}/set_image",
+            self.set_item_image,
+            required_scope=Scope.LIBRARY_MANAGE,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/remove_image",
+            self.remove_item_image,
+            required_scope=Scope.LIBRARY_MANAGE,
+        )
         self._db_add_lock = asyncio.Lock()
+        self._custom_image_lock = asyncio.Lock()
 
     @property
     def translation_owner(self) -> str:
@@ -368,8 +388,123 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # drop cached artwork for the removed item
         for img in library_item.metadata.images or []:
             await self.mass.metadata.invalidate_image_cache(img.provider, img.path)
+            if self._is_custom_image(img):
+                await self._delete_custom_image_file(img.path)
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
         self.logger.debug("deleted item with id %s from database", db_id)
+
+    @final
+    async def set_item_image(
+        self,
+        item_id: str | int,
+        data: str,
+        file_hint: str | None = None,
+        image_type: ImageType = ImageType.THUMB,
+    ) -> ItemCls:
+        """
+        Set a custom image for a library item from base64 encoded image data.
+
+        Replaces any existing image(s) of the given type on the item. Only raster
+        formats (png/jpg/webp) are accepted; the format is detected from the actual
+        content.
+
+        :param item_id: The library (database) id of the item.
+        :param data: Base64 encoded image bytes, optionally as a data-URL.
+        :param file_hint: Optional original filename, only used in error messages.
+        :param image_type: The image type to set (defaults to thumb).
+        """
+        db_id = int(item_id)
+        # a data-URL prefix is allowed for convenience (that's what a browser
+        # FileReader produces); only the base64 payload after the comma is used
+        if data.startswith("data:"):
+            data = data.split(",", 1)[-1]
+        # base64 inflates by roughly 4/3, so bound the encoded input before decoding
+        # to cap memory, then confirm the decoded size against the real limit
+        if len(data) > MAX_CUSTOM_IMAGE_BYTES // 3 * 4 + 8:
+            raise InvalidDataError("Image exceeds the size limit")
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except binascii.Error as err:
+            raise InvalidDataError("Image data is not valid base64") from err
+        try:
+            ext = await asyncio.to_thread(validate_custom_image, raw)
+        except InvalidDataError as err:
+            if file_hint:
+                raise InvalidDataError(f"{err.args[0]} (file: {file_hint})") from err
+            raise
+
+        async with self._custom_image_lock:
+            metadata = await self._get_raw_metadata(db_id)
+            old_images = [img for img in metadata.images or [] if img.type == image_type]
+            rel_path = await self._write_custom_image_file(raw, ext, db_id)
+            new_image = MediaItemImage(
+                type=image_type,
+                path=rel_path,
+                provider="builtin",
+                remotely_accessible=False,
+            )
+            metadata.images = UniqueList(
+                [*(img for img in metadata.images or [] if img.type != image_type), new_image]
+            )
+            try:
+                await self._persist_metadata(db_id, metadata)
+            except BaseException:
+                # drop the just-written file so a failed update leaves no orphan
+                await self._delete_custom_image_file(rel_path)
+                raise
+            for old_img in old_images:
+                await self.mass.metadata.invalidate_image_cache(old_img.provider, old_img.path)
+                if self._is_custom_image(old_img):
+                    await self._delete_custom_image_file(old_img.path)
+
+        library_item = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        return library_item
+
+    @final
+    async def remove_item_image(
+        self, item_id: str | int, image_type: ImageType = ImageType.THUMB
+    ) -> ItemCls:
+        """
+        Remove a previously set custom image from a library item.
+
+        Restores the item's default image of that type when one exists (such as the
+        builtin genre icons). A no-op when the item has no custom image of that type.
+
+        :param item_id: The library (database) id of the item.
+        :param image_type: The image type to remove (defaults to thumb).
+        """
+        db_id = int(item_id)
+        async with self._custom_image_lock:
+            metadata = await self._get_raw_metadata(db_id)
+            custom_images = [
+                img
+                for img in metadata.images or []
+                if img.type == image_type and self._is_custom_image(img)
+            ]
+            if not custom_images:
+                return await self.get_library_item(db_id)
+            library_item = await self.get_library_item(db_id)
+            default_images: list[MediaItemImage] = list(
+                self._get_default_images(library_item, image_type) or []
+            )
+            metadata.images = (
+                UniqueList(
+                    [
+                        *(img for img in metadata.images or [] if img.type != image_type),
+                        *default_images,
+                    ]
+                )
+                or None
+            )
+            await self._persist_metadata(db_id, metadata)
+            for old_img in custom_images:
+                await self.mass.metadata.invalidate_image_cache(old_img.provider, old_img.path)
+                await self._delete_custom_image_file(old_img.path)
+
+        library_item = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        return library_item
 
     async def library_count(self, favorite_only: bool = False) -> int:
         """
@@ -1949,6 +2084,73 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             {"metadata": serialize_to_json(metadata)},
         )
         return True
+
+    def _get_default_images(
+        self, item: ItemCls, image_type: ImageType
+    ) -> UniqueList[MediaItemImage] | None:
+        """
+        Return the default image(s) of the given type for this item, if any.
+
+        Override in a subclass when the media type has builtin default artwork
+        (such as the curated genre icons) that should be restored when a custom
+        image is removed.
+        """
+        return None
+
+    def _is_custom_image(self, img: MediaItemImage) -> bool:
+        """Return True when the image is a user-uploaded custom image."""
+        return img.provider == "builtin" and img.path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+
+    def _custom_images_dir(self) -> str:
+        """Return the directory holding user-uploaded custom images."""
+        return os.path.join(self.mass.storage_path, CUSTOM_IMAGES_DIRNAME)
+
+    async def _get_raw_metadata(self, db_id: int) -> MediaItemMetadata:
+        """
+        Return the item's metadata parsed straight from the db record.
+
+        Reading the raw column (instead of via get_library_item) avoids persisting
+        images that are only injected at read time, such as the album thumb that
+        gets merged into a track's images.
+        """
+        db_row = await self.mass.music.database.get_row(self.db_table, {"item_id": db_id})
+        if not db_row:
+            raise MediaNotFoundError(f"{self.media_type.value} with id {db_id} not found")
+        if raw_metadata := db_row["metadata"]:
+            return MediaItemMetadata.from_dict(json_loads(raw_metadata))
+        return MediaItemMetadata()
+
+    async def _write_custom_image_file(self, raw: bytes, ext: str, db_id: int) -> str:
+        """
+        Write uploaded image bytes to the custom images dir and return the relative path.
+
+        The filename is fully server-generated with a random suffix per upload, so a
+        replaced image gets a new path (and thus a new imageproxy id), which keeps
+        stale cached variants from ever being served.
+        """
+        images_dir = self._custom_images_dir()
+        await asyncio.to_thread(os.makedirs, images_dir, exist_ok=True)
+        filename = f"{self.media_type.value}.{db_id}.{shortuuid.random(8).lower()}.{ext}"
+        async with aiofiles.open(os.path.join(images_dir, filename), "wb") as outfile:
+            await outfile.write(raw)
+        return f"{CUSTOM_IMAGES_DIRNAME}/{filename}"
+
+    async def _delete_custom_image_file(self, rel_path: str) -> None:
+        """Delete a stored custom image file by its (metadata) relative path."""
+        images_dir = self._custom_images_dir()
+        filename = rel_path.removeprefix(f"{CUSTOM_IMAGES_DIRNAME}/")
+        if not is_safe_path(filename, images_dir):
+            return
+        with suppress(FileNotFoundError):
+            await asyncio.to_thread(os.remove, os.path.join(images_dir, filename))
+
+    async def _persist_metadata(self, db_id: int, metadata: MediaItemMetadata) -> None:
+        """Write the given metadata directly to the item's db record."""
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {"metadata": serialize_to_json(metadata)},
+        )
 
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """

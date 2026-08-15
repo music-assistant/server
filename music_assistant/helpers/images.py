@@ -25,6 +25,7 @@ import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -87,6 +88,12 @@ _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
 
+# User-uploaded custom media item images: size cap plus overrides for Pillow
+# format names whose canonical file extension differs from format.lower()
+# (MPO is the multi-picture jpeg variant many phone cameras produce).
+MAX_CUSTOM_IMAGE_BYTES = 10 * 1024 * 1024
+_CUSTOM_IMAGE_FORMAT_EXTENSIONS: dict[str, str] = {"JPEG": "jpg", "MPO": "jpg"}
+
 
 def is_svg_data(data: bytes) -> bool:
     """Return True when the given bytes appear to be an SVG image."""
@@ -114,6 +121,32 @@ def detect_image_content_format(data: bytes) -> str | None:
     if is_svg_data(data):
         return "svg"
     return None
+
+
+def validate_custom_image(data: bytes) -> str:
+    """
+    Validate user-uploaded image bytes and return the canonical file extension.
+
+    Any raster format Pillow can decode is accepted (which guarantees the
+    imageproxy can thumbnail it later); SVG is rejected. The format is detected
+    from the actual content, never from a client-supplied hint. This is blocking
+    CPU work, so call it from an executor thread.
+
+    :param data: Raw image bytes to validate.
+    """
+    if len(data) > MAX_CUSTOM_IMAGE_BYTES:
+        raise InvalidDataError("Image exceeds the size limit")
+    if is_svg_data(data):
+        raise InvalidDataError("SVG images are not supported for custom images")
+    try:
+        with Image.open(BytesIO(data)) as img:
+            image_format = img.format
+            img.verify()
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as err:
+        raise InvalidDataError("Uploaded data is not a valid image") from err
+    if not image_format:
+        raise InvalidDataError("Uploaded data is not a valid image")
+    return _CUSTOM_IMAGE_FORMAT_EXTENSIONS.get(image_format, image_format.lower())
 
 
 def create_thumb_hash(provider: str, path_or_url: str) -> str:

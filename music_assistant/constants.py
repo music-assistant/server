@@ -119,6 +119,8 @@ DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
 # impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
 # validating against this keeps a caller-supplied id from escaping the storage dir
 DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
+# subdirectory under the storage path holding user-uploaded custom media item images
+CUSTOM_IMAGES_DIRNAME: Final[str] = "custom_images"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
