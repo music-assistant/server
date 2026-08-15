@@ -332,7 +332,7 @@ class StatisticsController(CoreController):
         query = f"""
             SELECT
                 CAST(strftime('%H', datetime(timestamp, 'unixepoch')) AS INTEGER) as hour,
-                CAST(strftime('%w', datetime(timestamp, 'unixepoch')) AS INTEGER) as weekday,
+                CAST((CAST(strftime('%w', datetime(timestamp, 'unixepoch')) AS INTEGER) + 6) % 7 AS INTEGER) as weekday,
                 COUNT(*) as play_count
             FROM {DB_TABLE_PLAYLOG}
             WHERE userid = :user_id
@@ -526,18 +526,22 @@ class StatisticsController(CoreController):
         self,
         media_type: MediaType,
         since_timestamp: float,
-    ) -> set[str]:
+    ) -> set[tuple[str, str]]:
         """
-        Get set of item IDs played since timestamp.
+        Get set of (provider, item_id) tuples played since timestamp.
 
         Used for temporal filters in smart playlists and recommendations.
 
         :param media_type: The media type to filter by.
         :param since_timestamp: Unix timestamp to filter items played after.
         """
-        user_id = get_current_user()
+        user = get_current_user()
+        if not user:
+            return set()
+        user_id = user.user_id
+
         query = f"""
-            SELECT DISTINCT item_id
+            SELECT DISTINCT provider, item_id
             FROM {DB_TABLE_PLAYLOG}
             WHERE userid = :user_id
                 AND media_type = :media_type
@@ -551,7 +555,7 @@ class StatisticsController(CoreController):
         }
 
         rows = await self.mass.music.database.get_rows_from_query(query, params)
-        return {row["item_id"] for row in rows}
+        return {(row["provider"], row["item_id"]) for row in rows}
 
     def _get_period_cutoff(self, period: str) -> float:
         """
