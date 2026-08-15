@@ -32,6 +32,7 @@ from music_assistant.controllers.webserver.remote_access import (
 )
 from music_assistant.controllers.webserver.remote_access.gateway import (
     DATA_CHANNEL_CHUNK_SIZE,
+    HTTP_PROXY_CONCURRENCY,
     WebRTCGateway,
     WebRTCSession,
     _is_usable_ice_url,
@@ -40,6 +41,8 @@ from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
     _remote_id_from_certificate,
 )
+
+_GATEWAY_MODULE = "music_assistant.controllers.webserver.remote_access.gateway"
 
 
 async def test_remote_id_from_certificate() -> None:
@@ -1588,6 +1591,189 @@ async def test_a_second_http_proxy_channel_is_refused(cert_pems: tuple[str, str]
         assert session.channels["http_proxy"].channel is cast("DataChannel", first)
     finally:
         await gateway._close_session("duplicate-session")
+
+
+class _StallingProxyChannel(_FakeBidiChannel):
+    """
+    Proxy-channel stand-in whose sends park until the test lets them through.
+
+    Stands in for a client that stopped draining what it asked for: a real ``send`` then
+    waits on the channel's drain event, which is what parks the gateway's write-back.
+
+    :param stall_after: Let this many messages through before parking, matching a real
+        channel that only waits once its buffer holds something.
+    """
+
+    def __init__(self, stall_after: int = 0) -> None:
+        super().__init__(label="http_proxy")
+        self.drained = asyncio.Event()
+        self.abandoned = 0
+        self._stall_after = stall_after
+
+    async def send(self, data: str | bytes) -> None:
+        if len(self.sent) >= self._stall_after:
+            try:
+                await self.drained.wait()
+            except asyncio.CancelledError:
+                self.abandoned += 1
+                raise
+        await super().send(data)
+
+
+async def test_a_client_that_stops_draining_does_not_hold_the_proxy_channel(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A response the client never takes is abandoned instead of parking the send lock."""
+    gateway = _proxy_gateway(cert_pems)
+    gateway.logger = logging.getLogger("test_webrtc_stalled_send")
+    # the header goes out and the body frame is what parks, as on a channel that only waits
+    # once its buffer holds something
+    channel = _StallingProxyChannel(stall_after=1)
+    send_lock = asyncio.Lock()
+
+    with (
+        patch(f"{_GATEWAY_MODULE}.HTTP_PROXY_SEND_TIMEOUT", 0.05),
+        caplog.at_level(logging.WARNING, logger="test_webrtc_stalled_send"),
+    ):
+        await asyncio.wait_for(
+            gateway._send_http_proxy_response(
+                cast("DataChannel", channel), "img-stalled", 200, {}, b"art-bytes", send_lock
+            ),
+            timeout=5,
+        )
+
+    # the reply ends short of its announced size rather than half-way into a frame
+    assert json.loads(cast("str", channel.sent[0]))["size"] == len(b"art-bytes")
+    assert channel.sent[1:] == []
+    assert not send_lock.locked()
+    assert "Timeout sending proxy response img-stalled" in caplog.text
+
+
+async def test_a_stalled_response_does_not_block_the_next_one(cert_pems: tuple[str, str]) -> None:
+    """One wedged response must not stop the rest of the art for the life of the session."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"\xff\xd8second-image"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-stalled-session")
+    proxy_channel = _StallingProxyChannel(stall_after=1)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        with patch(f"{_GATEWAY_MODULE}.HTTP_PROXY_SEND_TIMEOUT", 0.05):
+            proxy_channel.feed(_proxy_request("img-stalls", "/imageproxy/stalls"))
+            await _wait_for(lambda: proxy_channel.abandoned >= 1)
+
+        proxy_channel.drained.set()
+        proxy_channel.feed(_proxy_request("img-next", "/imageproxy/next"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 3)
+
+        # the abandoned reply is the header alone; the next one follows it whole
+        assert json.loads(cast("str", proxy_channel.sent[0]))["id"] == "img-stalls"
+        response, body = _read_proxy_response(proxy_channel.sent[1:])
+        assert response["id"] == "img-next"
+        assert body == b"\xff\xd8second-image"
+    finally:
+        await gateway._close_session("proxy-stalled-session")
+
+
+async def test_a_stalled_response_frees_its_slot_for_other_requests(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Wedged write-backs must not leave the gateway-wide proxy budget exhausted."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"art-bytes"
+    gateway = _routing_gateway(cert_pems, http_session)
+    channel = _StallingProxyChannel()
+    send_lock = asyncio.Lock()
+
+    with patch(f"{_GATEWAY_MODULE}.HTTP_PROXY_SEND_TIMEOUT", 0.05):
+        # take the whole budget, so a single slot left behind is enough to fail this
+        requests = [
+            asyncio.ensure_future(
+                gateway._handle_http_proxy_request(
+                    cast("DataChannel", channel),
+                    {"id": f"img-{index}", "method": "GET", "path": f"/imageproxy/{index}"},
+                    send_lock,
+                )
+            )
+            for index in range(HTTP_PROXY_CONCURRENCY)
+        ]
+        try:
+            await asyncio.wait_for(asyncio.gather(*requests), timeout=15)
+        finally:
+            for request in requests:
+                request.cancel()
+
+    for _ in range(HTTP_PROXY_CONCURRENCY):
+        await asyncio.wait_for(gateway._http_proxy_semaphore.acquire(), timeout=5)
+
+
+async def test_http_proxy_fetch_carries_an_explicit_timeout(cert_pems: tuple[str, str]) -> None:
+    """The proxied fetch must be bounded rather than left on aiohttp's five minute default."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, Any] = {}
+
+    def fake_request(_method: str, _url: str, **kwargs: Any) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+
+    await gateway._handle_http_proxy_request(None, {"id": "1", "method": "GET", "path": "/info"})
+
+    timeout = cast("aiohttp.ClientTimeout", captured_kwargs["timeout"])
+    assert timeout.total is not None
+    assert timeout.total < 300
+
+
+async def test_a_timed_out_fetch_answers_the_client(cert_pems: tuple[str, str]) -> None:
+    """A fetch that runs out of time still answers, so the client is not left waiting."""
+
+    def timing_out_request(_method: str, _url: str, **_kwargs: Any) -> AsyncMock:
+        # aiohttp hands out its context manager first and only raises once the body is read
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(side_effect=TimeoutError)
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    http_session = _FakeHttpSession()
+    http_session.request = timing_out_request  # type: ignore[assignment]
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-timeout-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-slow", "/imageproxy/slow"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
+
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["id"] == "img-slow"
+        assert response["status"] == 504
+        assert body == b"Gateway Timeout"
+    finally:
+        await gateway._close_session("proxy-timeout-session")
 
 
 class _FakeDataChannel:
