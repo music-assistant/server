@@ -230,14 +230,7 @@ class WiimPlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         try:
-            # Remove and uncomment when wiim-sdk 0.1.5+ has been released
-            # await self.device.async_set_volume(volume_level)
-            # Inlined fix from https://github.com/Linkplay2020/wiim/pull/18:
-            # async_set_volume uses a UPnP action that is unreliable; the HTTP
-            # command works. Replicates the SDK method body until 0.1.5 ships.
-            volume_level = max(0, min(100, volume_level))
-            await self.device._http_command_ok("setPlayerCmd:vol:{}", str(volume_level))
-            self.device.volume = volume_level
+            await self.device.async_set_volume(volume_level)
         except WiimException as err:
             self._handle_command_error("volume_set", err)
             return

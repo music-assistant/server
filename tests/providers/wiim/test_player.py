@@ -357,10 +357,6 @@ class TestErrorHandling:
         assert player._attr_available is True
         player.update_state.assert_called()
 
-    @pytest.mark.skip(
-        reason="volume_set inlines the HTTP fix from wiim PR#18 and no longer calls "
-        "async_set_volume; re-enable when wiim-sdk 0.1.5+ has been released"
-    )
     @pytest.mark.asyncio
     async def test_volume_set_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
@@ -378,7 +374,7 @@ class TestErrorHandling:
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
         """A speaker answering a volume command with something other than OK must not throw."""
-        mock_wiim_device._http_command_ok = AsyncMock(
+        mock_wiim_device.async_set_volume = AsyncMock(
             side_effect=WiimInvalidDataException("did not return 'OK'")
         )
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
