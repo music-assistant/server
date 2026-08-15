@@ -1623,14 +1623,31 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
 
     # imported here to keep the detector out of the idle import footprint:
     # it is only needed for the rare text that is not UTF-8
-    from charset_normalizer import from_bytes  # noqa: PLC0415
+    import chardet  # noqa: PLC0415
+    from chardet.enums import EncodingEra  # noqa: PLC0415
 
+    # the reported confidence is deliberately not gated on: CUE sheets and playlists
+    # are nearly all ASCII keywords, which holds the score far below any usable
+    # threshold even though the charset itself is named correctly (support #6093).
+    # With no score to weigh them against, DOS and mainframe codepages are dropped from
+    # the candidates so a stray weak match cannot outrank the Windows codepage these
+    # files are really written in. Only a superset is guaranteed to decode the bytes
+    # past the window the detector samples, so it wins ties over its subsets.
     try:
-        if match := (await asyncio.to_thread(from_bytes, data)).best():
-            return match.encoding
+        detected = await asyncio.to_thread(
+            chardet.detect,
+            data,
+            encoding_era=EncodingEra.ALL & ~(EncodingEra.DOS | EncodingEra.MAINFRAME),
+            prefer_superset=True,
+            no_match_encoding=fallback,
+        )
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
-    return fallback
+        return fallback
+    if not (encoding := detected["encoding"]):
+        return fallback
+    LOGGER.debug("Detected charset %s (confidence %.2f)", encoding, detected["confidence"])
+    return encoding
 
 
 def parse_optional_bool(value: Any) -> bool | None:
