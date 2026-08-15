@@ -38,6 +38,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
@@ -91,6 +92,7 @@ class SonosPlayer(Player):
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self.sonos_queue: SonosQueue = SonosQueue()
+        self._external_pause_since: float | None = None
 
     @property
     def group_controller(self) -> SonosGroup:
@@ -203,6 +205,7 @@ class SonosPlayer(Player):
         for task_id in (
             f"sonos_reconnect_{self.player_id}",
             f"restore_airplay_group_{self.player_id}",
+            f"sonos_external_pause_{self.player_id}",
         ):
             # a timer that already fired lives on as a task under the same id,
             # so both are needed to cover the pending and the running case
@@ -243,7 +246,22 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PLAY command: Player is synced to another player.")
             return
-        await self.group_controller.play()
+        try:
+            await self.group_controller.play()
+        except FailedCommand as err:
+            if self._attr_active_source is None or "groupCoordinatorChanged" in str(err):
+                # only a source Sonos loaded itself can go away like this, and a coordinator
+                # change is a race condition rather than a source that disappeared
+                raise
+            # the loaded source refused to resume, so it is not merely paused after all
+            self.logger.debug(
+                "Source %s on Sonos player %s can not be resumed: %s",
+                self._attr_active_source,
+                self.player_id,
+                err,
+            )
+            self._mark_external_source_ended()
+            self.update_state()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -654,6 +672,7 @@ class SonosPlayer(Player):
                 current_media.uri = container["id"]["objectId"]
 
         self._attr_current_media = current_media
+        self._expire_stale_external_pause()
 
     async def on_protocol_playback(
         self,
@@ -857,6 +876,36 @@ class SonosPlayer(Player):
             self.player_id,
             [x.title for x in self.sonos_queue.items],
         )
+
+    def _expire_stale_external_pause(self) -> None:
+        """Report an external source that has been paused for a while as no longer active."""
+        if self._attr_playback_state != PlaybackState.PAUSED:
+            self._external_pause_since = None
+            return
+        if self._external_pause_since is None:
+            self._external_pause_since = time.time()
+        elif (time.time() - self._external_pause_since) >= EXTERNAL_PAUSE_IDLE_TIMEOUT:
+            self._mark_external_source_ended()
+            return
+        # nothing changes on the Sonos side when the session goes stale, so there is no event
+        # to react to. Keep the check armed rather than relying on a single timer: an update
+        # that bails out early (a reconnect, a group parent we do not know yet) would
+        # otherwise consume it and leave the source paused for good.
+        self.mass.call_later(
+            EXTERNAL_PAUSE_IDLE_TIMEOUT + 1,
+            self.on_player_event,
+            None,
+            task_id=f"sonos_external_pause_{self.player_id}",
+        )
+
+    def _mark_external_source_ended(self) -> None:
+        """Stop presenting the source Sonos has loaded as something that can be resumed."""
+        # the updates that follow rebuild the state from Sonos, which keeps reporting the very
+        # same source as paused, so backdating the pause is what keeps this applied
+        self._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

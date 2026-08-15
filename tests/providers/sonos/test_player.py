@@ -2,13 +2,22 @@
 
 import asyncio
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
-from aiosonos.exceptions import CannotConnect
+from aiosonos.api.models import MusicService
+from aiosonos.api.models import PlayBackState as SonosPlayBackState
+from aiosonos.exceptions import CannotConnect, FailedCommand
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.sonos.const import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    SOURCE_SPOTIFY,
+)
 from music_assistant.providers.sonos.player import SonosPlayer
 
 
@@ -230,3 +239,213 @@ async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistan
 
     assert player.connected is False
     assert timer_mass._tracked_timers == {}
+
+
+def _make_externally_paused_player() -> tuple[SonosPlayer, MagicMock, MagicMock]:
+    """Create a player reporting a paused external source, as Sonos does for Spotify Connect."""
+    mass = MagicMock()
+    mass.closing = False
+    player, client = _bind_player(mass)
+    player._external_pause_since = None
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = SOURCE_SPOTIFY
+    player._attr_current_media = PlayerMedia(uri="spotify:track:1", title="Shout")
+    return player, mass, client
+
+
+def _refuse_to_resume(client: MagicMock) -> None:
+    """Let the speaker reject the play command, as it does for a session it no longer has."""
+    client.player.is_passive = False
+    client.player.group.play = AsyncMock(side_effect=FailedCommand("ERROR_PLAYBACK_FAILED"))
+
+
+def test_a_paused_external_source_is_left_alone_at_first() -> None:
+    """Test a source that just paused stays resumable, so a real pause still works."""
+    player, mass, _ = _make_externally_paused_player()
+
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+    # Sonos reports nothing when the session goes stale, so we must come back to it ourselves
+    assert mass.call_later.call_args.kwargs["task_id"] == "sonos_external_pause_sonos_player"
+
+
+def test_a_source_paused_within_the_grace_period_stays_resumable() -> None:
+    """Test a genuine pause can still be resumed from MA for as long as the grace period lasts."""
+    player, _, _ = _make_externally_paused_player()
+    player._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT + 5
+
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+    assert player._attr_current_media is not None
+
+
+def test_an_external_source_paused_for_too_long_is_reported_as_idle() -> None:
+    """Test an abandoned session stops looking resumable, so play starts our own queue."""
+    player, _, _ = _make_externally_paused_player()
+    player._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT - 1
+
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
+
+
+def test_the_pause_clock_only_runs_while_the_player_reports_paused() -> None:
+    """Test resuming the source clears the clock, so a later pause gets the full grace period."""
+    player, _, _ = _make_externally_paused_player()
+    player._expire_stale_external_pause()
+    assert player._external_pause_since is not None
+
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._expire_stale_external_pause()
+
+    assert player._external_pause_since is None
+
+
+def test_playback_that_is_not_paused_is_never_expired() -> None:
+    """Test our own playback (already mapped to idle by Sonos) never starts the clock."""
+    player, mass = _make_player()
+    player._external_pause_since = None
+    player._attr_playback_state = PlaybackState.IDLE
+    player._attr_active_source = None
+    player._attr_current_media = None
+
+    player._expire_stale_external_pause()
+
+    assert player._external_pause_since is None
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_a_pending_external_pause_check(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test unloading a player leaves no timer behind to re-evaluate a paused source."""
+    player, _ = _bind_player(timer_mass)
+    player._external_pause_since = None
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = SOURCE_SPOTIFY
+    player._attr_current_media = None
+    player._expire_stale_external_pause()
+    assert timer_mass._tracked_timers != {}
+
+    await player.on_unload()
+
+    assert timer_mass._tracked_timers == {}
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_refuses_to_resume_is_ended_right_away() -> None:
+    """Test a dead session does not have to sit out the grace period to be given up on."""
+    player, _, client = _make_externally_paused_player()
+    _refuse_to_resume(client)
+
+    await player.play()
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
+
+
+@pytest.mark.asyncio
+async def test_an_ended_source_is_not_picked_back_up_from_what_sonos_reports() -> None:
+    """Test the next update does not resurrect the source Sonos still reports as paused."""
+    player, _, client = _make_externally_paused_player()
+    _refuse_to_resume(client)
+    await player.play()
+
+    # Sonos keeps reporting the very same paused source on every update that follows
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = SOURCE_SPOTIFY
+    player._expire_stale_external_pause()
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_play_on_our_own_queue_still_raises() -> None:
+    """Test a failure that is not about a stale external source is not swallowed."""
+    player, _, client = _make_externally_paused_player()
+    player._attr_active_source = None
+    _refuse_to_resume(client)
+
+    with pytest.raises(FailedCommand):
+        await player.play()
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_change_does_not_end_a_live_source() -> None:
+    """Test the race the speaker reports while regrouping is not read as a source that is gone."""
+    player, _, client = _make_externally_paused_player()
+    client.player.is_passive = False
+    client.player.group.play = AsyncMock(
+        side_effect=FailedCommand("ERROR_PLAYBACK_FAILED groupCoordinatorChanged")
+    )
+
+    with pytest.raises(FailedCommand):
+        await player.play()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+
+
+def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
+    """Create a connected player whose speaker reports the Spotify Connect state we captured."""
+    mass = MagicMock()
+    mass.closing = False
+    player, client = _bind_player(mass)
+    player.connected = True
+    player._attr_source_list = []
+    player._attr_group_members = []
+    player._attr_can_group_with = set()
+    player._provider = MagicMock(instance_id="sonos")
+    player._external_pause_since = None
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    group = client.player.group
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+    group.position = 42.0
+    group.container_type = "spotify.connect"
+    group.active_service = MusicService.SPOTIFY
+    group.playback_metadata = {
+        "container": {"name": "Spotify", "service": {"name": "Spotify"}},
+        "currentItem": {"id": "1", "track": {"name": "Shout"}},
+    }
+    return player, mass
+
+
+def test_update_attributes_reports_a_long_paused_source_as_idle() -> None:
+    """Test the whole path, from what the speaker reports to the state we hand to MA."""
+    player, _ = _speaker_reporting_paused_spotify()
+
+    player.update_attributes()
+    while_paused = (player._attr_playback_state, player._attr_active_source)
+    assert while_paused == (PlaybackState.PAUSED, SOURCE_SPOTIFY)
+
+    # the speaker keeps reporting the very same paused source once the session goes stale
+    player._external_pause_since = time.time() - EXTERNAL_PAUSE_IDLE_TIMEOUT - 1
+    player.update_attributes()
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
+
+
+def test_the_pause_check_stays_armed_until_the_grace_period_is_over() -> None:
+    """Test an update that arrives meanwhile cannot consume the only pending check."""
+    player, mass = _speaker_reporting_paused_spotify()
+
+    player.update_attributes()
+    player.update_attributes()
+
+    assert mass.call_later.call_count == 2
+    delay, callback, event = mass.call_later.call_args.args
+    assert delay > EXTERNAL_PAUSE_IDLE_TIMEOUT
+    assert callback == player.on_player_event
+    assert event is None
