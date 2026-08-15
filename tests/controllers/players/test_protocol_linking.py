@@ -5736,7 +5736,7 @@ class TestUniversalPlayerMerging:
         assert "up_2" in controller._players
 
     def test_merge_keeps_player_with_more_protocols(self, mock_mass: MagicMock) -> None:
-        """Test that the universal player with more protocol links absorbs the other."""
+        """Test that of two equally old universal players, the one with more links wins."""
         controller = PlayerController(mock_mass)
         up_provider = create_mock_universal_provider(mock_mass)
 
@@ -5824,6 +5824,70 @@ class TestUniversalPlayerMerging:
 
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
+
+    def test_merge_keeps_the_older_player_with_fewer_protocols(self, mock_mass: MagicMock) -> None:
+        """
+        The oldest universal player wins even when it serves fewer protocols.
+
+        Its player id is the one API consumers have been bound to the longest, and the
+        links of the absorbed player move over anyway. A player stored before ids were
+        minted has no creation moment at all, which must count as the oldest of the two.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+        _wire_nested_config(
+            mock_mass,
+            {
+                CONF_PLAYERS: {
+                    # the established player, from before player ids were minted
+                    "up_old": {"player_id": "up_old", "enabled": True, "values": {}},
+                    "up_new": {
+                        "player_id": "up_new",
+                        "enabled": True,
+                        "values": {CONF_CREATED_AT: 9000},
+                    },
+                }
+            },
+        )
+
+        players: dict[str, UniversalPlayer] = {}
+        for player_id, protocol_ids in (("up_old", ["dlna_1"]), ("up_new", ["ap_1", "spb_1"])):
+            player = UniversalPlayer(
+                provider=up_provider,
+                player_id=player_id,
+                name=player_id,
+                device_info=DeviceInfo(model="Test", manufacturer="Test"),
+                protocol_player_ids=protocol_ids,
+            )
+            player._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+            player._cache.clear()
+            player.update_state(signal_event=False)
+            player.set_initialized()
+            players[player_id] = player
+
+        protocol_players: dict[str, MockPlayer] = {}
+        for protocol_id, domain in (("dlna_1", "dlna"), ("ap_1", "airplay"), ("spb_1", "sendspin")):
+            protocol_player = MockPlayer(
+                MockProvider(domain, mass=mock_mass),
+                protocol_id,
+                domain,
+                player_type=PlayerType.PROTOCOL,
+                identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+            )
+            protocol_player.set_initialized()
+            protocol_players[protocol_id] = protocol_player
+
+        controller._players = {**players, **protocol_players}
+        controller._add_protocol_link(players["up_old"], protocol_players["dlna_1"], "dlna")
+        controller._add_protocol_link(players["up_new"], protocol_players["ap_1"], "airplay")
+        controller._add_protocol_link(players["up_new"], protocol_players["spb_1"], "sendspin")
+
+        controller._check_merge_universal_players(players["up_new"])
+
+        domains = {link.protocol_domain for link in players["up_old"].linked_output_protocols}
+        assert domains == {"dlna", "airplay", "sendspin"}
+        assert protocol_players["ap_1"].protocol_parent_id == "up_old"
+        assert len(players["up_new"].linked_output_protocols) == 0
 
     @staticmethod
     def _setup_merge_tiebreak(

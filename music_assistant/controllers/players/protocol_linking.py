@@ -733,8 +733,8 @@ class ProtocolLinkingMixin:
         from a different protocol (e.g., DLNA-based universal player now matches
         AirPlay-based universal player because they share the same MAC address).
 
-        The universal player with more protocol links absorbs the other one. Only one merge
-        is performed per call; re-evaluation will catch cascading merges.
+        The oldest universal player absorbs the other one. Only one merge is performed
+        per call; re-evaluation will catch cascading merges.
         """
         if not (match := self._find_mergeable_universal_player(universal_player)):
             return
@@ -801,7 +801,7 @@ class ProtocolLinkingMixin:
         """
         Return which of the two universal players absorbs the other, as (keeper, absorbed).
 
-        The player with the most protocol links wins, on a tie the oldest one.
+        The oldest player wins, on a tie the one with the most protocol links.
 
         :param universal_player: The universal player the merge was triggered for.
         :param other_player: The universal player it matched with.
@@ -815,13 +815,21 @@ class ProtocolLinkingMixin:
         return other_player, universal_player
 
     def _merge_rank(self, universal_player: Player) -> tuple[int, int, str]:
-        """Return the sort key of a universal player in a merge, lowest wins."""
+        """
+        Return the sort key of a universal player in a merge, lowest wins.
+
+        Age comes first because the keeper's player id is the one that survives, and the
+        oldest player is the one API consumers have been bound to the longest. The links
+        of the absorbed player move over either way, so nothing is lost by keeping the
+        smaller one. A player from before player ids were minted has no stored moment and
+        counts as the oldest, which is exactly what it is.
+        """
         created_at = self.mass.config.get(
             f"{CONF_PLAYERS}/{universal_player.player_id}/values/{CONF_CREATED_AT}", 0
         )
         return (
-            -len(universal_player.linked_output_protocols),
             created_at if isinstance(created_at, int) else 0,
+            -len(universal_player.linked_output_protocols),
             universal_player.player_id,
         )
 
