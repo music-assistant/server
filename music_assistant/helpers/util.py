@@ -1626,7 +1626,7 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     from charset_normalizer import from_bytes  # noqa: PLC0415
 
     try:
-        if match := await asyncio.to_thread(lambda: from_bytes(data).best()):
+        if match := (await asyncio.to_thread(from_bytes, data)).best():
             return match.encoding
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)

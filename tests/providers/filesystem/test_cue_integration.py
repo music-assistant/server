@@ -191,8 +191,8 @@ class TestReadCueFile:
         assert not content.startswith("\ufeff")
 
     @pytest.mark.asyncio
-    async def test_decodes_non_utf8_tolerantly(self, tmp_path: Path) -> None:
-        """Non-UTF-8 bytes are decoded without raising."""
+    async def test_decodes_latin1_bytes(self, tmp_path: Path) -> None:
+        """Bytes that are not valid UTF-8 keep their accented characters."""
         # 0xFC is "ü" in Latin-1 but invalid as a UTF-8 continuation byte
         (tmp_path / "a.cue").write_bytes(b'TITLE "M\xfcller"\n')
         provider = _make_provider(base_path=str(tmp_path))
