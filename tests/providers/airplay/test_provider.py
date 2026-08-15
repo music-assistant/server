@@ -1006,28 +1006,29 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
 
 
 def _password_marker_provider(
-    reviewed: bool, markers: dict[str, bool]
+    reviewed: bool, markers: dict[str, bool], player_type: str = "player"
 ) -> tuple[AirPlayProvider, MagicMock]:
-    """Build a provider whose config holds the given stored password markers."""
+    """Build a provider whose stored configs hold the given password markers."""
     prov = _make_provider()
     config = cast("MagicMock", prov.mass.config)
     config.get_raw_provider_config_value.return_value = reviewed
-    config.get_player_configs = AsyncMock(
-        return_value=[MagicMock(player_id=player_id) for player_id in markers]
-    )
+    config.get.return_value = {
+        player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": player_type}
+        for player_id in markers
+    } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
     config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default: markers[
         player_id
     ]
     return prov, config
 
 
-async def test_stale_password_markers_are_dropped_once() -> None:
+def test_stale_password_markers_are_dropped_once() -> None:
     """Verdicts from releases that could not tell a refusal apart are not trusted."""
     prov, config = _password_marker_provider(
         reviewed=False, markers={"ap_latched": True, "ap_clean": False}
     )
 
-    await prov._drop_unverified_password_markers()
+    prov._drop_unverified_password_markers()
 
     config.set_raw_player_config_value.assert_called_once_with(
         "ap_latched", "password_invalid", False
@@ -1037,7 +1038,25 @@ async def test_stale_password_markers_are_dropped_once() -> None:
     )
 
 
-async def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
+def test_protocol_players_are_reviewed_too() -> None:
+    """
+    Every non-Apple receiver is registered as a protocol player.
+
+    Those are exactly the ones a password applies to, and the config controller's
+    own listing drops them, so the review has to read the stored configs itself.
+    """
+    prov, config = _password_marker_provider(
+        reviewed=False, markers={"spb_latched": True}, player_type="protocol"
+    )
+
+    prov._drop_unverified_password_markers()
+
+    config.set_raw_player_config_value.assert_called_once_with(
+        "spb_latched", "password_invalid", False
+    )
+
+
+def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
     """
     A later restart must leave a fresh verdict alone.
 
@@ -1046,13 +1065,13 @@ async def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
     """
     prov, config = _password_marker_provider(reviewed=True, markers={"ap_latched": True})
 
-    await prov._drop_unverified_password_markers()
+    prov._drop_unverified_password_markers()
 
     config.set_raw_player_config_value.assert_not_called()
-    config.get_player_configs.assert_not_called()
+    config.get.assert_not_called()
 
 
-async def test_a_failed_review_is_retried_on_the_next_load() -> None:
+def test_a_failed_review_is_retried_on_the_next_load() -> None:
     """
     A review that dies part-way leaves nothing behind claiming it ran.
 
@@ -1063,6 +1082,6 @@ async def test_a_failed_review_is_retried_on_the_next_load() -> None:
     config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
 
     with pytest.raises(RuntimeError):
-        await prov._drop_unverified_password_markers()
+        prov._drop_unverified_password_markers()
 
     config.set_raw_provider_config_value.assert_not_called()

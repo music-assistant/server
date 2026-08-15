@@ -21,6 +21,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
+    CONF_PLAYERS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
 )
@@ -223,7 +224,7 @@ class AirPlayProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._set_pyatv_log_level()
-        await self._drop_unverified_password_markers()
+        self._drop_unverified_password_markers()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
         # Shared audible instants for in-flight announcements, keyed by
@@ -1175,7 +1176,7 @@ class AirPlayProvider(PlayerProvider):
             with suppress(Exception):
                 await writer.wait_closed()
 
-    async def _drop_unverified_password_markers(self) -> None:
+    def _drop_unverified_password_markers(self) -> None:
         """
         Clear the stored "password rejected" verdicts left by earlier releases, once.
 
@@ -1189,17 +1190,18 @@ class AirPlayProvider(PlayerProvider):
             self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
         ):
             return
-        for player_config in await self.mass.config.get_player_configs(self.instance_id):
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
             if not self.mass.config.get_raw_player_config_value(
-                player_config.player_id, CONF_PASSWORD_INVALID, False
+                player_id, CONF_PASSWORD_INVALID, False
             ):
                 continue
-            self.logger.info(
-                "Clearing the unverified password marker on %s", player_config.player_id
-            )
-            self.mass.config.set_raw_player_config_value(
-                player_config.player_id, CONF_PASSWORD_INVALID, False
-            )
+            self.logger.info("Clearing the unverified password marker on %s", player_id)
+            self.mass.config.set_raw_player_config_value(player_id, CONF_PASSWORD_INVALID, False)
         # last, so a failure part-way through leaves the review to be retried on
         # the next load instead of stranding the players it never reached
         self.mass.config.set_raw_provider_config_value(
