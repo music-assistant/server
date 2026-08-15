@@ -34,7 +34,6 @@ from .constants import (
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
-    ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
@@ -244,17 +243,13 @@ class AirPlayPlayer(Player):
     @property
     def password_required(self) -> bool:
         """Return if the device announces that it is password protected."""
-        # Three announcement forms, verified against live devices: receivers
-        # publish the classic pw boolean and/or the password bit in sf/flags,
-        # except Apple TVs - they keep the password bit raised at all times, so
-        # for them only the tvOS-specific flags bit counts. Enforcement can also
-        # exist WITHOUT any announcement (stale TXT after the password was
-        # enabled); that case is caught at connect time via password_invalid.
-        flags = self._get_flags()
-        if flags & ATV_PASSWORD_BIT:
-            return True
-        is_apple_tv = (self.device_info.model or "").startswith("AppleTV")
-        if flags & PASSWORD_BIT and not is_apple_tv:
+        # Two announcement forms, verified against live devices (including Apple
+        # TVs, which raise the password bit only while a password is actually
+        # set): receivers publish the password bit in sf/flags and/or the classic
+        # pw boolean. Enforcement can also exist WITHOUT any announcement (stale
+        # TXT after the password was enabled); that case is caught at connect
+        # time via password_invalid.
+        if self._get_flags() & PASSWORD_BIT:
             return True
         if raop_info := self.raop_discovery_info:
             return (raop_info.decoded_properties.get("pw") or "").lower() == "true"
