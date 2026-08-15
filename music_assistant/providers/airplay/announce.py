@@ -50,7 +50,7 @@ from .constants import (
 from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncGenerator, Iterable
 
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
@@ -375,7 +375,11 @@ async def _announce_with_session(
                 announcement,
                 requested_volume=volume_level,
             )
-            await session.start(render.get_stream(session_pcm_format))
+            # The clip is served with its silence tail: the legacy RAOP flow
+            # reports end of stream the moment the last fed sample is audible,
+            # and a volume command is dropped once a stream has ended - so
+            # without the tail the restore below never reaches the speaker.
+            await session.start(_clip_with_tail(render, session_pcm_format))
             player._transitioning = False
         # The clip is anchored: wait out the start lead plus the clip, then the
         # pad that covers the jitter between the anchored and the true audible
@@ -606,6 +610,26 @@ async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat)
     clip = bytearray()
     async for chunk in render.get_stream(pcm_format):
         clip.extend(chunk)
+    clip.extend(_clip_silence_tail(pcm_format))
+    return await asyncio.to_thread(_write_clip_file, clip)
+
+
+async def _clip_with_tail(
+    render: AnnouncementRender, pcm_format: AudioFormat
+) -> AsyncGenerator[bytes]:
+    """
+    Yield the announcement clip followed by the trailing silence.
+
+    :param render: The (finished) announcement render to read.
+    :param pcm_format: The raw PCM format to yield.
+    """
+    async for chunk in render.get_stream(pcm_format):
+        yield chunk
+    yield _clip_silence_tail(pcm_format)
+
+
+def _clip_silence_tail(pcm_format: AudioFormat) -> bytes:
+    """Return the silence tail appended to an announcement clip, in the given PCM format."""
     # Wire sizes come from the content type: at 24-bit the stdin carrier is
     # s32le while bit_depth stays 24, so bit_depth-derived sizes are wrong.
     bytes_per_sample = {
@@ -615,8 +639,7 @@ async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat)
         ContentType.PCM_F32LE: 4,
     }.get(pcm_format.content_type, pcm_format.bit_depth // 8)
     trail_frames = int(pcm_format.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
-    clip.extend(bytes(trail_frames * bytes_per_sample * pcm_format.channels))
-    return await asyncio.to_thread(_write_clip_file, clip)
+    return bytes(trail_frames * bytes_per_sample * pcm_format.channels)
 
 
 def _write_clip_file(data: bytes | bytearray) -> str:

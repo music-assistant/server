@@ -16,6 +16,7 @@ from music_assistant.providers.airplay import announce
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
     AIRPLAY_ANNOUNCE_DUCK_DB,
+    AIRPLAY_ANNOUNCE_DUCK_TAIL_S,
     AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS,
     AIRPLAY_PCM_FORMAT,
 )
@@ -50,7 +51,8 @@ def _make_render(duration: float = 1.5) -> MagicMock:
     render.wait_finished = AsyncMock(return_value=duration)
 
     async def get_stream(_output_format: Any) -> AsyncGenerator[bytes]:
-        yield b"\x00" * 64
+        # non-silent, so a clip is distinguishable from the silence around it
+        yield b"\xff" * 64
 
     render.get_stream = get_stream
     return render
@@ -401,6 +403,42 @@ async def test_session_path_restores_the_volume_when_the_clip_is_cut_short() -> 
 
     # the session is still up here, so the restore reaches the receiver
     assert events == ["volume=60", "volume=25", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_session_path_serves_the_clip_with_its_silence_tail() -> None:
+    """The dedicated session keeps feeding past the clip, so the volume restore lands in time."""
+    player = _make_player("solo")
+    player.playback_state = PlaybackState.IDLE
+    player._get_sync_clients = MagicMock(return_value=[player])
+    player._get_session_pcm_format = AsyncMock(return_value=HIRES_PCM_FORMAT)
+    render = _make_render(duration=0.01)
+    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    served = bytearray()
+
+    with (
+        patch.object(announce, "AirPlayStreamSession") as session_cls,
+        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.0),
+    ):
+
+        async def start(source: AsyncGenerator[bytes]) -> None:
+            async for chunk in source:
+                served.extend(chunk)
+
+        session = session_cls.return_value
+        session.start = AsyncMock(side_effect=start)
+        session.stop = AsyncMock()
+        session.start_time = 0.0
+        await announce.play_announcement(player, _make_announcement(), None)
+
+    # the tail is sized on the content type: this format carries 24 bit over an
+    # s32le wire, so a bit_depth-derived size would come out a quarter short
+    tail_bytes = (
+        int(HIRES_PCM_FORMAT.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
+        * 4
+        * HIRES_PCM_FORMAT.channels
+    )
+    assert served == b"\xff" * 64 + bytes(tail_bytes)
 
 
 @pytest.mark.asyncio
