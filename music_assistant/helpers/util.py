@@ -1623,14 +1623,20 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
 
     # imported here to keep the detector out of the idle import footprint:
     # it is only needed for the rare text that is not UTF-8
-    from charset_normalizer import from_bytes  # noqa: PLC0415
+    import chardet  # noqa: PLC0415
 
     try:
-        if match := (await asyncio.to_thread(from_bytes, data)).best():
-            return match.encoding
+        detected = await asyncio.to_thread(chardet.detect, data)
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
-    return fallback
+        return fallback
+    if not (encoding := detected["encoding"]):
+        return fallback
+    # the reported confidence is deliberately ignored: CUE sheets and playlists are
+    # nearly all ASCII keywords, which holds the score far below any usable threshold
+    # even though the charset itself is named correctly (support #6093)
+    LOGGER.debug("Detected charset %s (confidence %.2f)", encoding, detected["confidence"])
+    return encoding
 
 
 def parse_optional_bool(value: Any) -> bool | None:
