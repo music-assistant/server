@@ -14,6 +14,55 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
 
+
+class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
+    """Notify server for async_upnp_client which uses the MA webserver."""
+
+    def __init__(
+        self,
+        requester: UpnpRequester,
+        mass: MusicAssistant,
+    ) -> None:
+        """Initialize."""
+        self.mass = mass
+        self.event_handler = UpnpEventHandler(self, requester)
+        self.mass.streams.register_dynamic_route("/notify", self._handle_request, method="NOTIFY")
+
+    @property
+    def callback_url(self) -> str:
+        """Return callback URL on which we are callable."""
+        return f"{self.mass.streams.base_url}/notify"
+
+    async def _handle_request(self, request: Request) -> Response:
+        """Handle incoming requests."""
+        if request.method != "NOTIFY":
+            return Response(status=405)
+
+        # follow DLNA example and decode leniently.
+        body_bytes = await request.read()
+        body = body_bytes.decode("utf-8", errors="replace")
+
+        # transform aiohttp request to async_upnp_client request
+        http_request = HttpRequest(
+            method=request.method,
+            url=str(request.url),
+            headers=request.headers,
+            body=body,
+        )
+
+        try:
+            status = await self.event_handler.handle_notify(http_request)
+        except ET.ParseError as err:
+            self.mass.logger.debug(
+                "Ignoring malformed XML in DLNA notify from %s: %s",
+                request.remote,
+                err,
+            )
+            return Response(status=400)
+
+        return Response(status=status)
+
+
 def generate_string(track_details):
     title = track_details.get("title", "") or ""
     uri = track_details.get("uri", "") or ""
@@ -31,43 +80,6 @@ def generate_string(track_details):
         "</item>"
         "</DIDL-Lite>"
     )
-
-class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
-    """Notify server for async_upnp_client which uses the MA webserver."""
-
-    def __init__(
-        self,
-        requester: UpnpRequester,
-        mass: MusicAssistant,
-    ) -> None:
-        """Initialize."""
-        self.mass = mass
-        self.event_handler = UpnpEventHandler(self, requester)
-        # self.mass.streams.register_dynamic_route("/notify", self._handle_request, method="NOTIFY")
-
-    async def _handle_request(self, request: Request) -> Response:
-        """Handle incoming requests."""
-        if request.method != "NOTIFY":
-            return Response(status=405)
-
-        # transform aiohttp request to async_upnp_client request
-        http_request = HttpRequest(
-            method=request.method,
-            url=str(request.url),
-            headers=request.headers,
-            body=await request.text(),
-        )
-
-        status = await self.event_handler.handle_notify(http_request)
-
-        return Response(status=status)
-
-    @property
-    def callback_url(self) -> str:
-        """Return callback URL on which we are callable."""
-        return f"{self.mass.streams.base_url}/notify"
-
-
 
 # FIXME: text must be URL encoded - no & allowed
 # NOTE: does didl-lite do this?

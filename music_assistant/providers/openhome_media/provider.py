@@ -92,7 +92,7 @@ class OpenHomePlayerProvider(PlayerProvider):
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
 
         # use Music Assistant dynamic routes to receive subscribed messages
-        # self.notify_server = OpenHomeNotifyServer(self.requester, self.mass)
+        self.notify_server = OpenHomeNotifyServer(self.requester, self.mass)
 
     async def unload(self, is_removed: bool = False) -> None:
         """

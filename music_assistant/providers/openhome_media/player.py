@@ -137,61 +137,12 @@ class OpenHomePlayer(Player):
                 assert isinstance(self.provider, OpenHomePlayerProvider)  # for type checking
             upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
 
-            # EITHER get this to work - I failed
-            # Create profile wrapper for device and use event_handler from Provider
-            # self.event_handler = UpnpEventHandler(self, self.provider.requester)
-            # self.profile = OhmDevice(upnp_device, self.provider.notify_server.event_handler)
-
-            # OR
-            # Use per player notify server
-            source = (
-                get_local_ip(upnp_device.device_url),
-                0,
-            )  # NOTE: 0 means random dynamic port
-            self.notify_server = AiohttpNotifyServer(self.provider.requester, source=source)
-            await self.notify_server.async_start_server()
-            event_handler = self.notify_server.event_handler
-
             # Create profile wrapper
             if OhmDevice.is_profile_device(upnp_device):
-                self.profile = OhmDevice(upnp_device, event_handler)
+                self.profile = OhmDevice(upnp_device, self.provider.notify_server.event_handler)
             else:
                 self.logger.debug("Device is not an OpenHome Profile: %s", upnp_device)
                 return
-
-            # assign device info
-            self._attr_device_info = DeviceInfo(
-                model=self.profile.model_name,
-                manufacturer=self.profile.manufacturer,
-                model_id=self.profile.model_number,
-                manufacturer_id=self.profile.device.manufacturer_url,
-            )
-
-            # Identifiers in descending priority MAC_ADDRESS, UUID, IP_ADDRESS
-            # MAC address is extracted from UUID if format of UDN is UUID
-            # OpenHome Player uses machine name so will be excluded
-            if OpenHomePlayer.is_valid_uuid(self.player_id):
-                mac_address = OpenHomePlayer.get_mac_from_uuid(self.player_id)
-                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
-
-            # Add player_id (= UDN) as UUID identifier for identifying player across protocols
-            # Strip the "uuid:" prefix if present for proper matching
-            if self.player_id:
-                self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id.removeprefix("uuid:"))
-
-            # Try to extract just the IP from the URL for matching
-            # All currently known examples have a higher priority identifier available
-            ip_address = self.profile.device.presentation_url or self.description_url
-            with suppress(ValueError):
-                parsed = urlparse(ip_address)
-                if parsed.hostname:
-                    self._attr_device_info.add_identifier(
-                        IdentifierType.IP_ADDRESS, parsed.hostname
-                    )
-
-            # Get the sources available
-            self.sources = await self.profile.async_visible_sources()
-            self._attr_source_list = self._source_list_from_sources(self.sources)
 
             # Subscribe to event notifications
             try:
@@ -210,6 +161,41 @@ class OpenHomePlayer(Player):
                 self.profile = None
                 self.logger.debug("Error while subscribing during device connect: %r", err)
                 raise
+            else:
+                # connect was successful, update device info
+                # assign device info
+                self._attr_device_info = DeviceInfo(
+                    model=self.profile.model_name,
+                    manufacturer=self.profile.manufacturer,
+                    model_id=self.profile.model_number,
+                    manufacturer_id=self.profile.device.manufacturer_url,
+                )
+
+                # Identifiers in descending priority MAC_ADDRESS, UUID, IP_ADDRESS
+                # MAC address is extracted from UUID if format of UDN is UUID
+                # OpenHome Player uses machine name so will be excluded
+                if OpenHomePlayer.is_valid_uuid(self.player_id):
+                    mac_address = OpenHomePlayer.get_mac_from_uuid(self.player_id)
+                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+
+                # Add player_id (= UDN) as UUID identifier for identifying player across protocols
+                # Strip the "uuid:" prefix if present for proper matching
+                if self.player_id:
+                    self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id.removeprefix("uuid:"))
+
+                # Try to extract just the IP from the URL for matching
+                # All currently known examples have a higher priority identifier available
+                ip_address = self.profile.device.presentation_url or self.description_url
+                with suppress(ValueError):
+                    parsed = urlparse(ip_address)
+                    if parsed.hostname:
+                        self._attr_device_info.add_identifier(
+                            IdentifierType.IP_ADDRESS, parsed.hostname
+                        )
+
+                # Get the sources available
+                self.sources = await self.profile.async_visible_sources()
+                self._attr_source_list = self._source_list_from_sources(self.sources)
 
     def _handle_event(
             self,
