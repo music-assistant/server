@@ -20,7 +20,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.config_entries import ConfigEntry, CoreConfig
+from music_assistant_models.config_entries import ConfigEntry, CoreConfig, PlayerConfig
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -50,9 +50,11 @@ from music_assistant.constants import (
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ICON,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
+    CONF_OUTPUT_CODEC,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
@@ -4315,6 +4317,90 @@ class TestUnregisterTeardown:
 
         assert "boom" not in controller._players
         assert player.unloaded
+
+
+class TestConfigChangeRestartsPlayback:
+    """Test that a changed player setting which needs a reload restarts playback."""
+
+    @staticmethod
+    def _config(*, requires_reload: bool) -> PlayerConfig:
+        """Build a PlayerConfig holding a single output codec entry."""
+        return PlayerConfig(
+            provider="test_prov",
+            player_id="player_1",
+            values={
+                CONF_OUTPUT_CODEC: ConfigEntry(
+                    key=CONF_OUTPUT_CODEC,
+                    type=ConfigEntryType.STRING,
+                    label="Output codec",
+                    value="flac",
+                    requires_reload=requires_reload,
+                )
+            },
+        )
+
+    @staticmethod
+    def _prepare(mock_mass: MagicMock, queue_state: PlaybackState) -> PlayerController:
+        """Register a player whose active queue is in the given state."""
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.state.active_source = "player_1"
+        player.on_config_updated = AsyncMock()
+        controller._players = {"player_1": player}
+        queue = MagicMock()
+        queue.queue_id = "player_1"
+        queue.state = queue_state
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        mock_mass.player_queues.stop = AsyncMock()
+        return controller
+
+    async def test_reload_setting_restarts_playback(self, mock_mass: MagicMock) -> None:
+        """Test that changing a reload-requiring setting stops and resumes the queue."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_awaited_once_with("player_1")
+        mock_mass.call_later.assert_called_once_with(
+            1, mock_mass.player_queues.resume, "player_1", False
+        )
+
+    async def test_plain_setting_does_not_restart_playback(self, mock_mass: MagicMock) -> None:
+        """Test that a setting which applies on the fly leaves playback alone."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=False), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
+
+    async def test_untouched_reload_setting_does_not_restart_playback(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that only a changed reload-requiring setting restarts playback."""
+        controller = self._prepare(mock_mass, PlaybackState.PLAYING)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_ICON}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
+
+    async def test_idle_queue_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """Test that a reload-requiring change does not start playback on an idle queue."""
+        controller = self._prepare(mock_mass, PlaybackState.IDLE)
+
+        await controller.on_player_config_change(
+            self._config(requires_reload=True), {f"values/{CONF_OUTPUT_CODEC}"}
+        )
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        mock_mass.call_later.assert_not_called()
 
 
 if __name__ == "__main__":
