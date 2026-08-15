@@ -249,7 +249,9 @@ class SonosPlayer(Player):
         try:
             await self.group_controller.play()
         except FailedCommand as err:
-            if self._attr_active_source is None:
+            if self._attr_active_source is None or "groupCoordinatorChanged" in str(err):
+                # only a source Sonos loaded itself can go away like this, and a coordinator
+                # change is a race condition rather than a source that disappeared
                 raise
             # the loaded source refused to resume, so it is not merely paused after all
             self.logger.debug(

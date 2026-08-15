@@ -254,7 +254,7 @@ def _make_externally_paused_player() -> tuple[SonosPlayer, MagicMock, MagicMock]
 def _refuse_to_resume(client: MagicMock) -> None:
     """Let the speaker reject the play command, as it does for a session it no longer has."""
     client.player.is_passive = False
-    client.player.group.play = AsyncMock(side_effect=FailedCommand("ERROR_NOT_FOUND"))
+    client.player.group.play = AsyncMock(side_effect=FailedCommand("ERROR_PLAYBACK_FAILED"))
 
 
 def test_a_paused_external_source_is_left_alone_at_first() -> None:
@@ -375,3 +375,19 @@ async def test_a_failing_play_on_our_own_queue_still_raises() -> None:
 
     with pytest.raises(FailedCommand):
         await player.play()
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_change_does_not_end_a_live_source() -> None:
+    """Test the race the speaker reports while regrouping is not read as a source that is gone."""
+    player, _, client = _make_externally_paused_player()
+    client.player.is_passive = False
+    client.player.group.play = AsyncMock(
+        side_effect=FailedCommand("ERROR_PLAYBACK_FAILED groupCoordinatorChanged")
+    )
+
+    with pytest.raises(FailedCommand):
+        await player.play()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
