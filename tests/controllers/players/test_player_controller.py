@@ -60,6 +60,7 @@ from music_assistant.constants import (
     CONF_VOLUME_STEP,
 )
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
@@ -2488,6 +2489,257 @@ class TestGroupVolumeOrdering:
         assert players["leader"].state.volume_level == 30
 
 
+class LateReportingDevice:
+    """A mocked device that only reports the volume it was given back when told to."""
+
+    def __init__(self, command_delay: float = 0) -> None:
+        """
+        Initialize the mocked device.
+
+        :param command_delay: Seconds a single volume command takes to reach the device.
+        """
+        self.commands: list[int] = []
+        self._command_delay = command_delay
+        self._pending: dict[MockPlayer, int] = {}
+
+    def bind(self, player: MockPlayer) -> None:
+        """Make the given player answer its volume commands like this device."""
+
+        async def _volume_set(volume: int, _player: MockPlayer = player) -> None:
+            self.commands.append(volume)
+            if self._command_delay:
+                await asyncio.sleep(self._command_delay)
+            self._pending[_player] = volume
+
+        player.volume_set = AsyncMock(side_effect=_volume_set)  # type: ignore[method-assign]
+
+    def report(self) -> None:
+        """Report the volume of every command received so far back to the player state."""
+        for player, volume in self._pending.items():
+            player._attr_volume_level = volume
+            player.update_state(force_update=True, signal_event=False)
+        self._pending.clear()
+
+
+class TestVolumeNudgeTarget:
+    """Volume nudges step from the level last commanded, not from a lagging report."""
+
+    def _make_player(
+        self, mock_mass: MagicMock, command_delay: float = 0
+    ) -> tuple[PlayerController, MockPlayer, LateReportingDevice]:
+        """
+        Build a single player at volume 50 whose device reports back on request.
+
+        :param command_delay: Seconds a single volume command takes to reach the device.
+        """
+        controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(5)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_volume_level = 50
+        device = LateReportingDevice(command_delay)
+        device.bind(player)
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        # a second, forced pass so the player derives its group volume from its own state
+        player.update_state(force_update=True, signal_event=False)
+        return controller, player, device
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, command_delay: float = 0
+    ) -> tuple[PlayerController, dict[str, MockPlayer], LateReportingDevice]:
+        """
+        Build a leader synced to one member, both at volume 50, both late reporting.
+
+        :param command_delay: Seconds a single volume command takes to reach the device.
+        """
+        controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(5)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        device = LateReportingDevice(command_delay)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_volume_level = 50
+            device.bind(player)
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second, forced pass so the leader derives its group volume from the member
+        for player in players.values():
+            player.update_state(force_update=True, signal_event=False)
+        return controller, players, device
+
+    async def test_nudges_up_stack_before_the_player_reports_back(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Three volume ups in a row climb, even with no report in between."""
+        controller, _player, device = self._make_player(mock_mass)
+
+        for _ in range(3):
+            await controller.cmd_volume_up("player_1")
+
+        assert device.commands == [55, 60, 65]
+
+    async def test_nudges_down_stack_before_the_player_reports_back(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Three volume downs in a row descend, even with no report in between."""
+        controller, _player, device = self._make_player(mock_mass)
+
+        for _ in range(3):
+            await controller.cmd_volume_down("player_1")
+
+        assert device.commands == [45, 40, 35]
+
+    async def test_nudges_that_overlap_each_get_their_own_step(self, mock_mass: MagicMock) -> None:
+        """Volume ups that arrive while an earlier one is still on its way all count."""
+        controller, _player, device = self._make_player(mock_mass, command_delay=0.05)
+
+        await asyncio.gather(*(controller.cmd_volume_up("player_1") for _ in range(3)))
+
+        assert device.commands == [55, 60, 65]
+
+    async def test_a_queued_nudge_does_not_undo_the_level_a_later_one_claimed(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A nudge waiting for the volume lock may not take the level back down."""
+        controller, _player, device = self._make_player(mock_mass, command_delay=0.05)
+        tasks = [asyncio.create_task(controller.cmd_volume_up("player_1")) for _ in range(3)]
+        # let all three claim their level; the second and third then queue on the lock
+        await asyncio.sleep(0)
+        # wait for the second one to reach the device, so a nudge sent now reads whatever
+        # that (by then oldest) command left behind
+        while len(device.commands) < 2:
+            await asyncio.sleep(0.005)
+        tasks.append(asyncio.create_task(controller.cmd_volume_up("player_1")))
+
+        await asyncio.gather(*tasks)
+
+        assert device.commands == [55, 60, 65, 70]
+
+    async def test_a_group_nudge_moves_every_member_up(self, mock_mass: MagicMock) -> None:
+        """A group nudge up may not send a member the other way."""
+        controller, players, device = self._make_synced_pair(mock_mass)
+        # the loudest member is the one that was just turned down on its own, so the
+        # level it still reports sits above the level the group is being stepped to
+        players["member"]._attr_volume_level = 80
+        for _ in range(3):
+            for player in players.values():
+                player._cache.clear()
+                player.update_state(force_update=True, signal_event=False)
+
+        await controller.cmd_volume_set("member", 40)
+        await controller.cmd_group_volume_up("leader")
+
+        assert device.commands == [40, 55, 46]
+
+    async def test_a_group_nudge_on_an_ungrouped_player_steps_its_own_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group nudge falls back to the player itself, which has no group to step."""
+        controller, _player, device = self._make_player(mock_mass)
+
+        for _ in range(3):
+            await controller.cmd_group_volume_up("player_1")
+
+        assert device.commands == [55, 60, 65]
+
+    async def test_a_nudge_steps_from_the_level_the_slider_was_left_at(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A nudge right after a volume set steps from that set level."""
+        controller, _player, device = self._make_player(mock_mass)
+
+        await controller.cmd_volume_set("player_1", 20)
+        await controller.cmd_volume_up("player_1")
+
+        assert device.commands == [20, 25]
+
+    async def test_a_change_on_the_device_wins_once_the_last_command_ages_out(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A volume turned down on the device itself is the base of the next nudge."""
+        controller, player, device = self._make_player(mock_mass)
+        await controller.cmd_volume_up("player_1")
+        device.report()
+        # the volume is turned down on the device itself, well after that command
+        player._attr_volume_level = 20
+        player.update_state(force_update=True, signal_event=False)
+
+        with patch.object(players_controller, "VOLUME_TARGET_EXPIRY", 0):
+            await controller.cmd_volume_up("player_1")
+
+        assert device.commands[-1] == 25
+
+    async def test_group_nudges_up_stack_before_the_players_report_back(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Three group volume ups in a row climb, even with no report in between."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        for _ in range(3):
+            await controller.cmd_group_volume_up("leader")
+
+        assert device.commands == [55, 55, 60, 60, 65, 65]
+
+    async def test_group_nudges_down_stack_before_the_players_report_back(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Three group volume downs in a row descend, even with no report in between."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        for _ in range(3):
+            await controller.cmd_group_volume_down("leader")
+
+        assert device.commands == [45, 45, 40, 40, 35, 35]
+
+    async def test_a_group_nudge_after_a_member_was_set_on_its_own_keeps_the_step(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Setting one member does not send the group back to the level it reports."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        await controller.cmd_group_volume_up("leader")
+        await controller.cmd_volume_set("member", 10)
+        await controller.cmd_group_volume_up("leader")
+
+        # the loudest member was commanded to 55, so the group steps from there, and the
+        # member that was just turned down keeps its share of the group volume
+        assert device.commands == [55, 55, 10, 60, 20]
+
+    async def test_a_group_volume_beyond_the_range_does_not_pin_the_next_nudge(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An out of range group volume leaves the members at 100, not above it."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        await controller.cmd_group_volume("leader", 200)
+        await controller.cmd_group_volume_down("leader")
+
+        assert device.commands == [100, 100, 95, 95]
+
+    async def test_a_group_nudge_from_a_member_shares_the_target_of_its_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Group nudges addressed to a member and to its leader step the same group."""
+        controller, _players, device = self._make_synced_pair(mock_mass)
+
+        await controller.cmd_group_volume_up("leader")
+        await controller.cmd_group_volume_up("member")
+
+        assert device.commands == [55, 55, 60, 60]
+
+
 class TestFakeMuteInGroup:
     """A fake muted player in a group follows the mute lock, just like a native mute."""
 
@@ -2549,6 +2801,40 @@ class TestFakeMuteInGroup:
             player.update_state()
             assert player.state.volume_muted is True
             assert player.state.volume_level == 0
+
+    async def test_a_muted_member_does_not_inflate_a_group_nudge(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A volume level a muted member never receives may not step the group."""
+        controller, players = self._make_synced_pair(mock_mass)
+        controller.config = _volume_step_config(5)
+        await controller.cmd_volume_mute("member", True)
+        # let the group volume of the leader account for the muted member
+        players["leader"].update_state(signal_event=False)
+        # the member is held silent, so this level never reaches it
+        await controller.cmd_volume_set("member", 60)
+
+        await controller.cmd_group_volume_up("leader")
+
+        players["leader"].update_state()
+        assert players["leader"].state.volume_level == 55
+
+    async def test_a_nudge_after_unmuting_steps_from_the_restored_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Unmuting hands the next nudge the volume it restored, not the muted 0."""
+        controller, players = self._make_synced_pair(mock_mass)
+        controller.config = _volume_step_config(5)
+        await controller.cmd_volume_mute("member", True)
+        players["leader"].update_state(signal_event=False)
+        # a level set while muted never reaches the member
+        await controller.cmd_volume_set("member", 60)
+
+        await controller.cmd_volume_mute("member", False)
+        await controller.cmd_volume_up("member")
+
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 55
 
     async def test_group_volume_down_keeps_a_muted_member_muted(self, mock_mass: MagicMock) -> None:
         """Turning a group down leaves a single muted member silent, at its own volume."""
