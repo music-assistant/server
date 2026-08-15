@@ -51,7 +51,7 @@ from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
-from music_assistant.providers.openhome.constants import (CONF_USE_DEVICE_RADIO_AS_SOURCE,
+from music_assistant.providers.openhome_media.constants import (CONF_USE_DEVICE_RADIO_AS_SOURCE,
                                                           CONF_USE_DEVICE_PLAYLIST_AS_QUEUE, )
 
 if TYPE_CHECKING:

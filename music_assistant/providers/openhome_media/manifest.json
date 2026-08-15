@@ -1,6 +1,6 @@
 {
   "type": "player",
-  "domain": "openhome",
+  "domain": "openhome_media",
   "stage": "experimental",
   "name": "OpenHome Media",
   "description": "Stream music to OpenHome Media compatible devices such as Linn DS/DSM.",
