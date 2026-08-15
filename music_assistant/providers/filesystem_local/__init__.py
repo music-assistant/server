@@ -1750,6 +1750,49 @@ class LocalFileSystemProvider(MusicProvider):
         )
         return resolved
 
+    def _resolve_directory_by_file(
+        self, filename: str, track_path: str | None, start_dir: str | None = None
+    ) -> str | None:
+        """
+        Try to identify a directory by testing for a specific file.
+
+        Search for artist or album directory by walking up the tree and test
+        for existence of a specific file (for example "artist.nfo" or "album.nfo").
+
+        Meant to be used as a fallback when no other search method yields a valid path for album or artist.
+
+        The search is capped to go up two directories, but stops at the root of our filesystem.
+
+        :param filename: The filename to search.
+        :param start_dir: Directory to start the search in. Will be used as start if not None.
+        :param track_path: Path of the track. Will be used as start if start_dir is omitted or None.
+        """
+        start_search = start_dir if start_dir is not None else track_path
+
+        if start_search is not None:
+            full_path = self.get_absolute_path(start_search)
+            path_obj = Path(full_path)
+            path_root_obj = Path(self.base_path)
+
+            parent_dir = path_obj.parent
+            matched_dir: Path | None = None
+            for _ in range(3):
+                search = os.path.join(parent_dir, filename)
+                if os.path.exists(search):
+                    matched_dir = parent_dir
+                    break
+
+                if parent_dir.samefile(path_root_obj):
+                    # Reached root dir, stop.
+                    break
+
+                parent_dir = parent_dir.parent
+
+            if matched_dir:
+                return get_relative_path(self.base_path, matched_dir.as_posix())
+
+        return None
+
     def _match_album_artist(
         self, album: Album | None, name: str, mbid: str | None
     ) -> Artist | ItemMapping | None:
@@ -1777,6 +1820,7 @@ class LocalFileSystemProvider(MusicProvider):
         sort_name: str | None = None,
         mbid: str | None = None,
         artist_path: str | None = None,
+        track_path: str | None = None,
     ) -> Artist:
         """Parse full (album) Artist."""
         if not artist_path:
@@ -1806,6 +1850,12 @@ class LocalFileSystemProvider(MusicProvider):
                             break
                     if artist_path:
                         break
+
+        if artist_path is None:
+            # if we haven't found the path yet, try to find it by searching artist.nfo.
+            artist_path = self._resolve_directory_by_file(
+                filename="artist.nfo", start_dir=album_dir, track_path=track_path
+            )
 
         # prefer (short lived) cache for a bit more speed
         if artist_path and (
@@ -2225,6 +2275,10 @@ class LocalFileSystemProvider(MusicProvider):
         track_dir = os.path.dirname(track_path)
         album_dir = get_album_dir(track_dir, track_tags.album)
 
+        if album_dir is None:
+            # if we haven't found the path yet, try to find it by searching album.nfo.
+            album_dir = self._resolve_directory_by_file(filename="album.nfo", track_path=track_path)
+
         if album_dir and (
             cache := await self.cache.get(
                 key=album_dir,
@@ -2246,7 +2300,7 @@ class LocalFileSystemProvider(MusicProvider):
             )
             for name, mbid, sort_name in resolved_album_artists:
                 artist = await self._parse_artist(
-                    name, album_dir=album_dir, sort_name=sort_name, mbid=mbid
+                    name, album_dir=album_dir, sort_name=sort_name, mbid=mbid, track_path=track_path
                 )
                 album_artists.append(artist)
         else:
@@ -2261,7 +2315,11 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
                 album_artists = UniqueList(
-                    [await self._parse_artist(name=album_artist_str, album_dir=album_dir)]
+                    [
+                        await self._parse_artist(
+                            name=album_artist_str, album_dir=album_dir, track_path=track_path
+                        )
+                    ]
                 )
             # fallback to track artists (if defined by user)
             elif fallback_action == "track_artist":
@@ -2271,7 +2329,9 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 album_artists = UniqueList(
                     [
-                        await self._parse_artist(name=track_artist_str, album_dir=album_dir)
+                        await self._parse_artist(
+                            name=track_artist_str, album_dir=album_dir, track_path=track_path
+                        )
                         for track_artist_str in track_tags.artists
                     ]
                 )
