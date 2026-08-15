@@ -41,6 +41,8 @@ from .constants import (
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
     CONF_IGNORE_VOLUME,
+    CONF_PASSWORD_INVALID,
+    CONF_PASSWORD_MARKERS_REVIEWED,
     CONF_STORED_VOLUME,
     CONF_VERBOSE_PTP_LOGGING,
     DACP_DISCOVERY_TYPE,
@@ -221,6 +223,7 @@ class AirPlayProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._set_pyatv_log_level()
+        await self._drop_unverified_password_markers()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
         # Shared audible instants for in-flight announcements, keyed by
@@ -1171,3 +1174,32 @@ class AirPlayProvider(PlayerProvider):
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
+
+    async def _drop_unverified_password_markers(self) -> None:
+        """
+        Clear the stored "password rejected" verdicts left by earlier releases, once.
+
+        Those releases marked a player whenever the binary reported an auth-shaped
+        rejection, without separating a password challenge from a device that
+        refused the handshake outright. The refusals put players that have no
+        password at all into a setup flow only a password could leave, so the
+        verdicts are dropped and left to be earned again on the next connect.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
+        ):
+            return
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
+        )
+        for player_config in await self.mass.config.get_player_configs(self.instance_id):
+            if not self.mass.config.get_raw_player_config_value(
+                player_config.player_id, CONF_PASSWORD_INVALID, False
+            ):
+                continue
+            self.logger.info(
+                "Clearing the unverified password marker on %s", player_config.player_id
+            )
+            self.mass.config.set_raw_player_config_value(
+                player_config.player_id, CONF_PASSWORD_INVALID, False
+            )

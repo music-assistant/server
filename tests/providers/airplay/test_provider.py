@@ -1005,3 +1005,50 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
 
     prov.mass.discovery.async_find_mdns_service.assert_not_called()
     prov.mass.players.register.assert_not_called()
+
+
+def _password_marker_provider(
+    reviewed: bool, markers: dict[str, bool]
+) -> tuple[AirPlayProvider, MagicMock]:
+    """Build a provider whose config holds the given stored password markers."""
+    prov = _make_provider()
+    config = cast("MagicMock", prov.mass.config)
+    config.get_raw_provider_config_value.return_value = reviewed
+    config.get_player_configs = AsyncMock(
+        return_value=[MagicMock(player_id=player_id) for player_id in markers]
+    )
+    config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default: markers[
+        player_id
+    ]
+    return prov, config
+
+
+async def test_stale_password_markers_are_dropped_once() -> None:
+    """Verdicts from releases that could not tell a refusal apart are not trusted."""
+    prov, config = _password_marker_provider(
+        reviewed=False, markers={"ap_latched": True, "ap_clean": False}
+    )
+
+    await prov._drop_unverified_password_markers()
+
+    config.set_raw_player_config_value.assert_called_once_with(
+        "ap_latched", "password_invalid", False
+    )
+    config.set_raw_provider_config_value.assert_called_once_with(
+        INSTANCE_ID, "password_markers_reviewed", True
+    )
+
+
+async def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
+    """
+    A later restart must leave a fresh verdict alone.
+
+    Once the review has run, a stored marker was written by code that separates a
+    password challenge from a refusal, so it is real and has to survive.
+    """
+    prov, config = _password_marker_provider(reviewed=True, markers={"ap_latched": True})
+
+    await prov._drop_unverified_password_markers()
+
+    config.set_raw_player_config_value.assert_not_called()
+    config.get_player_configs.assert_not_called()

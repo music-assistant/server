@@ -56,6 +56,12 @@ CONF_PASSWORD: Final[str] = "password"
 # password, so the player keeps asking for setup across restarts until a working
 # password is entered.
 CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
+# Provider marker that the stored password verdicts were reviewed once. Releases
+# that could not tell a password challenge apart from a flat refusal wrote the
+# key above for both, so what they left behind is no evidence about a password
+# and is dropped a single time; a device that really challenges marks itself
+# again on its next connect.
+CONF_PASSWORD_MARKERS_REVIEWED: Final[str] = "password_markers_reviewed"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
