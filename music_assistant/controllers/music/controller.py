@@ -682,27 +682,46 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if always_include_media_types:
             always_str = "(" + ",".join(f'"{x}"' for x in always_include_media_types) + ")"
             media_type_clause = f"({media_type_clause} OR media_type in {always_str})"
-        query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE {media_type_clause} "
-            f"AND provider in {available_providers_str} "
-        )
+
+        # Build WHERE clause for subquery that finds latest play of each item
+        where_parts = [
+            media_type_clause,
+            f"provider in {available_providers_str}",
+        ]
         params: dict[str, Any] = {}
         if fully_played_only:
-            query += "AND fully_played = 1 "
+            where_parts.append("fully_played = 1")
         if userid:
-            query += "AND userid = :userid "
+            where_parts.append("userid = :userid")
             params["userid"] = userid
         elif user := get_current_user():
-            query += "AND userid = :userid "
+            where_parts.append("userid = :userid")
             params["userid"] = user.user_id
         if queue_id:
-            query += "AND queue_id = :queue_id "
+            where_parts.append("queue_id = :queue_id")
             params["queue_id"] = queue_id
         if played_after_timestamp is not None:
-            query += "AND timestamp >= :played_after_timestamp "
+            where_parts.append("timestamp >= :played_after_timestamp")
             params["played_after_timestamp"] = played_after_timestamp
-        query += "ORDER BY timestamp DESC"
+
+        where_clause = " AND ".join(where_parts)
+
+        # Deduplicate by (item_id, provider, media_type), selecting only the latest play of each item
+        # This prevents repeated plays from occupying all result slots
+        query = (
+            f"SELECT p.* FROM {DB_TABLE_PLAYLOG} p "
+            f"INNER JOIN ("
+            f"  SELECT item_id, provider, media_type, MAX(timestamp) as max_timestamp "
+            f"  FROM {DB_TABLE_PLAYLOG} "
+            f"  WHERE {where_clause} "
+            f"  GROUP BY item_id, provider, media_type "
+            f") latest "
+            f"ON p.item_id = latest.item_id "
+            f"   AND p.provider = latest.provider "
+            f"   AND p.media_type = latest.media_type "
+            f"   AND p.timestamp = latest.max_timestamp "
+            f"ORDER BY p.timestamp DESC"
+        )
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit
         )
@@ -1706,6 +1725,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             + " AND ".join(f"{key} = :{key}" for key in params)
             + " ORDER BY timestamp DESC LIMIT 1",
             params,
+            limit=0,
         )
         if db_rows:
             db_entry = db_rows[0]
@@ -1752,6 +1772,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "media_type": media_item.media_type.value,
                 "userid": userid,
             },
+            limit=0,
         )
         db_entry = db_rows[0] if db_rows else None
         if db_entry and (stored_speed := db_entry["playback_speed"]) is not None:
