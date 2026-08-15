@@ -63,7 +63,7 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
-from music_assistant.models.player import LinkedOutputProtocol
+from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
@@ -2293,6 +2293,170 @@ class TestVolumeStep:
         assert entry.type == ConfigEntryType.INTEGER
         assert entry.default_value == 0
         assert entry.range == (0, 10)
+
+
+class SlowDevice(NamedTuple):
+    """A mocked device that takes its time to answer its first volume command."""
+
+    player_id: str
+    reached: asyncio.Event
+
+
+class TestGroupVolumeOrdering:
+    """Group volume commands that overlap are handled one after the other."""
+
+    def _make_synced_pair(
+        self,
+        mock_mass: MagicMock,
+        slow_device: SlowDevice | None = None,
+        volumes: dict[str, int] | None = None,
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a mute capable leader synced to one member.
+
+        :param slow_device: When given, the named player takes its time to answer its
+            first volume command and reports as soon as it received that command.
+        :param volumes: Volume level per player, defaults to 50 for both.
+        """
+        controller = PlayerController(mock_mass)
+        controller.config = _volume_step_config(5)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = (volumes or {}).get(player_id, 50)
+
+            # let the mocked native volume control behave like a real device, that may
+            # take long enough to answer for a later command to overtake it
+            async def _volume_set(volume: int, _player: MockPlayer = player) -> None:
+                if (
+                    slow_device is not None
+                    and slow_device.player_id == _player.player_id
+                    and not slow_device.reached.is_set()
+                ):
+                    slow_device.reached.set()
+                    await asyncio.sleep(0.2)
+                _player._attr_volume_level = volume
+
+            player.volume_set = AsyncMock(side_effect=_volume_set)  # type: ignore[method-assign]
+            player.volume_mute = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda muted, _player=player: setattr(
+                    _player, "_attr_volume_muted", muted
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second, forced pass so the leader derives its group volume from the member
+        for player in players.values():
+            player.update_state(force_update=True, signal_event=False)
+        return controller, players
+
+    async def test_the_last_command_decides_the_group_volume(self, mock_mass: MagicMock) -> None:
+        """A slow command may not overrule the volume of a later, faster one."""
+        slow_leader = SlowDevice("leader", asyncio.Event())
+        controller, players = self._make_synced_pair(mock_mass, slow_leader)
+
+        first = asyncio.create_task(controller.cmd_group_volume("leader", 80))
+        # only send the second command once the first one reached the device
+        await slow_leader.reached.wait()
+        second = asyncio.create_task(controller.cmd_group_volume("leader", 30))
+        await asyncio.gather(first, second)
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 30
+
+    async def test_a_command_for_a_member_waits_for_one_for_its_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Addressing the same group by member or by leader may not overlap."""
+        slow_leader = SlowDevice("leader", asyncio.Event())
+        controller, players = self._make_synced_pair(mock_mass, slow_leader)
+        in_flight = 0
+        overlapped = False
+        set_group_volume = controller.set_group_volume
+
+        async def _track_overlap(group_player: Player, volume_level: int) -> None:
+            nonlocal in_flight, overlapped
+            in_flight += 1
+            overlapped = overlapped or in_flight > 1
+            try:
+                await set_group_volume(group_player, volume_level)
+            finally:
+                in_flight -= 1
+
+        controller.set_group_volume = _track_overlap  # type: ignore[method-assign]
+
+        first = asyncio.create_task(controller.cmd_group_volume("leader", 80))
+        await slow_leader.reached.wait()
+        # a synced member adjusts the very same group as its leader
+        second = asyncio.create_task(controller.cmd_group_volume("member", 30))
+        await asyncio.gather(first, second)
+
+        assert overlapped is False
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_level == 30
+
+    async def test_a_nudge_from_a_member_steps_the_volume_of_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group nudge addressed to a member steps the group, not the member itself."""
+        controller, players = self._make_synced_pair(mock_mass, volumes={"member": 40})
+        # the group sits at the volume of its loudest member, the member at its own
+        assert players["leader"].state.group_volume == 50
+        assert players["member"].state.group_volume == 40
+
+        await controller.cmd_group_volume_up("member")
+
+        for player in players.values():
+            player.update_state()
+        assert players["leader"].state.volume_level == 55
+
+    async def test_an_individual_volume_command_waits_for_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member's own volume command may not be overtaken by a group change."""
+        slow_member = SlowDevice("member", asyncio.Event())
+        controller, players = self._make_synced_pair(mock_mass, slow_member)
+
+        group = asyncio.create_task(controller.cmd_group_volume("leader", 80))
+        await slow_member.reached.wait()
+        individual = asyncio.create_task(controller.cmd_volume_set("member", 10))
+        await asyncio.gather(group, individual)
+
+        for player in players.values():
+            player.update_state()
+        assert players["member"].state.volume_level == 10
+        assert players["leader"].state.volume_level == 80
+
+    async def test_a_muted_leader_does_not_wait_on_its_own_group_command(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A muted sync leader is unmuted by a group volume change without blocking."""
+        controller, players = self._make_synced_pair(mock_mass)
+        players["leader"]._attr_volume_muted = True
+        players["leader"].update_state(force_update=True, signal_event=False)
+
+        # a sync leader is a member of its own group, so the fan-out sets the volume
+        # (and unmutes) the very player the group command is running for
+        async with asyncio.timeout(5):
+            await controller.cmd_group_volume("leader", 30)
+
+        players["leader"].update_state()
+        assert players["leader"].state.volume_muted is False
+        assert players["leader"].state.volume_level == 30
 
 
 class TestFakeMuteInGroup:

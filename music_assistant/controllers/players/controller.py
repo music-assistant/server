@@ -866,16 +866,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.state.type == PlayerType.GROUP or player.state.group_members:
-            # dedicated group player or sync leader
-            await self.set_group_volume(player, volume_level)
+        group_player = self._resolve_group_volume_player(player)
+        if group_player is None:
+            # treat as normal player volume change
+            await self.cmd_volume_set(player_id, volume_level)
             return
-        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
-            # redirect to sync leader
-            await self.set_group_volume(sync_leader, volume_level)
-            return
-        # treat as normal player volume change
-        await self.cmd_volume_set(player_id, volume_level)
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            await self.set_group_volume(group_player, volume_level)
 
     @api_command("players/cmd/group_volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -885,13 +882,17 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         - player_id: player_id of the player to handle the command.
         """
-        group_player_state = self.get_player_state(player_id, True)
-        assert group_player_state
-        cur_volume = group_player_state.group_volume
-        if cur_volume is None:
-            return
-        new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
-        await self.cmd_group_volume(player_id, new_volume)
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checker
+        # step from the volume of the group as a whole, which is not the volume of the
+        # addressed player when the command is addressed to one of its synced members
+        group_player = self._resolve_group_volume_player(player) or player
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            cur_volume = group_player.state.group_volume
+            if cur_volume is None:
+                return
+            new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
+            await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_down", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -901,13 +902,15 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         - player_id: player_id of the player to handle the command.
         """
-        group_player_state = self.get_player_state(player_id, True)
-        assert group_player_state
-        cur_volume = group_player_state.group_volume
-        if cur_volume is None:
-            return
-        new_volume = max(0, cur_volume - self._get_volume_step(cur_volume))
-        await self.cmd_group_volume(player_id, new_volume)
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checker
+        group_player = self._resolve_group_volume_player(player) or player
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            cur_volume = group_player.state.group_volume
+            if cur_volume is None:
+                return
+            new_volume = max(0, cur_volume - self._get_volume_step(cur_volume))
+            await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_mute", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -1979,7 +1982,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 progress = volume_level / base_group
                 new_child_volume = round(child_base * progress)
             new_child_volume = max(0, min(100, new_child_volume))
-            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
+            coros.append(self._set_member_volume(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
         # notify active AudioSource once at the group level to prevent
@@ -3542,6 +3545,39 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
             await self.mass.player_queues.resume(player_id)
+
+    def _resolve_group_volume_player(self, player: Player) -> Player | None:
+        """
+        Return the player whose group a group volume command applies to.
+
+        Returns None if the given player is not grouped at all. Commands addressed to a
+        synced member and to its sync leader resolve to the same player, so they read
+        and guard one and the same group.
+
+        :param player: The player the command was addressed to.
+        """
+        # the group volume lock this resolves to may not share the VOLUME purpose:
+        # set_group_volume sets the volume of the members concurrently and a sync leader
+        # is a member of its own group, so a group command would wait on its own lock.
+        if player.state.type == PlayerType.GROUP or player.state.group_members:
+            # dedicated group player or sync leader
+            return player
+        if player.state.synced_to:
+            # a synced player follows its sync leader
+            return self.get_player(player.state.synced_to)
+        return None
+
+    async def _set_member_volume(self, player_id: str, volume_level: int) -> None:
+        """
+        Set the volume of a single member as part of a group volume change.
+
+        :param player_id: player_id of the member to handle the command.
+        :param volume_level: logical volume level (0..100) to set on the member.
+        """
+        # take the volume lock of the member itself, so a group volume change and an
+        # individual volume command for that member can not overtake one another
+        async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
+            await self._handle_cmd_volume_set(player_id, volume_level)
 
     async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
