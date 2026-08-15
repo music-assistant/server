@@ -490,7 +490,8 @@ class AnnouncementsMixin:
             async with TaskManager(self.mass) as tg:
                 for volume_player_id, prev_volume in prev_volumes.items():
                     tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
-            # restore mute after the volume, because setting a volume unmutes the player again
+            # restore mute after the volume: a fake mute is simulated with the volume itself,
+            # so it only sticks once the level it hides behind is back in place
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, True))
@@ -742,7 +743,8 @@ class AnnouncementsMixin:
         async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
-        # restore mute after the volume, because setting a volume unmutes the player again
+        # restore mute after the volume: a fake mute is simulated with the volume itself,
+        # so it only sticks once the level it hides behind is back in place
         async with TaskManager(self.mass) as tg:
             for muted_player_id in prev_muted:
                 if not (muted_player := self.get_player(muted_player_id)):
