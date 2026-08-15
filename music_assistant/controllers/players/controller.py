@@ -1806,7 +1806,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
-            self._enforce_volume_limits(player)
+            corrected = self._enforce_volume_limits(player)
+            # a level set on the device itself makes the reference a group volume change
+            # interpolates from obsolete. a member on its way to a level we did send
+            # reports levels too, and a group only ever reports what its members are at,
+            # so neither of those counts. a correction always is the device's own doing:
+            # the levels we command never fall outside the configured range
+            if player.state.type != PlayerType.GROUP and (
+                corrected or self._unexpired_volume_target(player) is None
+            ):
+                self._invalidate_group_volume_snapshot(player_id)
         # dispatch to internal state update subscribers (with changed_values)
         self._dispatch_state_update_subscribers(player, changed_values)
 
@@ -1968,12 +1977,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # scaling down: each child interpolates from its snapshot value toward 0.
         # this ensures the relative balance is preserved and all children converge
         # to 0 and 100 at the extremes. the snapshot is invalidated when a child's
-        # individual volume changes or group membership changes.
+        # individual volume or the group membership changes, and rebuilt when the
+        # children it holds are no longer the ones being adjusted.
         # the levels a nudge steps from are the ones the members were last commanded, so
         # the snapshot has to read the same source, or a change a member has not confirmed
         # yet puts the reference above the level being set and turns a step up into one down
         snapshot: dict[str, int] | None = group_player.extra_data.get(ATTR_GROUP_VOLUME_SNAPSHOT)
-        if snapshot is None or not all(c.player_id in snapshot for c in children):
+        if snapshot is None or snapshot.keys() != {c.player_id for c in children}:
             snapshot = {c.player_id: self._volume_nudge_base(c) or 0 for c in children}
             group_player.extra_data[ATTR_GROUP_VOLUME_SNAPSHOT] = snapshot
 
@@ -2525,21 +2535,27 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         )
         return min_volume, max_volume
 
-    def _enforce_volume_limits(self, player: Player) -> None:
-        """Clamp device volume to min/max range when changed externally."""
+    def _enforce_volume_limits(self, player: Player) -> bool:
+        """
+        Clamp device volume to min/max range when changed externally.
+
+        :param player: The player to check the volume of.
+        :return: True if the volume was outside the configured range and got corrected.
+        """
         player_id = player.player_id
         min_volume, max_volume = self._get_volume_limits(player_id)
         if min_volume == 0 and max_volume == 100:
-            return
+            return False
         # state.volume_level is the resolved logical volume, available for all
         # volume control types; a device volume outside the configured range
         # surfaces here as a value outside 0-100 (scaling does not clamp)
         logical_volume = player.state.volume_level
         if logical_volume is None or 0 <= logical_volume <= 100:
-            return
+            return False
         clamped = max(0, min(100, logical_volume))
         # correct via the regular volume-set path so scaling and redirection apply
         self.mass.create_task(self._handle_cmd_volume_set(player_id, clamped))
+        return True
 
     def _forward_state_update(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
