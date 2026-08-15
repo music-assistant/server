@@ -12,13 +12,14 @@ the models package produces.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, ProviderType
+from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+from music_assistant_models.enums import ProviderType
 
-from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.constants import CONF_LOG_LEVEL, DEFAULT_PROVIDER_CONFIG_ENTRIES
 from music_assistant.models.provider import Provider
 from music_assistant.providers.hue_entertainment.constants import (
     CONF_BRIGHTNESS,
@@ -31,8 +32,8 @@ from music_assistant.providers.hue_entertainment.provider import HueEntertainmen
 async def _make_config() -> ProviderConfig:
     """Build a ProviderConfig holding the provider's own entries plus the log level."""
     provider = HueEntertainmentProvider.__new__(HueEntertainmentProvider)
-    entries = list(await provider.get_config_entries())
-    entries.append(ConfigEntry(key=CONF_LOG_LEVEL, type=ConfigEntryType.STRING, default_value=None))
+    # the default entries are shared module-level instances; copy before setting values on them
+    entries = [*await provider.get_config_entries(), *deepcopy(DEFAULT_PROVIDER_CONFIG_ENTRIES)]
     values = {entry.key: entry for entry in entries}
     for entry in values.values():
         entry.value = entry.default_value
@@ -74,15 +75,20 @@ async def test_settings_change_applies_in_place() -> None:
 
 
 @pytest.mark.parametrize(
-    "update",
+    ("update", "expected"),
     [
-        {CONF_COLOR_MODE: "ambient"},
-        {CONF_HUE_LATENCY_MS: 120},
-        {CONF_BRIGHTNESS: 50, CONF_COLOR_MODE: "ambient", CONF_HUE_LATENCY_MS: 120},
+        ({CONF_COLOR_MODE: "ambient"}, {"color_mode": "ambient"}),
+        ({CONF_HUE_LATENCY_MS: 120}, {"hue_latency_ms": 120}),
+        (
+            {CONF_BRIGHTNESS: 0, CONF_COLOR_MODE: "ambient", CONF_HUE_LATENCY_MS: 0},
+            {"brightness": 0, "color_mode": "ambient", "hue_latency_ms": 0},
+        ),
     ],
-    ids=["color_mode", "latency", "all_settings"],
+    ids=["color_mode", "latency", "all_settings_at_zero"],
 )
-async def test_every_in_place_setting_skips_the_reload(update: dict[str, ConfigValueType]) -> None:
+async def test_every_in_place_setting_skips_the_reload(
+    update: dict[str, ConfigValueType], expected: dict[str, ConfigValueType]
+) -> None:
     """Each hot-applyable setting - and any combination of them - avoids the reload."""
     config = await _make_config()
     provider, bridge_manager = _make_provider(config)
@@ -92,6 +98,8 @@ async def test_every_in_place_setting_skips_the_reload(update: dict[str, ConfigV
         await provider.update_config(config, changed_keys)
 
     bridge_manager.update_settings.assert_called_once()
+    kwargs = bridge_manager.update_settings.call_args.kwargs
+    assert {key: kwargs[key] for key in expected} == expected
     base_update.assert_not_awaited()
 
 

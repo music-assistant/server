@@ -27,9 +27,11 @@ from .constants import (
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    DEFAULT_BRIGHTNESS,
     DEFAULT_COLOR_MODE,
     DEFAULT_HUE_LATENCY_MS,
 )
+from .settings import get_brightness, get_color_mode, get_hue_latency_ms
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -68,7 +70,7 @@ class HueEntertainmentProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_BRIGHTNESS,
                 type=ConfigEntryType.INTEGER,
-                default_value=100,
+                default_value=DEFAULT_BRIGHTNESS,
                 range=(0, 100),
                 category="settings",
             ),
@@ -221,14 +223,11 @@ class HueEntertainmentProvider(PluginProvider):
         }
         if changed_keys and changed_keys <= settings_keys and self._bridge_manager:
             self._bridge_manager.update_settings(
-                color_mode=str(config.get_value(CONF_COLOR_MODE) or "smooth"),
-                brightness=int(float(str(config.get_value(CONF_BRIGHTNESS) or 100))),
-                hue_latency_ms=int(
-                    float(str(config.get_value(CONF_HUE_LATENCY_MS) or DEFAULT_HUE_LATENCY_MS))
-                ),
+                color_mode=get_color_mode(config),
+                brightness=get_brightness(config),
+                hue_latency_ms=get_hue_latency_ms(config),
             )
             self.config = config
             return
 
-        # For other changes (host, credentials), do a full reload
         await super().update_config(config, changed_keys)
