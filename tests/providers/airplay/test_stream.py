@@ -312,30 +312,26 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
+async def test_cli_args_no_family_buffer_defaults() -> None:
     """
-    LinkPlay-family devices get the deep receiver queue from the family table.
+    Every device family stays on Automatic depth: no --latency by default.
 
-    Both platform generations must match - the newer names Linkplay as
-    manufacturer, the older only marks the platform in fv under OEM brands -
-    and they starve at different depths, so each generation carries its own
-    value rather than the older one inheriting the newer one's.
+    The LinkPlay generations that used to get a deepened realtime queue from
+    the family table manage their own buffer on the buffered stream, so the
+    table ships empty and only the per-player setting adds the argument.
     """
     player = _make_player()
     player.device_info.manufacturer = "Linkplay Technology Inc."
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "1750"
+    assert "--latency" not in args
     assert "--ptp-shared" in args
 
-    # Old platform: OEM brand, the Linkplay token only in fv. Starves far
-    # deeper than the newer platform above.
     player = _make_player()
     player.device_info.manufacturer = "Edifier Inc"
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "2500"
+    assert "--latency" not in args
 
-    # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()
     args = await _build_args(player)
     assert "--latency" not in args
