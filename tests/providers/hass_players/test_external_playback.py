@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.providers.hass_players.player import HomeAssistantPlayer
 
 BASE_URL = "http://10.0.0.5:8097"
@@ -38,6 +39,7 @@ def _make_player() -> HomeAssistantPlayer:
     player._attr_active_source = None
     player._attr_current_media = None
     player._ma_playback_active = False
+    player._ma_playback_started = False
     player._reports_stream_url = False
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
     return player
@@ -100,14 +102,13 @@ async def test_entity_echoing_stream_url_still_detects_takeover() -> None:
 async def test_idle_entity_ends_the_ma_session() -> None:
     """Playback that starts after the entity went idle is external again."""
     player = _make_player()
-    player._ma_playback_active = True
-    player._attr_playback_state = PlaybackState.PLAYING
 
+    await player.play_media(PlayerMedia(uri="library://track/1", title="MA Track"))
+    player.update_from_compressed_state({"s": "playing"})
     player.update_from_compressed_state({"s": "idle"})
     assert player._ma_playback_active is False
 
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._update_attributes(_external_attributes())
+    player.update_from_compressed_state({"s": "playing", "a": _external_attributes()})
 
     assert player._attr_active_source == "External"
 
@@ -119,6 +120,53 @@ async def test_play_media_starts_the_ma_session() -> None:
     await player.play_media(PlayerMedia(uri="library://track/1", title="MA Track"))
 
     assert player._ma_playback_active is True
+
+
+async def test_late_idle_of_previous_session_is_ignored() -> None:
+    """An entity reporting the stop of the previous track late keeps our session ours."""
+    player = _make_player()
+    player._ma_playback_active = True
+    player._ma_playback_started = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    # switching tracks stops the entity first, so its idle can arrive after our play
+    await player.play_media(PlayerMedia(uri="library://track/2", title="Next Track"))
+    player.update_from_compressed_state({"s": "idle"})
+    player.update_from_compressed_state({"s": "playing", "a": _external_attributes()})
+
+    assert player._ma_playback_active is True
+    assert player._attr_active_source is None
+
+
+async def test_power_on_state_does_not_end_the_ma_session() -> None:
+    """An entity that reports powering on before it plays keeps our session ours."""
+    player = _make_player()
+
+    await player.play_media(PlayerMedia(uri="library://track/1", title="MA Track"))
+    player.update_from_compressed_state({"s": "on"})
+    player.update_from_compressed_state({"s": "playing", "a": _external_attributes()})
+
+    assert player._attr_active_source is None
+
+
+async def test_announcement_does_not_disturb_source_detection() -> None:
+    """An announcement neither ends our session nor proves the entity reports our URL."""
+    player = _make_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._update_attributes(_external_attributes())
+    assert player._attr_active_source == "External"
+
+    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+    player.update_from_compressed_state(
+        {
+            "s": "playing",
+            "a": {"media_content_id": f"{BASE_URL}/announcement/{PLAYER_ID}.mp3"},
+        }
+    )
+    player.update_from_compressed_state({"s": "idle"})
+
+    assert player._reports_stream_url is False
+    assert player._attr_active_source == "External"
 
 
 async def test_stop_ends_the_ma_session() -> None:
