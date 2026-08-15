@@ -383,13 +383,15 @@ class StatisticsController(CoreController):
 
         query = f"""
             SELECT
+                item_id,
+                provider,
                 name,
                 COUNT(*) * 180 as estimated_seconds
             FROM {DB_TABLE_PLAYLOG}
             WHERE userid = :user_id
                 AND media_type = :media_type
                 AND timestamp >= :cutoff_timestamp
-            GROUP BY name
+            GROUP BY item_id, provider
             ORDER BY estimated_seconds DESC
         """
 
