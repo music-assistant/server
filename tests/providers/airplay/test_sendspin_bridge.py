@@ -532,20 +532,20 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     assert bridge._airplay_stream_ready.is_set()
 
 
-async def test_a_fresh_process_is_told_the_synced_volume_and_mute() -> None:
+async def test_a_fresh_process_releases_a_foreign_mute_latch_before_it_connects() -> None:
     """
-    A cold start syncs volume and mute from the parent before it connects.
+    A cold start releases a foreign mute latch before it connects.
 
-    Connecting is what carries that state to the device, so a sync after it
-    would not be heard until the next command.
+    Connecting is what carries that state to the device, so releasing the latch
+    after it would not be heard until the next command.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
     bridge._airplay_stream_start_task = asyncio.current_task()
     stream = _make_anchor_stream()
     order: list[str] = []
-    cast("MagicMock", bridge.airplay_player).sync_volume_state = MagicMock(
-        side_effect=lambda: order.append("sync")
+    cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch = MagicMock(
+        side_effect=lambda: order.append("release_mute")
     )
     stream.connect = AsyncMock(side_effect=lambda *_a, **_kw: order.append("connect"))
 
@@ -561,16 +561,16 @@ async def test_a_fresh_process_is_told_the_synced_volume_and_mute() -> None:
     ):
         await bridge._start_protocol_from_chunk()
 
-    assert order == ["sync", "connect"]
+    assert order == ["release_mute", "connect"]
 
 
-async def test_a_kept_process_keeps_the_volume_and_mute_it_plays_at() -> None:
+async def test_a_kept_process_keeps_a_mute_latch_owned_by_another_control() -> None:
     """
-    A warm handover does not re-sync volume and mute from the parent player.
+    A warm handover does not release a foreign mute latch.
 
-    Only a connect re-sends VOLUME=, so a sync over a kept process would move our
-    state away from what the speaker is playing at -- most visibly by clearing a
-    mute the device is still holding, leaving it silent with nothing to say so.
+    Only a connect re-sends VOLUME=, so releasing the latch over a kept process
+    would clear it while the device is still muted on its own end, leaving the
+    stream silent with nothing to say so.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = _make_anchor_stream()
@@ -591,15 +591,15 @@ async def test_a_kept_process_keeps_the_volume_and_mute_it_plays_at() -> None:
         await bridge._start_protocol_from_chunk()
 
     kept_stream.flush.assert_awaited_once_with()
-    cast("MagicMock", bridge.airplay_player).sync_volume_state.assert_not_called()
+    cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch.assert_not_called()
 
 
-async def test_a_failed_warm_handover_syncs_before_its_cold_retry() -> None:
+async def test_a_failed_warm_handover_releases_the_latch_before_its_cold_retry() -> None:
     """
-    The cold retry after a failed warm handover is not left with un-synced state.
+    The cold retry after a failed warm handover still releases a foreign mute latch.
 
     That retry spawns a fresh process, which is sent whatever volume and mute it
-    finds on connect, so a mute the parent no longer owns would start it silent.
+    finds on connect, so a mute latch the parent no longer owns would start it silent.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
@@ -622,7 +622,7 @@ async def test_a_failed_warm_handover_syncs_before_its_cold_retry() -> None:
         await bridge._start_protocol_from_chunk()
 
     cold_stream.connect.assert_awaited_once_with(False)
-    cast("MagicMock", bridge.airplay_player).sync_volume_state.assert_called_once_with()
+    cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch.assert_called_once_with()
 
 
 async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:

@@ -2251,6 +2251,87 @@ async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_when_player_owns_it() -> None:
+    """The initial volume push is sent when this output owns its own volume."""
+    player = _make_player()
+    player.owns_volume = True
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_skips_volume_when_another_control_owns_it() -> None:
+    """No unsolicited volume push when another control owns this output's volume."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -> None:
+    """A latched mute is still pushed even when another control owns the volume."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = True
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_for_a_requested_session_volume() -> None:
+    """A volume explicitly requested for the session is pushed, even without ownership."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream.session = MagicMock(requested_volume=85)
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
+
+
+@pytest.mark.asyncio
 async def test_wait_for_connection_fails_on_an_unread_command_pipe() -> None:
     """A binary that never attaches to the command pipe can never be anchored: fail the connect."""
     player = _make_player()

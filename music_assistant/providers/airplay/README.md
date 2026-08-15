@@ -334,6 +334,12 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 | `device-prevent-playback=1` | Device switched to another source or powered off |
 | `device-prevent-playback=0` | Device ready for playback again |
 
+### Volume Ownership
+
+An AirPlay volume command sets the receiver's own volume, and that level stays behind on the device after the session ends. Music Assistant therefore only sends one when nothing else owns the volume of this output: on a device that is also reachable through a native provider or another protocol (a Sonos speaker, an AV receiver), the stream simply plays at the level the device is already set to, and volume stays with that provider.
+
+A volume is still sent when the AirPlay output itself is the resolved volume control, when a mute has to travel with the stream, and when a session asks for a specific level (an announcement).
+
 ### Volume Feedback
 
 Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
