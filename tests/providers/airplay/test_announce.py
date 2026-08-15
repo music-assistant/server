@@ -34,10 +34,10 @@ def _zero_restore_pad() -> Iterator[None]:
     """
     Zero the audible-end pad for every test.
 
-    The live path holds its return (and the volume restore) until the clip's
-    audible end plus this pad; the streams below ack a long-past instant, so
-    only the pad would otherwise add real wall-clock time to every test. The
-    audible-end test overrides it with its own value.
+    Both paths hold the volume restore until the clip's audible end plus this
+    pad - the live path holds its return with it too; the streams below ack a
+    long-past instant, so only the pad would otherwise add real wall-clock time
+    to every test. The tests that assert on that timing override it themselves.
     """
     with patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 0):
         yield
@@ -331,16 +331,22 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     announcement = _make_announcement()
     render = _make_render(duration=0.01)
     player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-    events: list[str] = []
-    player.volume_set = AsyncMock(side_effect=lambda level: events.append(f"volume={level}"))
+    events: list[tuple[str, float]] = []
 
     with (
         patch.object(announce, "AirPlayStreamSession") as session_cls,
-        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.0),
+        patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 100),
+        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.4),
     ):
+        started = time.monotonic()
+        player.volume_set = AsyncMock(
+            side_effect=lambda level: events.append((f"volume={level}", time.monotonic() - started))
+        )
         session = session_cls.return_value
         session.start = AsyncMock()
-        session.stop = AsyncMock(side_effect=lambda: events.append("stop"))
+        session.stop = AsyncMock(
+            side_effect=lambda: events.append(("stop", time.monotonic() - started))
+        )
         session.start_time = 0.0
         await announce.play_announcement(player, announcement, 60)
 
@@ -353,8 +359,13 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     session.start.assert_awaited_once()
     session.stop.assert_awaited_once()
     # An AirPlay volume only reaches the receiver over a running stream, so the
-    # restore has to be sent before the session is stopped.
-    assert events == ["volume=60", "volume=25", "stop"]
+    # restore has to land on the clip's audible end (+ the 0.1s pad), well
+    # inside the 0.4s drain the session is stopped after.
+    assert [name for name, _ in events] == ["volume=60", "volume=25", "stop"]
+    _, restored_at = events[1]
+    _, stopped_at = events[2]
+    assert 0.1 <= restored_at < 0.3
+    assert stopped_at >= 0.4
     # the player ends idle without still showing media (like player.stop())
     assert player._attr_current_media is None
     player.update_state.assert_called()

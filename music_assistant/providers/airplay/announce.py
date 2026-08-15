@@ -379,7 +379,10 @@ async def _announce_with_session(
             player._transitioning = False
         # The clip is anchored: wait out the start lead plus the clip, then the
         # pad that covers the jitter between the anchored and the true audible
-        # end, so the restore below cannot clip the announcement's own tail.
+        # end, so the restore below does not land on the announcement's own
+        # tail. Restoring at the end of the drain instead would be a coin flip:
+        # the binary reports its own end of stream on that same margin, and the
+        # server treats that report as the end of the stream.
         restore_pad = AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000
         await asyncio.sleep(max(0.0, session.start_time - time.time()) + duration + restore_pad)
         await _restore_member_volumes(prev_volumes)
@@ -390,8 +393,8 @@ async def _announce_with_session(
     finally:
         player._transitioning = False
         try:
-            # Whatever the wait above did not reach (a cancelled announcement)
-            # still has to be restored while the session is up. A session that
+            # Whatever the restore above did not reach (a cancelled
+            # announcement) still goes back while the session is up. A session that
             # failed to START has already stopped itself, so there the restore
             # only settles our own state and the device is corrected by the
             # volume the next stream pushes.
@@ -630,8 +633,8 @@ async def _restore_member_volumes(prev_volumes: dict[AirPlayPlayer, int]) -> Non
 
     An AirPlay volume command only reaches the receiver over a running stream,
     so this has to be called while the announcement session is still up:
-    afterwards it would just update our own state and leave the speaker at the
-    announcement level until the next stream pushes the remembered one.
+    afterwards it only settles our own state and leaves the speaker sitting at
+    the announcement level.
 
     An entry is dropped only once its member is restored, so a later call
     covers exactly what this one did not reach.
