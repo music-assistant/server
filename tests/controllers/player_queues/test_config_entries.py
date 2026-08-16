@@ -95,7 +95,11 @@ def test_core_config_entries_click_actions() -> None:
             PLAY_ACTION_PLAY_FROM_HERE,
             PLAY_ACTION_PLAY_TRACK,
         }
-    for key in (*click_keys, CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK):
+    for key in (
+        *click_keys,
+        CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+        CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
+    ):
         assert by_key[key].category == CATEGORY_CLICK_ACTIONS
         # a hidden entry would never reach the settings UI these are configured from
         assert by_key[key].hidden is False
