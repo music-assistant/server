@@ -1020,9 +1020,18 @@ class _FakeContent:
 class _FakeResponse:
     """Stand-in for the aiohttp response of a playlist fetch."""
 
-    def __init__(self, raw_data: bytes, charset: str | None) -> None:
+    def __init__(self, raw_data: bytes, charset: str | None, status: int = 200) -> None:
         self.charset = charset
         self.content = _FakeContent(raw_data)
+        self.status = status
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise client_exceptions.ClientResponseError(
+                request_info=MagicMock(),
+                history=(),
+                status=self.status,
+            )
 
     async def __aenter__(self) -> Self:
         return self
@@ -1054,15 +1063,16 @@ class _FailingRequest:
         return None
 
 
-def _mass_serving(raw_data: bytes, charset: str | None = None) -> Any:
+def _mass_serving(raw_data: bytes, charset: str | None = None, status: int = 200) -> Any:
     """
     Return a mock mass whose http session serves the given playlist bytes.
 
     :param raw_data: Raw response body handed to fetch_playlist.
     :param charset: Charset the server declares in its Content-Type header, if any.
+    :param status: HTTP status the server answers with.
     """
     mass = MagicMock()
-    mass.http_session.get = MagicMock(return_value=_FakeResponse(raw_data, charset))
+    mass.http_session.get = MagicMock(return_value=_FakeResponse(raw_data, charset, status))
     return mass
 
 
@@ -1090,6 +1100,23 @@ async def test_fetch_playlist_timeout() -> None:
 async def test_fetch_playlist_client_error() -> None:
     """A connection failure is reported as invalid data instead of surfacing raw."""
     mass = _mass_failing(client_exceptions.ClientConnectionError("boom"))
+
+    with pytest.raises(InvalidDataError, match="Error while fetching playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_error_status() -> None:
+    """
+    An error response is rejected instead of parsed.
+
+    Without the status check every markup line of the error page becomes an entry.
+    """
+    error_page = (
+        b"<html>\n<head><title>404 Not Found</title></head>\n"
+        b"<body>\n<center><h1>404 Not Found</h1></center>\n</body>\n</html>\n"
+    )
+    mass = _mass_serving(error_page, status=404)
 
     with pytest.raises(InvalidDataError, match="Error while fetching playlist"):
         await fetch_playlist(mass, "http://example.com/station.m3u")
