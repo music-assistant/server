@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.helpers import playlists
 from music_assistant.helpers.playlists import (
     ImageInfo,
     IsHLSPlaylist,
@@ -1053,16 +1054,16 @@ class _FailingRequest:
         return None
 
 
-def _mass_serving(raw_data: bytes, charset: str | None = "utf-8") -> Any:
+def _mass_serving(raw_data: bytes, charset: str | None = None) -> Any:
     """
     Return a mock mass whose http session serves the given playlist bytes.
 
     :param raw_data: Raw response body handed to fetch_playlist.
-    :param charset: Charset the server declares in its Content-Type header.
+    :param charset: Charset the server declares in its Content-Type header, if any.
     """
     mass = MagicMock()
     mass.http_session.get = MagicMock(return_value=_FakeResponse(raw_data, charset))
-    return cast("Any", mass)
+    return mass
 
 
 def _mass_failing(error: BaseException) -> Any:
@@ -1073,7 +1074,7 @@ def _mass_failing(error: BaseException) -> Any:
     """
     mass = MagicMock()
     mass.http_session.get = MagicMock(return_value=_FailingRequest(error))
-    return cast("Any", mass)
+    return mass
 
 
 @pytest.mark.asyncio
@@ -1124,15 +1125,19 @@ async def test_fetch_playlist_hls_master_playlist_always_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_playlist_pls_by_extension() -> None:
-    """A .pls url is parsed as PLS."""
-    mass = _mass_serving(PLS_PLAYLIST.encode())
+async def test_fetch_playlist_pls_by_extension(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A .pls url picks the PLS parser on the extension alone."""
+    # every real PLS body carries the marker too, so only a marker-free body can
+    # show which of the two conditions selected the parser
+    parsed = [PlaylistItem(path="http://stream.example.com/aac")]
+    parse_pls_mock = MagicMock(return_value=parsed)
+    monkeypatch.setattr(playlists, "parse_pls", parse_pls_mock)
+    mass = _mass_serving(M3U_PLAYLIST.encode())
 
     result = await fetch_playlist(mass, "http://example.com/station.pls")
 
-    assert len(result) == 1
-    assert result[0].path == "http://stream.example.com/aac"
-    assert result[0].title == "Test Station"
+    parse_pls_mock.assert_called_once_with(M3U_PLAYLIST)
+    assert result == parsed
 
 
 @pytest.mark.asyncio
@@ -1189,9 +1194,33 @@ async def test_fetch_playlist_unknown_charset_falls_back_to_detection() -> None:
 async def test_fetch_playlist_undecodable_byte_degrades_instead_of_raising() -> None:
     """One bad byte costs a character, not the whole playlist."""
     raw_data = M3U_PLAYLIST.encode().replace(b"#EXTM3U", b"#EXTM3U\n#\xff")
-    mass = _mass_serving(raw_data)
+    mass = _mass_serving(raw_data, charset="utf-8")
 
     result = await fetch_playlist(mass, "http://example.com/station.m3u")
 
     assert len(result) == 1
     assert result[0].path == "http://stream.example.com/aac"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_declared_charset_is_used() -> None:
+    """A legacy charset the server declares is taken over guesswork."""
+    # a mostly-ASCII body gives the detector too little to go on, so a station that
+    # names its charset is the only thing keeping such a title readable
+    raw_data = "#EXTM3U\n#EXTINF:-1,Хит\nhttp://stream.example.com/aac\n".encode("cp1251")
+    mass = _mass_serving(raw_data, charset="cp1251")
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert result[0].title == "Хит"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
+    """An oversized playlist is truncated instead of being pulled in whole."""
+    padding = "#" + " " * (64 * 1024)
+    mass = _mass_serving(f"#EXTM3U\n{padding}\nhttp://stream.example.com/aac\n".encode())
+
+    # the entry sits past the read limit, so nothing is left to parse
+    with pytest.raises(InvalidDataError, match="Empty playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
