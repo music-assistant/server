@@ -2427,7 +2427,7 @@
   "provider.webdav.config_entries.verify_ssl.description": "Verify SSL certificates when connecting to HTTPS WebDAV servers",
   "provider.webdav.config_entries.verify_ssl.label": "Verify SSL certificate",
   "provider.webdav.manifest.description": "Stream music and audiobooks stored on any WebDAV-compatible server",
-  "provider.wiim.manifest.description": "Stream music to WiiM devices.",
+  "provider.wiim.manifest.description": "Stream music to WiiM, Audio Pro and other compatible LinkPlay speakers.",
   "provider.wikipedia.manifest.description": "Provider of multi-lingual artist biographies and other related text.",
   "provider.yandex_music.config_entries.base_url.description": "API endpoint base URL. Only change if Yandex Music changes their API endpoint. Default: {0}",
   "provider.yandex_music.config_entries.base_url.label": "API Base URL",

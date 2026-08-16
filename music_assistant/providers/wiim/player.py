@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import time
 import typing
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimException
@@ -74,7 +75,6 @@ class WiimPlayer(Player):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.SELECT_SOURCE,
         }
-        self._attr_can_group_with = {provider.instance_id}
         self.device = device
         self._wiim_controller = provider.wiim_controller
 
@@ -97,6 +97,17 @@ class WiimPlayer(Player):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+
+    @property
+    def can_group_with(self) -> set[str]:
+        """Return the ids of the other official WiiM players this player can group with."""
+        return {
+            player.player_id
+            for player in self.provider.players
+            if isinstance(player, WiimPlayer)
+            and player.available
+            and player.player_id != self.player_id
+        }
 
     # --- Lifecycle ---
 
@@ -288,19 +299,17 @@ class WiimPlayer(Player):
         try:
             if player_ids_to_add:
                 follower_udns = [
-                    cast("WiimPlayer", member).device.udn
+                    member.device.udn
                     for member_id in player_ids_to_add
-                    if (member := self.mass.players.get_player(member_id))
+                    if (member := self._resolve_wiim_member(member_id)) is not None
                 ]
                 if follower_udns:
                     await self._wiim_controller.async_join_group(self.device.udn, follower_udns)
 
             if player_ids_to_remove:
                 for member_id in player_ids_to_remove:
-                    if member := self.mass.players.get_player(member_id):
-                        await self._wiim_controller.async_ungroup_device(
-                            cast("WiimPlayer", member).device.udn
-                        )
+                    if (member := self._resolve_wiim_member(member_id)) is not None:
+                        await self._wiim_controller.async_ungroup_device(member.device.udn)
         except WiimException as err:
             self._handle_command_error("set_members", err)
         finally:
@@ -552,3 +561,22 @@ class WiimPlayer(Player):
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
+
+    def _resolve_wiim_member(self, player_id: str) -> WiimPlayer | None:
+        """
+        Return a same-backend member for a grouping command.
+
+        Unknown members are ignored, but a member that belongs to another backend
+        (e.g. a generic LinkPlay player surfaced by an external mixed group) is
+        rejected as unsupported rather than cast, since MA-created grouping stays
+        within the official backend.
+        """
+        member = self.mass.players.get_player(player_id)
+        if member is None:
+            return None
+        if not isinstance(member, WiimPlayer):
+            raise UnsupportedFeaturedException(
+                f"Cannot group {player_id} with {self.display_name}: "
+                "cross-backend grouping is unsupported"
+            )
+        return member

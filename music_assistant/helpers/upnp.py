@@ -1,17 +1,91 @@
-"""Helper(s) to create DIDL Lite metadata for Sonos/DLNA players."""
+"""Helper(s) for UPnP/DLNA players: DIDL Lite metadata and a shared notify server."""
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xmlescape
 
+from aiohttp.web import Request, Response
+from async_upnp_client.const import HttpRequest
+from async_upnp_client.event_handler import UpnpEventHandler, UpnpNotifyServer
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.helpers.audio import get_mime_type
 
 if TYPE_CHECKING:
+    from async_upnp_client.client import UpnpRequester
+
+    from music_assistant import MusicAssistant
     from music_assistant.models.player import PlayerMedia
+
+
+class MassUpnpNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
+    """
+    UPnP event notify server backed by the Music Assistant webserver.
+
+    A single instance owns one dynamic NOTIFY route and the matching
+    :class:`UpnpEventHandler`. Providers that both subscribe to UPnP events must
+    each use their own ``route_path`` so their callback URLs never collide.
+
+    :param requester: The UPnP requester used for (re)subscription requests.
+    :param mass: The Music Assistant instance whose streams webserver hosts the route.
+    :param route_path: The path to register the NOTIFY route on (e.g. ``/notify``).
+    """
+
+    def __init__(
+        self,
+        requester: UpnpRequester,
+        mass: MusicAssistant,
+        route_path: str = "/notify",
+    ) -> None:
+        """Initialize and register the NOTIFY route on the MA webserver."""
+        self.mass = mass
+        self._route_path = route_path
+        self.event_handler = UpnpEventHandler(self, requester)
+        self._unregister = self.mass.streams.register_dynamic_route(
+            route_path, self._handle_request, method="NOTIFY"
+        )
+
+    @property
+    def callback_url(self) -> str:
+        """Return the callback URL devices should send NOTIFY requests to."""
+        return f"{self.mass.streams.base_url}{self._route_path}"
+
+    def unregister(self) -> None:
+        """Remove the NOTIFY route from the webserver."""
+        self._unregister()
+
+    async def _handle_request(self, request: Request) -> Response:
+        """Handle an incoming UPnP NOTIFY request."""
+        if request.method != "NOTIFY":
+            return Response(status=405)
+
+        # Some devices (e.g. Denon HEOS) send NOTIFY bodies that are not valid
+        # UTF-8 when track metadata contains non-ASCII characters in the device's
+        # native encoding. Decode leniently so we don't drop the event.
+        body_bytes = await request.read()
+        body = body_bytes.decode("utf-8", errors="replace")
+
+        http_request = HttpRequest(
+            method=request.method,
+            url=str(request.url),
+            headers=request.headers,
+            body=body,
+        )
+
+        try:
+            status = await self.event_handler.handle_notify(http_request)
+        except ET.ParseError as err:
+            self.mass.logger.debug(
+                "Ignoring malformed XML in UPnP notify from %s: %s",
+                request.remote,
+                err,
+            )
+            return Response(status=400)
+
+        return Response(status=status)
 
 
 # XML

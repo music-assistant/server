@@ -5,6 +5,10 @@ from music_assistant_models.player import PlayerSource
 # Player ID prefix to avoid colliding with DLNA (which uses the raw UDN)
 PLAYER_ID_PREFIX = "wiim_"
 
+# Dedicated UPnP NOTIFY route for the generic LinkPlay backend, kept distinct
+# from the DLNA provider's "/notify" route so the two never collide.
+LINKPLAY_NOTIFY_ROUTE = "/wiim_notify"
+
 # Passive sources detected via current track URI
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.errors import UnsupportedFeaturedException
 from wiim import PlayingStatus
 from wiim.exceptions import (
     WiimDeviceException,
@@ -678,3 +679,42 @@ class TestPollRefreshesTransportState:
         await player.poll()
 
         mock_wiim_device.async_update_http_status.assert_not_awaited()
+
+
+class TestSetMembersTypeSafety:
+    """Official grouping must reject cross-backend members instead of crashing."""
+
+    async def test_add_generic_member_raises_unsupported(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Adding a non-WiimPlayer member raises a typed error rather than AttributeError."""
+        leader = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        # a registered generic LinkPlay player (no .device attribute)
+        mock_provider.mass.players.get_player.return_value = MagicMock(spec=[])
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await leader.set_members(player_ids_to_add=["wiim_uuid:generic"])
+
+    async def test_add_same_backend_member_joins(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Adding another official WiiM player joins it via the controller."""
+        leader = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        follower = MagicMock(spec=WiimPlayer)
+        follower.device = MagicMock()
+        follower.device.udn = "uuid:follower"
+        mock_provider.mass.players.get_player.return_value = follower
+
+        await leader.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.wiim_controller.async_join_group.assert_awaited_once_with(
+            mock_wiim_device.udn, ["uuid:follower"]
+        )
