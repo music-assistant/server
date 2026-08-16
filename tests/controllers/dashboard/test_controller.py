@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -32,6 +33,7 @@ def _make_controller() -> DashboardController:
     controller.logger = MagicMock()
     controller._dashboards = {}
     controller._sessions = {}
+    controller._session_owners = {}
     # neither casting mechanism configured by default: individual tests opt in
     controller.mass.webserver.base_url = ""
     controller.mass.webserver.remote_access.is_enabled = False
@@ -923,3 +925,92 @@ async def test_get_dashboard_code_mints_fresh_code_each_call(mass: MusicAssistan
 
     assert result1["success"] is True
     assert result2["success"] is True
+
+
+def _owner_user(user_id: str, preferences: dict[str, Any] | None) -> MagicMock:
+    """Build a user-shaped mock carrying the given preferences."""
+    user = MagicMock()
+    user.user_id = user_id
+    user.preferences = preferences
+    return user
+
+
+async def test_viewer_preferences_follow_the_casting_user() -> None:
+    """A viewer receives the session owner's preferences, filtered to visualizer keys."""
+    controller = _make_controller()
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+    controller._session_owners["dash1"] = "user-1"
+    owner = _owner_user(
+        "user-1",
+        {
+            "visualizer_enabled": True,
+            "visualizer_preset": "martin - mandelbox explorer",
+            "visualizer_enabled.player1": False,
+            "theme": "dark",
+        },
+    )
+    controller.mass.webserver.auth.get_user = AsyncMock(return_value=owner)  # type: ignore[method-assign]
+
+    prefs = await controller.get_viewer_preferences(DashboardType.PARTY)
+
+    assert prefs == {
+        "visualizer_enabled": True,
+        "visualizer_preset": "martin - mandelbox explorer",
+        "visualizer_enabled.player1": False,
+    }
+
+
+async def test_viewer_preferences_match_now_playing_session_by_player() -> None:
+    """With several now-playing sessions, the one showing the viewer's player wins."""
+    controller = _make_controller()
+    for dashboard_id, player_id, owner_id in (
+        ("dash1", "player1", "user-1"),
+        ("dash2", "player2", "user-2"),
+    ):
+        controller._sessions[dashboard_id] = DashboardSession(
+            dashboard_id=dashboard_id,
+            name=dashboard_id,
+            dashboard=DashboardType.NOW_PLAYING,
+            player_id=player_id,
+        )
+        controller._session_owners[dashboard_id] = owner_id
+    users = {
+        "user-1": _owner_user("user-1", {"visualizer_preset": "one"}),
+        "user-2": _owner_user("user-2", {"visualizer_preset": "two"}),
+    }
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda uid: users.get(uid)
+    )
+
+    prefs = await controller.get_viewer_preferences(DashboardType.NOW_PLAYING, "player2")
+
+    assert prefs == {"visualizer_preset": "two"}
+
+
+async def test_viewer_preferences_without_matching_session_are_empty() -> None:
+    """No matching active session (or unknown owner) yields empty preferences."""
+    controller = _make_controller()
+    assert await controller.get_viewer_preferences(DashboardType.PARTY) == {}
+
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+    controller._session_owners["dash1"] = "user-gone"
+    controller.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    assert await controller.get_viewer_preferences(DashboardType.PARTY) == {}
+
+
+async def test_preferences_change_signals_only_for_session_owners() -> None:
+    """A preference change pings sessions of that owner and nobody else."""
+    controller = _make_controller()
+    controller._session_owners["dash1"] = "user-1"
+
+    controller.notify_user_preferences_changed("someone-else")
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
+
+    controller.notify_user_preferences_changed("user-1")
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from music_assistant_models.auth import Scope
@@ -63,6 +63,9 @@ class DashboardController(CoreController):
         self.manifest.description = "Casts Music Assistant dashboards to display devices."
         self._dashboards: dict[str, _RegisteredDashboard] = {}
         self._sessions: dict[str, DashboardSession] = {}
+        # user_id of whoever cast each active session: dashboard viewers follow
+        # that user's (visualizer) preferences, as they have none of their own
+        self._session_owners: dict[str, str] = {}
 
     @api_command("dashboard/register")
     async def register_dashboard(
@@ -194,6 +197,10 @@ class DashboardController(CoreController):
             self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
 
         self._sessions[dashboard_id] = session
+        if (user := get_current_user()) is not None:
+            self._session_owners[dashboard_id] = user.user_id
+        else:
+            self._session_owners.pop(dashboard_id, None)
         self._signal_sessions_updated()
 
     @api_command("dashboard/hide", required_scope=Scope.USERS_INVITE)
@@ -218,7 +225,42 @@ class DashboardController(CoreController):
                 self.mass.signal_event(EventType.DASHBOARD_HIDE, object_id=dashboard_id)
 
         self._sessions.pop(dashboard_id, None)
+        self._session_owners.pop(dashboard_id, None)
         self._signal_sessions_updated()
+
+    @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
+    async def get_viewer_preferences(
+        self, dashboard: DashboardType, player_id: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Return the visualizer preferences a dashboard viewer should render with.
+
+        A dashboard session runs as the shared viewer user, which has no
+        preferences and no way to set any; it follows the preferences of the
+        user who cast it instead. PROVIDERS_READ (held by guests) so the
+        viewer itself can read this; only visualizer settings are exposed.
+
+        :param dashboard: Dashboard the viewer is showing.
+        :param player_id: Player the viewer is showing, when dashboard is NOW_PLAYING.
+        """
+        owner_id: str | None = None
+        for session_dashboard_id, session in self._sessions.items():
+            if session.dashboard != dashboard:
+                continue
+            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
+                continue
+            # multiple matches: the most recently shown session wins
+            owner_id = self._session_owners.get(session_dashboard_id, owner_id)
+        if owner_id is None:
+            return {}
+        owner = await self.mass.webserver.auth.get_user(owner_id)
+        if owner is None:
+            return {}
+        return {
+            key: value
+            for key, value in (owner.preferences or {}).items()
+            if key.startswith("visualizer_")
+        }
 
     @api_command("dashboard/get_url")
     async def get_url_for_dashboard(
@@ -265,6 +307,7 @@ class DashboardController(CoreController):
         def unregister() -> None:
             self._dashboards.pop(dashboard_id, None)
             self._signal_dashboards_updated()
+            self._session_owners.pop(dashboard_id, None)
             if self._sessions.pop(dashboard_id, None) is not None:
                 self._signal_sessions_updated()
 
@@ -283,11 +326,24 @@ class DashboardController(CoreController):
         sessions_changed = False
         for dashboard_id in stale_ids:
             del self._dashboards[dashboard_id]
+            self._session_owners.pop(dashboard_id, None)
             if self._sessions.pop(dashboard_id, None) is not None:
                 sessions_changed = True
 
         self._signal_dashboards_updated()
         if sessions_changed:
+            self._signal_sessions_updated()
+
+    def notify_user_preferences_changed(self, user_id: str) -> None:
+        """
+        Signal active dashboard sessions when their owner's preferences changed.
+
+        Viewers re-fetch `dashboard/viewer_preferences` on the sessions-updated
+        event, so a preference change reaches a cast display live.
+
+        :param user_id: The user whose preferences were just updated.
+        """
+        if user_id in self._session_owners.values():
             self._signal_sessions_updated()
 
     def end_session(self, dashboard_id: str, reason: str) -> None:
@@ -298,6 +354,7 @@ class DashboardController(CoreController):
         :param reason: Human-readable cause, logged as a warning.
         """
         session = self._sessions.pop(dashboard_id, None)
+        self._session_owners.pop(dashboard_id, None)
         if session is None:
             return
         self.logger.warning("Dashboard session on %s ended: %s", session.name, reason)
