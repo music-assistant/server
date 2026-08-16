@@ -33,7 +33,7 @@ async def test_parse_playlist_basics(provider: SoundcloudMusicProvider) -> None:
     assert playlist.is_editable is False
     mapping = next(iter(playlist.provider_mappings))
     assert mapping.item_id == "10"
-    assert mapping.provider_instance == "soundcloud--test"
+    assert mapping.provider_instance == provider.instance_id
 
 
 async def test_parse_playlist_strips_related_tracks_prefix(

@@ -280,29 +280,6 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     )
                     continue
             folders.append(folder)
-        # Part 2, the subscribed feed
-        feed = await self._soundcloud.get_subscribe_feed(20)
-        if feed and "collection" in feed:
-            folder = RecommendationFolder(
-                name="SoundCloud Feed",
-                translation_key="soundcloud_feed",
-                item_id=f"{self.instance_id}_sc_subscribed_feed",
-                provider=self.instance_id,
-                icon="mdi-rss",
-            )
-            for item in feed["collection"]:
-                if item.get("type") == "track" or item.get("type") == "track-repost":
-                    try:
-                        folder.items.append(await self._parse_track(item.get("track")))
-                    except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                        self.logger.debug("Parse track failed: %s", item, exc_info=error)
-                        continue
-                else:
-                    self.logger.debug(
-                        "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
-                    )
-                    continue
-            folders.append(folder)
         return folders
 
     @use_cache(3600 * 3)  # Cache for 3 hours
@@ -314,7 +291,12 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             return tracks
         for item in feed["collection"]:
             if item.get("type") == "track" or item.get("type") == "track-repost":
-                tracks.append(await self._parse_track(item.get("track")))
+                try:
+                    tracks.append(await self._parse_track(item.get("track")))
+                except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                    # a single unplayable track (e.g. DRM protected) must not empty the feed
+                    self.logger.debug("Parse track failed: %s", item, exc_info=error)
+                    continue
             else:
                 self.logger.debug(
                     "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")

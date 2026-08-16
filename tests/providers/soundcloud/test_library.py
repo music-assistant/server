@@ -81,8 +81,8 @@ async def test_library_tracks_skip_unparsable(provider: SoundcloudMusicProvider)
     assert [track.item_id for track in tracks] == ["2"]
 
 
-async def test_recommendations(provider: SoundcloudMusicProvider) -> None:
-    """Mixed selections and the subscribed feed are both offered as folders."""
+async def test_recommendation_payload(provider: SoundcloudMusicProvider) -> None:
+    """The payload holds the mixed selections, keeping only system playlists."""
     provider._soundcloud.get_mixed_selection.return_value = {
         "collection": [
             {
@@ -97,6 +97,31 @@ async def test_recommendations(provider: SoundcloudMusicProvider) -> None:
             }
         ]
     }
+
+    folders = await provider._fetch_recommendation_payload()
+
+    assert [folder.name for folder in folders] == ["Made for you"]
+    assert [item.item_id for item in folders[0].items] == ["10"]
+    # the feed row is filled on demand, so building the payload must not fetch it
+    provider._soundcloud.get_subscribe_feed.assert_not_awaited()
+
+
+async def test_recommendation_payload_with_empty_selection(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """A mixed selection without items yields an empty folder instead of failing."""
+    provider._soundcloud.get_mixed_selection.return_value = {
+        "collection": [{"id": "mixed-1", "title": "Made for you"}]
+    }
+
+    folders = await provider._fetch_recommendation_payload()
+
+    assert [folder.name for folder in folders] == ["Made for you"]
+    assert folders[0].items == []
+
+
+async def test_subscribed_feed_tracks(provider: SoundcloudMusicProvider) -> None:
+    """Reposts count as tracks in the feed, other item types are ignored."""
     provider._soundcloud.get_subscribe_feed.return_value = {
         "collection": [
             {"type": "track", "track": _track_obj(1)},
@@ -105,35 +130,14 @@ async def test_recommendations(provider: SoundcloudMusicProvider) -> None:
         ]
     }
 
-    recommendations: Any = SoundcloudMusicProvider.recommendations.__wrapped__  # type: ignore[attr-defined]
-    folders = await recommendations(provider)
+    feed_tracks: Any = SoundcloudMusicProvider._get_subscribed_feed_tracks.__wrapped__  # type: ignore[attr-defined]
+    tracks = await feed_tracks(provider)
 
-    assert [folder.name for folder in folders] == ["Made for you", "SoundCloud Feed"]
-    # only the system playlist is kept from the mixed selection
-    assert [item.item_id for item in folders[0].items] == ["10"]
-    # reposts count as tracks, other feed types are ignored
-    assert [item.item_id for item in folders[1].items] == ["1", "2"]
+    assert [track.item_id for track in tracks] == ["1", "2"]
 
 
-async def test_recommendations_with_empty_selection(provider: SoundcloudMusicProvider) -> None:
-    """A mixed selection without items yields an empty folder instead of failing."""
-    provider._soundcloud.get_mixed_selection.return_value = {
-        "collection": [{"id": "mixed-1", "title": "Made for you"}]
-    }
-    provider._soundcloud.get_subscribe_feed.return_value = {}
-
-    recommendations: Any = SoundcloudMusicProvider.recommendations.__wrapped__  # type: ignore[attr-defined]
-    folders = await recommendations(provider)
-
-    assert [folder.name for folder in folders] == ["Made for you"]
-    assert folders[0].items == []
-
-
-async def test_recommendations_skip_unparsable_feed_track(
-    provider: SoundcloudMusicProvider,
-) -> None:
-    """An unparsable track in the feed does not discard the rest of the folder."""
-    provider._soundcloud.get_mixed_selection.return_value = {}
+async def test_subscribed_feed_skips_unparsable_track(provider: SoundcloudMusicProvider) -> None:
+    """An unplayable track in the feed does not discard the rest of the row."""
     provider._soundcloud.get_subscribe_feed.return_value = {
         "collection": [
             {"type": "track", "track": {"id": 1}},  # missing title/duration
@@ -141,18 +145,17 @@ async def test_recommendations_skip_unparsable_feed_track(
         ]
     }
 
-    recommendations: Any = SoundcloudMusicProvider.recommendations.__wrapped__  # type: ignore[attr-defined]
-    folders = await recommendations(provider)
+    feed_tracks: Any = SoundcloudMusicProvider._get_subscribed_feed_tracks.__wrapped__  # type: ignore[attr-defined]
+    tracks = await feed_tracks(provider)
 
-    assert [item.item_id for item in folders[0].items] == ["2"]
+    assert [track.item_id for track in tracks] == ["2"]
 
 
-async def test_recommendations_without_feed(provider: SoundcloudMusicProvider) -> None:
-    """An empty subscribed feed simply yields no feed folder."""
-    provider._soundcloud.get_mixed_selection.return_value = {}
+async def test_subscribed_feed_without_results(provider: SoundcloudMusicProvider) -> None:
+    """An empty subscribed feed yields no tracks."""
     provider._soundcloud.get_subscribe_feed.return_value = {}
 
-    recommendations: Any = SoundcloudMusicProvider.recommendations.__wrapped__  # type: ignore[attr-defined]
-    folders = await recommendations(provider)
+    feed_tracks: Any = SoundcloudMusicProvider._get_subscribed_feed_tracks.__wrapped__  # type: ignore[attr-defined]
+    tracks = await feed_tracks(provider)
 
-    assert folders == []
+    assert tracks == []

@@ -133,7 +133,7 @@ async def test_stream_details_for_progressive_url(provider: SoundcloudMusicProvi
     streamdetails = await _stream_details(provider, PROGRESSIVE_CDN)
 
     assert streamdetails.item_id == "1"
-    assert streamdetails.provider == "soundcloud--test"
+    assert streamdetails.provider == provider.instance_id
     assert streamdetails.path == PROGRESSIVE_CDN
     assert streamdetails.stream_type == StreamType.HTTP
     assert streamdetails.can_seek
