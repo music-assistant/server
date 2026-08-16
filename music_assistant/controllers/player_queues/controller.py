@@ -589,7 +589,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
-        """Clear all items in the queue."""
+        """Clear all items in the queue, switching shuffle off with them."""
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
         # the discarded content must not carry over into whatever is played next
@@ -1135,6 +1135,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        # the shuffle intent belongs with the flag it was recorded for, or the target would judge
+        # the transferred shuffle against a stamp left over from its own previous content
+        self._queue_data[target_queue_id].shuffle_set_at = self._queue_data[
+            source_queue_id
+        ].shuffle_set_at
         target_queue.crossfade_enabled = source_queue.crossfade_enabled
         # refresh the derived smart-fades indicator for the target's own config/availability
         target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
@@ -1791,6 +1796,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
         queue.is_dynamic = False
+        # dropping the dynamic source changes what smart shuffle resolves to, so the derived
+        # flag has to follow or clients keep showing a smart mix on a plain queue
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue.ended = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
@@ -1823,13 +1831,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param option: The enqueue option this command resolved to.
         :param shuffle: Explicit shuffle request from the caller; None to derive it.
         """
-        if option != QueueOption.REPLACE:
-            # only replacing the queue starts a new listening session. The options that enqueue
-            # onto the running queue keep its shuffle state - and its already-shuffled items, which
-            # switching shuffle off here would leave contradicting the queue's own flag.
-            return
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
+        # Only an enqueue that discards the existing items starts a new listening session. That is
+        # a replace, and any option other than add onto a queue that already played to its end -
+        # which `_enqueue_with_option` wipes for the same reason. The options that keep (part of)
+        # the queue keep its shuffle state too: their items are already in shuffled order, which
+        # switching shuffle off here would leave contradicting the queue's own flag.
+        starts_new_session = option == QueueOption.REPLACE or (
+            queue.ended and option != QueueOption.ADD
+        )
+        if not starts_new_session:
+            return
         if shuffle is None:
             # Without an explicit request, shuffle only carries over when the user asked for it
             # moments ago: starting an album is otherwise expected to play it in track order,
