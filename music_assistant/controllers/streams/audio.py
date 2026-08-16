@@ -130,6 +130,7 @@ from music_assistant.helpers.ffmpeg import (
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
     MAX_PLAYLIST_SIZE,
+    PLAYLIST_CONTENT_TYPES,
     IsHLSPlaylist,
     PlaylistItem,
     parse_m3u,
@@ -710,13 +711,15 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
+                content_type = headers.get("content-type", "")
                 if (
                     url.endswith((".m3u", ".m3u8", ".pls"))
                     or ".m3u?" in url
                     or ".m3u8?" in url
                     or ".pls?" in url
-                    or "audio/x-mpegurl" in headers.get("content-type", "")
-                    or "audio/x-scpls" in headers.get("content-type", "")
+                    or any(
+                        playlist_type in content_type for playlist_type in PLAYLIST_CONTENT_TYPES
+                    )
                 ):
                     # take the playlist from this very response: a separate request would
                     # go out with another user agent and stricter TLS than the rest of the

@@ -91,14 +91,14 @@ async def test_playlist_is_unwrapped_from_the_probe_response(
 
 @pytest.mark.asyncio
 async def test_hls_playlist_resolves_as_hls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An HLS media playlist is recognised from the probe response body."""
+    """An HLS station without a telling URL is recognised by its content type."""
     audio = _streams_audio()
     response = _FakeConnCtx({"content-type": "application/vnd.apple.mpegurl"}, HLS_BODY)
     monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: response)
 
-    result = await audio.resolve_radio_stream("http://radio.example.com/station.m3u8")
+    result = await audio.resolve_radio_stream("http://radio.example.com/live")
 
-    assert result == ("http://radio.example.com/station.m3u8", StreamType.HLS)
+    assert result == ("http://radio.example.com/live", StreamType.HLS)
     cast("MagicMock", audio.mass).http_session.get.assert_not_called()
 
 
