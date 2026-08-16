@@ -15,12 +15,12 @@ CONF_HOUSEHOLD_ID = "household_id"
 # PAUSE is advertised unconditionally: whether a speaker can pause depends on what it has
 # loaded rather than on the model, so pause() reads that back from the speaker itself and
 # falls back to stop when it is refused.
+# The volume features are deliberately absent here: they depend on the individual speaker
+# and are added by SonosPlayer.
 PLAYER_FEATURES = (
     PlayerFeature.PLAY_MEDIA,
     PlayerFeature.PAUSE,
     PlayerFeature.SET_MEMBERS,
-    PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.SELECT_SOURCE,
