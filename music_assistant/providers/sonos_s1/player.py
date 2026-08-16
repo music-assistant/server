@@ -14,7 +14,13 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerState
+from music_assistant_models.enums import (
+    IdentifierType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerState,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
@@ -70,14 +76,23 @@ class SonosPlayer(Player):
         self,
         provider: SonosPlayerProvider,
         soco: SoCo,
+        fixed_volume: bool,
     ) -> None:
-        """Initialize SonosPlayer instance."""
+        """
+        Initialize SonosPlayer instance.
+
+        :param fixed_volume: Whether the speaker is set to fixed volume output.
+        """
         super().__init__(provider, soco.uid)
         self.soco = soco
         self.household_id: str = soco.household_id
 
         # Set player attributes
         self._attr_supported_features = set(PLAYER_FEATURES)
+        if not fixed_volume:
+            # a speaker playing out at a fixed level (a Connect or Port wired into an
+            # amplifier) refuses volume commands, so it must not offer any volume control
+            self._attr_supported_features |= {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
         # S1 hardware is fixed to 16-bit at 44.1/48 kHz
         self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         self._attr_name = soco.player_name
