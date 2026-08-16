@@ -12,8 +12,12 @@ CONF_NETWORK_SCAN = "network_scan"
 CONF_HOUSEHOLD_ID = "household_id"
 
 # Player Features
+# PAUSE is advertised unconditionally: whether a speaker can pause depends on what it has
+# loaded rather than on the model, so pause() reads that back from the speaker itself and
+# falls back to stop when it is refused.
 PLAYER_FEATURES = (
     PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.PAUSE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,

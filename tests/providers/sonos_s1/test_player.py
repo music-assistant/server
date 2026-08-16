@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from soco.core import SoCo
 from soco.exceptions import SoCoException
@@ -123,6 +123,11 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert call_args.args[0] == STREAM_URL
     assert STREAM_URL in call_args.kwargs["meta"]
     assert "library://track/123" not in call_args.kwargs["meta"]
+
+
+def test_pause_is_advertised_as_a_supported_feature(sonos_player: SonosPlayer) -> None:
+    """Without the feature the player controller converts every pause into a stop."""
+    assert PlayerFeature.PAUSE in sonos_player.supported_features
 
 
 class _RecordingSoco:
