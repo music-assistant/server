@@ -113,6 +113,9 @@ def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) 
         ("MIT AND Frobnicate-1.0", False),
         # a malformed expression names nothing we can check, so it is not compatible either
         ("MIT OR AND", False),
+        # "or later" is a single marker, not a way to dress up an unknown identifier
+        ("MIT++++", False),
+        ("LGPL-2.1+", True),
         ("MIT OR (Apache-2.0", False),
         ("BSD-3-Clause-No-Nuclear-License-2014", False),
         ("LicenseRef-Proprietary", False),
@@ -178,6 +181,9 @@ def test_compatible_licenses(license_str: str) -> None:
         # only understood in part is not understood: "Zlib" alone would be compatible
         ("Zlib plus custom terms", "Unknown/unverified license"),
         ("GNU General Public License v3 (GPLv3)", "Incompatible copyleft license"),
+        # an LGPL term in the string does not excuse a GPL one standing next to it
+        ("LGPL plus GPL terms", "Incompatible copyleft license"),
+        ("LGPL-2.1-or-later AND GPL-3.0-only", "Incompatible copyleft license"),
         ("Frobnicate-1.0", "Unknown/unverified license (Frobnicate-1.0)"),
         ("Other/Proprietary License", "Unknown/unverified license"),
         # a custom license is never pre-approved, not even when its name reads permissive

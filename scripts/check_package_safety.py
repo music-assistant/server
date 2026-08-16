@@ -41,8 +41,13 @@ COMPATIBLE_SPDX_LICENSES = {
     "BSL-1.0",
     "CC0-1.0",
     "ISC",
+    "LGPL-2.0",
+    "LGPL-2.0-ONLY",
+    "LGPL-2.0-OR-LATER",
+    "LGPL-2.1",
     "LGPL-2.1-ONLY",
     "LGPL-2.1-OR-LATER",
+    "LGPL-3.0",
     "LGPL-3.0-ONLY",
     "LGPL-3.0-OR-LATER",
     "MIT",
@@ -174,9 +179,10 @@ def check_license_compatibility(
     if spdx_compatible:
         return True, f"Compatible ({license_str})"
 
-    copyleft = "LGPL" not in license_upper and any(
-        problem in license_upper for problem in PROBLEMATIC_LICENSES
-    )
+    # drop the LGPL mentions before looking for the copyleft families we do not accept, so that a
+    # GPL term next to an LGPL one is still spotted
+    without_lgpl = license_upper.replace("LGPL", "")
+    copyleft = any(problem in without_lgpl for problem in PROBLEMATIC_LICENSES)
 
     # an SPDX expression is a validated, machine-readable field: whatever the evaluator did not
     # accept in one names a license that is not on the allow list, so guessing from the wording
@@ -570,7 +576,8 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
             raise _SpdxSyntaxError
         return result
 
-    identifier = tokens.pop(0).rstrip("+").upper()
+    # a single trailing "+" is the deprecated "or later" marker and does not change the license
+    identifier = tokens.pop(0).upper().removesuffix("+")
     # a "WITH <exception>" suffix only grants extra permissions, so the identifier decides
     if tokens and tokens[0].upper() == "WITH":
         tokens.pop(0)
