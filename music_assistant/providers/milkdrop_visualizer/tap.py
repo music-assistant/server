@@ -40,9 +40,11 @@ if TYPE_CHECKING:
 
 MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
-# How long a viewerless tap stays attached, so refreshes and the next track
-# rejoin instantly instead of hitting the mid-stream join gap.
-TAP_LINGER_SECONDS = 600
+# How long a viewerless tap's client (and its buffered frames) stay around
+# before being torn down, so a reload - including a slow one on a cast display
+# - only has to rejoin the group. The tap leaves the group immediately either
+# way, so nothing about playback or the player's members depends on this.
+TAP_LINGER_SECONDS = 30
 # How long to wait for the Sendspin provider to register a player for a freshly
 # created tap client, before grouping it onto the player being visualized.
 TAP_PLAYER_WAIT_ATTEMPTS = 25
@@ -216,6 +218,10 @@ class TapManager:
         """
         async with self._lock:
             if (existing := self._taps.get(target.player_id)) is not None:
+                if existing.client_id not in target.group_members:
+                    # a viewer returned within the linger window, after the
+                    # release had already taken the tap out of the group
+                    await self._join_group(target, existing)
                 return existing
             # Stable id: reconnects and multiple viewers reuse one hidden tap
             # player. Hash the full id rather than slicing its tail, so two
@@ -287,22 +293,31 @@ class TapManager:
         :param target: The Sendspin player whose group to join.
         :param tap: The tap joining the group.
         """
-        # The player controller only knows the tap once the Sendspin provider
-        # has registered a player for its client, which happens on the client
-        # added event this call raced.
-        for _ in range(TAP_PLAYER_WAIT_ATTEMPTS):
-            if self.mass.players.get_player(tap.client_id) is not None:
-                break
-            await asyncio.sleep(TAP_PLAYER_WAIT_INTERVAL)
-        else:
-            self.logger.warning(
-                "Tap %s did not register as a player; visualizing without grouping",
-                tap.client_id,
-            )
-            return
         # Group onto the player itself, not its Sendspin output: the controller
         # maps the tap onto that output and performs the handover.
         parent_id = target.protocol_parent_id or target.player_id
+        parent = self.mass.players.get_player(parent_id)
+        if parent is None:
+            return
+        # Two things have to catch up with the client that was just created:
+        # the Sendspin provider registers a player for it on the client added
+        # event, and only then does the target recalculate which players it
+        # accepts as members (that set is cached on its state).
+        for _ in range(TAP_PLAYER_WAIT_ATTEMPTS):
+            tap_player = self.mass.players.get_player(tap.client_id)
+            if tap_player is not None and tap_player.initialized.is_set():
+                parent.update_state()
+                if tap.client_id in parent.state.can_group_with:
+                    break
+            await asyncio.sleep(TAP_PLAYER_WAIT_INTERVAL)
+        else:
+            self.logger.warning(
+                "Tap %s never became groupable with %s; visualizing without grouping, "
+                "so the player only switches to Sendspin when something else moves it there",
+                tap.client_id,
+                parent.display_name,
+            )
+            return
         await self.mass.players.cmd_set_members(parent_id, player_ids_to_add=[tap.client_id])
 
     async def _leave_group(self, target_player_id: str, tap: Tap) -> None:
@@ -324,22 +339,24 @@ class TapManager:
 
     async def _linger(self, target_player_id: str) -> None:
         """
-        Remove a tap once it has been viewerless for the linger window.
+        Leave the group as soon as the last viewer goes, then tear the tap down.
 
-        The linger keeps the tap in the group across refreshes and track
-        changes during a viewing session, so subsequent streams are covered
-        from their start (avoiding the mid-stream join gap).
+        Leaving is immediate because the tap is a real group member: staying in
+        would keep the player rendering over Sendspin, and showing an extra
+        member, long after anyone was watching. Only the (invisible) client
+        lingers, so a refresh just rejoins instead of rebuilding it.
         """
         tap = self._taps.get(target_player_id)
         if tap is None or tap.queues:
             return
+        await self._leave_group(target_player_id, tap)
+        self.logger.debug("Waveform tap %s left the group (no viewers)", tap.client_id)
         await asyncio.sleep(TAP_LINGER_SECONDS)
         async with self._lock:
             tap = self._taps.get(target_player_id)
             if tap is None or tap.queues:
                 return
             self._taps.pop(target_player_id, None)
-            await self._leave_group(target_player_id, tap)
             if (sendspin := get_sendspin_provider(self.mass)) is not None:
                 await sendspin.server_api.remove_client(tap.client_id)
             self.logger.info("Waveform tap %s removed (viewers gone)", tap.client_id)
