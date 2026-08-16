@@ -19,25 +19,36 @@ HLS_BODY = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:10,\nsegment0.aac\n"
 class _FakeContent:
     """Minimal stand-in for aiohttp StreamReader content."""
 
-    def __init__(self, raw_data: bytes | Exception) -> None:
+    def __init__(self, raw_data: bytes | Exception, chunk_size: int | None = None) -> None:
         self._raw_data = raw_data
+        self._chunk_size = chunk_size
+        self._pos = 0
 
     async def read(self, n: int) -> bytes:
         if isinstance(self._raw_data, Exception):
             raise self._raw_data
-        return self._raw_data[:n]
+        # like the real stream, a read hands over what has arrived so far
+        available = len(self._raw_data) - self._pos
+        size = min(n, self._chunk_size, available) if self._chunk_size else min(n, available)
+        chunk = self._raw_data[self._pos : self._pos + size]
+        self._pos += size
+        return chunk
 
 
 class _FakeConnCtx:
     """Async context manager yielding a fake radio probe response."""
 
     def __init__(
-        self, headers: dict[str, str], raw_data: bytes | Exception = b"", charset: str | None = None
+        self,
+        headers: dict[str, str],
+        raw_data: bytes | Exception = b"",
+        charset: str | None = None,
+        chunk_size: int | None = None,
     ) -> None:
         self._resp = MagicMock()
         self._resp.headers = headers
         self._resp.charset = charset
-        self._resp.content = _FakeContent(raw_data)
+        self._resp.content = _FakeContent(raw_data, chunk_size)
 
     async def __aenter__(self) -> Any:
         return self._resp
@@ -67,7 +78,7 @@ async def test_playlist_is_unwrapped_from_the_probe_response(
     audio = _streams_audio()
     responses = {
         "http://radio.example.com/station.pls": _FakeConnCtx(
-            {"content-type": "audio/x-scpls"}, PLS_BODY
+            {"content-type": "audio/x-scpls"}, PLS_BODY, chunk_size=8
         ),
         "http://radio.example.com/stream": _FakeConnCtx({"icy-metaint": "16000"}),
     }

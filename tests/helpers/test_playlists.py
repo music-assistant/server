@@ -1010,19 +1010,33 @@ HLS_MASTER_PLAYLIST = (
 class _FakeContent:
     """Stand-in for the payload stream of an aiohttp response."""
 
-    def __init__(self, raw_data: bytes) -> None:
+    def __init__(self, raw_data: bytes, chunk_size: int | None = None) -> None:
         self._raw_data = raw_data
+        # like the real stream, a read hands over what has arrived so far, not the full
+        # amount asked for
+        self._chunk_size = chunk_size or max(len(raw_data), 1)
+        self._pos = 0
 
     async def read(self, n: int = -1) -> bytes:
-        return self._raw_data if n < 0 else self._raw_data[:n]
+        available = len(self._raw_data) - self._pos
+        size = available if n < 0 else min(n, self._chunk_size, available)
+        chunk = self._raw_data[self._pos : self._pos + size]
+        self._pos += size
+        return chunk
 
 
 class _FakeResponse:
     """Stand-in for the aiohttp response of a playlist fetch."""
 
-    def __init__(self, raw_data: bytes, charset: str | None, status: int = 200) -> None:
+    def __init__(
+        self,
+        raw_data: bytes,
+        charset: str | None,
+        status: int = 200,
+        chunk_size: int | None = None,
+    ) -> None:
         self.charset = charset
-        self.content = _FakeContent(raw_data)
+        self.content = _FakeContent(raw_data, chunk_size)
         self.status = status
 
     def raise_for_status(self) -> None:
@@ -1063,16 +1077,24 @@ class _FailingRequest:
         return None
 
 
-def _mass_serving(raw_data: bytes, charset: str | None = None, status: int = 200) -> Any:
+def _mass_serving(
+    raw_data: bytes,
+    charset: str | None = None,
+    status: int = 200,
+    chunk_size: int | None = None,
+) -> Any:
     """
     Return a mock mass whose http session serves the given playlist bytes.
 
     :param raw_data: Raw response body handed to fetch_playlist.
     :param charset: Charset the server declares in its Content-Type header, if any.
     :param status: HTTP status the server answers with.
+    :param chunk_size: Largest amount a single read hands over, if the body is chunked.
     """
     mass = MagicMock()
-    mass.http_session.get = MagicMock(return_value=_FakeResponse(raw_data, charset, status))
+    mass.http_session.get = MagicMock(
+        return_value=_FakeResponse(raw_data, charset, status, chunk_size)
+    )
     return mass
 
 
@@ -1240,6 +1262,18 @@ async def test_fetch_playlist_declared_charset_is_used() -> None:
     result = await fetch_playlist(mass, "http://example.com/station.m3u")
 
     assert result[0].title == "Хит"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_reads_a_body_that_arrives_in_chunks() -> None:
+    """A playlist spread over several chunks is parsed whole, not just its first chunk."""
+    mass = _mass_serving(
+        b"#EXTM3U\n#EXTINF:-1,Station\nhttp://stream.example.com/aac\n", chunk_size=8
+    )
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert [x.path for x in result] == ["http://stream.example.com/aac"]
 
 
 @pytest.mark.asyncio

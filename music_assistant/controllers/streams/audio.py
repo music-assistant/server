@@ -129,12 +129,12 @@ from music_assistant.helpers.ffmpeg import (
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
-    MAX_PLAYLIST_SIZE,
     PLAYLIST_CONTENT_TYPES,
     IsHLSPlaylist,
     PlaylistItem,
     parse_m3u,
     parse_playlist_data,
+    read_playlist_body,
 )
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
@@ -725,7 +725,7 @@ class StreamsAudio:
                     # go out with another user agent and stricter TLS than the rest of the
                     # radio paths, so a host could answer it differently
                     try:
-                        playlist_data = await resp.content.read(MAX_PLAYLIST_SIZE)
+                        playlist_data = await read_playlist_body(resp.content)
                     except aiohttp.ClientError as err:
                         # the endpoint answered as a playlist, so a truncated body is a bad
                         # playlist - not a reason to fall back to streaming the URL directly

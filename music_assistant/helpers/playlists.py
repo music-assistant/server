@@ -34,6 +34,8 @@ from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
+    from aiohttp import StreamReader
+
     from music_assistant.mass import MusicAssistant
 
 
@@ -296,6 +298,23 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
     return playlist
 
 
+async def read_playlist_body(content: StreamReader) -> bytes:
+    """
+    Read a playlist body, up to MAX_PLAYLIST_SIZE bytes.
+
+    :param content: Response body to read from.
+    """
+    # a single read returns whatever happens to be buffered, so a playlist spread over
+    # several chunks would otherwise be parsed truncated
+    raw_data = bytearray()
+    while len(raw_data) < MAX_PLAYLIST_SIZE:
+        chunk = await content.read(MAX_PLAYLIST_SIZE - len(raw_data))
+        if not chunk:
+            break
+        raw_data += chunk
+    return bytes(raw_data)
+
+
 async def parse_playlist_data(
     url: str, raw_data: bytes, charset: str | None = None, raise_on_hls: bool = True
 ) -> list[PlaylistItem]:
@@ -337,7 +356,7 @@ async def fetch_playlist(
         ) as resp:
             # an error page is still a body: its markup would otherwise parse into entries
             resp.raise_for_status()
-            raw_data = await resp.content.read(MAX_PLAYLIST_SIZE)
+            raw_data = await read_playlist_body(resp.content)
             charset = resp.charset
     except TimeoutError as err:
         msg = f"Timeout while fetching playlist {url}"
