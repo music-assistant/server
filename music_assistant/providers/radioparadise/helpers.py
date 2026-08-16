@@ -40,6 +40,36 @@ def find_current_song(
     return first_song if first_song is not None else None
 
 
+def normalize_stream_title(text: str) -> str:
+    """Casefold and collapse whitespace for stream-title comparison."""
+    return " ".join(text.split()).casefold()
+
+
+def find_song_by_stream_title(
+    songs: dict[str, dict[str, Any]], stream_title: str
+) -> dict[str, Any] | None:
+    """
+    Find the block song matching an in-band ICY stream title.
+
+    Matches by composing "artist - title" from the block's structured fields;
+    the ICY string is never split, which would be ambiguous around " - ".
+
+    :param songs: Dictionary of songs from Radio Paradise block data.
+    :param stream_title: Cleaned in-band stream title.
+    """
+    want = normalize_stream_title(stream_title)
+    if not want:
+        return None
+    for song in songs.values():
+        artist = song.get("artist") or ""
+        title = song.get("title") or ""
+        if not artist or not title:
+            continue
+        if normalize_stream_title(f"{artist} - {title}") == want:
+            return song
+    return None
+
+
 def get_next_song(songs: dict[str, Any], current_song: dict[str, Any]) -> dict[str, Any] | None:
     """
     Get the next song that will play after the current song.
