@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import StreamType
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 
@@ -17,10 +19,12 @@ HLS_BODY = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:10,\nsegment0.aac\n"
 class _FakeContent:
     """Minimal stand-in for aiohttp StreamReader content."""
 
-    def __init__(self, raw_data: bytes) -> None:
+    def __init__(self, raw_data: bytes | Exception) -> None:
         self._raw_data = raw_data
 
     async def read(self, n: int) -> bytes:
+        if isinstance(self._raw_data, Exception):
+            raise self._raw_data
         return self._raw_data[:n]
 
 
@@ -28,7 +32,7 @@ class _FakeConnCtx:
     """Async context manager yielding a fake radio probe response."""
 
     def __init__(
-        self, headers: dict[str, str], raw_data: bytes = b"", charset: str | None = None
+        self, headers: dict[str, str], raw_data: bytes | Exception = b"", charset: str | None = None
     ) -> None:
         self._resp = MagicMock()
         self._resp.headers = headers
@@ -95,3 +99,21 @@ async def test_hls_playlist_resolves_as_hls(monkeypatch: pytest.MonkeyPatch) -> 
     result = await audio.resolve_radio_stream("http://radio.example.com/station.m3u8")
 
     assert result == ("http://radio.example.com/station.m3u8", StreamType.HLS)
+    cast("MagicMock", audio.mass).http_session.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_truncated_playlist_is_not_cached_as_a_direct_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A playlist body that dies mid-transfer fails instead of being streamed as audio."""
+    audio = _streams_audio()
+    response = _FakeConnCtx(
+        {"content-type": "audio/x-scpls"}, aiohttp.ClientPayloadError("connection closed")
+    )
+    monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(InvalidDataError):
+        await audio.resolve_radio_stream("http://radio.example.com/station.pls")
+
+    cast("MagicMock", audio.mass).cache.set.assert_not_called()

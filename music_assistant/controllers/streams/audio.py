@@ -721,7 +721,12 @@ class StreamsAudio:
                     # take the playlist from this very response: a separate request would
                     # go out with another user agent and stricter TLS than the rest of the
                     # radio paths, so a host could answer it differently
-                    playlist_data = await resp.content.read(MAX_PLAYLIST_SIZE)
+                    try:
+                        playlist_data = await resp.content.read(MAX_PLAYLIST_SIZE)
+                    except aiohttp.ClientError as err:
+                        # the endpoint answered as a playlist, so a truncated body is a bad
+                        # playlist - not a reason to fall back to streaming the URL directly
+                        raise InvalidDataError(f"Error while fetching playlist {url}") from err
                     playlist_charset = resp.charset
 
             if headers.get("icy-metaint") is not None:
