@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from soco.core import SoCo
 from soco.exceptions import SoCoException
@@ -142,6 +142,11 @@ class _RecordingSoco:
     def pause(self) -> None:
         """Pause playback on the speaker."""
         self.paused = True
+
+
+def test_pause_is_advertised_as_a_supported_feature(sonos_player: SonosPlayer) -> None:
+    """Without the feature the player controller converts every pause into a stop."""
+    assert PlayerFeature.PAUSE in sonos_player.supported_features
 
 
 async def test_pause_queries_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
