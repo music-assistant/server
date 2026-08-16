@@ -1137,11 +1137,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        # the shuffle intent belongs with the flag it was recorded for, or the target would judge
-        # the transferred shuffle against a stamp left over from its own previous content
-        self._queue_data[target_queue_id].shuffle_set_at = self._queue_data[
-            source_queue_id
-        ].shuffle_set_at
+        # The shuffle intent moves with the flag it was recorded for, or the target would judge the
+        # transferred shuffle against a stamp left over from its own previous content. It is good
+        # for one play, so it is taken off the source rather than copied: the gesture followed the
+        # queue to its new player and must not shuffle whatever is started here next.
+        source_data = self._queue_data[source_queue_id]
+        self._queue_data[target_queue_id].shuffle_set_at = source_data.shuffle_set_at
+        source_data.shuffle_set_at = None
         target_queue.crossfade_enabled = source_queue.crossfade_enabled
         # refresh the derived smart-fades indicator for the target's own config/availability
         target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)

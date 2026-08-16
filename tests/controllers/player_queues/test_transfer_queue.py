@@ -168,3 +168,6 @@ async def test_transfer_queue_carries_the_source_shuffle_intent() -> None:
 
     assert fake.get("tgt").shuffle_enabled is True
     assert fake._queue_data["tgt"].shuffle_set_at == switched_on_at
+    # the gesture is good for one play and it followed the queue, so it must not be left behind
+    # to shuffle whatever gets started on the player it was moved off
+    assert fake._queue_data["src"].shuffle_set_at is None
