@@ -2033,6 +2033,55 @@ def test_native_control_failure_does_not_override_pinned_mode() -> None:
     player.provider.mass.create_task.assert_not_called()
 
 
+def test_native_control_failure_after_newer_action_does_not_schedule_recovery() -> None:
+    """A late failure from superseded playback cannot restart the queue."""
+    player = _make_player()
+    player.state.playback_state = PlaybackState.PLAYING
+    stream = AirPlayStream(player)
+    stream.session = MagicMock(sync_clients=[player])
+    stream.supersede_recovery()
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+    )
+    player.provider.mass.create_task.assert_not_called()
+
+
+def test_playing_status_allows_recovery_after_a_newer_action() -> None:
+    """Confirmed playback makes later failures eligible for recovery again."""
+    player = _make_player()
+    player.state.playback_state = PlaybackState.PLAYING
+    player.provider.mass.create_task.side_effect = lambda awaitable, **_: awaitable.close()
+    stream = AirPlayStream(player)
+    stream.session = MagicMock(sync_clients=[player])
+    stream.supersede_recovery()
+    stream._handle_status_line("[STATUS] playing elapsed_ms=1000")
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.create_task.assert_called_once()
+
+
+def test_playing_status_during_stop_does_not_reopen_recovery() -> None:
+    """A buffered playing update cannot revive recovery during teardown."""
+    player = _make_player()
+    player.state.playback_state = PlaybackState.PLAYING
+    stream = AirPlayStream(player)
+    stream.session = MagicMock(sync_clients=[player])
+    stream.supersede_recovery()
+    stream._stopping = True
+    stream._handle_status_line("[STATUS] playing elapsed_ms=1000")
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+    )
+    player.provider.mass.create_task.assert_not_called()
+
+
 def test_unrelated_cli_error_does_not_switch_to_compatibility() -> None:
     """A different runtime failure does not diagnose the native control route."""
     player = _make_player()
@@ -2158,6 +2207,38 @@ async def test_compatibility_restart_does_not_reclaim_a_replaced_stream() -> Non
     await stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
 
     stream.session.stop.assert_awaited_once()
+    player.provider.mass.player_queues.resume.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_superseding_recovery_does_not_cancel_session_teardown() -> None:
+    """A newer action lets the in-progress session teardown finish cleanly."""
+    player = _make_player()
+    queue = MagicMock(queue_id="queue")
+    player.provider.mass.player_queues.get_active_queue.return_value = queue
+    player.provider.mass.player_queues.resume = AsyncMock()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    async def stop_session() -> None:
+        stop_started.set()
+        await release_stop.wait()
+
+    stream.session = MagicMock(stop=AsyncMock(side_effect=stop_session))
+    task = asyncio.create_task(
+        stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
+    )
+    stream._recovery_task = task
+
+    await stop_started.wait()
+    stream.supersede_recovery()
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    release_stop.set()
+    await task
     player.provider.mass.player_queues.resume.assert_not_awaited()
 
 

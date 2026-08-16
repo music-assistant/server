@@ -268,6 +268,8 @@ class AirPlayStream:
         self._native_control_failure_handled: bool = False
         self._recovery_generation: int = 0
         self._recovery_task: asyncio.Task[None] | None = None
+        self._recovery_blocked: bool = False
+        self._recovery_waiting_to_resume: bool = False
 
     @property
     def running(self) -> bool:
@@ -287,13 +289,14 @@ class AirPlayStream:
     def supersede_recovery(self) -> None:
         """Prevent pending recovery from resuming playback from this stream."""
         self._recovery_generation += 1
+        self._recovery_blocked = True
         task = self._recovery_task
         if task is None:
             return
         if task.done():
             self._recovery_task = None
             return
-        if task is asyncio.current_task():
+        if task is asyncio.current_task() or not self._recovery_waiting_to_resume:
             return
         self._recovery_task = None
         task.cancel()
@@ -1607,6 +1610,10 @@ class AirPlayStream:
 
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time against the current start anchor's media position."""
+        # This process is audibly playing after the latest action, so a future
+        # terminal failure belongs to the current playback rather than stale work.
+        if not self._stopping and not self._stopped:
+            self._recovery_blocked = False
         # the binary's elapsed restarts at each START; report against its base
         elapsed_time += self._start_position
         # The binary only emits this status while actually playing, so it is
@@ -1746,10 +1753,12 @@ class AirPlayStream:
                 or self.player.stream is not self
             ):
                 return
+            self._recovery_waiting_to_resume = True
             await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
         except MusicAssistantError as err:
             self.player.logger.warning("Restart in AirPlay compatibility mode failed: %s", err)
         finally:
+            self._recovery_waiting_to_resume = False
             if self._recovery_task is asyncio.current_task():
                 self._recovery_task = None
 
@@ -1968,6 +1977,9 @@ class AirPlayStream:
             and not self.player.synced_to
             and not self.player.group_members
             and self.player.state.playback_state == PlaybackState.PLAYING
+            and not self._recovery_blocked
+            and not self._stopping
+            and not self._stopped
         ):
             # Native groups and Sendspin bridges already recover a dead transport
             # in place. A standalone queue has no owner to restart it.
