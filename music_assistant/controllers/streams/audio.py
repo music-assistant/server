@@ -131,6 +131,7 @@ from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
     HLS_CONTENT_TYPES,
     PLAYLIST_CONTENT_TYPES,
+    PLAYLIST_READ_TIMEOUT,
     IsHLSPlaylist,
     PlaylistItem,
     parse_m3u,
@@ -712,7 +713,8 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
-                content_type = headers.get("content-type", "")
+                # media types are case insensitive, the comparisons below are all lower case
+                content_type = headers.get("content-type", "").lower()
                 # a server declaring HLS settles it: a media playlist is free to carry none
                 # of the tags the parser recognises an HLS playlist by
                 is_hls = any(hls_type in content_type for hls_type in HLS_CONTENT_TYPES)
@@ -729,7 +731,10 @@ class StreamsAudio:
                     # go out with another user agent and stricter TLS than the rest of the
                     # radio paths, so a host could answer it differently
                     try:
-                        playlist_data = await read_playlist_body(resp.content)
+                        # the probe has no total timeout, so bound the body on its own:
+                        # a server trickling bytes would otherwise stall resolving for hours
+                        async with asyncio.timeout(PLAYLIST_READ_TIMEOUT):
+                            playlist_data = await read_playlist_body(resp.content)
                     except aiohttp.ClientError as err:
                         # the endpoint answered as a playlist, so a truncated body is a bad
                         # playlist - not a reason to fall back to streaming the URL directly

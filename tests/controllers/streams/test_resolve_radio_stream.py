@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,12 +20,17 @@ HLS_BODY = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:10,\nsegment0.aac\n"
 class _FakeContent:
     """Minimal stand-in for aiohttp StreamReader content."""
 
-    def __init__(self, raw_data: bytes | Exception, chunk_size: int | None = None) -> None:
+    def __init__(
+        self, raw_data: bytes | Exception, chunk_size: int | None = None, delay: float = 0
+    ) -> None:
         self._raw_data = raw_data
         self._chunk_size = chunk_size
+        self._delay = delay
         self._pos = 0
 
     async def read(self, n: int) -> bytes:
+        if self._delay:
+            await asyncio.sleep(self._delay)
         if isinstance(self._raw_data, Exception):
             raise self._raw_data
         # like the real stream, a read hands over what has arrived so far
@@ -44,11 +50,12 @@ class _FakeConnCtx:
         raw_data: bytes | Exception = b"",
         charset: str | None = None,
         chunk_size: int | None = None,
+        delay: float = 0,
     ) -> None:
         self._resp = MagicMock()
         self._resp.headers = headers
         self._resp.charset = charset
-        self._resp.content = _FakeContent(raw_data, chunk_size)
+        self._resp.content = _FakeContent(raw_data, chunk_size, delay)
 
     async def __aenter__(self) -> Any:
         return self._resp
@@ -126,6 +133,37 @@ async def test_hls_without_version_tag_still_resolves_as_hls(
     result = await audio.resolve_radio_stream("http://radio.example.com/live")
 
     assert result == ("http://radio.example.com/live", StreamType.HLS)
+
+
+@pytest.mark.asyncio
+async def test_content_type_is_matched_case_insensitively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server shouting its media type in mixed case is understood all the same."""
+    audio = _streams_audio()
+    response = _FakeConnCtx({"content-type": "Application/Vnd.Apple.Mpegurl"}, HLS_BODY)
+    monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: response)
+
+    result = await audio.resolve_radio_stream("http://radio.example.com/live")
+
+    assert result == ("http://radio.example.com/live", StreamType.HLS)
+
+
+@pytest.mark.asyncio
+async def test_trickling_playlist_body_gives_up_instead_of_stalling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server feeding the playlist a byte at a time cannot hold up resolving."""
+    audio = _streams_audio()
+    response = _FakeConnCtx({"content-type": "audio/x-scpls"}, PLS_BODY, chunk_size=1, delay=0.02)
+    monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: response)
+    # a byte at a time at that pace runs well past the budget
+    monkeypatch.setattr("music_assistant.controllers.streams.audio.PLAYLIST_READ_TIMEOUT", 0.05)
+
+    with pytest.raises(InvalidDataError, match="Timeout"):
+        await audio.resolve_radio_stream("http://radio.example.com/station.pls")
+
+    cast("MagicMock", audio.mass).cache.set.assert_not_called()
 
 
 @pytest.mark.asyncio

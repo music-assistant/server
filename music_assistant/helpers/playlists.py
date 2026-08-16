@@ -46,6 +46,7 @@ FIELD_SEPARATOR = "||"
 # playlists are small text files: cap the read so a stream served under a
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
+PLAYLIST_READ_TIMEOUT = 5
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -352,7 +353,9 @@ async def fetch_playlist(
     """Fetch and parse a remote M3U or PLS playlist."""
     try:
         async with mass.http_session.get(
-            encoded_request_url(url), allow_redirects=True, timeout=ClientTimeout(total=5)
+            encoded_request_url(url),
+            allow_redirects=True,
+            timeout=ClientTimeout(total=PLAYLIST_READ_TIMEOUT),
         ) as resp:
             # an error page is still a body: its markup would otherwise parse into entries
             resp.raise_for_status()
