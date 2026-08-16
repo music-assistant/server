@@ -117,6 +117,12 @@ class TestDetectCharset:
         raw = CYRILLIC_CUE.encode("cp1251")
         assert await detect_charset(raw, preferred="cp1251") == "cp1251"
 
+    async def test_byte_order_mark_beats_the_declared_charset(self) -> None:
+        """A source declaring plain utf-8 must not leave its own BOM in the text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw, preferred="utf-8")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
     async def test_unknown_declared_charset_is_ignored(self) -> None:
         """A charset name Python has no codec for must not reach decode()."""
         raw = CYRILLIC_CUE.encode("cp1251")

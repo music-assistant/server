@@ -1612,6 +1612,11 @@ async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | 
     :param fallback: Charset to return when the charset can not be determined.
     :param preferred: Charset declared by the source, taken over detection when usable.
     """
+    # a BOM outranks the declared charset: it names the very same UTF-8 but, unlike
+    # the declared name, also gets the marker itself stripped off the decoded text
+    if data.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+
     if preferred:
         # a declared charset is only worth anything if Python has a codec for it:
         # servers do send misspelled or plain made-up names in their Content-Type
@@ -1622,8 +1627,6 @@ async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | 
         else:
             return preferred
 
-    if data.startswith(codecs.BOM_UTF8):
-        return "utf-8-sig"
     try:
         data.decode()
     except UnicodeDecodeError:
