@@ -1419,13 +1419,9 @@ class Player(ABC):
     @final
     def power_control(self) -> str:
         """Return the power control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_POWER_CONTROL)
+        conf = self.__stored_control_conf(CONF_POWER_CONTROL, PlayerFeature.POWER)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-            # validate that NATIVE is still backed by an actual POWER feature.
-            # this handles graceful degradation for players (e.g. group players)
-            # that previously advertised POWER but no longer do.
-            if conf == PLAYER_CONTROL_NATIVE and PlayerFeature.POWER not in self.supported_features:
-                return PLAYER_CONTROL_NONE
+            # the control type is explicitly set in the config, use that
             return str(conf)
         if conf and (_control := self.mass.players.get_player_control(str(conf))):
             # the control type is explicitly set to a player control,
@@ -1440,12 +1436,7 @@ class Player(ABC):
     @final
     def volume_control(self) -> str:
         """Return the volume control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_VOLUME_CONTROL)
-        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(PlayerFeature.VOLUME_SET):
-            # NATIVE is only honored while the player still advertises the feature; dropping a
-            # stale value lets auto-select degrade to a protocol player (or to no control at all)
-            # instead of re-exposing a volume slider the provider can not drive.
-            conf = None
+        conf = self.__stored_control_conf(CONF_VOLUME_CONTROL, PlayerFeature.VOLUME_SET)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
@@ -1471,12 +1462,7 @@ class Player(ABC):
     @final
     def mute_control(self) -> str:
         """Return the mute control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL)
-        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(PlayerFeature.VOLUME_MUTE):
-            # NATIVE is only honored while the player still advertises the feature; dropping a
-            # stale value lets auto-select degrade to a protocol player (or to no control at all)
-            # instead of re-exposing a mute button the provider can not drive.
-            conf = None
+        conf = self.__stored_control_conf(CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE)
         if conf == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
             # fake mute is simulated by setting the volume to zero, so without a volume
             # control to drive there is no way to mute this player at all
@@ -2271,16 +2257,29 @@ class Player(ABC):
         return None
 
     @final
+    def __stored_control_conf(self, conf_key: str, feature: PlayerFeature) -> ConfigValueType:
+        """
+        Return the stored control selection, dropping a NATIVE the player can no longer back.
+
+        A NATIVE selection is only meaningful while the player advertises the matching feature.
+        Dropping a stale one makes the caller fall back to its auto-select logic instead of
+        re-exposing a control the provider can no longer drive - the resolved control is what
+        the final feature set is derived from, so an unchecked value would put the feature back.
+
+        :param conf_key: Config key holding the control selection.
+        :param feature: Feature a NATIVE selection requires the player to advertise.
+        """
+        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(feature):
+            return None
+        return conf
+
+    @final
     def __control_for_output(
         self, feature: PlayerFeature, conf_key: str, output_protocol_id: str
     ) -> str:
         """Resolve the control owning the given feature for one specific output."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
-        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(feature):
-            # same rule as the device-wide resolvers: a stored NATIVE is only honored while
-            # the player still advertises the feature, so this output falls back to whatever
-            # actually renders its audio.
-            conf = None
+        conf = self.__stored_control_conf(conf_key, feature)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             return str(conf)
         if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):

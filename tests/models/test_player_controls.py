@@ -256,6 +256,11 @@ class TestVolumeControlExplicitConfig:
         )
         player = _create_player(mock_mass)
         assert player.volume_control == PLAYER_CONTROL_NONE
+        # the resolved control is what the final feature set is derived from, so the state has
+        # to be recalculated to prove the invalid control does not put VOLUME_SET back
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert PlayerFeature.VOLUME_SET not in player.state.supported_features
 
     def test_explicit_native_degrades_to_protocol_player(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config degrades to a protocol player that can drive the volume."""
@@ -331,6 +336,11 @@ class TestMuteControlExplicitConfig:
         )
         player = _create_player(mock_mass)
         assert player.mute_control == PLAYER_CONTROL_NONE
+        # the resolved control is what the final feature set is derived from, so the state has
+        # to be recalculated to prove the invalid control does not put VOLUME_MUTE back
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert PlayerFeature.VOLUME_MUTE not in player.state.supported_features
 
     def test_explicit_native_degrades_to_protocol_player(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config degrades to a protocol player that can drive the mute."""
