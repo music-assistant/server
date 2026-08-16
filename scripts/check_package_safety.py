@@ -254,8 +254,10 @@ def check_license_compatibility(
     # whatever the evaluator did not accept in an expression names a license that is not on the
     # allow list, so reading such a value further would only weaken the check. A free-form field
     # is all we have to go on, but what we recognise in it must not end up approving a copyleft
-    # license standing next to it
-    if spdx_compatible is None and not copyleft and not spdx_expression:
+    # license standing next to it, and a "LicenseRef-" value names a custom license whatever
+    # wording is packed into the identifier
+    custom = "LICENSEREF" in license_upper
+    if spdx_compatible is None and not copyleft and not custom and not spdx_expression:
         # a free-form field holds either the name of the license or the text of it; a name says
         # nothing about terms written around it, and a text is read on the grant it spells out
         if _names_license(license_str) or _quotes_license_text(license_str):
@@ -695,8 +697,9 @@ def _license_words(value: str) -> str:
     """
     # separators are spelled inconsistently ("MPL 2.0" for "MPL-2.0"), "licence" and "license"
     # are the same word, and both a leading "The" and a trailing "License" are noise the same
-    # name is written with and without
-    words = re.findall(r"[A-Z0-9]+", value.upper().replace("LICENCE", "LICENSE"))
+    # name is written with and without. Words in any script count, so that a term we cannot read
+    # keeps the value from matching a name rather than dropping out of it
+    words = re.findall(r"[^\W_]+", value.upper().replace("LICENCE", "LICENSE"))
     if words[:1] == ["THE"]:
         del words[0]
     if words[-1:] == ["LICENSE"]:

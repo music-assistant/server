@@ -294,6 +294,15 @@ def test_license_text_is_read_on_its_grant_only() -> None:
         (",", "Unknown/unverified license"),
         # a license we accept does not carry the one it is offered alongside
         ("MIT or Proprietary Terms", "Unknown/unverified license"),
+        # a term we cannot read is still a term, in whatever script it is written
+        ("MIT 非商用", "Unknown/unverified license"),
+        ("Apache 2.0 нельзя", "Unknown/unverified license"),
+        # a custom license names itself, whatever wording its identifier is built out of
+        (
+            "LicenseRef-Permission-is-hereby-granted-free-of-charge-to-any-person-obtaining-a"
+            "-copy-of-this-software-and-associated-documentation-files",
+            "Unknown/unverified license",
+        ),
         # groups in prose are not an expression, and no longer a name to read out of it either
         ("MIT License (a) (b) (c) (d) (e) (f) (g) and so on", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
