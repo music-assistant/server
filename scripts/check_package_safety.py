@@ -29,12 +29,17 @@ COMPATIBLE_LICENSES = {
     "MPL-2.0",
     "Unlicense",
     "CC0",
-    "Public Domain",
     # compact spellings that would not survive the boundary check as a suffix of the name above
     "PSFL",
     "ISCL",
     "LGPLv2",
     "LGPLv3",
+}
+
+# Licenses recognised only as the whole value, because their wording also turns up in prose that
+# says the opposite ("this software is not in the public domain")
+EXACT_LICENSES = {
+    "Public Domain",
 }
 
 # SPDX identifiers accepted in a PEP 639 `license_expression`
@@ -195,7 +200,7 @@ def check_license_compatibility(
     # copyleft or custom license next to it
     guessable = not spdx_expression and not copyleft and "LICENSEREF" not in license_upper
     if spdx_compatible is None and guessable:
-        for compatible in COMPATIBLE_LICENSES:
+        for compatible in COMPATIBLE_LICENSES | EXACT_LICENSES:
             if _names_license(license_upper, compatible):
                 return True, f"Compatible ({license_str})"
 
@@ -610,6 +615,9 @@ def _names_license(license_upper: str, name: str) -> bool:
     # tolerate spelling variants of the separators, so that "MPL 2.0" is read as "MPL-2.0", but
     # match whole words only, so the name is neither assembled out of unrelated ones ("this
     # copyright" holding an "ISC") nor read out of one that merely starts the same ("MITigation")
+    if name in EXACT_LICENSES:
+        return license_upper.strip() == name.upper()
+
     parts = [re.escape(part) for part in re.findall(r"[A-Z0-9]+", name.upper())]
     return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}(?![A-Z0-9])", license_upper) is not None
 

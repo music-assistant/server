@@ -156,6 +156,7 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "ISC License (ISCL)",
         "PSFL",
         "LGPLv2+",
+        "Public Domain",
         # a plain license field can hold an expression too (aiohttp publishes this one)
         "Apache-2.0 AND MIT",
         # ...while prose that merely contains the word "and" is still matched on its wording
@@ -211,6 +212,8 @@ def test_compatible_licenses(license_str: str) -> None:
         ("Mitigation License 1.0", "Unknown/unverified license"),
         # a name that merely starts like one we know is not that license
         ("MITX", "Unknown/unverified license"),
+        # prose that says the opposite of the license it names
+        ("This software is not in the public domain. All rights reserved.", "Unknown/unverified"),
         ("ISC2", "Unknown/unverified license"),
         ("Internal use only, do not transmit", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
