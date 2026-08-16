@@ -239,13 +239,19 @@ def test_compatible_licenses(license_str: str) -> None:
         # ...and the grant has to be the one the text opens, not the tail of another word
         (
             "Nonpermission is hereby granted, free of charge, to any person obtaining a copy of"
-            " this software.",
+            " this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
+        # a text that breaks off the grant to restrict it does not spell out that grant
+        (
+            "Permission is hereby granted, free of charge, to any person obtaining a copy solely"
+            " for non-commercial use.",
             "Unknown/unverified license",
         ),
         # a copyleft license the text is combined with is not excused by the grant it spells out
         (
             "MIT License AND GPL-3.0-only\n\nPermission is hereby granted, free of charge, to any"
-            " person obtaining a copy of this software.",
+            " person obtaining a copy of this software and associated documentation files.",
             "Incompatible copyleft license",
         ),
         # neither alternative of an expression is one we know, so the expression is not either

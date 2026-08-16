@@ -63,25 +63,32 @@ COMPATIBLE_LICENSE_NAMES = {
     "Zlib",
 }
 
-# Opening of the grant each permissive license spells out, used to recognise packages that put
-# their whole license text in the license field. The grant is what the license actually gives,
-# so it identifies the text where the heading above it would only be a name in prose.
+# The grant each permissive license spells out, used to recognise packages that put their whole
+# license text in the license field. The grant is what the license actually gives, so it
+# identifies the text where the heading above it would only be a name in prose. Each is quoted
+# far enough to cover the permission itself, so that a text restricting it reads differently.
 LICENSE_TEXT_GRANTS = {
     # MIT
-    "Permission is hereby granted, free of charge, to any person obtaining a copy",
+    "Permission is hereby granted, free of charge, to any person obtaining a copy of this"
+    " software and associated documentation files",
     # ISC
-    "Permission to use, copy, modify, and/or distribute this software for any purpose",
+    "Permission to use, copy, modify, and/or distribute this software for any purpose with or"
+    " without fee is hereby granted",
     # BSD, 2-clause and 3-clause alike
     "Redistribution and use in source and binary forms, with or without modification, are"
-    " permitted",
+    " permitted provided that the following conditions are met",
     # Apache-2.0
-    "Licensed under the Apache License, Version 2.0",
+    'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file'
+    " except in compliance with the License",
     # MPL-2.0
-    "This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0",
+    "This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a"
+    " copy of the MPL was not distributed with this file",
     # Unlicense
-    "This is free and unencumbered software released into the public domain",
+    "This is free and unencumbered software released into the public domain. Anyone is free to"
+    " copy, modify, publish, use, compile, sell, or distribute this software",
     # Zlib
-    "Permission is granted to anyone to use this software for any purpose",
+    "Permission is granted to anyone to use this software for any purpose, including commercial"
+    " applications, and to alter it and redistribute it freely",
 }
 
 # SPDX identifiers accepted in a PEP 639 `license_expression`
