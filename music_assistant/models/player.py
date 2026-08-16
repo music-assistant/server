@@ -2276,6 +2276,11 @@ class Player(ABC):
     ) -> str:
         """Resolve the control owning the given feature for one specific output."""
         conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(feature):
+            # same rule as the device-wide resolvers: a stored NATIVE is only honored while
+            # the player still advertises the feature, so this output falls back to whatever
+            # actually renders its audio.
+            conf = None
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             return str(conf)
         if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):

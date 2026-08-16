@@ -751,6 +751,34 @@ class TestControlForOutput:
         _link_protocols(player, [_make_protocol_link("proto_a")])
         assert player.volume_control_for_output("proto_a") == PLAYER_CONTROL_NATIVE
 
+    def test_stale_native_degrades_to_named_output(self, mock_mass: MagicMock) -> None:
+        """A stored NATIVE the player can no longer back hands the output to its own protocol."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control_for_output("proto_a") == "proto_a"
+        # the device-wide resolver must agree, otherwise the two disagree on the same config
+        assert player.volume_control == "proto_a"
+
+    def test_stale_native_mute_degrades_to_named_output(self, mock_mass: MagicMock) -> None:
+        """The mute resolver applies the same stale-NATIVE rule as the volume one."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_MUTE})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.mute_control_for_output("proto_a") == "proto_a"
+
     def test_explicit_config_wins(self, mock_mass: MagicMock) -> None:
         """An explicitly configured control is a device-wide statement, so it still wins."""
         proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
