@@ -255,8 +255,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return  # no change
         queue.shuffle_enabled = shuffle_enabled
         # remember the moment the user asked for shuffle, so media started right after this
-        # keeps it instead of being reset by the "fresh queue plays in order" default
-        self._queue_data[queue_id].shuffle_set_at = time.time() if shuffle_enabled else None
+        # keeps it instead of being reset by the "fresh queue plays in order" default. Monotonic
+        # because only the elapsed interval matters, and a host whose clock is corrected while
+        # MA runs (a Pi without an RTC syncing after boot) would otherwise age it wrongly.
+        self._queue_data[queue_id].shuffle_set_at = time.monotonic() if shuffle_enabled else None
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue_items = self._queue_data[queue_id].items
         cur_index = (
@@ -1849,7 +1851,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # regardless of what the previous listening session left switched on.
             shuffle = (
                 queue_data.shuffle_set_at is not None
-                and (time.time() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
+                and (time.monotonic() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
             )
         queue_data.shuffle_set_at = None
         if queue.shuffle_enabled == shuffle:

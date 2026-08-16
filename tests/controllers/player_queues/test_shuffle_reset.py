@@ -201,7 +201,7 @@ async def test_switching_shuffle_off_drops_the_intent() -> None:
 async def test_stale_shuffle_intent_is_not_honoured() -> None:
     """A toggle from well before the play command is a leftover, not intent for this album."""
     ctrl = _controller(shuffle_enabled=True)
-    ctrl._queue_data["q1"].shuffle_set_at = time.time() - SHUFFLE_INTENT_WINDOW - 100
+    ctrl._queue_data["q1"].shuffle_set_at = time.monotonic() - SHUFFLE_INTENT_WINDOW - 100
 
     await ctrl.play_media("q1", _album(), QueueOption.REPLACE)
 

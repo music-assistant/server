@@ -140,7 +140,9 @@ async def test_transfer_queue_drops_a_stale_shuffle_intent_on_the_target() -> No
     make the media started next read it as a "shuffle this" gesture the user never made for it.
     """
     fake = _shuffle_controller(
-        source_shuffle_enabled=False, source_shuffle_set_at=None, target_shuffle_set_at=time.time()
+        source_shuffle_enabled=False,
+        source_shuffle_set_at=None,
+        target_shuffle_set_at=time.monotonic(),
     )
 
     await PlayerQueuesController.transfer_queue(
@@ -153,7 +155,7 @@ async def test_transfer_queue_drops_a_stale_shuffle_intent_on_the_target() -> No
 
 async def test_transfer_queue_carries_the_source_shuffle_intent() -> None:
     """A shuffle switched on moments before the transfer still counts for the media started next."""
-    switched_on_at = time.time()
+    switched_on_at = time.monotonic()
     fake = _shuffle_controller(
         source_shuffle_enabled=True,
         source_shuffle_set_at=switched_on_at,
