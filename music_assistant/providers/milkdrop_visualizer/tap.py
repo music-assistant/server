@@ -40,11 +40,6 @@ if TYPE_CHECKING:
 
 MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
-# How long a viewerless tap's client (and its buffered frames) stay around
-# before being torn down, so a reload - including a slow one on a cast display
-# - only has to rejoin the group. The tap leaves the group immediately either
-# way, so nothing about playback or the player's members depends on this.
-TAP_LINGER_SECONDS = 30
 # How long to wait for the Sendspin provider to register a player for a freshly
 # created tap client, before grouping it onto the player being visualized.
 TAP_PLAYER_WAIT_ATTEMPTS = 25
@@ -219,8 +214,8 @@ class TapManager:
         async with self._lock:
             if (existing := self._taps.get(target.player_id)) is not None:
                 if existing.client_id not in target.group_members:
-                    # a viewer returned within the linger window, after the
-                    # release had already taken the tap out of the group
+                    # a viewer arrived while a release was in flight, so the
+                    # tap is still here but no longer a member
                     await self._join_group(target, existing)
                 return existing
             # Stable id: reconnects and multiple viewers reuse one hidden tap
@@ -244,17 +239,17 @@ class TapManager:
 
     def schedule_release(self, target_player_id: str) -> None:
         """
-        Start the linger countdown for a tap whose viewer just left.
+        Tear down a tap whose last viewer just left.
 
         Keyed per target with abort_existing, so a target never accumulates
-        countdowns: an earlier one would otherwise still be sleeping and could
-        tear down a tap that a later viewer created.
+        releases: an earlier one could otherwise tear down a tap that a later
+        viewer created.
 
         :param target_player_id: The player whose tap may now be idle.
         """
         self.mass.create_task(
-            self._linger(target_player_id),
-            task_id=f"milkdrop_linger_{target_player_id}",
+            self._release(target_player_id),
+            task_id=f"milkdrop_release_{target_player_id}",
             abort_existing=True,
         )
 
@@ -337,26 +332,21 @@ class TapManager:
         with suppress(MusicAssistantError):
             await self.mass.players.cmd_set_members(parent_id, player_ids_to_remove=[tap.client_id])
 
-    async def _linger(self, target_player_id: str) -> None:
+    async def _release(self, target_player_id: str) -> None:
         """
-        Leave the group as soon as the last viewer goes, then tear the tap down.
+        Ungroup and remove a tap as soon as its last viewer goes.
 
-        Leaving is immediate because the tap is a real group member: staying in
-        would keep the player rendering over Sendspin, and showing an extra
-        member, long after anyone was watching. Only the (invisible) client
-        lingers, so a refresh just rejoins instead of rebuilding it.
+        Nothing is kept back for a returning viewer: a tap costs about 20ms to
+        build, against the group join every viewer pays anyway, and a tap that
+        outlived its viewers would sit in the player list as a member of
+        nothing.
         """
-        tap = self._taps.get(target_player_id)
-        if tap is None or tap.queues:
-            return
-        await self._leave_group(target_player_id, tap)
-        self.logger.debug("Waveform tap %s left the group (no viewers)", tap.client_id)
-        await asyncio.sleep(TAP_LINGER_SECONDS)
         async with self._lock:
             tap = self._taps.get(target_player_id)
             if tap is None or tap.queues:
                 return
             self._taps.pop(target_player_id, None)
+            await self._leave_group(target_player_id, tap)
             if (sendspin := get_sendspin_provider(self.mass)) is not None:
                 await sendspin.server_api.remove_client(tap.client_id)
             self.logger.info("Waveform tap %s removed (viewers gone)", tap.client_id)

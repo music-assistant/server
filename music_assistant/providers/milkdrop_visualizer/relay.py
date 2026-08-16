@@ -131,7 +131,7 @@ class MilkdropRelay:
             )
             await self._serve_session(ws, queue)
         finally:
-            # Detach synchronously; the linger runs detached so the request
+            # Detach synchronously; the release runs detached so the request
             # handler (and its socket) is not held open for its duration.
             self._sessions.discard(ws)
             tap.queues.discard(queue)
