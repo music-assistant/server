@@ -494,9 +494,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_by: Optional sort key to order tracks before applying start_item.
         :param start_from_beginning: Start a podcast episode at position 0, ignoring any
             saved resume position. The stored progress itself is left untouched.
-        :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
-            options that start new media (play/replace). Omit to let the queue decide: it keeps
-            shuffle when the user just switched it on, and plays in order otherwise.
+        :param shuffle: Play the media shuffled (or explicitly in order). Only applies when the
+            queue is replaced, and never to a dynamic source (an always-on smart mix). Omit to let
+            the queue decide: it keeps shuffle when the user just switched it on, and plays the
+            media in order otherwise.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
@@ -1822,8 +1823,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param option: The enqueue option this command resolved to.
         :param shuffle: Explicit shuffle request from the caller; None to derive it.
         """
-        if option not in (QueueOption.PLAY, QueueOption.REPLACE):
-            # enqueueing onto the running queue is not a fresh start, so its shuffle state stands
+        if option != QueueOption.REPLACE:
+            # only replacing the queue starts a new listening session. The options that enqueue
+            # onto the running queue keep its shuffle state - and its already-shuffled items, which
+            # switching shuffle off here would leave contradicting the queue's own flag.
             return
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue

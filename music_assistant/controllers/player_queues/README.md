@@ -102,11 +102,12 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
 - **Media-time vs stream-time.** The queue's elapsed time is stored in media-time (usable directly
   as a resume position), whereas the player reports stream-time (post-atempo). The two are bridged
   by scaling with the current item's playback speed.
-- **Shuffle does not outlive the media it was set for.** Starting new media (a *play* or *replace*
-  enqueue) plays it in order unless the caller asks for shuffle explicitly, or the user switched
-  shuffle on moments earlier — tracked by the runtime-only `shuffle_set_at` stamp, which is never
-  restored from cache and is consumed by the play command that reads it. Enqueueing onto the running
-  queue (*add* / *next* / *replace next*) leaves the shuffle state alone.
+- **Shuffle does not outlive the media it was set for.** A *replace* enqueue starts a new listening
+  session and plays its media in order, unless the caller asks for shuffle explicitly or the user
+  switched shuffle on moments earlier — tracked by the runtime-only `shuffle_set_at` stamp, which is
+  never restored from cache and is consumed by the play command that reads it. Every other option
+  enqueues onto the running queue and leaves its shuffle state (and its already-shuffled items)
+  alone. A dynamic queue is exempt: it is an always-on smart mix and forces shuffle on.
 
 ## State and Persistence
 
