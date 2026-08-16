@@ -129,7 +129,8 @@ class SoundcloudMusicProvider(MusicProvider):
         self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
-        self._user_id = self._me["id"]
+        # the API returns the id as a number, while it is only ever used to build request urls
+        self._user_id = str(self._me["id"])
 
     @use_cache(3600 * 48)  # Cache for 48 hours
     async def search(
@@ -267,7 +268,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 provider=self.instance_id,
                 icon="mdi-playlist-music",
             )
-            for playlist in collection.get("items").get("collection", []):
+            for playlist in (collection.get("items") or {}).get("collection", []):
                 # Each items can be a track, playlist, album or artist but seems playlists only
                 if playlist.get("kind") == "system-playlist":
                     folder.items.append(await self._parse_playlist(playlist))

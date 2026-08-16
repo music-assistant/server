@@ -5,14 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
 from music_assistant.providers.soundcloud import (
-    SUPPORTED_FEATURES,
     DrmProtectedTrackError,
     SoundcloudMusicProvider,
     _is_drm_protected,
@@ -55,26 +53,6 @@ def _track_obj(track_id: int, title: str, transcodings: list[dict[str, Any]]) ->
         "user": {"id": 1, "username": "Some Artist", "permalink": "some-artist"},
         "media": {"transcodings": transcodings},
     }
-
-
-@pytest.fixture
-def provider() -> SoundcloudMusicProvider:
-    """Return a Soundcloud provider instance with a mocked API client."""
-    mass = AsyncMock()
-    mass.http_session = MagicMock()
-    manifest = MagicMock()
-    manifest.domain = "soundcloud"
-    config = MagicMock()
-    config.get_value.return_value = "GLOBAL"
-    prov = SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    prov._soundcloud = AsyncMock()
-    prov._soundcloud.get_user_details.return_value = {
-        "id": 1,
-        "username": "Some Artist",
-        "permalink": "some-artist",
-    }
-    prov._user_id = "1"
-    return prov
 
 
 def test_is_drm_protected_detects_encrypted_transcodings() -> None:
