@@ -393,3 +393,35 @@ def test_compare_strings_case_insensitive_fuzzy() -> None:
     # These differ slightly ("Feat." vs "FT.") so create_safe_string won't match,
     # falling through to SequenceMatcher which must compare both strings lowered.
     assert compare.compare_strings("Track Feat. John", "TRACK FT. JOHN", strict=False) is True
+
+
+def test_compare_radio() -> None:
+    """Test the radio compare helper."""
+
+    def _radio(
+        item_id: str, provider: str, name: str, *, is_dynamic: bool = False
+    ) -> media_items.Radio:
+        return media_items.Radio(
+            item_id=item_id,
+            provider=provider,
+            name=name,
+            is_dynamic=is_dynamic,
+            provider_mappings={
+                media_items.ProviderMapping(
+                    item_id=item_id, provider_domain=provider, provider_instance=provider
+                )
+            },
+        )
+
+    live_a = _radio("a", "tunein", "Chill Vibes")
+    live_b = _radio("b", "radiobrowser", "Chill Vibes")
+    # a live station is matched across providers on its name
+    assert compare.compare_radio(live_a, live_b) is True
+
+    station = _radio("c", "pandora", "Chill Vibes", is_dynamic=True)
+    # a dynamic station only exists on its own provider, so the name is not enough
+    assert compare.compare_radio(station, live_a) is False
+    assert compare.compare_radio(live_a, station) is False
+    # ... but it is still recognised as itself
+    same = _radio("c", "pandora", "Chill Vibes", is_dynamic=True)
+    assert compare.compare_radio(station, same) is True

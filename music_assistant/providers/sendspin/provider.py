@@ -106,6 +106,7 @@ from music_assistant.providers.sendspin.helpers import (
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
+    SendspinSourcePlayer,
     SendspinVisualizerPlayer,
 )
 from music_assistant.providers.sendspin.security import (
@@ -1223,7 +1224,8 @@ class SendspinProvider(PlayerProvider):
         Create the appropriate player class based on client roles.
 
         Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
-        visualizer role -> VISUALIZER. Bridge-registered type overrides the default.
+        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer.
+        Bridge-registered type overrides the default.
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
@@ -1253,6 +1255,10 @@ class SendspinProvider(PlayerProvider):
             viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
             viz_player._attr_type = bridge_player_type or default_type
             player = viz_player
+        elif "source" in negotiated_families:
+            # Capture-only device: a SendspinPlayer here would advertise playback it
+            # cannot do. It only needs a settings page.
+            player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
             if isinstance(existing_player, SendspinPlayer):

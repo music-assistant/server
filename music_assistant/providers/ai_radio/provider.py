@@ -134,6 +134,7 @@ class AIRadioProvider(
             ("ai_radio/hosts/save", self.save_host),
             ("ai_radio/hosts/delete", self.delete_host),
             ("ai_radio/hosts/template", self.host_template),
+            ("ai_radio/hosts/presets/list", self.list_host_presets),
             ("ai_radio/engines/tts/list", self.list_tts_engines),
             ("ai_radio/start", self.start_run),
             ("ai_radio/stop", self.stop_run),
@@ -340,6 +341,13 @@ class AIRadioProvider(
     async def host_template(self) -> dict[str, Any]:
         """Return a default host template."""
         return self._default_host_template()
+
+    async def list_host_presets(self) -> list[dict[str, Any]]:
+        """Return the bundled preset hosts as templates a client can add from."""
+        return [
+            {"host": deepcopy(host), "sections": deepcopy(sections)}
+            for host, sections in self._default_preset_hosts()
+        ]
 
     async def list_tts_engines(self) -> list[dict[str, str]]:
         """Return the available TTS engines for host voice selection."""

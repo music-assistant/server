@@ -299,6 +299,7 @@ class StreamsAudio:
             # Remember the last AudioError so we can re-raise its (actionable)
             # message instead of the generic MediaNotFoundError below.
             last_audio_error: AudioError | None = None
+            attempted: set[tuple[str, str]] = set()
             for allow_other_provider in (False, True):
                 if streamdetails:
                     break
@@ -314,11 +315,19 @@ class StreamsAudio:
                         and prov_media.provider_instance not in preferred_providers
                     ):
                         continue
+                    # the second pass is there to widen to providers the steering held back,
+                    # not to give a mapping a second chance: without a user provider filter
+                    # the first pass already tried them all, so re-attempting one just buys
+                    # the same failure at the cost of another provider round-trip
+                    attempt = (prov_media.provider_instance, prov_media.item_id)
+                    if attempt in attempted:
+                        continue
                     # guard that provider is available
                     provider = mass.get_provider(prov_media.provider_instance)
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
+                    attempted.add(attempt)
                     # get streamdetails from provider; music and plugin providers
                     # share this signature, so either type can own the item.
                     try:
@@ -951,8 +960,8 @@ class StreamsAudio:
         ) as resp:
             resp.raise_for_status()
             raw_data = await resp.read()
-            encoding = resp.charset or await detect_charset(raw_data)
-            master_m3u_data = raw_data.decode(encoding)
+            encoding = await detect_charset(raw_data, preferred=resp.charset)
+            master_m3u_data = raw_data.decode(encoding, errors="replace")
         substreams = parse_m3u(master_m3u_data)
         # There is a chance that we did not get a master playlist with subplaylists
         # but just a single master/sub playlist with the actual audio stream(s)

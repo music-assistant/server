@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.media_items import SearchResults, UniqueList
@@ -273,7 +273,11 @@ class PluginProvider(Provider):
         return []
 
     async def get_tts_message(
-        self, message: str, language: str | None = None, engine_id: str | None = None
+        self,
+        message: str,
+        language: str | None = None,
+        engine_id: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> StreamDetails:
         """
         Convert text to speech audio.
@@ -284,6 +288,9 @@ class PluginProvider(Provider):
         :param language: Optional language code.
         :param engine_id: The provider-scoped id of the engine to use (``TTSEngine.id``,
             not its ``uid``). Omit or pass None to use the plugin's own default engine.
+        :param options: Optional integration-specific options (for example a voice
+            tuning parameter), passed through to the engine as-is. Ignored by plugins
+            that have none.
         :return: StreamDetails for the generated audio. ``path`` must be either a
             fetchable http(s)/rtsp/rtmp URL or the absolute path of an existing local
             file, and must stay resolvable for as long as consumers may play the clip.

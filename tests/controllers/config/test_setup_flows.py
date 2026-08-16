@@ -36,7 +36,7 @@ from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFF
 from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.player import Player, _state_fingerprint
+from music_assistant.models.player import LinkedOutputProtocol, Player, _state_fingerprint
 from music_assistant.models.setup_flow import AbortFlow, SetupSession, StepExpiredError
 from music_assistant.providers.filesystem_local.setup_flow import (
     run_setup as filesystem_local_run_setup,
@@ -1468,7 +1468,15 @@ async def test_has_setup_flow_serialized_for_protocol_child() -> None:
     child._attr_needs_setup = False  # already set up, but its flow can be re-run
     players = {parent.player_id: parent, child.player_id: child}
     # link the child: set_linked_output_protocols survives the update_state cache flush
-    parent.set_linked_output_protocols([_child_output_protocol(child)])
+    parent.set_linked_output_protocols(
+        [
+            LinkedOutputProtocol(
+                output_protocol_id=child.player_id,
+                protocol_domain=child.provider.domain,
+                priority=10,
+            )
+        ]
+    )
     with patch.object(
         parent.mass.players, "get_player", side_effect=lambda pid, *_a, **_k: players.get(pid)
     ):

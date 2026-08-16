@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    StreamType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -19,6 +25,13 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import (
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_TARGET,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
+)
 from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
@@ -30,7 +43,12 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_STATION_ID,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
+    CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
+    MIN_LOUDNESS_REFERENCE_SECONDS,
+    TTS_CLIP_PCM_FORMAT,
+    TTS_PEAK_CEILING_DB,
+    TTS_SPEECHNORM_FILTER,
 )
 from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
@@ -49,13 +67,18 @@ class DummyRenderer(AIRadioRenderMixin):
         self._hosts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
+        self.tts_options: list[dict[str, Any] | None] = []
         self.weather_calls = 0
         self.fail_generation = False
+        self.measure_calls: list[str] = []
+        self.measured_loudness: float | None = None
 
     def _configured_now(self) -> Any:
         return __import__("datetime").datetime(2026, 7, 30, 18, 30)
 
-    async def _generate_text(self, instructions: str, prompt: str, web_mode: str) -> str:
+    async def _generate_text(
+        self, instructions: str, prompt: str, web_mode: str, language: str | None = None
+    ) -> str:
         # a real suspension point so concurrent callers actually interleave under
         # asyncio.gather, otherwise the lock in get_stream_details is never exercised
         await asyncio.sleep(0)
@@ -69,9 +92,14 @@ class DummyRenderer(AIRadioRenderMixin):
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
     async def _render_tts_media(
-        self, text: str, engine_uid: str | None = None, language: str | None = None
+        self,
+        text: str,
+        engine_uid: str | None = None,
+        language: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> tuple[str, StreamType, AudioFormat]:
         self.tts_texts.append(text)
+        self.tts_options.append(options)
         return (
             f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
             StreamType.HTTP,
@@ -80,6 +108,10 @@ class DummyRenderer(AIRadioRenderMixin):
 
     async def _probe_duration(self, path: str) -> int | None:
         return 9
+
+    async def _measure_loudness(self, path: str) -> float | None:
+        self.measure_calls.append(path)
+        return self.measured_loudness
 
 
 class RealTtsRenderer(DummyRenderer):
@@ -148,12 +180,46 @@ def _attach_queues(renderer: DummyRenderer, queues: dict[str, list[QueueItem]]) 
         ),
         metadata=SimpleNamespace(locale="en_US"),
     )
+    _attach_normalization(renderer, queue_ids=tuple(queues))
     return signals
 
 
 def _attach_queue(renderer: DummyRenderer, items: list[QueueItem]) -> list[bool]:
     """Wire a single-queue player_queues stub and return the signal_update call log."""
     return _attach_queues(renderer, {"player_a": items})
+
+
+def _attach_normalization(
+    renderer: DummyRenderer,
+    *,
+    enabled: bool = True,
+    target: int = -14,
+    boost: int = 3,
+    tracks_mode: str = VolumeNormalizationMode.FALLBACK_DYNAMIC.value,
+    queue_ids: tuple[str, ...] = ("player_a",),
+) -> None:
+    """Wire the queue, streams and provider config that decide the clip's loudness gain."""
+
+    def queue_setting(queue_id: str, key: str, default: str) -> str:
+        assert queue_id in queue_ids
+        assert key == CONF_VOLUME_NORMALIZATION
+        assert default == CONF_VALUE_ENABLED
+        return CONF_VALUE_ENABLED if enabled else CONF_VALUE_DISABLED
+
+    def streams_setting(key: str, **_kwargs: Any) -> str | int:
+        if key == CONF_VOLUME_NORMALIZATION_TRACKS:
+            return tracks_mode
+        assert key == CONF_VOLUME_NORMALIZATION_TARGET
+        return target
+
+    def provider_setting(key: str) -> int:
+        assert key == CONF_TTS_LOUDNESS_BOOST
+        return boost
+
+    mass = cast("Any", renderer).mass
+    mass.config = SimpleNamespace(get_effective_player_queue_config_value=queue_setting)
+    mass.streams = SimpleNamespace(get_config_value=streams_setting)
+    cast("Any", renderer).config = SimpleNamespace(get_value=provider_setting)
 
 
 async def test_render_resolves_deferred_placeholders_at_render_time() -> None:
@@ -289,7 +355,7 @@ async def test_render_tts_media_passes_the_locale_as_language() -> None:
 
     engine = cast("Any", renderer)._get_tts_engine.return_value
     engine.provider.get_tts_message.assert_awaited_once_with(
-        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud"
+        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud", options={}
     )
 
 
@@ -410,7 +476,11 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
 
     class UnspeakableRenderer(DummyRenderer):
         async def _render_tts_media(
-            self, text: str, engine_uid: str | None = None, language: str | None = None
+            self,
+            text: str,
+            engine_uid: str | None = None,
+            language: str | None = None,
+            options: dict[str, Any] | None = None,
         ) -> tuple[str, StreamType, AudioFormat]:
             raise RuntimeError("tts down")
 
@@ -460,13 +530,16 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
     return renderer
 
 
+@pytest.mark.parametrize(
+    "server_error",
+    ["Server returned 5XX Server Error reply", "HTTP error 500 Internal Server Error"],
+)
 async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
-    monkeypatch: pytest.MonkeyPatch,
+    server_error: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An engine that hands out a URL it cannot render fails the clip, not the playback."""
     renderer = _failing_probe(
-        "Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 "
-        "(Server returned 5XX Server Error reply)",
+        f"Unable to retrieve info for http://ha.invalid/api/tts_proxy/1.mp3 ({server_error})",
         monkeypatch,
     )
 
@@ -476,6 +549,10 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
     session = renderer._sessions["sess"]
     assert session.skipped_sections == 1
     assert "enough credit" in session.last_render_error
+    # the hint is a guess, so the whole probe message travels with it - the url included,
+    # since that is what tells a failing engine apart from a failing tts server behind it
+    assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error
+    assert server_error in session.last_render_error
 
 
 async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -502,6 +579,7 @@ async def test_generate_script_uses_host_instructions() -> None:
         instructions: str,
         prompt: str,  # noqa: ARG001
         web_mode: str,  # noqa: ARG001
+        language: str | None = None,  # noqa: ARG001
     ) -> str:
         captured["instructions"] = instructions
         return "script"
@@ -525,6 +603,7 @@ async def test_generate_script_falls_back_to_default_instructions() -> None:
         instructions: str,
         prompt: str,  # noqa: ARG001
         web_mode: str,  # noqa: ARG001
+        language: str | None = None,  # noqa: ARG001
     ) -> str:
         # mirrors the empty-to-default fallback the real _generate_text applies (runtime.py)
         captured["instructions"] = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
@@ -536,6 +615,87 @@ async def test_generate_script_falls_back_to_default_instructions() -> None:
     await renderer._generate_script(item, "p", "clip_1")
 
     assert captured["instructions"] == DEFAULT_LLM_INSTRUCTIONS
+
+
+async def test_generate_script_forwards_the_hosts_language() -> None:
+    """The host's configured language reaches _generate_text, ready to override the locale."""
+    renderer = DummyRenderer()
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "instructions": "Persona text.",
+            "tts_engine": "",
+            "language": "fr_FR",
+        }
+    }
+    captured: dict[str, str | None] = {}
+
+    async def fake_generate_text(
+        instructions: str,  # noqa: ARG001
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,
+    ) -> str:
+        captured["language"] = language
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["language"] == "fr_FR"
+
+
+async def test_generate_script_forwards_empty_language_when_host_has_none() -> None:
+    """A host with no configured language forwards an empty string, not None."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "instructions": "Persona text.", "tts_engine": ""}}
+    captured: dict[str, str | None] = {}
+
+    async def fake_generate_text(
+        instructions: str,  # noqa: ARG001
+        prompt: str,  # noqa: ARG001
+        web_mode: str,  # noqa: ARG001
+        language: str | None = None,
+    ) -> str:
+        captured["language"] = language
+        return "script"
+
+    cast("Any", renderer)._generate_text = fake_generate_text
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+
+    await renderer._generate_script(item, "p", "clip_1")
+
+    assert captured["language"] == ""
+
+
+async def test_render_tts_media_prefers_the_hosts_language_over_the_locale() -> None:
+    """A host's configured language reaches the TTS engine, overriding the server locale."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "", "language": "fr_FR"}}
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="fr-FR", engine_id="tts.cloud", options={}
+    )
+
+
+async def test_render_tts_media_falls_back_to_locale_when_host_language_is_empty() -> None:
+    """A host with no configured language falls back to the server locale for the TTS call."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": ""}}
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.", language="en-US", engine_id="tts.cloud", options={}
+    )
 
 
 async def test_resolve_deferred_placeholders_skips_weather_without_token() -> None:
@@ -553,11 +713,68 @@ async def test_mint_clip_media_resolves_host_tts_engine() -> None:
     """A clip whose host declares a tts_engine reaches _get_tts_engine with that override."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
     renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    _attach_normalization(renderer)
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
 
     await renderer._mint_clip_media(item, "hello world", "clip_1")
 
     cast("Any", renderer)._get_tts_engine.assert_awaited_once_with("tts.rick_voice")
+
+
+async def test_mint_clip_media_forwards_the_hosts_options() -> None:
+    """A host's configured TTS options are forwarded into the render call."""
+    renderer = DummyRenderer()
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "tts_engine": "",
+            "options": {"voice": "en_US-lessac-medium", "length_scale": 1.2},
+        }
+    }
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    _attach_normalization(renderer)
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
+
+    await renderer._mint_clip_media(item, "hello world", "clip_1")
+
+    assert renderer.tts_options == [{"voice": "en_US-lessac-medium", "length_scale": 1.2}]
+
+
+async def test_mint_clip_media_sends_no_options_for_a_host_without_any() -> None:
+    """A host with no configured options forwards an empty dict, not None."""
+    renderer = DummyRenderer()
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": ""}}
+    cast("Any", renderer).mass = SimpleNamespace(metadata=SimpleNamespace(locale="en_US"))
+    _attach_normalization(renderer)
+    item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick"})
+
+    await renderer._mint_clip_media(item, "hello world", "clip_1")
+
+    assert renderer.tts_options == [{}]
+
+
+async def test_render_tts_media_forwards_the_hosts_tts_options() -> None:
+    """A host's configured TTS options reach the engine's get_tts_message call."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    renderer._hosts = {
+        "rick": {
+            "id": "rick",
+            "tts_engine": "",
+            "options": {"voice": "en_US-lessac-medium", "length_scale": 1.2},
+        }
+    }
+    _attach_queue(renderer, [_clip_item("sess_001", **{ATTR_HOST_ID: "rick"})])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message.assert_awaited_once_with(
+        "Good evening, it is warm out.",
+        language="en-US",
+        engine_id="tts.cloud",
+        options={"voice": "en_US-lessac-medium", "length_scale": 1.2},
+    )
 
 
 async def test_render_tts_media_streams_a_url_over_http() -> None:
@@ -572,7 +789,7 @@ async def test_render_tts_media_streams_a_url_over_http() -> None:
     engine = cast("Any", renderer)._get_tts_engine.return_value
     # the provider-scoped engine.id, never engine.uid, and never omitted
     engine.provider.get_tts_message.assert_awaited_once_with(
-        "hello world", language=None, engine_id="tts.cloud"
+        "hello world", language=None, engine_id="tts.cloud", options=None
     )
 
 
@@ -613,9 +830,7 @@ async def test_render_tts_media_gives_up_on_a_stalled_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stalled TTS engine fails the clip instead of pinning the render path."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.rendering.TTS_QUERY_TIMEOUT_SECONDS", 0.01
-    )
+    monkeypatch.setattr("music_assistant.helpers.tts.TTS_QUERY_TIMEOUT_SECONDS", 0.01)
 
     async def _answers_too_late(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         await asyncio.sleep(5)
@@ -654,3 +869,215 @@ async def test_local_file_clip_yields_local_file_streamdetails(tmp_path: Path) -
 
     assert streamdetails.stream_type == StreamType.LOCAL_FILE
     assert streamdetails.path == str(clip)
+
+
+async def test_a_measured_clip_is_lifted_to_the_target_plus_the_boost() -> None:
+    """A clip quieter than the levelled music is served through the provider's own chain."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, target=-14, boost=3)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.stream_type == StreamType.CUSTOM
+    assert streamdetails.decoded_audio_format == TTS_CLIP_PCM_FORMAT
+    assert streamdetails.audio_format.content_type == ContentType.MP3
+    assert streamdetails.data.gain_db == pytest.approx(7.0)
+
+
+async def test_the_clip_is_evened_out_and_lifted_before_it_is_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The filter chain reaches ffmpeg as speechnorm, then gain, then the peak limiter."""
+    captured: dict[str, Any] = {}
+
+    async def fake_ffmpeg_stream(**kwargs: Any) -> AsyncGenerator[bytes]:
+        captured.update(kwargs)
+        yield b"pcm"
+
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.rendering.get_ffmpeg_stream", fake_ffmpeg_stream
+    )
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, target=-14, boost=3)
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    chunks = [chunk async for chunk in renderer.get_audio_stream(streamdetails)]
+
+    assert chunks == [b"pcm"]
+    assert captured["audio_input"] == streamdetails.path
+    assert captured["input_format"].content_type == ContentType.MP3
+    assert captured["output_format"] == TTS_CLIP_PCM_FORMAT
+    assert captured["filter_params"] == [
+        TTS_SPEECHNORM_FILTER,
+        "volume=7.0dB",
+        f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false:latency=true",
+    ]
+
+
+async def test_the_engine_reference_is_measured_once_and_reused() -> None:
+    """A second clip from the same voice levels itself against the stored measurement."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001"), _clip_item("sess_002")])
+    _attach_normalization(renderer)
+
+    first = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    second = await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert len(renderer.measure_calls) == 1
+    assert first.data.gain_db == second.data.gain_db
+
+
+async def test_a_short_clip_levels_itself_but_never_becomes_the_reference() -> None:
+    """A clip of a few words is too thin a sample to speak for the rest of the engine."""
+
+    class BriefRenderer(DummyRenderer):
+        async def _probe_duration(self, path: str) -> int | None:
+            return MIN_LOUDNESS_REFERENCE_SECONDS - 1
+
+    renderer = BriefRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001"), _clip_item("sess_002")])
+    _attach_normalization(renderer)
+
+    first = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert first.stream_type == StreamType.CUSTOM
+    assert len(renderer.measure_calls) == 2
+    assert cast("Any", renderer)._engine_loudness == {}
+
+
+async def test_clip_plays_untouched_when_the_queue_does_not_normalize() -> None:
+    """With the music unlevelled there is nothing to match, so the clip airs as rendered."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, enabled=False)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.stream_type == StreamType.HTTP
+    assert streamdetails.decoded_audio_format is None
+    assert streamdetails.data is None
+
+
+async def test_clip_plays_untouched_when_it_could_not_be_measured() -> None:
+    """A failed measurement leaves the clip playable at its own level."""
+    renderer = DummyRenderer()
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.measure_calls
+    assert streamdetails.stream_type == StreamType.HTTP
+    assert streamdetails.data is None
+
+
+async def test_a_clip_above_the_wanted_level_is_trimmed_back_down() -> None:
+    """The trim runs in either direction, so a loud voice is brought down to the target."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -8.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, target=-14, boost=3)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.stream_type == StreamType.CUSTOM
+    assert streamdetails.data.gain_db == pytest.approx(-3.0)
+
+
+async def test_the_levelled_clip_does_not_hand_out_the_shared_pcm_format() -> None:
+    """Core writes what ffmpeg reports onto this format, so it may not be the shared one."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.decoded_audio_format == TTS_CLIP_PCM_FORMAT
+    assert streamdetails.decoded_audio_format is not TTS_CLIP_PCM_FORMAT
+
+
+# verbatim ffmpeg 7.1 output, so the parsing this depends on is covered for real
+FFMPEG_LOUDNORM_OUTPUT = b"""[Parsed_loudnorm_0 @ 0x93b41d440] \n{
+\t"input_i" : "-18.37",
+\t"input_tp" : "-1.89",
+\t"input_lra" : "0.40",
+\t"input_thresh" : "-27.86",
+\t"normalization_type" : "dynamic"
+}
+"""
+
+
+async def test_the_measurement_reads_the_level_out_of_ffmpegs_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine reference comes from loudnorm's report on the rendered clip."""
+    captured: dict[str, Any] = {}
+
+    async def fake_check_output(*args: str, **_kwargs: Any) -> tuple[int, bytes]:
+        captured["args"] = args
+        return 0, FFMPEG_LOUDNORM_OUTPUT
+
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.rendering.check_output", fake_check_output
+    )
+    renderer = DummyRenderer()
+
+    loudness = await AIRadioRenderMixin._measure_loudness(renderer, "http://ha.invalid/clip.mp3")
+
+    assert loudness == -18.37
+    assert "http://ha.invalid/clip.mp3" in captured["args"]
+    # the reading has to come from behind speechnorm, or the gain corrects for a level
+    # that never reaches it
+    assert f"{TTS_SPEECHNORM_FILTER},loudnorm=print_format=json" in captured["args"]
+
+
+async def test_a_failed_measurement_leaves_the_level_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ffmpeg run that did not succeed yields no reference rather than a wrong one."""
+
+    async def fake_check_output(*_args: str, **_kwargs: Any) -> tuple[int, bytes]:
+        return 1, b"ffmpeg: Invalid data found when processing input"
+
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.rendering.check_output", fake_check_output
+    )
+    renderer = DummyRenderer()
+
+    assert (
+        await AIRadioRenderMixin._measure_loudness(renderer, "http://ha.invalid/clip.mp3") is None
+    )
+
+
+async def test_clip_plays_untouched_when_tracks_are_not_normalized() -> None:
+    """The queue switch alone does not mean the music around the clip is levelled."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, tracks_mode=VolumeNormalizationMode.DISABLED.value)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.stream_type == StreamType.HTTP
+    assert streamdetails.data is None
+
+
+async def test_no_measurement_is_taken_when_the_reading_has_nowhere_to_go() -> None:
+    """Measuring costs a fetch and a decode, so a queue that will not use it is not charged."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    _attach_normalization(renderer, enabled=False)
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.measure_calls == []

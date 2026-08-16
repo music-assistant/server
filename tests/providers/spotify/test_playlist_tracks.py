@@ -5,6 +5,9 @@ from collections import OrderedDict
 from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, call
 
+import pytest
+from music_assistant_models.errors import MediaNotFoundError
+
 from music_assistant.providers.spotify.provider import (
     _PLAYLIST_PAGINATION_STATE_LIMIT,
     SpotifyProvider,
@@ -22,6 +25,7 @@ class SpotifyPlaylistHarness(NamedTuple):
     requires_global: AsyncMock
     get_metadata: AsyncMock
     get_page: AsyncMock
+    set_global: AsyncMock
 
 
 def _make_provider(instance_id: str = "spotify--test") -> SpotifyPlaylistHarness:
@@ -32,6 +36,7 @@ def _make_provider(instance_id: str = "spotify--test") -> SpotifyPlaylistHarness
     provider.logger = MagicMock()
     provider._sp_user = {"id": "test-user", "display_name": "Test User"}
     provider._playlist_pagination_states = OrderedDict()
+    provider.dev_session_active = True
 
     mass = MagicMock()
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
@@ -44,10 +49,12 @@ def _make_provider(instance_id: str = "spotify--test") -> SpotifyPlaylistHarness
     requires_global = AsyncMock(return_value=False)
     get_metadata = AsyncMock()
     get_page = AsyncMock()
+    set_global = AsyncMock()
     provider.get_playlist = get_playlist  # type: ignore[method-assign]
     provider._playlist_requires_global_token = requires_global  # type: ignore[method-assign]
     provider._get_paginated_meta = get_metadata  # type: ignore[method-assign]
     provider._get_data_with_caching = get_page  # type: ignore[method-assign]
+    provider._set_playlist_requires_global_token = set_global  # type: ignore[method-assign]
 
     return SpotifyPlaylistHarness(
         provider,
@@ -55,6 +62,7 @@ def _make_provider(instance_id: str = "spotify--test") -> SpotifyPlaylistHarness
         requires_global,
         get_metadata,
         get_page,
+        set_global,
     )
 
 
@@ -368,6 +376,99 @@ async def test_session_paths_do_not_share_pagination_metadata() -> None:
         (args.args[1], args.kwargs["use_global_session"])
         for args in harness.get_page.await_args_list
     ] == [("dev-etag", False), ("global-etag", True)]
+
+
+async def test_restricted_playlist_items_metadata_retries_with_global_session() -> None:
+    """Playlist items hidden from the developer session remain available globally."""
+    harness = _make_provider()
+    harness.get_metadata.side_effect = [
+        MediaNotFoundError("developer session forbidden"),
+        {"etag": "global-etag", "total": 1},
+    ]
+    harness.get_page.return_value = _playlist_page(1, "global-track")
+
+    tracks = await harness.provider.get_playlist_tracks(PLAYLIST_ID)
+
+    assert [args.kwargs["use_global_session"] for args in harness.get_metadata.await_args_list] == [
+        False,
+        True,
+    ]
+    harness.get_page.assert_awaited_once_with(
+        f"playlists/{PLAYLIST_ID}/items",
+        "global-etag",
+        limit=50,
+        offset=0,
+        use_global_session=True,
+    )
+    harness.set_global.assert_awaited_once_with(PLAYLIST_ID)
+    assert tracks[0].item_id == "global-track"
+
+
+async def test_restricted_playlist_page_retries_with_global_session() -> None:
+    """A rejected developer-session page retries the complete request through the global session."""
+    harness = _make_provider()
+    harness.get_metadata.side_effect = [
+        {"etag": "dev-etag", "total": 1},
+        {"etag": "global-etag", "total": 1},
+    ]
+    harness.get_page.side_effect = [
+        MediaNotFoundError("developer session forbidden"),
+        _playlist_page(1, "global-track"),
+    ]
+
+    tracks = await harness.provider.get_playlist_tracks(PLAYLIST_ID)
+
+    assert [
+        (args.args[1], args.kwargs["use_global_session"])
+        for args in harness.get_page.await_args_list
+    ] == [("dev-etag", False), ("global-etag", True)]
+    harness.set_global.assert_awaited_once_with(PLAYLIST_ID)
+    assert tracks[0].item_id == "global-track"
+
+
+@pytest.mark.parametrize(
+    ("dev_session_active", "requires_global", "use_global_session"),
+    [(False, False, False), (True, True, True)],
+)
+async def test_playlist_failure_without_available_fallback_propagates(
+    dev_session_active: bool,
+    requires_global: bool,
+    use_global_session: bool,
+) -> None:
+    """Playlist failures propagate when another Spotify session cannot be tried."""
+    harness = _make_provider()
+    harness.provider.dev_session_active = dev_session_active
+    harness.requires_global.return_value = requires_global
+    harness.get_metadata.side_effect = MediaNotFoundError("playlist unavailable")
+
+    with pytest.raises(MediaNotFoundError):
+        await harness.provider.get_playlist_tracks(PLAYLIST_ID)
+
+    harness.get_metadata.assert_awaited_once_with(
+        f"playlists/{PLAYLIST_ID}/items",
+        limit=1,
+        offset=0,
+        use_global_session=use_global_session,
+    )
+    harness.set_global.assert_not_awaited()
+
+
+async def test_failed_global_playlist_fallback_is_not_cached() -> None:
+    """An unavailable playlist is not marked as requiring the global session."""
+    harness = _make_provider()
+    harness.get_metadata.side_effect = [
+        MediaNotFoundError("developer session forbidden"),
+        MediaNotFoundError("playlist unavailable"),
+    ]
+
+    with pytest.raises(MediaNotFoundError):
+        await harness.provider.get_playlist_tracks(PLAYLIST_ID)
+
+    assert [args.kwargs["use_global_session"] for args in harness.get_metadata.await_args_list] == [
+        False,
+        True,
+    ]
+    harness.set_global.assert_not_awaited()
 
 
 async def test_provider_instances_do_not_share_pagination_metadata() -> None:

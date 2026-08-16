@@ -13,6 +13,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
+from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
 
@@ -95,15 +96,13 @@ def _make_mock_player(
     )
     player.is_native_player = is_native
 
-    # Build linked_output_protocols. Their `available` flag is the one production
-    # sets at link time and never refreshes, so it stays True even for a protocol
-    # player that has since gone offline.
+    # Build linked_output_protocols: the links only record the topology, so they
+    # say nothing about whether the protocol player can be reached right now.
     offline = set(offline_protocol_domains or [])
     protocols = []
     for domain in protocol_domains or []:
-        proto = MagicMock(spec=OutputProtocol)
+        proto = MagicMock(spec=LinkedOutputProtocol)
         proto.protocol_domain = domain
-        proto.available = True
         # default to a synthetic protocol id; tests that need a specific id can override
         proto.output_protocol_id = f"{player_id}_{domain}_proto"
         protocols.append(proto)
@@ -128,6 +127,10 @@ def _make_mock_player(
         live.output_protocol_id = proto.output_protocol_id
         outputs.append(live)
     player.output_protocols = outputs
+
+    # mirrors Player.playback_domains: derived from the live view, never the
+    # stale link-time flags
+    player.playback_domains = {output.protocol_domain for output in outputs if output.available}
 
     # State mock
     # real lists, so a test that needs members has to say so instead of silently

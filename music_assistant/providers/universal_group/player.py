@@ -75,7 +75,11 @@ class UniversalGroupPlayer(Player):
         """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
-        self._attr_name = self.config.name or f"Universal Group {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = (
+            self.config.default_name or self.config.name or f"Universal Group {player_id}"
+        )
         self._attr_available = True
         # See SyncGroupPlayer: groups have no opinion on power by default; the
         # session lifecycle is what governs activity. Fake power control is the

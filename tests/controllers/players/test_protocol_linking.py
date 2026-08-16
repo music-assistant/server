@@ -1,9 +1,12 @@
 """Tests for protocol player linking and universal player creation."""
 
+import asyncio
 import logging
+import re
 from collections.abc import Awaitable
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from music_assistant_models.config_entries import PlayerConfig
@@ -14,7 +17,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.player import OutputProtocol, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     ATTR_ENABLED,
@@ -22,13 +25,15 @@ from music_assistant.constants import (
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_PARENT_ID,
 )
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.universal_player.constants import CONF_CREATED_AT
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
@@ -58,9 +63,78 @@ def create_mock_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvi
     config.instance_id = "universal_player"
     config.name = None
     provider.config = config
-    # Initialize the locks dict that would normally be set in handle_async_init
-    provider._universal_player_locks = {}
+    # Initialize the lock that would normally be set in handle_async_init
+    provider._lock = asyncio.Lock()
     return provider
+
+
+# Player id of the universal player a device was wrapped in earlier, as minted once
+# by UniversalPlayerProvider.mint_player_id.
+STORED_UNIVERSAL_ID = "up1a2b3c4d"
+
+
+def _wire_nested_config(mock_mass: MagicMock, store: dict[str, Any]) -> None:
+    """Wire mass.config get/set/remove to a nested, path-addressable store."""
+
+    def _get(key: str, default: object = None) -> object:
+        node: Any = store
+        for part in key.split("/"):
+            if not isinstance(node, dict) or part not in node:
+                return default
+            node = node[part]
+        return node
+
+    def _set(key: str, value: object) -> None:
+        parts = key.split("/")
+        node: dict[str, Any] = store
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+
+    def _remove(key: str) -> None:
+        parts = key.split("/")
+        node: Any = store
+        for part in parts[:-1]:
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                return
+        if isinstance(node, dict):
+            node.pop(parts[-1], None)
+
+    mock_mass.config.get = MagicMock(side_effect=_get)
+    mock_mass.config.set = MagicMock(side_effect=_set)
+    mock_mass.config.remove = MagicMock(side_effect=_remove)
+
+
+def _fake_create_default_player_config(
+    store: dict[str, Any],
+    player_id: str,
+    provider: str,
+    player_type: PlayerType,
+    name: str | None = None,
+    enabled: bool = True,
+    values: dict[str, Any] | None = None,
+) -> None:
+    """
+    Mirror ConfigController.create_default_player_config against a plain dict store.
+
+    Only the parts the universal player flows depend on: a fresh config keeps the
+    creation-time name as the default name only, an existing config keeps its type.
+    """
+    players: dict[str, Any] = store.setdefault(CONF_PLAYERS, {})
+    if existing := players.get(player_id):
+        if name and name != existing.get("default_name"):
+            existing["default_name"] = name
+        return
+    players[player_id] = {
+        "player_id": player_id,
+        "provider": provider,
+        "player_type": player_type.value,
+        "enabled": enabled,
+        "name": None,
+        "default_name": name,
+        "values": dict(values or {}),
+    }
 
 
 class MockProvider:
@@ -183,6 +257,8 @@ def mock_mass() -> MagicMock:
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
     mass.get_providers = MagicMock(return_value=[])
+    # awaited by the tests that replay the tasks scheduled during a config wipe
+    mass.webserver.auth.remove_from_user_filters = AsyncMock()
     return mass
 
 
@@ -225,6 +301,26 @@ class TestIdentifiersMatch:
             "player_b",
             "Player B",
             identifiers={IdentifierType.MAC_ADDRESS: "11:22:33:44:55:66"},
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is False
+
+    def test_invalid_mac_address_no_match(self, mock_mass: MagicMock) -> None:
+        """Test that an all-zero MAC is not identity and never matches across devices."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Player A",
+            identifiers={IdentifierType.MAC_ADDRESS: "00:00:00:00:00:00"},
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Player B",
+            identifiers={IdentifierType.MAC_ADDRESS: "00:00:00:00:00:00"},
         )
 
         assert controller._identifiers_match(player_a, player_b) is False
@@ -731,122 +827,202 @@ class TestFindMatchingProtocolPlayers:
         assert snapcast_player_2 not in matches
 
 
-class TestGetDeviceKeyFromPlayers:
-    """Tests for device key generation."""
+class TestResolveStoredUniversalPlayer:
+    """
+    Tests for resolving the universal player a protocol player is persistently linked to.
 
-    def test_device_key_from_mac(self, mock_mass: MagicMock) -> None:
+    Regression tests for music-assistant/support#5888: the universal player id is
+    minted once and a device is always routed back to the wrapper its protocol
+    players point at, so the id API consumers (such as the Home Assistant
+    integration) bind their entities to stays put.
+    """
+
+    @staticmethod
+    def _stored_universal_config(**overrides: Any) -> dict[str, Any]:
+        """Return the stored config of a universal player wrapping the ap_123456 device."""
+        return {
+            "player_id": STORED_UNIVERSAL_ID,
+            "provider": "universal_player",
+            "player_type": "player",
+            "enabled": True,
+            "default_name": "Living Room",
+            "values": {
+                "linked_protocol_ids": ["ap_123456"],
+                "device_identifiers": {"mac_address": "54:78:C9:E6:0D:A0"},
+                "device_info": {"model": "WiiM Pro", "manufacturer": "Linkplay"},
+            },
+        } | overrides
+
+    @staticmethod
+    def _wire_config(
+        mock_mass: MagicMock,
+        parent_id: str | None,
+        parent_config: dict[str, Any] | None = None,
+    ) -> None:
         """
-        Test device key generation from MAC address.
+        Wire a config store holding the ap_123456 protocol player and its parent.
 
-        Note: Device keys are normalized to clear the locally-administered bit
-        (bit 1 of first octet) to ensure consistent keys across protocols.
+        :param mock_mass: The mocked MusicAssistant instance to wire.
+        :param parent_id: Parent link persisted on the protocol player, if any.
+        :param parent_config: Stored config of the parent player, when it (still) exists.
         """
-        universal_provider = create_mock_universal_provider(mock_mass)
+        players: dict[str, Any] = {
+            "ap_123456": {
+                "player_id": "ap_123456",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": parent_id},
+            }
+        }
+        if parent_config is not None:
+            players[parent_config["player_id"]] = parent_config
+        _wire_nested_config(mock_mass, {CONF_PLAYERS: players})
 
-        provider = MockProvider("airplay")
-        # Use a MAC without locally-administered bit set for cleaner test
-        # 00:BB:CC:DD:EE:FF has first byte 0x00, bit 1 = 0
+    @staticmethod
+    def _wire_players(mock_mass: MagicMock, registry: dict[str, Player]) -> None:
+        """Wire mass.players so registrations land in the given registry."""
+
+        async def _register(player: Player) -> None:
+            registry[player.player_id] = player
+            player.set_initialized()
+
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: registry.get(pid)
+        )
+        mock_mass.players.register_or_update = AsyncMock(side_effect=_register)
+
+    @staticmethod
+    def _make_protocol_player(mock_mass: MagicMock) -> MockPlayer:
+        """Return the unlinked AirPlay protocol player of the wrapped device."""
         player = MockPlayer(
-            provider,
+            MockProvider("airplay", mass=mock_mass),
             "ap_123456",
             "Test Player",
-            identifiers={IdentifierType.MAC_ADDRESS: "00:BB:CC:DD:EE:FF"},
-        )
-
-        device_key = universal_provider._get_device_key_from_players([player])
-
-        assert device_key == "00bbccddeeff"
-
-    def test_device_key_normalizes_locally_administered_mac(self, mock_mass: MagicMock) -> None:
-        """
-        Test that device key normalizes locally-administered MACs.
-
-        A device with hardware MAC 54:78:C9:E6:0D:A0 and AirPlay MAC 56:78:C9:E6:0D:A0
-        should generate the same device key, allowing them to be merged into
-        the same universal player.
-        """
-        universal_provider = create_mock_universal_provider(mock_mass)
-
-        provider_dlna = MockProvider("dlna")
-        provider_airplay = MockProvider("airplay")
-
-        # DLNA player with real hardware MAC
-        player_dlna = MockPlayer(
-            provider_dlna,
-            "dlna_123456",
-            "WiiM Pro (DLNA)",
+            player_type=PlayerType.PROTOCOL,
             identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
         )
+        player.set_initialized()
+        return player
 
-        # AirPlay player with locally-administered MAC (bit 1 set)
-        player_airplay = MockPlayer(
-            provider_airplay,
-            "ap_123456",
-            "WiiM Pro (AirPlay)",
-            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
-        )
-
-        # Both should generate the same device key
-        key_dlna = universal_provider._get_device_key_from_players([player_dlna])
-        key_airplay = universal_provider._get_device_key_from_players([player_airplay])
-
-        # Keys should be identical (both normalized to clear locally-administered bit)
-        assert key_dlna == key_airplay
-        # The normalized MAC should have bit 1 cleared (0x54 not 0x56)
-        assert key_dlna == "5478c9e60da0"
-
-    def test_device_key_from_uuid_fallback(self, mock_mass: MagicMock) -> None:
-        """Test device key generation falls back to UUID when no MAC available."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
-        provider = MockProvider("dlna")
-        player = MockPlayer(
-            provider,
-            "dlna_123456",
-            "Test Player",
-            identifiers={IdentifierType.UUID: "uuid:12345678-1234-1234-1234-123456789abc"},
-        )
-
-        device_key = universal_provider._get_device_key_from_players([player])
-
-        assert device_key == "uuid12345678123412341234123456789abc"
-
-    def test_device_key_from_ip_falls_back_to_player_id(self, mock_mass: MagicMock) -> None:
-        """Test that device key falls back to player_id for IP-only players (IP not used)."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
-        provider = MockProvider("airplay")
-        player = MockPlayer(
-            provider,
-            "ap_123456",
-            "Test Player",
-            identifiers={IdentifierType.IP_ADDRESS: "192.168.1.100"},
-        )
-
-        device_key = universal_provider._get_device_key_from_players([player])
-
-        # IP address is not used for device key - falls back to player_id
-        # This allows protocol players without MAC/UUID to still get a UniversalPlayer
-        assert device_key == "ap_123456"
-
-    def test_device_key_from_no_identifiers_falls_back_to_player_id(
+    async def test_registered_parent_resolves_to_its_universal_player(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that device key falls back to player_id when no identifiers at all."""
+        """The stored parent link resolves to the universal player it names."""
         universal_provider = create_mock_universal_provider(mock_mass)
-
-        provider = MockProvider("sendspin")
-        player = MockPlayer(
-            provider,
-            "sendspin-device-abc",
-            "Test Player",
-            # No identifiers at all (like Sendspin protocol players)
+        self._wire_config(mock_mass, STORED_UNIVERSAL_ID, self._stored_universal_config())
+        registry: dict[str, Player] = {}
+        self._wire_players(mock_mass, registry)
+        universal = _create_universal_player(
+            mock_mass, STORED_UNIVERSAL_ID, "Living Room", protocol_player_ids=["ap_123456"]
         )
+        registry[STORED_UNIVERSAL_ID] = universal
+        player = self._make_protocol_player(mock_mass)
 
-        device_key = universal_provider._get_device_key_from_players([player])
+        assert await universal_provider._resolve_stored_universal_player(player) is universal
+        mock_mass.players.register_or_update.assert_not_awaited()
 
-        # Falls back to player_id when no MAC/UUID identifiers
-        assert device_key == "sendspindeviceabc"
+    async def test_unregistered_parent_is_restored_from_its_config(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A stored parent that is not registered is restored under its own player id."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        self._wire_config(mock_mass, STORED_UNIVERSAL_ID, self._stored_universal_config())
+        registry: dict[str, Player] = {}
+        self._wire_players(mock_mass, registry)
+        player = self._make_protocol_player(mock_mass)
+
+        resolved = await universal_provider._resolve_stored_universal_player(player)
+
+        assert resolved is not None
+        assert resolved.player_id == STORED_UNIVERSAL_ID
+        assert resolved._protocol_player_ids == ["ap_123456"]
+        assert registry[STORED_UNIVERSAL_ID] is resolved
+
+    async def test_parent_config_of_another_provider_is_ignored(self, mock_mass: MagicMock) -> None:
+        """A parent config owned by another provider is never ours to resolve to."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        # a native player whose id merely happens to start with the universal player prefix
+        self._wire_config(
+            mock_mass,
+            "upnp_media_renderer",
+            {
+                "player_id": "upnp_media_renderer",
+                "provider": "some_native_provider",
+                "enabled": True,
+                "values": {"linked_protocol_ids": ["ap_123456"]},
+            },
+        )
+        registry: dict[str, Player] = {}
+        self._wire_players(mock_mass, registry)
+        player = self._make_protocol_player(mock_mass)
+
+        assert await universal_provider._resolve_stored_universal_player(player) is None
+        mock_mass.players.register_or_update.assert_not_awaited()
+
+    async def test_disabled_parent_config_is_ignored(self, mock_mass: MagicMock) -> None:
+        """A disabled universal player stays off: the user turned this device off."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        self._wire_config(
+            mock_mass, STORED_UNIVERSAL_ID, self._stored_universal_config(enabled=False)
+        )
+        registry: dict[str, Player] = {}
+        self._wire_players(mock_mass, registry)
+        player = self._make_protocol_player(mock_mass)
+
+        assert await universal_provider._resolve_stored_universal_player(player) is None
+        mock_mass.players.register_or_update.assert_not_awaited()
+
+    async def test_stored_parent_without_a_config_is_ignored(self, mock_mass: MagicMock) -> None:
+        """A parent link left dangling by a deleted config resolves to nothing."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        self._wire_config(mock_mass, STORED_UNIVERSAL_ID)
+        registry: dict[str, Player] = {}
+        self._wire_players(mock_mass, registry)
+        player = self._make_protocol_player(mock_mass)
+
+        assert await universal_provider._resolve_stored_universal_player(player) is None
+        mock_mass.players.register_or_update.assert_not_awaited()
+
+    async def test_without_a_stored_parent_link_nothing_resolves(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol player that was never wrapped resolves to no universal player."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        self._wire_config(mock_mass, None)
+        registry: dict[str, Player] = {}
+        self._wire_players(mock_mass, registry)
+        player = self._make_protocol_player(mock_mass)
+
+        assert await universal_provider._resolve_stored_universal_player(player) is None
+
+
+class TestMintPlayerId:
+    """Tests for minting the opaque player id of a new universal player."""
+
+    def test_minted_id_is_free_as_a_player_and_as_a_config(self, mock_mass: MagicMock) -> None:
+        """A minted id is never one that is already taken."""
+        universal_provider = create_mock_universal_provider(mock_mass)
+        _wire_nested_config(
+            mock_mass,
+            {CONF_PLAYERS: {"upbbbbbbbb": {"player_id": "upbbbbbbbb", "enabled": False}}},
+        )
+        registered = {"upaaaaaaaa": MagicMock()}
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: registered.get(pid)
+        )
+        candidates = [
+            UUID("aaaaaaaa-0000-0000-0000-000000000000"),  # taken by a registered player
+            UUID("bbbbbbbb-0000-0000-0000-000000000000"),  # taken by a (stale) config
+            UUID("cccccccc-0000-0000-0000-000000000000"),
+        ]
+
+        with patch(
+            "music_assistant.providers.universal_player.provider.uuid4", side_effect=candidates
+        ):
+            assert universal_provider.mint_player_id() == "upcccccccc"
 
 
 class TestGetCleanPlayerName:
@@ -1171,9 +1347,8 @@ class TestSelectBestOutputProtocol:
         # Link DLNA protocol to native player
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_AABBCCDDEEFF",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
                 )
@@ -1244,15 +1419,13 @@ class TestSelectBestOutputProtocol:
         # Link protocols to native player
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_AABBCCDDEEFF",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_AABBCCDDEEFF",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
                 ),
@@ -1349,15 +1522,13 @@ class TestSelectBestOutputProtocol:
         # Link both protocols, AirPlay with the better priority
         universal_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_AABBCCDDEEFF",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_AABBCCDDEEFF",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
                 ),
@@ -1379,6 +1550,232 @@ class TestSelectBestOutputProtocol:
             if protocol.output_protocol_id == "airplay_AABBCCDDEEFF"
         )
         assert airplay_output.available is False
+
+
+class TestGetControlTarget:
+    """Tests for resolving the target of an audio-path command."""
+
+    def test_fallback_follows_protocol_priority(self, mock_mass: MagicMock) -> None:
+        """
+        Without an active output the fallback picks the highest priority protocol.
+
+        An announcement on an idle player reaches this path, so it has to land on the
+        same output that regular playback selection would have chosen.
+        """
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        universal_provider = MockProvider("universal_player", mass=mock_mass)
+        universal_player = MockPlayer(universal_provider, "universal_123", "Kantoor")
+        universal_player._attr_supported_features = set()
+
+        sendspin_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": sendspin_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        # sendspin links first, but airplay outranks it
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == airplay_player
+
+    def test_fallback_follows_preferred_output_protocol(self, mock_mass: MagicMock) -> None:
+        """An explicitly preferred output beats the priority order."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        def _get_raw_player_config_value(
+            _player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
+                return "sendspin_AABBCCDDEEFF"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_get_raw_player_config_value
+        )
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
+        )
+        universal_player._attr_supported_features = set()
+        sendspin_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": sendspin_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        # airplay outranks sendspin, but the user picked sendspin
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                ),
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == sendspin_player
+
+    def test_fallback_ignores_preference_for_another_players_output(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A preference left behind by a relink does not steal another speaker's output."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        def _get_raw_player_config_value(
+            _player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
+                return "airplay_998877665544"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_get_raw_player_config_value
+        )
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
+        )
+        universal_player._attr_supported_features = set()
+        own_player = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_AABBCCDDEEFF",
+            "Kantoor Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        own_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        # the preference now points at an output belonging to a different speaker
+        other_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_998877665544",
+            "Woonkamer AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        other_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "sendspin_AABBCCDDEEFF": own_player,
+            "airplay_998877665544": other_player,
+        }
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="sendspin_AABBCCDDEEFF",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+
+        target = controller._get_control_target(
+            universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=False
+        )
+        assert target == own_player
+
+    def test_require_active_skips_the_fallback(self, mock_mass: MagicMock) -> None:
+        """With require_active there is no fallback to an idle linked protocol."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        universal_player = MockPlayer(
+            MockProvider("universal_player", mass=mock_mass),
+            "universal_123",
+            "Kantoor",
+        )
+        universal_player._attr_supported_features = set()
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+        controller._players = {
+            "universal_123": universal_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        universal_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        assert (
+            controller._get_control_target(
+                universal_player, PlayerFeature.PLAY_ANNOUNCEMENT, require_active=True
+            )
+            is None
+        )
 
 
 class TestPlayerGrouping:
@@ -1482,23 +1879,19 @@ class TestPlayerGrouping:
         # Link protocol players to native players
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_wiim",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -1589,30 +1982,26 @@ class TestPlayerGrouping:
         # Link AirPlay to Sonos A
         sonos_a.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_wiim",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
         wiim_player.set_active_output_protocol("airplay_wiim")
         wiim_player.set_protocol_parent_id("airplay_wiim")
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -1712,37 +2101,29 @@ class TestPlayerGrouping:
         # Link protocols (DLNA has lower priority than AirPlay)
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_sonos",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,  # Lower priority (higher number)
-                    available=True,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,  # Higher priority (lower number)
-                    available=True,
                 ),
             ]
         )
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_wiim",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
-                    available=True,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_wiim",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
             ]
         )
@@ -1779,6 +2160,21 @@ class TestPlayerGrouping:
         assert protocol_domain == "airplay"
         assert protocol_player == sonos_airplay
 
+        # A group already on DLNA must be moved off it as well, because DLNA cannot
+        # group members itself
+        protocol_members, _native_members, protocol_player, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=sonos_player,
+                player_ids=["wiim_456"],
+                parent_protocol_player=sonos_dlna,
+                parent_protocol_domain="dlna",
+            )
+        )
+
+        assert protocol_members == ["airplay_wiim"]
+        assert protocol_domain == "airplay"
+        assert protocol_player == sonos_airplay
+
 
 class TestJoinActiveNativeSession:
     """
@@ -1802,12 +2198,10 @@ class TestJoinActiveNativeSession:
         """Link an AirPlay protocol player to a native player."""
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id=airplay_id,
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2135,12 +2529,10 @@ class TestSessionBoundNativeGrouping:
         """Link a bridge protocol player to a native player."""
         player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id=bridge_id,
-                    name="Bridge",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -2335,17 +2727,15 @@ class TestCanGroupWith:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -2430,30 +2820,26 @@ class TestCanGroupWith:
 
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_other",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
             ]
         )
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
         sonos_player.set_active_output_protocol("airplay_sonos")
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -2562,31 +2948,25 @@ class TestCanGroupWith:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_sonos",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=50,
-                    available=True,
                 ),
             ]
         )
 
         wiim_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_other",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 ),
             ]
         )
@@ -2595,7 +2975,7 @@ class TestCanGroupWith:
         sonos_player._cache.clear()
         wiim_player._cache.clear()
 
-        # Wire up mock_mass.players to controller so get_linked_protocol works
+        # Wire up mock_mass.players to controller so player lookups resolve
         mock_mass.players = controller
 
         controller._players = {
@@ -2666,12 +3046,10 @@ class TestNativePlayerProtocolGrouping:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2735,12 +3113,10 @@ class TestNativePlayerProtocolGrouping:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2820,12 +3196,10 @@ class TestProtocolSwitchingDuringPlayback:
             players[bridge_id] = bridge
             players[parent_id].set_linked_output_protocols(
                 [
-                    OutputProtocol(
+                    LinkedOutputProtocol(
                         output_protocol_id=bridge_id,
-                        name="Bridge",
                         protocol_domain="sendspin",
                         priority=40,
-                        available=True,
                     )
                 ]
             )
@@ -2879,12 +3253,10 @@ class TestProtocolSwitchingDuringPlayback:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -2942,12 +3314,10 @@ class TestProtocolSwitchingDuringPlayback:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3021,12 +3391,10 @@ class TestProtocolSwitchingDuringPlayback:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3139,6 +3507,109 @@ class TestProtocolSwitchingDuringPlayback:
             controller.cmd_resume.assert_not_awaited()
         controller._handle_set_members.assert_not_awaited()
 
+    async def test_joining_member_protocol_is_active_before_its_stream_starts(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A joining member's parent knows which protocol carries its audio before its stream starts.
+
+        The member's stream is started from inside set_members, and providers resolve the
+        member's volume control while starting it. A device that also exposes a higher
+        priority sibling interface (e.g. a soundbar that is both Chromecast and AirPlay)
+        would otherwise resolve volume to that sibling and apply its volume semantics to
+        a stream it does not attenuate.
+        """
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        cast_provider = MockProvider("chromecast", instance_id="chromecast", mass=mock_mass)
+
+        leader = MockPlayer(airplay_provider, "leader", "Kitchen")
+        leader_airplay = MockPlayer(
+            airplay_provider,
+            "leader_airplay",
+            "Kitchen (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        leader_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader_airplay.set_protocol_parent_id("leader")
+
+        # the joining device exposes both a Chromecast and an AirPlay interface, and has no
+        # native volume of its own, so its volume control is one of the two protocol players
+        joiner = MockPlayer(cast_provider, "joiner", "Living Room")
+        joiner._attr_supported_features = set()
+        joiner_cast = MockPlayer(
+            cast_provider,
+            "joiner_cast",
+            "Living Room (Cast)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        joiner_cast.set_protocol_parent_id("joiner")
+        joiner_airplay = MockPlayer(
+            airplay_provider,
+            "joiner_airplay",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        joiner_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        joiner_airplay.set_protocol_parent_id("joiner")
+
+        leader.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="leader_airplay",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+        joiner.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="joiner_cast",
+                    protocol_domain="chromecast",
+                    priority=10,
+                ),
+                LinkedOutputProtocol(
+                    output_protocol_id="joiner_airplay",
+                    protocol_domain="airplay",
+                    priority=20,
+                ),
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            player.player_id: player
+            for player in (leader, leader_airplay, joiner, joiner_cast, joiner_airplay)
+        }
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+
+        # While the device sits idle its Chromecast interface owns the volume: the winner is
+        # decided by the hardcoded per-domain control priority, not by the link priorities.
+        assert joiner.volume_control == "joiner_cast"
+
+        observed_volume_controls: list[str] = []
+
+        async def record_set_members(
+            player_ids_to_add: list[str] | None = None,  # noqa: ARG001
+            player_ids_to_remove: list[str] | None = None,  # noqa: ARG001
+        ) -> None:
+            observed_volume_controls.append(joiner.volume_control)
+
+        leader_airplay.set_members = record_set_members  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=leader_airplay,
+            protocol_members_to_add=["joiner_airplay"],
+            protocol_members_to_remove=[],
+        )
+
+        assert observed_volume_controls == ["joiner_airplay"]
+
 
 class TestNativeProtocolPlayerGrouping:
     """Tests for grouping with native protocol players (e.g., native AirPlay like Apple TV)."""
@@ -3184,12 +3655,10 @@ class TestNativeProtocolPlayerGrouping:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3399,12 +3868,10 @@ class TestFinalSyncedToWithNativeProtocolParent:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3467,12 +3934,10 @@ class TestUngroupTranslation:
 
         sonos_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_sonos",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
-                    available=True,
                 )
             ]
         )
@@ -3548,12 +4013,10 @@ class TestNativeProtocolDomainPlayerGrouping:
         # Link sendspin protocol to Kantoor
         kantoor.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="sendspin_kantoor",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -3623,12 +4086,10 @@ class TestNativeProtocolDomainPlayerGrouping:
         # Link sendspin protocol to Kantoor
         kantoor.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="sendspin_kantoor",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -3698,12 +4159,10 @@ class TestNativeProtocolDomainPlayerGrouping:
 
         kantoor.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="sendspin_kantoor",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -3832,12 +4291,10 @@ class TestNativeProtocolDomainPlayerGrouping:
 
         mancave.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="spb_mancave",
-                    name="Sendspin",
                     protocol_domain="sendspin",
                     priority=40,
-                    available=True,
                 )
             ]
         )
@@ -5281,7 +5738,7 @@ class TestUniversalPlayerMerging:
         assert "up_2" in controller._players
 
     def test_merge_keeps_player_with_more_protocols(self, mock_mass: MagicMock) -> None:
-        """Test that the universal player with more protocol links absorbs the other."""
+        """Test that of two equally old universal players, the one with more links wins."""
         controller = PlayerController(mock_mass)
         up_provider = create_mock_universal_provider(mock_mass)
 
@@ -5370,12 +5827,97 @@ class TestUniversalPlayerMerging:
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
 
-    def test_merge_deterministic_tiebreaker_on_equal_link_counts(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """Test that equal-link-count merges resolve to the lex-smaller player_id."""
+    def test_merge_keeps_the_older_player_with_fewer_protocols(self, mock_mass: MagicMock) -> None:
+        """
+        The oldest universal player wins even when it serves fewer protocols.
+
+        Its player id is the one API consumers have been bound to the longest, and the
+        links of the absorbed player move over anyway. A player stored before ids were
+        minted has no creation moment at all, which must count as the oldest of the two.
+        """
         controller = PlayerController(mock_mass)
         up_provider = create_mock_universal_provider(mock_mass)
+        _wire_nested_config(
+            mock_mass,
+            {
+                CONF_PLAYERS: {
+                    # the established player, from before player ids were minted
+                    "up_old": {"player_id": "up_old", "enabled": True, "values": {}},
+                    "up_new": {
+                        "player_id": "up_new",
+                        "enabled": True,
+                        "values": {CONF_CREATED_AT: 9000},
+                    },
+                }
+            },
+        )
+
+        players: dict[str, UniversalPlayer] = {}
+        for player_id, protocol_ids in (("up_old", ["dlna_1"]), ("up_new", ["ap_1", "spb_1"])):
+            player = UniversalPlayer(
+                provider=up_provider,
+                player_id=player_id,
+                name=player_id,
+                device_info=DeviceInfo(model="Test", manufacturer="Test"),
+                protocol_player_ids=protocol_ids,
+            )
+            player._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+            player._cache.clear()
+            player.update_state(signal_event=False)
+            player.set_initialized()
+            players[player_id] = player
+
+        protocol_players: dict[str, MockPlayer] = {}
+        for protocol_id, domain in (("dlna_1", "dlna"), ("ap_1", "airplay"), ("spb_1", "sendspin")):
+            protocol_player = MockPlayer(
+                MockProvider(domain, mass=mock_mass),
+                protocol_id,
+                domain,
+                player_type=PlayerType.PROTOCOL,
+                identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+            )
+            protocol_player.set_initialized()
+            protocol_players[protocol_id] = protocol_player
+
+        controller._players = {**players, **protocol_players}
+        controller._add_protocol_link(players["up_old"], protocol_players["dlna_1"], "dlna")
+        controller._add_protocol_link(players["up_new"], protocol_players["ap_1"], "airplay")
+        controller._add_protocol_link(players["up_new"], protocol_players["spb_1"], "sendspin")
+
+        controller._check_merge_universal_players(players["up_new"])
+
+        domains = {link.protocol_domain for link in players["up_old"].linked_output_protocols}
+        assert domains == {"dlna", "airplay", "sendspin"}
+        assert protocol_players["ap_1"].protocol_parent_id == "up_old"
+        assert len(players["up_new"].linked_output_protocols) == 0
+
+    @staticmethod
+    def _setup_merge_tiebreak(
+        mock_mass: MagicMock, created_at: dict[str, int]
+    ) -> tuple[PlayerController, UniversalPlayer, UniversalPlayer, MockPlayer, MockPlayer]:
+        """
+        Set up two universal players of one device, each with a single protocol link.
+
+        :param mock_mass: The mocked MusicAssistant instance to wire.
+        :param created_at: Stored creation timestamp per universal player id.
+        :return: Tuple of (controller, up_aaa, up_bbb, its DLNA player, its AirPlay player).
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+        _wire_nested_config(
+            mock_mass,
+            {
+                CONF_PLAYERS: {
+                    player_id: {
+                        "player_id": player_id,
+                        "provider": "universal_player",
+                        "enabled": True,
+                        "values": {CONF_CREATED_AT: timestamp},
+                    }
+                    for player_id, timestamp in created_at.items()
+                }
+            },
+        )
 
         # up_a: lex-smaller player_id, one protocol link (DLNA)
         up_a = UniversalPlayer(
@@ -5434,6 +5976,16 @@ class TestUniversalPlayerMerging:
         controller._add_protocol_link(up_a, dlna_player, "dlna")
         controller._add_protocol_link(up_b, ap_player, "airplay")
 
+        return controller, up_a, up_b, dlna_player, ap_player
+
+    def test_merge_deterministic_tiebreaker_on_equal_link_counts(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that merges of equally old players resolve to the lex-smaller player_id."""
+        controller, up_a, up_b, _, ap_player = self._setup_merge_tiebreak(
+            mock_mass, {"up_aaa": 1000, "up_bbb": 1000}
+        )
+
         # Call merge from the lex-larger side. Under the old non-deterministic
         # behavior the caller (up_b) would have won. With the tiebreaker the
         # lex-smaller player_id (up_a) wins regardless of which side calls.
@@ -5441,14 +5993,29 @@ class TestUniversalPlayerMerging:
 
         # up_a (lex-smaller) should have absorbed up_b's AirPlay link
         protocol_domains = {link.protocol_domain for link in up_a.linked_output_protocols}
-        assert "dlna" in protocol_domains
-        assert "airplay" in protocol_domains
+        assert protocol_domains == {"dlna", "airplay"}
 
         # AirPlay player should now point to up_aaa
         assert ap_player.protocol_parent_id == "up_aaa"
 
         # up_b should have no more links
         assert len(up_b.linked_output_protocols) == 0
+
+    def test_merge_tiebreaker_prefers_the_older_universal_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that the player that has been around longest absorbs the other one."""
+        controller, up_a, up_b, dlna_player, _ = self._setup_merge_tiebreak(
+            mock_mass, {"up_aaa": 2000, "up_bbb": 1000}
+        )
+
+        controller._check_merge_universal_players(up_a)
+
+        # up_b is older, so it wins despite its lex-larger player_id
+        protocol_domains = {link.protocol_domain for link in up_b.linked_output_protocols}
+        assert protocol_domains == {"dlna", "airplay"}
+        assert dlna_player.protocol_parent_id == "up_bbb"
+        assert len(up_a.linked_output_protocols) == 0
 
     async def test_merge_preserves_moved_protocols_during_parent_cleanup(
         self, mock_mass: MagicMock
@@ -5815,6 +6382,37 @@ class TestUniversalPlayerMerging:
         assert "players/up_keep/values/hide_in_ui" not in config_store
         # non-conflicting values still migrate
         assert config_store["players/up_keep/values/flow_mode"] is True
+
+    def test_merge_does_not_carry_over_the_creation_moment(self, mock_mass: MagicMock) -> None:
+        """
+        The absorbed player's creation moment stays behind.
+
+        It is bookkeeping of that wrapper alone; copying it onto the keeper would let a
+        later merge discard the keeper's older - and therefore established - player id.
+        """
+        config_store: dict[str, Any] = {
+            "players/up_keep": {
+                "enabled": True,
+                "name": "Keep (Universal)",
+                "default_name": "Keep (Universal)",
+                "values": {},
+            },
+            "players/up_remove": {
+                "enabled": True,
+                "name": "Remove (Universal)",
+                "default_name": "Remove (Universal)",
+                "values": {CONF_CREATED_AT: 5000},
+            },
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+        }
+        controller, keep, _ = self._setup_merge_scenario(mock_mass, config_store)
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        assert f"players/up_keep/values/{CONF_CREATED_AT}" not in config_store
+        assert CONF_CREATED_AT not in config_store["players/up_keep"]["values"]
 
     def test_merge_repoints_group_memberships(self, mock_mass: MagicMock) -> None:
         """Merge re-points group memberships from the removed wrapper to the keeper."""
@@ -6578,7 +7176,7 @@ class TestEndToEndDuplicateProtocol:
     End-to-end integration tests for duplicate protocol → separate universal player flow.
 
     These tests exercise the full async flow through _delayed_protocol_evaluation,
-    ensure_universal_player_for_protocols, and _create_separate_universal_player,
+    ensure_universal_players_for_protocols, and _create_separate_universal_player,
     verifying that a second instance of the same protocol domain on the same host
     results in a separate universal player.
     """
@@ -6681,7 +7279,7 @@ class TestEndToEndDuplicateProtocol:
         # ap2 should NOT be linked to the existing universal player
         assert ap2.protocol_parent_id != "up_aabbccddeeff"
 
-        # ap2 should have its own universal player (with player_id-based device key)
+        # ap2 should have its own (freshly minted) universal player
         assert ap2.protocol_parent_id is not None
         separate_up_id = ap2.protocol_parent_id
         assert separate_up_id in controller._players
@@ -6760,7 +7358,7 @@ class TestEndToEndDuplicateProtocol:
         self, mock_mass: MagicMock
     ) -> None:
         """
-        Path B: ensure_universal_player_for_protocols separates can_join vs rejected.
+        Path B: ensure_universal_players_for_protocols separates can_join vs rejected.
 
         Scenario: Two AirPlay players arrive simultaneously for delayed eval.
         Both are unlinked, both pass to _create_or_update_universal_player.
@@ -6805,7 +7403,7 @@ class TestEndToEndDuplicateProtocol:
         # _find_matching_universal_player will find the universal player by MAC
         # _add_protocol_to_existing_universal will refuse (duplicate domain)
         # _find_matching_protocol_players will skip ap1 (same domain)
-        # _create_or_update_universal_player → ensure_universal_player_for_protocols
+        # _create_or_update_universal_player → ensure_universal_players_for_protocols
         #   finds existing universal player, separates ap2 as rejected
         await controller._delayed_protocol_evaluation("ap_2")
 
@@ -7177,6 +7775,171 @@ class TestEndToEndDuplicateProtocol:
         shared_up = controller._players[shared_up_id]
         shared_domains = {link.protocol_domain for link in shared_up.linked_output_protocols}
         assert shared_domains == {"airplay", "dlna", "chromecast"}
+
+
+class TestEndToEndUniversalPlayerId:
+    """
+    End-to-end tests for the minted player id of a universal player.
+
+    Regression tests for music-assistant/support#5888: the id used to be derived from
+    whichever device identifiers happened to be available when the wrapper was created,
+    so a re-created wrapper could silently change id and orphan the entities API
+    consumers (such as the Home Assistant integration) bind to it. These tests drive
+    the real evaluation path against a config store that persists what the flow writes.
+    """
+
+    @staticmethod
+    def _setup_controller(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, dict[str, Any]]:
+        """
+        Wire a controller, the universal player provider and a persisting config store.
+
+        :param mock_mass: The mocked MusicAssistant instance to wire.
+        :return: Tuple of (controller, backing config store).
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+        mock_mass.get_providers = MagicMock(return_value=[up_provider])
+
+        store: dict[str, Any] = {CONF_PLAYERS: {}}
+        _wire_nested_config(mock_mass, store)
+        mock_mass.config.create_default_player_config = MagicMock(
+            side_effect=lambda *args, **kwargs: _fake_create_default_player_config(
+                store, *args, **kwargs
+            )
+        )
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("Test")
+
+        async def fake_register_or_update(player: Player) -> None:
+            controller._players[player.player_id] = player
+            player.set_initialized()
+
+        mock_mass.players = MagicMock()
+        mock_mass.players.register_or_update = AsyncMock(side_effect=fake_register_or_update)
+        mock_mass.players.get_player = lambda pid, *_args, **_kwargs: controller._players.get(pid)
+        return controller, store
+
+    @staticmethod
+    def _make_airplay_player(
+        mock_mass: MagicMock, player_id: str, name: str, identifiers: dict[IdentifierType, str]
+    ) -> MockPlayer:
+        """Return an unlinked AirPlay protocol player."""
+        player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            player_id,
+            name,
+            player_type=PlayerType.PROTOCOL,
+            identifiers=identifiers,
+        )
+        player.set_initialized()
+        return player
+
+    async def test_id_survives_recreation_with_other_identifiers(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A re-created wrapper keeps its id when a different set of identifiers is known.
+
+        The first evaluation only knows the device's MAC, the second only its UUID.
+        The derived key changed along with that, taking the player id with it.
+        """
+        controller, store = self._setup_controller(mock_mass)
+        first = self._make_airplay_player(
+            mock_mass, "ap_1", "Living Room", {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"}
+        )
+        controller._players = {"ap_1": first}
+
+        await controller._delayed_protocol_evaluation("ap_1")
+
+        universal_id = first.protocol_parent_id
+        assert universal_id is not None
+        assert re.fullmatch(r"up[0-9a-f]{8}", universal_id)
+
+        # tear the wrapper down (its config is kept, as a non-permanent unregister does)
+        # and bring the device back with only a UUID to identify it by
+        del controller._players[universal_id]
+        second = self._make_airplay_player(
+            mock_mass,
+            "ap_1",
+            "Living Room",
+            {IdentifierType.UUID: "12345678-1234-1234-1234-123456789abc"},
+        )
+        controller._players = {"ap_1": second}
+
+        await controller._delayed_protocol_evaluation("ap_1")
+
+        assert second.protocol_parent_id == universal_id
+        assert universal_id in controller._players
+        assert store[CONF_PLAYERS]["ap_1"]["values"][CONF_PROTOCOL_PARENT_ID] == universal_id
+
+    async def test_wrappers_created_in_one_second_still_order(self, mock_mass: MagicMock) -> None:
+        """
+        Two wrappers created back to back get distinct creation timestamps.
+
+        A merge between them must be able to keep the older one, which it cannot do
+        when both carry the same timestamp and the tiebreak falls back to the id.
+        """
+        controller, store = self._setup_controller(mock_mass)
+        players = [
+            self._make_airplay_player(
+                mock_mass, f"ap_{index}", f"Speaker {index}", {IdentifierType.MAC_ADDRESS: mac}
+            )
+            for index, mac in enumerate(("54:78:C9:E6:0D:A0", "AA:BB:CC:DD:EE:FF"), start=1)
+        ]
+        controller._players = {player.player_id: player for player in players}
+
+        for player in players:
+            await controller._delayed_protocol_evaluation(player.player_id)
+
+        created = [
+            store[CONF_PLAYERS][player.protocol_parent_id]["values"][CONF_CREATED_AT]
+            for player in players
+        ]
+        assert all(isinstance(value, int) for value in created)
+        assert created[0] < created[1]
+
+    async def test_new_devices_get_distinct_minted_ids(self, mock_mass: MagicMock) -> None:
+        """Devices that were never wrapped before each get their own minted id."""
+        controller, _ = self._setup_controller(mock_mass)
+        players = [
+            self._make_airplay_player(
+                mock_mass, f"ap_{index}", f"Speaker {index}", {IdentifierType.MAC_ADDRESS: mac}
+            )
+            for index, mac in enumerate(("54:78:C9:E6:0D:A0", "AA:BB:CC:DD:EE:FF"), start=1)
+        ]
+        controller._players = {player.player_id: player for player in players}
+
+        for player in players:
+            await controller._delayed_protocol_evaluation(player.player_id)
+
+        universal_ids = [player.protocol_parent_id for player in players]
+        assert all(pid and re.fullmatch(r"up[0-9a-f]{8}", pid) for pid in universal_ids)
+        assert len(set(universal_ids)) == len(players)
+
+    async def test_duplicate_domain_gets_a_second_wrapper_with_a_parent_link(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        Two players of one protocol domain end up on two wrappers, both linked.
+
+        The handoff must persist a parent link for the second player as well,
+        otherwise it silently stays unwrapped.
+        """
+        controller, store = self._setup_controller(mock_mass)
+        identifiers = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"}
+        ap1 = self._make_airplay_player(mock_mass, "ap_1", "Zone 1", identifiers)
+        ap2 = self._make_airplay_player(mock_mass, "ap_2", "Zone 2", identifiers)
+        controller._players = {"ap_1": ap1, "ap_2": ap2}
+
+        await controller._create_or_update_universal_player([ap1, ap2])
+
+        assert ap1.protocol_parent_id is not None
+        assert ap2.protocol_parent_id is not None
+        assert ap1.protocol_parent_id != ap2.protocol_parent_id
+        for player in (ap1, ap2):
+            stored = store[CONF_PLAYERS][player.player_id]["values"][CONF_PROTOCOL_PARENT_ID]
+            assert stored == player.protocol_parent_id
 
 
 class TestSiblingProtocolMatching:
@@ -7625,6 +8388,54 @@ class TestNativePlayerSiblingLinking:
         assert sendspin_linked, "Sendspin should be linked via sibling protocol matching"
 
 
+class TestCachedProtocolLinkRecovery:
+    """Tests for recovering protocol links from config."""
+
+    def test_recovered_links_are_applied_through_the_setter(self, mock_mass: MagicMock) -> None:
+        """Recovery applies a single link per protocol domain through the setter."""
+        controller = PlayerController(mock_mass)
+
+        protocol_configs = {
+            "ap_first": {
+                "provider": "airplay--first",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "heos_player"},
+            },
+            "ap_second": {
+                "provider": "airplay--second",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "heos_player"},
+            },
+        }
+
+        def config_get_side_effect(key: str, default: object = None) -> object:
+            if key == "players/heos_player/values/linked_protocol_ids":
+                return ["ap_first", "ap_second"]
+            if key == "players":
+                return protocol_configs
+            if key.startswith("players/"):
+                return protocol_configs.get(key.split("/", maxsplit=1)[1])
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=config_get_side_effect)
+
+        heos_player = MockPlayer(
+            MockProvider("heos", mass=mock_mass),
+            "heos_player",
+            "Denon AVR-X2700H",
+        )
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        recovered = [link.output_protocol_id for link in heos_player.linked_output_protocols]
+        assert recovered == ["ap_first"]
+        mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
+
+        # a repeat pass has nothing left to recover, so no update is triggered
+        controller._recover_cached_protocol_links(heos_player)
+        mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
+
+
 class TestMultiMACMatching:
     """Tests for multi-MAC matching (reported MAC vs ARP MAC)."""
 
@@ -7799,9 +8610,8 @@ class TestProtocolParentIdPersistence:
         # Set up linked protocols
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_test",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -7855,9 +8665,8 @@ class TestCleanupProtocolLinks:
 
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_test",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -7924,9 +8733,8 @@ class TestCleanupProtocolLinks:
 
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_live",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -7988,9 +8796,8 @@ class TestCleanupProtocolLinks:
 
         parent.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="airplay_live",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 )
@@ -8216,39 +9023,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             return default
 
         mock_mass.config.get.side_effect = _get
-
-    @staticmethod
-    def _wire_nested_config(mock_mass: MagicMock, store: dict[str, Any]) -> None:
-        """Wire mass.config get/set/remove to a nested, path-addressable store."""
-
-        def _get(key: str, default: object = None) -> object:
-            node: Any = store
-            for part in key.split("/"):
-                if not isinstance(node, dict) or part not in node:
-                    return default
-                node = node[part]
-            return node
-
-        def _set(key: str, value: object) -> None:
-            parts = key.split("/")
-            node: dict[str, Any] = store
-            for part in parts[:-1]:
-                node = node.setdefault(part, {})
-            node[parts[-1]] = value
-
-        def _remove(key: str) -> None:
-            parts = key.split("/")
-            node: Any = store
-            for part in parts[:-1]:
-                node = node.get(part) if isinstance(node, dict) else None
-                if node is None:
-                    return
-            if isinstance(node, dict):
-                node.pop(parts[-1], None)
-
-        mock_mass.config.get = MagicMock(side_effect=_get)
-        mock_mass.config.set = MagicMock(side_effect=_set)
-        mock_mass.config.remove = MagicMock(side_effect=_remove)
 
     @pytest.mark.asyncio
     async def test_orphan_protocol_dropped_but_configs_kept(self, mock_mass: MagicMock) -> None:
@@ -8670,7 +9444,7 @@ class TestUniversalPlayerRestoreOrphanCleanup:
                 universal_id: {"queue_id": universal_id, "values": {"crossfade_duration": 5}}
             },
         }
-        self._wire_nested_config(mock_mass, store)
+        _wire_nested_config(mock_mass, store)
         mock_mass.config.save_player_config = AsyncMock()
         scheduled_tasks: list[Awaitable[object]] = []
         mock_mass.create_task = MagicMock(
@@ -8754,7 +9528,7 @@ class TestUniversalPlayerRestoreOrphanCleanup:
                 native_id: {"queue_id": native_id, "values": {"crossfade_duration": 2}},
             },
         }
-        self._wire_nested_config(mock_mass, store)
+        _wire_nested_config(mock_mass, store)
         mock_mass.config.save_player_config = AsyncMock()
         scheduled_tasks: list[Awaitable[object]] = []
         mock_mass.create_task = MagicMock(
@@ -8876,15 +9650,13 @@ class TestParentDisableCascade:
         native_player._attr_available = False
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="ap_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="dlna_1",
-                    name="DLNA",
                     protocol_domain="dlna",
                     priority=20,
                 ),
@@ -8934,9 +9706,8 @@ class TestParentDisableCascade:
         native_player._attr_available = False
         native_player.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id="ap_1",
-                    name="AirPlay",
                     protocol_domain="airplay",
                     priority=10,
                 ),

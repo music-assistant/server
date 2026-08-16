@@ -54,7 +54,9 @@ class SyncGroupPlayer(Player):
     ) -> None:
         """Initialize SyncGroupPlayer instance."""
         super().__init__(provider, player_id)
-        self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = self.config.default_name or self.config.name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
         # Group players default to "no opinion" on power. The session lifecycle
@@ -896,26 +898,14 @@ class SyncGroupPlayer(Player):
                 result.append(pid)
         return result
 
-    def _member_playback_domains(self, player: Player) -> set[str]:
-        """
-        Return the protocol domains a player can be reached on right now.
-
-        Only outputs that are available at this moment count, so a protocol whose
-        player went offline is left out. A wrapper player (UniversalPlayer)
-        contributes its linked protocols but never its own domain.
-
-        :param player: The player to inspect.
-        """
-        return {output.protocol_domain for output in player.output_protocols if output.available}
-
     def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
         """
-        Check if a player supports the given protocol domain.
+        Check if a player can be reached on the given protocol domain right now.
 
         :param player: The player to check.
         :param domain: The protocol domain string (e.g. "airplay", "sonos").
         """
-        return domain in self._member_playback_domains(player)
+        return domain in player.playback_domains
 
     def _all_members_can_play_on_domain(self, domain: str) -> bool:
         """
@@ -930,7 +920,7 @@ class SyncGroupPlayer(Player):
             member = self.mass.players.get_player(member_id)
             if member is None or not member.state.available:
                 continue
-            paths = self._member_playback_domains(member)
+            paths = member.playback_domains
             if paths and domain not in paths:
                 return False
         return True
@@ -1294,8 +1284,8 @@ class SyncGroupPlayer(Player):
         # 1. Old leader's session protocol player steps out of the session.
         # Direct call (the controller's cmd_set_members would interpret this
         # self-removal as "dissolve the entire group"). The provider's set_members
-        # implementation handles "remove self while other clients remain" by
-        # promoting another sync_client at the protocol level.
+        # keeps the live session running for the members that stay behind and releases
+        # them, so they are briefly without a leader until step 2 picks them back up.
         if session_player is not None:
             await session_player.set_members(player_ids_to_remove=[session_player.player_id])
 
@@ -1450,6 +1440,6 @@ class SyncGroupPlayer(Player):
         if player.provider.domain == domain:
             return player
         for linked in player.linked_output_protocols:
-            if linked.protocol_domain == domain and linked.available:
+            if linked.protocol_domain == domain:
                 return self.mass.players.get_player(linked.output_protocol_id)
         return None

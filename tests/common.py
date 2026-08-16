@@ -235,6 +235,9 @@ class MockProvider:
         self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
         self.unloading = False
+        # tests that let their players signal state updates fill this with the
+        # players of this provider, the way a real provider reports them
+        self.players: list[Player] = []
 
 
 class MockPlayer(Player):

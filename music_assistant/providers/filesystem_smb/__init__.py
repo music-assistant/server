@@ -154,6 +154,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
+        await super().unload(is_removed)
         await unmount(self.base_path, self.logger)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
