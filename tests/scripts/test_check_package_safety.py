@@ -216,6 +216,20 @@ def test_compatible_licenses(license_str: str) -> None:
     assert compatible, status
 
 
+def test_license_text_is_read_on_its_grant_only() -> None:
+    """Test a license text is accepted on the grant it spells out, terms added to it aside."""
+    # a grant identifies the license it belongs to, but says nothing about clauses written after
+    # it, so a text adding one is still accepted. Recognising those would mean comparing against
+    # the complete text of every license, which this check does not attempt
+    restricted = (
+        "Permission is hereby granted, free of charge, to any person obtaining a copy of this"
+        ' software and associated documentation files (the "Software"), to deal in the Software'
+        " without restriction.\n\nThe Software shall be used for Good, not Evil."
+    )
+
+    assert check_license_compatibility(restricted)[0]
+
+
 @pytest.mark.parametrize(
     ("license_str", "expected_status"),
     [
