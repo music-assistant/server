@@ -2368,7 +2368,7 @@
   "provider.tidal.setup_flow.user.description": "",
   "provider.tidal.setup_flow.user.title": "Link your Tidal account",
   "provider.tidal.setup_flow.user_finish.description": "",
-  "provider.tidal.setup_flow.user_finish.title": "Save the Oops URL.",
+  "provider.tidal.setup_flow.user_finish.title": "Save the 'Page Not Found' URL.",
   "provider.tunein.manifest.description": "Listen to global radio stations, sports, and podcasts through TuneIn.",
   "provider.universal_group.config_entries.dynamic_members.description": "Allow members to (temporary) join/leave the group dynamically.",
   "provider.universal_group.config_entries.dynamic_members.label": "Enable dynamic members",
