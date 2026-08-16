@@ -1733,7 +1733,7 @@ async def test_gdrive_flow_form_then_hosted_bounce(
 async def test_tidal_flow_pkce_url_paste(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real Tidal flow: paste the redirect URL, exchange it, store the tokens."""
+    """The real Tidal flow: label, authorize redirect, paste URL, exchange, store tokens."""
     from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
     from music_assistant.providers.tidal.constants import (  # noqa: PLC0415
         CONF_AUTH_TOKEN,
@@ -1760,14 +1760,27 @@ async def test_tidal_flow_pkce_url_paste(
         patch.object(
             TidalAuthManager, "process_pkce_login", AsyncMock(return_value=auth_data)
         ) as mock_exchange,
+        patch.object(
+            SetupSession, "external_until", AsyncMock(side_effect=StepExpiredError)
+        ) as mock_external_until,
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.type == FlowStepType.FORM
         assert step.step_id == "user"
-        # the authorize link rides along on the instructions label
-        instructions = next(x for x in step.entries if x.key == "auth_instructions")
-        assert instructions.help_link == "https://login.tidal.com/authorize?x=1"
+        # the instructions step no longer carries a help_link - the authorize URL is
+        # driven entirely through the external_until redirect below
+        assert any(x.key == "auth_instructions" for x in step.entries)
+
+        # submitting the (label-only) "user" step triggers the authorize redirect;
+        # it's mocked to expire immediately, so the flow proceeds straight to "user_finish"
+        finish_prompt = await flow_mass.config.submit_setup_flow(step.flow_id, {})
+        assert finish_prompt.type == FlowStepType.FORM
+        assert finish_prompt.step_id == "user_finish"
+        assert mock_external_until.await_args is not None
+        assert mock_external_until.await_args.args[1] == "https://login.tidal.com/authorize?x=1"
+        assert mock_external_until.await_args.kwargs["step_id"] == "authorize"
+
         finish_step = await flow_mass.config.submit_setup_flow(
             step.flow_id,
             {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"},
@@ -1787,7 +1800,7 @@ async def test_tidal_flow_pkce_url_paste(
 async def test_tidal_flow_exchange_error_retries(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed token exchange re-renders the form with an error, then succeeds on retry."""
+    """A failed token exchange restarts the authorize redirect, then succeeds on retry."""
     from music_assistant_models.errors import LoginFailed  # noqa: PLC0415
 
     from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
@@ -1812,19 +1825,37 @@ async def test_tidal_flow_exchange_error_retries(
             TidalAuthManager, "build_pkce_login", return_value=("https://login.tidal.com/x", {})
         ),
         patch.object(TidalAuthManager, "process_pkce_login", exchange),
+        patch.object(
+            SetupSession, "external_until", AsyncMock(side_effect=StepExpiredError)
+        ) as mock_external_until,
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        retry_step = await flow_mass.config.submit_setup_flow(
+        assert step.step_id == "user"
+
+        finish_prompt = await flow_mass.config.submit_setup_flow(step.flow_id, {})
+        assert finish_prompt.type == FlowStepType.FORM
+        assert finish_prompt.step_id == "user_finish"
+
+        retry_prompt = await flow_mass.config.submit_setup_flow(
             step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth"}
         )
-        assert retry_step.type == FlowStepType.FORM
+        # a failed exchange restarts the whole redirect: back to "user" (with the error)
+        assert retry_prompt.type == FlowStepType.FORM
+        assert retry_prompt.step_id == "user"
         # the canonical retry pattern surfaces the error's translation key
-        assert retry_step.errors == {"base": "login_failed"}
+        assert retry_prompt.errors == {"base": "login_failed"}
+
+        finish_prompt_2 = await flow_mass.config.submit_setup_flow(step.flow_id, {})
+        assert finish_prompt_2.type == FlowStepType.FORM
+        assert finish_prompt_2.step_id == "user_finish"
+
         finish_step = await flow_mass.config.submit_setup_flow(
             step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"}
         )
     assert finish_step.type == FlowStepType.FINISH
+    # the authorize redirect was shown twice - once per pass through the retry loop
+    assert mock_external_until.await_count == 2
 
 
 async def test_hue_pairing_flow_retry_then_success(
