@@ -241,6 +241,53 @@ async def test_dynamic_source_overrides_an_explicit_play_in_order() -> None:
     assert _queue(ctrl).smart_shuffle_active is True
 
 
+async def test_replacing_a_dynamic_queue_drops_the_smart_mix_indicator() -> None:
+    """
+    An album started over a dynamic queue is a plain queue, so it must not report a smart mix.
+
+    The dynamic source is what made smart shuffle active here (the per-queue setting is off), so
+    dropping it has to take the indicator with it.
+    """
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    ctrl._smart_shuffle.is_enabled = Mock(return_value=False)
+
+    await ctrl.play_media("q1", _album(), QueueOption.REPLACE, shuffle=True)
+
+    assert _queue(ctrl).is_dynamic is False
+    # the caller asked for a shuffled play, but a plain random shuffle is not a smart mix
+    assert _queue(ctrl).shuffle_enabled is True
+    assert _queue(ctrl).smart_shuffle_active is False
+
+
+@pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.NEXT, QueueOption.REPLACE_NEXT])
+async def test_starting_media_on_an_ended_queue_resets_shuffle(option: QueueOption) -> None:
+    """
+    A queue that played to its end is discarded by every option but add, so the shuffle goes too.
+
+    The items of a finished queue are not kept, so there is nothing left in shuffled order for the
+    flag to contradict: this is a new listening session just as much as a replace is.
+    """
+    ctrl = _controller(shuffle_enabled=True, ended=True)
+
+    await ctrl.play_media("q1", _album(), option)
+
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+async def test_adding_onto_an_ended_queue_keeps_shuffle() -> None:
+    """Adding continues a finished queue rather than starting over, so its shuffle stays on."""
+    ctrl = _controller(shuffle_enabled=True, ended=True)
+    # a marker rather than a realistic timestamp: it only has to show the intent was left alone
+    ctrl._queue_data["q1"].shuffle_set_at = 12345.0
+
+    await ctrl.play_media("q1", _album(), QueueOption.ADD)
+
+    assert _queue(ctrl).shuffle_enabled is True
+    assert _played_order(ctrl) == ALBUM_TRACKS[::-1]
+    assert ctrl._queue_data["q1"].shuffle_set_at == 12345.0
+
+
 @pytest.mark.parametrize("shuffle_enabled", [True, False])
 @pytest.mark.parametrize(
     "option", [QueueOption.PLAY, QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT]
@@ -254,7 +301,8 @@ async def test_enqueueing_leaves_shuffle_untouched(
     These all keep (part of) the existing queue, whose items are already in shuffled order, so
     switching shuffle off here would leave those items contradicting the queue's own flag.
     """
-    ctrl = _controller(shuffle_enabled=shuffle_enabled)
+    # a running queue, as opposed to the finished one every option but add starts over from
+    ctrl = _controller(shuffle_enabled=shuffle_enabled, ended=False)
     # a marker rather than a realistic timestamp: it only has to show the intent was left alone
     ctrl._queue_data["q1"].shuffle_set_at = 12345.0
 
