@@ -51,6 +51,8 @@ def pypi_info(**overrides: Any) -> dict[str, Any]:
             pypi_info(classifiers=["Programming Language :: Python", "License :: OSI Approved"]),
             "Unknown",
         ),
+        # a classifier that is no more than the "License" segment names one no more than that does
+        (pypi_info(classifiers=["License"]), "Unknown"),
         # several classifiers: the one that fails the check decides, whatever its position
         (
             pypi_info(
@@ -120,8 +122,17 @@ def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) 
         ("MIT OR (Apache-2.0", False),
         ("BSD-3-Clause-No-Nuclear-License-2014", False),
         ("LicenseRef-Proprietary", False),
+        # an expression is never license prose, so a custom identifier cannot smuggle in the
+        # wording of a grant to be read as the license it belongs to
+        (
+            "LicenseRef-Permission-is-hereby-granted-free-of-charge-to-any-person-obtaining-a"
+            "-copy-of-this-software-and-associated-documentation-files",
+            False,
+        ),
         ("0BSD", True),
         ("MIT OR Apache-2.0", True),
+        # a group has to be closed for what follows it to be read as part of the expression
+        ("(MIT) OR (Apache-2.0)", True),
         # an alternative we do not know does not spoil one we do
         ("Frobnicate-1.0 OR MIT", True),
         ("Apache-2.0 WITH LLVM-exception", True),
@@ -159,29 +170,71 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "Public Domain",
         # a plain license field can hold an expression too (aiohttp publishes this one)
         "Apache-2.0 AND MIT",
-        # ...while prose that merely contains the word "and" is still matched on its wording
-        "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a"
-        " copy of this software and associated documentation files, to deal in the Software"
-        " without restriction, including without limitation the rights to use and to permit"
-        " persons to whom the Software is furnished to do so.",
         "The MIT License (MIT)",
         "CC0 1.0 Universal",
         # spelling variants of the same licenses
         "MPL 2.0",
         "Apache 2.0 License",
+        "MIT license",
+        "The MIT License",
+        "MIT Licence",
+        # a name holding a comma is matched whole, before the value is read as a list
+        "Apache License, Version 2.0",
+        # spellings the BSD family is published under (protobuf, jsonpatch)
+        "3-Clause BSD License",
+        "Modified BSD License",
+        # every license of a value that lists several (pycryptodome publishes this one)
+        "BSD, Public Domain",
+        # ...however the value joins them (uritemplate publishes the first)
+        "BSD 3-Clause OR Apache-2.0",
+        "MIT/Apache-2.0",
+        "MIT License AND Apache Software License",
+        "MIT and/or Apache-2.0",
+        # a name holding a separator is still matched whole, before the value is split on one
+        "zlib/libpng License",
+        "GNU Library or Lesser General Public License (LGPL)",
+        "Historical Permission Notice and Disclaimer (HPND)",
         # a custom license alongside one we accept still leaves a usable option
         "MIT OR LicenseRef-Proprietary",
         # an exception only widens what the license allows, so the license itself decides
         "Zlib WITH LLVM-exception",
         "LGPL-3.0-only WITH LGPL-3.0-linking-exception",
-        # prose is matched on its wording; the groups in it are not an expression to refuse
-        "MIT License (a) (b) (c) (d) (e) (f) (g) (h) (i) (j) (k) (l) and so on",
+        # packages that put their whole license text in the field are read on the grant it
+        # spells out, whatever heading and punctuation surround it (ya-dialogs-api, aiomusiccast)
+        "MIT License\n\n        Copyright (c) 2026 Mikhail Nevskiy\n\n        Permission is"
+        " hereby granted, free of charge, to any person obtaining a copy\n        of this"
+        ' software and associated documentation files (the "Software"), to deal\n        in the'
+        " Software without restriction.",
+        "**The MIT License (MIT)**  Copyright &copy; 2021, Tom Schneider  Permission is hereby"
+        " granted, free of charge, to any person obtaining a copy of this software and"
+        ' associated documentation files (the "Software"), to deal in the Software without'
+        " restriction.",
+        "Copyright (c) 2026\n\nPermission to use, copy, modify, and/or distribute this software"
+        " for any purpose with or without fee is hereby granted.",
+        "Redistribution and use in source and binary forms, with or without modification, are"
+        " permitted provided that the following conditions are met.",
+        'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this'
+        " file except in compliance with the License.",
     ],
 )
 def test_compatible_licenses(license_str: str) -> None:
     """Test permissive licenses are accepted."""
     compatible, status = check_license_compatibility(license_str)
     assert compatible, status
+
+
+def test_license_text_is_read_on_its_grant_only() -> None:
+    """Test a license text is accepted on the grant it spells out, terms added to it aside."""
+    # a grant identifies the license it belongs to, but says nothing about clauses written after
+    # it, so a text adding one is still accepted. Recognising those would mean comparing against
+    # the complete text of every license, which this check does not attempt
+    restricted = (
+        "Permission is hereby granted, free of charge, to any person obtaining a copy of this"
+        ' software and associated documentation files (the "Software"), to deal in the Software'
+        " without restriction.\n\nThe Software shall be used for Good, not Evil."
+    )
+
+    assert check_license_compatibility(restricted)[0]
 
 
 @pytest.mark.parametrize(
@@ -216,6 +269,67 @@ def test_compatible_licenses(license_str: str) -> None:
         ("This software is not in the public domain. All rights reserved.", "Unknown/unverified"),
         ("ISC2", "Unknown/unverified license"),
         ("Internal use only, do not transmit", "Unknown/unverified license"),
+        # a name we accept does not carry the terms written around it, however it is joined to
+        # them, and an SPDX operator between prose words is not an expression to read it out of
+        ("MIT License AND Proprietary", "Unknown/unverified license"),
+        ("MIT License for non-commercial use only", "Unknown/unverified license"),
+        ("MIT plus commercial terms", "Unknown/unverified license"),
+        ("BSD, Proprietary", "Unknown/unverified license"),
+        # a license text is only recognised by the grant it spells out, not by its heading
+        ("MIT License\n\nAll rights reserved. Contact us for terms.", "Unknown/unverified"),
+        # ...and the grant has to be the one the text opens, not the tail of another word
+        (
+            "Nonpermission is hereby granted, free of charge, to any person obtaining a copy of"
+            " this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
+        # a text that breaks off the grant to restrict it does not spell out that grant
+        (
+            "Permission is hereby granted, free of charge, to any person obtaining a copy solely"
+            " for non-commercial use.",
+            "Unknown/unverified license",
+        ),
+        # ...and neither does one that denies it outright, however the denial is worded
+        (
+            "No permission is hereby granted, free of charge, to any person obtaining a copy of"
+            " this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
+        (
+            "No additional permission is hereby granted, free of charge, to any person obtaining"
+            " a copy of this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
+        # a grant is quoted to its last word, so a text trailing off into another license is not
+        # taken for the one it started as
+        (
+            'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this'
+            " file except in compliance with the Proprietary License",
+            "Unknown/unverified license",
+        ),
+        # a copyleft license the text is combined with is not excused by the grant it spells out
+        (
+            "MIT License AND GPL-3.0-only\n\nPermission is hereby granted, free of charge, to any"
+            " person obtaining a copy of this software and associated documentation files.",
+            "Incompatible copyleft license",
+        ),
+        # neither alternative of an expression is one we know, so the expression is not either
+        ("Frobnicate-1.0 OR Frobnicate-2.0", "Unknown/unverified license"),
+        # a value that is only separators names nothing
+        (",", "Unknown/unverified license"),
+        # a license we accept does not carry the one it is offered alongside
+        ("MIT or Proprietary Terms", "Unknown/unverified license"),
+        # a term we cannot read is still a term, in whatever script it is written
+        ("MIT 非商用", "Unknown/unverified license"),
+        ("Apache 2.0 нельзя", "Unknown/unverified license"),
+        # a custom license names itself, whatever wording its identifier is built out of
+        (
+            "LicenseRef-Permission-is-hereby-granted-free-of-charge-to-any-person-obtaining-a"
+            "-copy-of-this-software-and-associated-documentation-files",
+            "Unknown/unverified license",
+        ),
+        # groups in prose are not an expression, and no longer a name to read out of it either
+        ("MIT License (a) (b) (c) (d) (e) (f) (g) and so on", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
         ("MIT AND Proprietary", "Unknown/unverified license"),
         ("MIT AND(Proprietary)", "Unknown/unverified license"),
