@@ -21,7 +21,7 @@ from pywiim import Player as PywiimPlayer
 from pywiim import WiiMClient, WiiMError, WiiMGroupCompatibilityError
 from pywiim.upnp.client import UpnpClient
 
-from music_assistant.constants import create_sample_rates_config_entry
+from music_assistant.constants import EXTERNAL_SOURCES, create_sample_rates_config_entry
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import PLAYER_ID_PREFIX
@@ -85,6 +85,10 @@ class LinkPlayPlayer(Player):
         self._description_url = description_url
         self._dmr_device: DmrDevice | None = None
         self._eventing_active = False
+        # Whether this cycle holds a trustworthy live UPnP URI: a live subscription or a
+        # successful poll sets it, a failed poll clears it so a stale cached URI is not
+        # read as a source takeover.
+        self._live_uri_fresh = False
         self._mac_address = mac_address
         self._rebuild_lock = asyncio.Lock()
         # Ownership tracking for the URL MA last asked the device to play.
@@ -436,11 +440,18 @@ class LinkPlayPlayer(Player):
             return
         # Without event subscriptions the live UPnP transport URI would never update,
         # so poll it here to keep source-takeover detection working on those devices.
-        if self._dmr_device is not None and not self._eventing_active:
+        if self._eventing_active:
+            # A live subscription keeps the DMR's transport URI current.
+            self._live_uri_fresh = True
+        elif self._dmr_device is not None:
             try:
                 await self._dmr_device.async_update()
+                self._live_uri_fresh = True
             except UpnpError as err:
                 self.logger.debug("UPnP poll failed for %s: %r", self.name, err)
+                # The cached URI is now stale; untrust it so a transient failure is not
+                # mistaken for a takeover of a still-playing MA stream.
+                self._live_uri_fresh = False
         await self._update_group_members()
         self._push_state()
 
@@ -607,8 +618,8 @@ class LinkPlayPlayer(Player):
         )
 
     def _live_track_uri(self) -> str | None:
-        """Return the device's live UPnP transport URI, if eventing has reported one."""
-        if self._dmr_device is None:
+        """Return the device's live UPnP transport URI, if a fresh one is available."""
+        if self._dmr_device is None or not self._live_uri_fresh:
             return None
         return self._dmr_device.current_track_uri or None
 
@@ -639,9 +650,14 @@ class LinkPlayPlayer(Player):
 
     def _set_external_media(self, live_uri: str | None, metadata_changed: bool) -> None:
         """Publish current media for playback MA did not start (read-only)."""
-        # Publish the device's own source id (or an explicit sentinel) so MA treats this
-        # as an external source and shows this media instead of falling back to our queue.
-        self._attr_active_source = self._pywiim.source or "external"
+        # This path only runs for playback MA does not own, so it must always read as
+        # external. MA keeps surfacing the remembered MA queue unless the reported source
+        # is a recognised external one, so URL/network modes fall back to the sentinel.
+        source = self._pywiim.source
+        if source and source.lower() in EXTERNAL_SOURCES:
+            self._attr_active_source = source
+        else:
+            self._attr_active_source = "external"
         title = self._pywiim.media_title
         artist = self._pywiim.media_artist
         album = self._pywiim.media_album
@@ -706,5 +722,9 @@ class LinkPlayPlayer(Player):
         self, service: UpnpService, state_variables: Sequence[UpnpStateVariable[Any]]
     ) -> None:
         """Handle a UPnP event by scheduling a fresh state refresh."""
-        del service, state_variables
+        del service
+        if not state_variables:
+            # async-upnp-client signals a failed auto-resubscribe with an empty variable
+            # sequence; drop to polling so transport/source changes keep being observed.
+            self._eventing_active = False
         self._schedule_refresh()

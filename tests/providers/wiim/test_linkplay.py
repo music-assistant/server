@@ -310,6 +310,7 @@ class TestSourceTakeover:
         player._ma_stream_uri = _MA_STREAM_URI
         player._ma_stream_confirmed = True
         player._dmr_device = MagicMock(current_track_uri="http://other/app.mp3")
+        player._live_uri_fresh = True
 
         player._push_state()
 
@@ -325,6 +326,7 @@ class TestSourceTakeover:
         player._ma_stream_uri = _MA_STREAM_URI
         player._ma_stream_confirmed = False
         player._dmr_device = MagicMock(current_track_uri="http://previous/track.mp3")
+        player._live_uri_fresh = True
 
         player._push_state()
 
@@ -340,6 +342,7 @@ class TestSourceTakeover:
         player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
         player._ma_stream_uri = _MA_STREAM_URI
         player._dmr_device = MagicMock(current_track_uri=_MA_STREAM_URI)
+        player._live_uri_fresh = True
 
         player._push_state()
 
@@ -357,6 +360,7 @@ class TestSourceTakeover:
         player._ma_stream_confirmed = False  # our stream was never seen
         player._ma_stream_since = time.time() - 120  # past the handover window
         player._dmr_device = MagicMock(current_track_uri="http://other/app.mp3")
+        player._live_uri_fresh = True
 
         player._push_state()
 
@@ -469,6 +473,7 @@ class TestExternalMediaIdentity:
 
         # first external track: full metadata, distinct live URI
         player._dmr_device = MagicMock(current_track_uri="spotify://track/1")
+        player._live_uri_fresh = True
         mock_pywiim_player.media_title = "First"
         mock_pywiim_player.media_album = "Album A"
         mock_pywiim_player.media_image_url = "http://art/a.jpg"
@@ -498,6 +503,7 @@ class TestExternalMediaIdentity:
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.source = "network"
         player._dmr_device = MagicMock(current_track_uri="http://radio/stream")
+        player._live_uri_fresh = True
 
         mock_pywiim_player.media_title = "Now Playing A"
         mock_pywiim_player.media_album = "Album A"
@@ -514,6 +520,21 @@ class TestExternalMediaIdentity:
         assert second is not None
         assert second.title == "Now Playing B"
         assert second.album is None
+
+    def test_url_mode_takeover_surfaces_as_external(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A non-MA URL/network stream must read as external, not the remembered MA queue."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        mock_pywiim_player.play_state = "play"
+        mock_pywiim_player.source = "network"  # URL mode, not in EXTERNAL_SOURCES
+        mock_pywiim_player.media_title = "Someone else's stream"
+        player._dmr_device = MagicMock(current_track_uri="http://other/app.mp3")
+        player._live_uri_fresh = True
+
+        player._push_state()
+
+        assert player._attr_active_source == "external"
 
 
 class TestFeatures:
@@ -766,11 +787,34 @@ class TestEventing:
         """A UPnP event schedules a refresh with a stable task id so bursts coalesce."""
         player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
 
-        player._handle_upnp_event(MagicMock(), [])
+        player._handle_upnp_event(MagicMock(), [MagicMock()])
 
         mock_provider.mass.create_task.assert_called_once()
         _, kwargs = mock_provider.mass.create_task.call_args
         assert kwargs.get("task_id") == f"linkplay_refresh_{EDIFIER_PLAYER_ID}"
+
+    def test_resubscribe_failure_falls_back_to_polling(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """An empty event signals a failed resubscribe, so eventing drops to polling."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        player._eventing_active = True
+
+        player._handle_upnp_event(MagicMock(), [])
+
+        assert player._eventing_active is False
+        mock_provider.mass.create_task.assert_called_once()
+
+    def test_normal_event_keeps_eventing_active(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A real event (with state variables) leaves the live subscription in place."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        player._eventing_active = True
+
+        player._handle_upnp_event(MagicMock(), [MagicMock()])
+
+        assert player._eventing_active is True
 
 
 class TestSessionOwnership:
@@ -1167,6 +1211,28 @@ class TestPollingFallback:
 
         dmr.async_update.assert_not_called()
 
+    async def test_failed_dmr_poll_keeps_ownership(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A transient UPnP poll failure must not release a still-playing MA stream."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        dmr = MagicMock()
+        dmr.async_update = AsyncMock(side_effect=UpnpConnectionError("boom"))
+        dmr.current_track_uri = "http://other/app.mp3"  # stale cached value
+        player._dmr_device = dmr
+        player._eventing_active = False
+        mock_pywiim_player.play_state = "play"
+        mock_pywiim_player.source = "network"
+        player._ma_stream_uri = _MA_STREAM_URI
+        player._ma_stream_since = time.time() - 120  # past the handover window
+
+        await player._refresh_state()
+
+        dmr.async_update.assert_awaited_once()
+        # the stale URI is untrusted, so ownership of the still-playing stream is kept
+        assert player._ma_stream_uri == _MA_STREAM_URI
+
 
 class TestRefreshFailure:
     """A failed poll must mark the device offline and drop stale media/source."""
@@ -1248,6 +1314,7 @@ class TestNowPlayingIdentity:
         mock_pywiim_player.source = "spotify"
 
         player._dmr_device = MagicMock(current_track_uri="spotify://1")
+        player._live_uri_fresh = True
         mock_pywiim_player.media_position = 40
         mock_pywiim_player.media_title = "A"
         player._push_state()
@@ -1267,6 +1334,7 @@ class TestNowPlayingIdentity:
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.source = "network"
         player._dmr_device = MagicMock(current_track_uri="http://radio/stream")
+        player._live_uri_fresh = True
 
         mock_pywiim_player.media_position = 100
         mock_pywiim_player.media_title = "Song A"
