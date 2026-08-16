@@ -143,6 +143,30 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     ) as mock_send_show_dashboard:
         await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
+    # a fresh cast always launches: an "already running" receiver may be
+    # backgrounded (Android TV launcher) and only a launch makes it visible
+    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=True)
+
+
+async def test_on_show_swaps_without_relaunch_on_an_active_dashboard() -> None:
+    """Showing on a device already showing our dashboard swaps the url without a relaunch."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = connected_chromecast
+    castplayer.app_quit_sent = False
+    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards._active_casts[str(device_uuid)] = MagicMock()
+    url = "https://mass.example.com?path=%2Fparty"
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
+
+    with patch(
+        "music_assistant.providers.chromecast.dashboard.send_show_dashboard"
+    ) as mock_send_show_dashboard:
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
+
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=False)
 
 
@@ -177,6 +201,8 @@ async def test_on_show_forces_a_launch_when_a_release_is_on_the_wire(
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = app_quit_sent
     dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    # an active tracked cast, so only the on-the-wire release decides the force
+    dashboards._active_casts[str(device_uuid)] = MagicMock()
     url = "https://mass.example.com?path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
 
@@ -231,7 +257,7 @@ async def test_on_show_reuses_cached_on_demand_connection() -> None:
     ) as mock_send_show_dashboard:
         await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
-    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=False)
+    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=True)
 
 
 async def test_on_show_raises_for_unknown_device() -> None:
