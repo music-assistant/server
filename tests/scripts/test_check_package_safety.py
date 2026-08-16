@@ -153,6 +153,9 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "MIT License",
         "Apache Software License",
         "GNU Lesser General Public License v3 (LGPLv3)",
+        "ISC License (ISCL)",
+        "The MIT License (MIT)",
+        "CC0 1.0 Universal",
         # spelling variants of the same licenses
         "MPL 2.0",
         "Apache 2.0 License",
@@ -192,6 +195,10 @@ def test_compatible_licenses(license_str: str) -> None:
         ("Apache-2.0 AND MIT WITH GPL-3.0-only", "Incompatible copyleft license"),
         ("LGPL-2.1-or-later AND GPL-3.0-only", "Incompatible copyleft license"),
         ("Frobnicate-1.0", "Unknown/unverified license (Frobnicate-1.0)"),
+        # a license name has to be named, not spelled out by unrelated words running together
+        ("This copyright notice shall be included in all copies", "Unknown/unverified license"),
+        ("Redistribution is permitted for internal use only", "Unknown/unverified license"),
+        ("SUBMITTED-1.0", "Unknown/unverified license"),
         ("Other/Proprietary License", "Unknown/unverified license"),
         # a custom license is never pre-approved, not even when its name reads permissive
         (

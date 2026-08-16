@@ -187,10 +187,8 @@ def check_license_compatibility(
     # do recognise there must not end up approving a copyleft or custom license next to it
     guessable = not spdx_expression and not copyleft and "LICENSEREF" not in license_upper
     if spdx_compatible is None and guessable:
-        # ignore punctuation so spelling variants such as "MPL 2.0" match "MPL-2.0"
-        squashed = re.sub(r"[^A-Z0-9]", "", license_upper)
         for compatible in COMPATIBLE_LICENSES:
-            if re.sub(r"[^A-Z0-9]", "", compatible.upper()) in squashed:
+            if _names_license(license_upper, compatible):
                 return True, f"Compatible ({license_str})"
 
     if copyleft:
@@ -585,6 +583,20 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
             return False
 
     return True if identifier in COMPATIBLE_SPDX_LICENSES else None
+
+
+def _names_license(license_upper: str, name: str) -> bool:
+    """
+    Return whether an upper-cased license string names the given license.
+
+    :param license_upper: The upper-cased license string to search.
+    :param name: The license name to look for, e.g. "MPL-2.0".
+    """
+    # tolerate spelling variants of the separators, so that "MPL 2.0" is read as "MPL-2.0", but
+    # only match from a word boundary, so the name cannot be assembled out of unrelated words
+    # ("this copyright" holding an "ISC", or "permitted" a "MIT")
+    parts = [re.escape(part) for part in re.findall(r"[A-Z0-9]+", name.upper())]
+    return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}", license_upper) is not None
 
 
 def _is_spdx_operator(token: str) -> bool:
