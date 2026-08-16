@@ -267,6 +267,7 @@ class AirPlayStream:
         self._clock_stall_warned: bool = False
         self._native_control_failure_handled: bool = False
         self._recovery_generation: int = 0
+        self._recovery_task: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -286,6 +287,16 @@ class AirPlayStream:
     def supersede_recovery(self) -> None:
         """Prevent pending recovery from resuming playback from this stream."""
         self._recovery_generation += 1
+        task = self._recovery_task
+        if task is None:
+            return
+        if task.done():
+            self._recovery_task = None
+            return
+        if task is asyncio.current_task():
+            return
+        self._recovery_task = None
+        task.cancel()
 
     async def connect(
         self,
@@ -1723,21 +1734,24 @@ class AirPlayStream:
 
     async def _restart_playback_in_compatibility_mode(self, recovery_generation: int) -> None:
         """Restart the active queue after switching to AirPlay compatibility mode."""
-        queue = self.mass.player_queues.get_active_queue(self.player.player_id)
-        if self.session is not None:
-            await self.session.stop()
-        else:
-            await self.stop(force=True)
-        if (
-            queue is None
-            or recovery_generation != self._recovery_generation
-            or self.player.stream is not self
-        ):
-            return
         try:
+            queue = self.mass.player_queues.get_active_queue(self.player.player_id)
+            if self.session is not None:
+                await self.session.stop()
+            else:
+                await self.stop(force=True)
+            if (
+                queue is None
+                or recovery_generation != self._recovery_generation
+                or self.player.stream is not self
+            ):
+                return
             await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
         except MusicAssistantError as err:
             self.player.logger.warning("Restart in AirPlay compatibility mode failed: %s", err)
+        finally:
+            if self._recovery_task is asyncio.current_task():
+                self._recovery_task = None
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
@@ -1957,8 +1971,9 @@ class AirPlayStream:
         ):
             # Native groups and Sendspin bridges already recover a dead transport
             # in place. A standalone queue has no owner to restart it.
-            self.mass.create_task(
-                self._restart_playback_in_compatibility_mode(self._recovery_generation)
+            self._recovery_task = self.mass.create_task(
+                self._restart_playback_in_compatibility_mode(self._recovery_generation),
+                eager_start=False,
             )
 
     def _parse_anchor_corrected(self, line: str) -> None:

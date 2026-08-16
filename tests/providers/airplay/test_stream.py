@@ -2047,7 +2047,7 @@ def test_native_control_failure_restarts_a_standalone_session() -> None:
     """A standalone queue is restarted because no group recovery owns its transport."""
     player = _make_player()
     player.state.playback_state = PlaybackState.PLAYING
-    player.provider.mass.create_task.side_effect = lambda awaitable: awaitable.close()
+    player.provider.mass.create_task.side_effect = lambda awaitable, **_: awaitable.close()
     stream = AirPlayStream(player)
     stream.session = MagicMock(sync_clients=[player])
 
@@ -2159,6 +2159,60 @@ async def test_compatibility_restart_does_not_reclaim_a_replaced_stream() -> Non
 
     stream.session.stop.assert_awaited_once()
     player.provider.mass.player_queues.resume.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_superseding_recovery_cancels_it_while_waiting_for_queue_lock() -> None:
+    """A newer action cancels recovery even after its generation check."""
+    player = _make_player()
+    queue = MagicMock(queue_id="queue")
+    player.provider.mass.player_queues.get_active_queue.return_value = queue
+    resume_started = asyncio.Event()
+
+    async def resume_queue(*_args: Any, **_kwargs: Any) -> None:
+        resume_started.set()
+        await asyncio.Event().wait()
+
+    player.provider.mass.player_queues.resume = AsyncMock(side_effect=resume_queue)
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream.session = MagicMock(stop=AsyncMock())
+    task = asyncio.create_task(
+        stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
+    )
+    stream._recovery_task = task
+
+    await resume_started.wait()
+    stream.supersede_recovery()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stream._recovery_task is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_cancel_its_own_queue_restart() -> None:
+    """The queue action started by recovery may supersede the stream without self-cancelling."""
+    player = _make_player()
+    queue = MagicMock(queue_id="queue")
+    player.provider.mass.player_queues.get_active_queue.return_value = queue
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream.session = MagicMock(stop=AsyncMock())
+
+    async def resume_queue(*_args: Any, **_kwargs: Any) -> None:
+        stream.supersede_recovery()
+
+    player.provider.mass.player_queues.resume = AsyncMock(side_effect=resume_queue)
+    task = asyncio.create_task(
+        stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
+    )
+    stream._recovery_task = task
+
+    await task
+
+    assert task.cancelled() is False
+    assert stream._recovery_task is None
 
 
 @pytest.mark.asyncio
