@@ -51,6 +51,8 @@ def pypi_info(**overrides: Any) -> dict[str, Any]:
             pypi_info(classifiers=["Programming Language :: Python", "License :: OSI Approved"]),
             "Unknown",
         ),
+        # a classifier that is no more than the "License" segment names one no more than that does
+        (pypi_info(classifiers=["License"]), "Unknown"),
         # several classifiers: the one that fails the check decides, whatever its position
         (
             pypi_info(
@@ -159,23 +161,33 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "Public Domain",
         # a plain license field can hold an expression too (aiohttp publishes this one)
         "Apache-2.0 AND MIT",
-        # ...while prose that merely contains the word "and" is still matched on its wording
-        "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a"
-        " copy of this software and associated documentation files, to deal in the Software"
-        " without restriction, including without limitation the rights to use and to permit"
-        " persons to whom the Software is furnished to do so.",
         "The MIT License (MIT)",
         "CC0 1.0 Universal",
         # spelling variants of the same licenses
         "MPL 2.0",
         "Apache 2.0 License",
+        "MIT license",
+        # every license of a value that lists several (pycryptodome publishes this one)
+        "BSD, Public Domain",
         # a custom license alongside one we accept still leaves a usable option
         "MIT OR LicenseRef-Proprietary",
         # an exception only widens what the license allows, so the license itself decides
         "Zlib WITH LLVM-exception",
         "LGPL-3.0-only WITH LGPL-3.0-linking-exception",
-        # prose is matched on its wording; the groups in it are not an expression to refuse
-        "MIT License (a) (b) (c) (d) (e) (f) (g) (h) (i) (j) (k) (l) and so on",
+        # packages that put their whole license text in the field are read on the grant it
+        # spells out, whatever heading and punctuation surround it (ya-dialogs-api, aiomusiccast)
+        "MIT License\n\n        Copyright (c) 2026 Mikhail Nevskiy\n\n        Permission is"
+        " hereby granted, free of charge, to any person obtaining a copy\n        of this"
+        ' software and associated documentation files (the "Software"), to deal\n        in the'
+        " Software without restriction.",
+        "**The MIT License (MIT)**  Copyright &copy; 2021, Tom Schneider  Permission is hereby"
+        " granted, free of charge, to any person obtaining a copy of this software and"
+        ' associated documentation files (the "Software"), to deal in the Software without'
+        " restriction.",
+        "Copyright (c) 2026\n\nPermission to use, copy, modify, and/or distribute this software"
+        " for any purpose with or without fee is hereby granted.",
+        "Redistribution and use in source and binary forms, with or without modification, are"
+        " permitted provided that the following conditions are met.",
     ],
 )
 def test_compatible_licenses(license_str: str) -> None:
@@ -216,6 +228,32 @@ def test_compatible_licenses(license_str: str) -> None:
         ("This software is not in the public domain. All rights reserved.", "Unknown/unverified"),
         ("ISC2", "Unknown/unverified license"),
         ("Internal use only, do not transmit", "Unknown/unverified license"),
+        # a name we accept does not carry the terms written around it, however it is joined to
+        # them, and an SPDX operator between prose words is not an expression to read it out of
+        ("MIT License AND Proprietary", "Unknown/unverified license"),
+        ("MIT License for non-commercial use only", "Unknown/unverified license"),
+        ("MIT plus commercial terms", "Unknown/unverified license"),
+        ("BSD, Proprietary", "Unknown/unverified license"),
+        # a license text is only recognised by the grant it spells out, not by its heading
+        ("MIT License\n\nAll rights reserved. Contact us for terms.", "Unknown/unverified"),
+        # ...and the grant has to be the one the text opens, not the tail of another word
+        (
+            "Nonpermission is hereby granted, free of charge, to any person obtaining a copy of"
+            " this software.",
+            "Unknown/unverified license",
+        ),
+        # a copyleft license the text is combined with is not excused by the grant it spells out
+        (
+            "MIT License AND GPL-3.0-only\n\nPermission is hereby granted, free of charge, to any"
+            " person obtaining a copy of this software.",
+            "Incompatible copyleft license",
+        ),
+        # neither alternative of an expression is one we know, so the expression is not either
+        ("Frobnicate-1.0 OR Frobnicate-2.0", "Unknown/unverified license"),
+        # a value that is only separators names nothing
+        (",", "Unknown/unverified license"),
+        # groups in prose are not an expression, and no longer a name to read out of it either
+        ("MIT License (a) (b) (c) (d) (e) (f) (g) and so on", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
         ("MIT AND Proprietary", "Unknown/unverified license"),
         ("MIT AND(Proprietary)", "Unknown/unverified license"),

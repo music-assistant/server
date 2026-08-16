@@ -14,32 +14,74 @@ import urllib.request
 from datetime import datetime
 from typing import Any
 
-# OSI-approved and common compatible licenses
-COMPATIBLE_LICENSES = {
-    "MIT",
-    "Apache-2.0",
+# Complete spellings of compatible licenses, as packages write them in the free-form license
+# field and as PyPI names them in its `License ::` classifiers. A value has to be one of these
+# in full: a name occurring somewhere inside it says nothing about the terms around it.
+COMPATIBLE_LICENSE_NAMES = {
+    # names of the PyPI classifiers, which are a closed vocabulary
     "Apache Software License",
-    "BSD",
-    "BSD-3-Clause",
-    "BSD-2-Clause",
-    "ISC",
+    "Boost Software License 1.0 (BSL-1.0)",
+    "CC0 1.0 Universal (CC0 1.0) Public Domain Dedication",
+    "CMU License (MIT-CMU)",
+    "GNU Lesser General Public License v2 (LGPLv2)",
+    "GNU Lesser General Public License v2 or later (LGPLv2+)",
+    "GNU Lesser General Public License v3 (LGPLv3)",
+    "GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "GNU Library or Lesser General Public License (LGPL)",
+    "Historical Permission Notice and Disclaimer (HPND)",
+    "ISC License (ISCL)",
+    "MIT No Attribution License (MIT-0)",
+    "Mozilla Public License 2.0 (MPL 2.0)",
+    "Public Domain",
     "Python Software Foundation License",
-    "PSF",
-    "LGPL",
-    "MPL-2.0",
-    "Unlicense",
+    "The Unlicense (Unlicense)",
+    "Universal Permissive License (UPL)",
+    "Zero-Clause BSD (0BSD)",
+    "zlib/libpng License",
+    # spellings of the same licenses used in the free-form field
+    "Apache",
+    "Apache 2.0",
+    "Apache Software License 2.0",
+    "BSD",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
     "CC0",
-    # compact spellings that would not survive the boundary check as a suffix of the name above
-    "PSFL",
+    "CC0 1.0",
+    "CC0 1.0 Universal",
+    "ISC",
     "ISCL",
+    "LGPL",
     "LGPLv2",
     "LGPLv3",
+    "MIT",
+    "MPL",
+    "MPL 2.0",
+    "PSF",
+    "PSFL",
+    "The MIT License (MIT)",
+    "Unlicense",
+    "Zlib",
 }
 
-# Licenses recognised only as the whole value, because their wording also turns up in prose that
-# says the opposite ("this software is not in the public domain")
-EXACT_LICENSES = {
-    "Public Domain",
+# Opening of the grant each permissive license spells out, used to recognise packages that put
+# their whole license text in the license field. The grant is what the license actually gives,
+# so it identifies the text where the heading above it would only be a name in prose.
+LICENSE_TEXT_GRANTS = {
+    # MIT
+    "Permission is hereby granted, free of charge, to any person obtaining a copy",
+    # ISC
+    "Permission to use, copy, modify, and/or distribute this software for any purpose",
+    # BSD, 2-clause and 3-clause alike
+    "Redistribution and use in source and binary forms, with or without modification, are"
+    " permitted",
+    # Apache-2.0
+    "Licensed under the Apache License, Version 2.0",
+    # MPL-2.0
+    "This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0",
+    # Unlicense
+    "This is free and unencumbered software released into the public domain",
+    # Zlib
+    "Permission is granted to anyone to use this software for any purpose",
 }
 
 # SPDX identifiers accepted in a PEP 639 `license_expression`
@@ -184,10 +226,7 @@ def check_license_compatibility(
         return False, "No license information"
 
     license_upper = license_str.upper()
-    spdx_compatible, joins_licenses = _evaluate_spdx_expression(license_str)
-    # a value that reads as an expression joining licenses is precise enough to judge on the
-    # names in it alone, whichever field it came from
-    spdx_expression = spdx_expression or joins_licenses
+    spdx_compatible = _evaluate_spdx_expression(license_str)
 
     if spdx_compatible:
         return True, f"Compatible ({license_str})"
@@ -195,14 +234,18 @@ def check_license_compatibility(
     copyleft = _is_copyleft(license_upper)
 
     # whatever the evaluator did not accept in an expression names a license that is not on the
-    # allow list, so guessing from the wording would only weaken the check. For free-form fields
-    # the wording is all we have, but a name we do recognise there must not end up approving a
-    # copyleft or custom license next to it
-    guessable = not spdx_expression and not copyleft and "LICENSEREF" not in license_upper
-    if spdx_compatible is None and guessable:
-        for compatible in COMPATIBLE_LICENSES | EXACT_LICENSES:
-            if _names_license(license_upper, compatible):
-                return True, f"Compatible ({license_str})"
+    # allow list, so reading such a value further would only weaken the check. A free-form field
+    # is all we have to go on, but what we recognise in it must not end up approving a copyleft
+    # license standing next to it
+    if spdx_compatible is None and not copyleft:
+        # a text spelling out a grant we accept states what the license gives, so it is read as
+        # that license even where its own wording happens to read like an expression
+        if _quotes_license_text(license_str):
+            return True, f"Compatible ({license_str})"
+        # a name is only the label of terms the value does not show, so it is not read out of
+        # the prose around it, nor out of an expression PyPI has already validated
+        if not spdx_expression and _names_license(license_str):
+            return True, f"Compatible ({license_str})"
 
     if copyleft:
         return False, f"Incompatible copyleft license ({license_str})"
@@ -504,23 +547,22 @@ class _SpdxSyntaxError(Exception):
     """Raised when a string does not follow the SPDX expression grammar."""
 
 
-def _evaluate_spdx_expression(license_str: str) -> tuple[bool | None, bool]:
+def _evaluate_spdx_expression(license_str: str) -> bool | None:
     """
     Check an SPDX license expression (PEP 639) against the allow list.
 
     Returns whether the expression is compatible, which is None when it names a license that is
-    neither known-compatible nor known-problematic or when the string is not an expression at
-    all, together with whether the part that did read as one joined several licenses.
+    neither known-compatible nor known-problematic or when the string is not an expression at all.
 
     :param license_str: The license string to evaluate, e.g. "MIT OR Apache-2.0".
     """
     tokens = re.findall(r"\(|\)|[^\s()]+", license_str)
     if not tokens:
-        return None, False
+        return None
     # real expressions nest a group or two at most; refuse anything deeper rather than recursing
     # into it, and refuse outright as the fallback would match on a name nested inside
     if _max_group_depth(tokens) > MAX_SPDX_NESTING:
-        return False, True
+        return False
 
     remaining = list(tokens)
     try:
@@ -531,10 +573,7 @@ def _evaluate_spdx_expression(license_str: str) -> tuple[bool | None, bool]:
     except _SpdxSyntaxError:
         result = None
 
-    # judge the shape on the tokens that were read as an expression, so that prose merely holding
-    # the word "and" is not mistaken for one, while a malformed expression still is
-    read = tokens[: len(tokens) - len(remaining)]
-    return result, any(token.upper() in ("AND", "OR", "WITH") for token in read)
+    return result
 
 
 def _evaluate_spdx_tokens(tokens: list[str]) -> bool | None:
@@ -605,21 +644,43 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
     return True if identifier in COMPATIBLE_SPDX_LICENSES else None
 
 
-def _names_license(license_upper: str, name: str) -> bool:
+def _names_license(license_str: str) -> bool:
     """
-    Return whether an upper-cased license string names the given license.
+    Return whether a license string is, as a whole, one or more licenses we accept.
 
-    :param license_upper: The upper-cased license string to search.
-    :param name: The license name to look for, e.g. "MPL-2.0".
+    :param license_str: The license string to read, e.g. "MIT License".
     """
-    # tolerate spelling variants of the separators, so that "MPL 2.0" is read as "MPL-2.0", but
-    # match whole words only, so the name is neither assembled out of unrelated ones ("this
-    # copyright" holding an "ISC") nor read out of one that merely starts the same ("MITigation")
-    if name in EXACT_LICENSES:
-        return license_upper.strip() == name.upper()
+    # a value listing several licenses gives no reason to prefer one of them, so every one has
+    # to be acceptable
+    names = [_license_words(name) for name in license_str.split(",") if name.strip()]
+    known = {_license_words(name) for name in COMPATIBLE_LICENSE_NAMES}
+    return bool(names) and known.issuperset(names)
 
-    parts = [re.escape(part) for part in re.findall(r"[A-Z0-9]+", name.upper())]
-    return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}(?![A-Z0-9])", license_upper) is not None
+
+def _quotes_license_text(license_str: str) -> bool:
+    """
+    Return whether a license string spells out the text of a license we accept.
+
+    :param license_str: The license string to read.
+    """
+    words = f" {_license_words(license_str)} "
+    return any(f" {_license_words(grant)} " in words for grant in LICENSE_TEXT_GRANTS)
+
+
+def _license_words(value: str) -> str:
+    """
+    Return the words of a license string as one key, so spelling variants compare equal.
+
+    :param value: The license string to normalise.
+    """
+    # separators are spelled inconsistently ("MPL 2.0" for "MPL-2.0"), and both a leading "The"
+    # and a trailing "License" are noise the same name is written with and without
+    words = re.findall(r"[A-Z0-9]+", value.upper())
+    if words[:1] == ["THE"]:
+        del words[0]
+    if words[-1:] == ["LICENSE"]:
+        del words[-1]
+    return " ".join(words)
 
 
 def _is_spdx_operator(token: str) -> bool:
