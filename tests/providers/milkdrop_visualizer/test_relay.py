@@ -13,7 +13,9 @@ from music_assistant.providers.sendspin.player import SendspinBasePlayer
 def _relay(players: list[Mock]) -> MilkdropRelay:
     """Return a relay whose mass exposes the given players."""
     provider = Mock()
-    provider.mass.players = players
+    # iterating mass.players yields the players; get_player() is set per test
+    provider.mass.players.__iter__ = lambda _self: iter(players)
+    provider.mass.players.get_player.return_value = None
     provider.logger.getChild.return_value = Mock()
     return MilkdropRelay(provider)
 
@@ -66,3 +68,32 @@ def test_no_players_returns_none() -> None:
     """With no Sendspin players at all, resolution yields None."""
     relay = _relay([])
     assert relay._resolve_target(None) is None
+
+
+def test_resolves_a_player_through_its_linked_sendspin_output() -> None:
+    """A player whose Sendspin bridge shares none of its id still resolves (e.g. Sonos)."""
+    # a Sonos "RINCON_..." reaches Sendspin through a bridge riding on its
+    # AirPlay side, so no amount of id matching could connect the two
+    bridge = _player("spb_542a1b5ca840", underlying="ap542a1b5ca840")
+    relay = _relay([bridge])
+    sonos = Mock()
+    output = Mock()
+    output.output_protocol_id = "spb_542a1b5ca840"
+    sonos.get_output_protocol_by_domain.return_value = output
+    players = {"RINCON_542A1B5CA84001400": sonos, "spb_542a1b5ca840": bridge}
+    relay.mass.players.get_player = Mock(side_effect=players.get)  # type: ignore[method-assign]
+
+    assert relay._resolve_target("RINCON_542A1B5CA84001400") is bridge
+    sonos.get_output_protocol_by_domain.assert_called_once_with("sendspin")
+
+
+def test_player_without_a_linked_sendspin_output_still_resolves_to_none() -> None:
+    """A player with no Sendspin output anywhere is reported as unvisualizable."""
+    relay = _relay([_player("spb_542a1b5ca840")])
+    other = Mock()
+    other.get_output_protocol_by_domain.return_value = None
+    relay.mass.players.get_player = Mock(  # type: ignore[method-assign]
+        side_effect={"dlna_box": other}.get
+    )
+
+    assert relay._resolve_target("dlna_box") is None

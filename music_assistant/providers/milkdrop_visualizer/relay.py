@@ -39,6 +39,7 @@ RELAY_ROUTE = "/milkdrop_visualizer"
 # Shortest normalized id tail accepted when matching a wrapper player id
 # against the Sendspin player it embeds.
 MIN_SUFFIX_MATCH_CHARS = 8
+SENDSPIN_DOMAIN = "sendspin"
 
 
 def _normalize_player_id(value: str) -> str:
@@ -256,10 +257,21 @@ class MilkdropRelay:
             if isinstance(player, SendspinBasePlayer) and player.api is not None
         ]
         if query:
-            # The query may be the Sendspin player itself, a player a Sendspin
-            # bridge rides on (underlying_player_id), or a wrapper id spelling
-            # the same device differently (universal "up20f83b..." vs Sendspin
-            # "20:F8:3B:..."), hence the normalized suffix match.
+            # A player that reaches Sendspin through a linked output shares no
+            # id with it at all (a Sonos "RINCON_..." whose bridge rides on its
+            # AirPlay side is "spb_<mac>"), so ask the player for its Sendspin
+            # output first. This is exact; the id matching below only has to
+            # cover queries that name no MA player of their own.
+            if (queried := self.mass.players.get_player(query)) is not None:
+                output = queried.get_output_protocol_by_domain(SENDSPIN_DOMAIN)
+                if output is not None:
+                    linked = self.mass.players.get_player(output.output_protocol_id)
+                    if isinstance(linked, SendspinBasePlayer) and linked.api is not None:
+                        return linked
+            # The query may also be the Sendspin player itself, a player a
+            # Sendspin bridge rides on (underlying_player_id), or a wrapper id
+            # spelling the same device differently (universal "up20f83b..." vs
+            # Sendspin "20:F8:3B:..."), hence the normalized suffix match.
             normalized_query = _normalize_player_id(query)
             for player in candidates:
                 for candidate_id in (player.player_id, player.underlying_player_id or ""):
