@@ -210,6 +210,46 @@
         "play": "Play (and keep queue)",
         "replace": "Play (and replace queue)"
       }
+    },
+    "default_click_action_artist": {
+      "label": "What clicking an artist does.",
+      "description": "Choose whether clicking an artist opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_album": {
+      "label": "What clicking an album does.",
+      "description": "Choose whether clicking an album opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_playlist": {
+      "label": "What clicking a playlist does.",
+      "description": "Choose whether clicking a playlist opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_play_action_album_track": {
+      "label": "What playing a track from an album does.",
+      "description": "Choose whether the album continues after the track you picked, or only that track is played.",
+      "options": {
+        "play_from_here": "Play from this track onwards",
+        "play_track": "Play only this track"
+      }
+    },
+    "default_play_action_playlist_track": {
+      "label": "What playing a track from a playlist does.",
+      "description": "Choose whether the playlist continues after the track you picked, or only that track is played.",
+      "options": {
+        "play_from_here": "Play from this track onwards",
+        "play_track": "Play only this track"
+      }
     }
   }
 }
