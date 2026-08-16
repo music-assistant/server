@@ -55,6 +55,16 @@ SUPPORTED_FEATURES = {
 # this tolerance are acceptable
 SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 
+# Soundcloud serves DRM protected (encrypted HLS) audio for part of its catalog, mostly major
+# label releases. Playing those requires a Widevine/FairPlay CDM, which we do not have.
+# Such a track does still advertise plain mp3 transcodings, but requesting one of those returns
+# a 404, so the presence of an encrypted protocol is what tells us the track is unplayable.
+DRM_PROTOCOL_MARKER = "encrypted"
+
+
+class DrmProtectedTrackError(InvalidDataError):
+    """Error raised when a Soundcloud track is DRM protected and can not be streamed."""
+
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -143,18 +153,24 @@ class SoundcloudMusicProvider(MusicProvider):
         searchresult = await self._soundcloud.search(quote(search_query), limit)
 
         for item in searchresult["collection"]:
-            media_type = item["kind"]
-            if media_type == "user" and MediaType.ARTIST in media_types:
-                result.artists = [*result.artists, await self._parse_artist(item)]
-            elif media_type == "track" and MediaType.TRACK in media_types:
-                duration = item.get("duration", 0)
-                full_duration = item.get("full_duration", 0)
-                if abs(duration - full_duration) < SEARCH_DURATION_COMPARISON_TOLERANCE:
-                    # skip preview/snippet tracks (e.g. in case of free accounts)
-                    # where duration is significantly shorter than full_duration
-                    result.tracks = [*result.tracks, await self._parse_track(item)]
-            elif media_type == "playlist" and MediaType.PLAYLIST in media_types:
-                result.playlists = [*result.playlists, await self._parse_playlist(item)]
+            try:
+                media_type = item["kind"]
+                if media_type == "user" and MediaType.ARTIST in media_types:
+                    result.artists = [*result.artists, await self._parse_artist(item)]
+                elif media_type == "track" and MediaType.TRACK in media_types:
+                    duration = item.get("duration", 0)
+                    full_duration = item.get("full_duration", 0)
+                    if abs(duration - full_duration) < SEARCH_DURATION_COMPARISON_TOLERANCE:
+                        # skip preview/snippet tracks (e.g. in case of free accounts)
+                        # where duration is significantly shorter than full_duration
+                        result.tracks = [*result.tracks, await self._parse_track(item)]
+                elif media_type == "playlist" and MediaType.PLAYLIST in media_types:
+                    result.playlists = [*result.playlists, await self._parse_playlist(item)]
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                # a single unusable result (e.g. a DRM protected track) must not
+                # discard the rest of the search results
+                self.logger.debug("Parse search result failed: %s", item, exc_info=error)
+                continue
 
         return result
 
@@ -209,9 +225,13 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
+        drm_protected = 0
         async for track in self._soundcloud.get_track_details_liked(self._user_id):
             try:
                 yield await self._parse_track(track)
+            except DrmProtectedTrackError:
+                drm_protected += 1
+                continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 # somehow certain track id's don't exist (anymore)
                 self.logger.debug(
@@ -221,6 +241,13 @@ class SoundcloudMusicProvider(MusicProvider):
                     track,
                 )
                 continue
+
+        if drm_protected:
+            self.logger.info(
+                "Skipped %s DRM protected track(s) while syncing the library: "
+                "Soundcloud only allows those to be played in its own apps",
+                drm_protected,
+            )
 
         self.logger.debug(
             "Processing Soundcloud library tracks took %s seconds",
@@ -262,7 +289,11 @@ class SoundcloudMusicProvider(MusicProvider):
             )
             for item in feed["collection"]:
                 if item.get("type") == "track" or item.get("type") == "track-repost":
-                    folder.items.append(await self._parse_track(item.get("track")))
+                    try:
+                        folder.items.append(await self._parse_track(item.get("track")))
+                    except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                        self.logger.debug("Parse track failed: %s", item, exc_info=error)
+                        continue
                 else:
                     self.logger.debug(
                         "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
@@ -287,10 +318,11 @@ class SoundcloudMusicProvider(MusicProvider):
         """Get full track details by id."""
         track_obj = await self._soundcloud.get_track_details(prov_track_id)
         try:
-            track = await self._parse_track(track_obj[0])
+            return await self._parse_track(track_obj[0])
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Parse track failed: %s", track_obj, exc_info=error)
-        return track
+            msg = f"Soundcloud track {prov_track_id} is not available"
+            raise MediaNotFoundError(msg) from error
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -324,6 +356,7 @@ class SoundcloudMusicProvider(MusicProvider):
         playlist_obj = await self._get_playlist_object(prov_playlist_id)
         if "tracks" not in playlist_obj:
             return result
+        drm_protected = 0
         for index, item in enumerate(playlist_obj["tracks"], 1):
             try:
                 # Skip some ugly "tracks" entries, example:
@@ -336,9 +369,18 @@ class SoundcloudMusicProvider(MusicProvider):
                     track_details = await self._soundcloud.get_track_details(item["id"])
                     if track := await self._parse_track(track_details[0], index):
                         result.append(track)
+            except DrmProtectedTrackError:
+                drm_protected += 1
+                continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", item, exc_info=error)
                 continue
+        if drm_protected:
+            self.logger.debug(
+                "Skipped %s DRM protected track(s) in Soundcloud playlist %s",
+                drm_protected,
+                prov_playlist_id,
+            )
         return result
 
     @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
@@ -411,18 +453,16 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return tracks
 
-    async def _get_stream_url(self, item_id: str) -> str | None:
+    async def _get_stream_url(self, track_info: dict[str, Any]) -> str | None:
         """
         Get stream URL, preferring progressive (HTTP) over HLS.
 
         SoundCloud HLS playlists can have limited content windows (~10 min) which
         cause seeking failures mid-track. Progressive HTTP URLs support full
         range-based seeking across the entire track duration.
+
+        :param track_info: Raw track object as returned by the Soundcloud API.
         """
-        full_json = await self._soundcloud.get_track_details(item_id)
-        if not (full_json and isinstance(full_json, list)):
-            return None
-        track_info = full_json[0]
         track_auth = track_info.get("track_authorization")
         if not track_auth:
             return None
@@ -447,7 +487,16 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url = await self._get_stream_url(item_id)
+        full_json = await self._soundcloud.get_track_details(item_id)
+        track_info = full_json[0] if full_json and isinstance(full_json, list) else None
+        if track_info and _is_drm_protected(track_info):
+            # this track should never have been imported, but it may predate that check
+            msg = (
+                f"Soundcloud track {item_id} is DRM protected, "
+                "which Soundcloud only allows to be played in its own apps"
+            )
+            raise MediaNotFoundError(msg)
+        url = await self._get_stream_url(track_info) if track_info else None
         if not url:
             msg = f"No stream URL available for Soundcloud track {item_id}"
             raise MediaNotFoundError(msg)
@@ -557,6 +606,9 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict[str, Any], playlist_position: int = 0) -> Track:
         """Parse a Soundcloud Track response to a Track model object."""
+        if _is_drm_protected(track_obj):
+            msg = f"Track {track_obj.get('id')} is DRM protected and can not be streamed"
+            raise DrmProtectedTrackError(msg)
         name, version = parse_title_and_version(track_obj["title"])
         track_id = str(track_obj["id"])
         track = Track(
@@ -608,3 +660,17 @@ class SoundcloudMusicProvider(MusicProvider):
         """Patch artwork URL to a high quality thumbnail."""
         # This is undocumented in their API docs, but was previously
         return artwork_url.replace("large", "t500x500")
+
+
+def _is_drm_protected(track_obj: dict[str, Any]) -> bool:
+    """
+    Return if the given Soundcloud track object is DRM protected.
+
+    :param track_obj: Raw track object as returned by the Soundcloud API. A partial object
+        without media details is not considered DRM protected.
+    """
+    transcodings = track_obj.get("media", {}).get("transcodings", [])
+    return any(
+        DRM_PROTOCOL_MARKER in transcoding.get("format", {}).get("protocol", "")
+        for transcoding in transcodings
+    )
