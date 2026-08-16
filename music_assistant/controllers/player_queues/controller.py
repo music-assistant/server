@@ -1842,8 +1842,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
             # locked), so it must not outlive the source that imposed it. Recorded directly, as in
             # the still-dynamic case below: the state is provisional until the sources are known,
-            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic. The
+            # intent goes with it, or a play soon after would resurrect a shuffle the queue's own
+            # toggle now reads as off.
             queue.shuffle_enabled = False
+            queue_data.shuffle_set_at = None
             return
         if option not in (QueueOption.PLAY, QueueOption.REPLACE):
             # only the options that start playing the media right away are a new listening

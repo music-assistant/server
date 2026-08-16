@@ -359,6 +359,28 @@ async def test_replace_next_over_a_dynamic_queue_drops_the_imposed_shuffle() -> 
     assert resolve_call.kwargs["keep_preceding_items"] is False
 
 
+async def test_replace_next_over_a_dynamic_queue_drops_the_shuffle_intent_with_it() -> None:
+    """
+    The shuffle dropped here takes its intent along, so a later play does not resurrect it.
+
+    Staging a dynamic source keeps an intent the user left on the queue moments earlier. Once
+    replace next switches the imposed shuffle off, that stamp would otherwise still be fresh enough
+    for the next play to act on - shuffling media on a queue whose toggle now reads off.
+    """
+    ctrl = _controller()
+    await ctrl.set_shuffle("q1", True)
+    await ctrl.play_media("q1", _dynamic_playlist(), QueueOption.ADD)
+    assert ctrl._queue_data["q1"].shuffle_set_at is not None
+
+    await ctrl.play_media("q1", _album(), QueueOption.REPLACE_NEXT)
+
+    assert _queue(ctrl).shuffle_enabled is False
+    assert ctrl._queue_data["q1"].shuffle_set_at is None
+    # the next media the user starts plays in order, matching what the queue's toggle now says
+    await ctrl.play_media("q1", _album(), QueueOption.REPLACE)
+    assert _played_order(ctrl) == ALBUM_TRACKS
+
+
 async def test_replace_next_that_leaves_the_queue_dynamic_keeps_the_smart_mix() -> None:
     """Staging another dynamic source keeps the queue an always-on smart mix, shuffle included."""
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
