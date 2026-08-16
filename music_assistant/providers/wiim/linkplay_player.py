@@ -615,6 +615,11 @@ class LinkPlayPlayer(Player):
     def _set_ma_media(self, metadata_changed: bool) -> None:
         """Publish current media for MA-initiated playback."""
         self._attr_active_source = self.player_id
+        if not (self._ma_stream_confirmed or self._handover_window_expired()):
+            # During the handover window the device can still expose the previous track's
+            # cached metadata, so the media play_media published is kept until our stream
+            # is provably live (a matching live URI) or the window has elapsed.
+            return
         has_metadata = bool(
             self._pywiim.media_title or self._pywiim.media_artist or self._pywiim.media_album
         )

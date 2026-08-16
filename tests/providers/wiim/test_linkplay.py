@@ -188,6 +188,7 @@ class TestStateMapping:
         mock_pywiim_player.media_position = 12
         player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
         player._ma_stream_uri = _MA_STREAM_URI  # active MA stream
+        player._ma_stream_confirmed = True
 
         player._push_state()
 
@@ -1285,6 +1286,7 @@ class TestNowPlayingIdentity:
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.source = "custompushurl"
         player._ma_stream_uri = _MA_STREAM_URI
+        player._ma_stream_confirmed = True
 
         mock_pywiim_player.media_title = "Song A"
         mock_pywiim_player.media_album = "Album A"
@@ -1328,6 +1330,7 @@ class TestMaSourceIdentity:
         """The queue/plugin source id survives when device metadata rebuilds the media."""
         player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
         player._ma_stream_uri = _MA_STREAM_URI
+        player._ma_stream_confirmed = True
         player._ma_source_id = "my_plugin_source"
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.source = "custompushurl"
@@ -1337,3 +1340,41 @@ class TestMaSourceIdentity:
 
         assert player._attr_current_media is not None
         assert player._attr_current_media.source_id == "my_plugin_source"
+
+    def test_unconfirmed_handover_keeps_optimistic_media(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Before confirmation, the device's stale metadata must not replace the MA media."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        player._ma_stream_uri = _MA_STREAM_URI
+        player._ma_stream_confirmed = False
+        player._ma_stream_since = time.time()  # within the handover window
+        player.set_current_media(uri=_MA_STREAM_URI or "", title="New MA Track", clear_all=True)
+        mock_pywiim_player.play_state = "play"
+        mock_pywiim_player.source = "custompushurl"
+        # the device still exposes the previous track's cached metadata
+        mock_pywiim_player.media_title = "Old Track"
+        mock_pywiim_player.media_artist = "Old Artist"
+
+        player._push_state()
+
+        assert player._attr_active_source == EDIFIER_PLAYER_ID
+        assert player._attr_current_media is not None
+        assert player._attr_current_media.title == "New MA Track"
+
+    def test_window_expired_publishes_device_metadata_without_eventing(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Without eventing, device metadata is trusted once the handover window elapses."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        player._ma_stream_uri = _MA_STREAM_URI
+        player._ma_stream_confirmed = False
+        player._ma_stream_since = time.time() - 120  # past the handover window
+        mock_pywiim_player.play_state = "play"
+        mock_pywiim_player.source = "custompushurl"
+        mock_pywiim_player.media_title = "Live Song"
+
+        player._push_state()
+
+        assert player._attr_current_media is not None
+        assert player._attr_current_media.title == "Live Song"
