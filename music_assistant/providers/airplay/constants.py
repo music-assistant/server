@@ -56,11 +56,24 @@ CONF_PASSWORD: Final[str] = "password"
 # password, so the player keeps asking for setup across restarts until a working
 # password is entered.
 CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
+# Provider marker that the stored password verdicts were reviewed once. Releases
+# that could not tell a password challenge apart from a flat refusal wrote the
+# key above for both, so what they left behind is no evidence about a password
+# and is dropped a single time; a device that really challenges marks itself
+# again on its next connect.
+CONF_PASSWORD_MARKERS_REVIEWED: Final[str] = "password_markers_reviewed"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
-# Advanced per-device escape hatch: force the legacy RAOP protocol on an
-# AirPlay-2-capable receiver whose AirPlay 2 implementation misbehaves.
-CONF_FORCE_RAOP: Final[str] = "force_raop"
+# Advanced per-device streaming mode: pins the protocol/timing lane for
+# receivers whose automatic route misbehaves. Options are offered per device
+# capability; Automatic is the default and the only value MA itself may write
+# away from (a receiver measured never answering PTP is switched to NTP).
+CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+STREAMING_MODE_AUTO: Final[str] = "auto"
+STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
+STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
+STREAMING_MODE_AP2_COMPAT: Final[str] = "ap2_compat"
+STREAMING_MODE_RAOP: Final[str] = "raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
@@ -223,11 +236,13 @@ AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS: Final[int] = 2000
 # and out itself. <= -60 mutes the music entirely. -18 dB puts the music
 # clearly in the background under speech (-12 was field-judged too shallow).
 AIRPLAY_ANNOUNCE_DUCK_DB: Final[int] = -18
-# Silence appended to every announcement clip file. The binary holds the duck
-# for the whole file, so this keeps the music ducked past the announcement -
-# the volume restore lands inside this cushion instead of racing the duck's
-# 200 ms tail ramp (a restore that lands after the ramp plays a moment of
-# full-level music at the still-bumped device volume).
+# Silence appended to every announcement clip, so the volume restore has a
+# cushion to land in. Mixed over live playback the binary holds the duck for
+# the whole clip, so the restore lands while the music is still ducked instead
+# of racing the duck's 200 ms tail ramp (a restore that lands after the ramp
+# plays a moment of full-level music at the still-bumped device volume). On a
+# dedicated announcement session it keeps the stream alive past the clip, which
+# is what a volume command needs to reach the receiver at all.
 AIRPLAY_ANNOUNCE_DUCK_TAIL_S: Final[float] = 1.0
 # On top of the lead to the commanded instant: how long to wait for a member's
 # announce_started before treating that member as not announcing. An outdated
@@ -320,10 +335,6 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
 PIN_REQUIRED = 0x8
 PASSWORD_BIT = 0x80
 LEGACY_PAIRING_BIT = 0x200
-# Observed on tvOS when an AirPlay password is set. Apple TVs keep PASSWORD_BIT
-# raised at all times (it marks their onscreen-code capability, not a password),
-# so this is the only flags-based password signal they give.
-ATV_PASSWORD_BIT = 0x1000
 
 # Provider setting: opt-in for the shared PTP daemon's per-packet timing trace
 # (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —

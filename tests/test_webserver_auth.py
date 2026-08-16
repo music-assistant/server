@@ -18,7 +18,7 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_GLOBAL_FAILURE_CEILING,
@@ -50,6 +50,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     LoginRateLimiter,
 )
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
 
 
@@ -2419,3 +2420,117 @@ async def test_homeassistant_system_user_has_service_role(
     migrated_user = await auth_manager.get_user(system_user.user_id)
     assert migrated_user is not None
     assert migrated_user.role == UserRole.SERVICE
+
+
+async def _get_filters(
+    auth_manager: AuthenticationManager, user_id: str
+) -> tuple[list[str], list[str]]:
+    """Read the raw provider and player filter of the given user from the database."""
+    row = await auth_manager.database.get_row("users", {"user_id": user_id})
+    assert row is not None
+    return json_loads(row["provider_filter"]), json_loads(row["player_filter"])
+
+
+async def test_remove_from_user_filters(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a removed provider/player is stripped from the access filters of all users.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="restricted",
+        provider_filter=["spotify--old", "jellyfin--live"],
+        player_filter=["player_gone", "player_live"],
+    )
+    unrestricted = await auth_manager.create_user(username="unrestricted")
+
+    await auth_manager.remove_from_user_filters(
+        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
+    )
+
+    provider_filter, player_filter = await _get_filters(auth_manager, user.user_id)
+    assert provider_filter == ["jellyfin--live"]
+    assert player_filter == ["player_live"]
+    # a user without restrictions must stay unrestricted
+    assert await _get_filters(auth_manager, unrestricted.user_id) == ([], [])
+
+
+async def test_remove_from_user_filters_lifts_restriction(
+    auth_manager: AuthenticationManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Test that a user whose filter loses its last entry ends up unrestricted.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param caplog: Pytest log capture fixture.
+    """
+    user = await auth_manager.create_user(username="onlyspotify", provider_filter=["spotify--old"])
+
+    with caplog.at_level(logging.WARNING):
+        await auth_manager.remove_from_user_filters(provider_instance_ids=["spotify--old"])
+
+    provider_filter, _ = await _get_filters(auth_manager, user.user_id)
+    assert provider_filter == []
+    assert "no longer restricted" in caplog.text
+
+
+async def test_remove_from_user_filters_in_parallel(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that removals running at the same time do not undo each other.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="twoplayers", player_filter=["player_one", "player_two"]
+    )
+
+    # removing a player provider wipes the config of each of its players on its own
+    await asyncio.gather(
+        auth_manager.remove_from_user_filters(player_ids=["player_one"]),
+        auth_manager.remove_from_user_filters(player_ids=["player_two"]),
+    )
+
+    assert await _get_filters(auth_manager, user.user_id) == ([], [])
+
+
+async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that filter entries pointing at unknown providers/players are cleaned up on startup.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    auth_manager.mass.config.set(
+        f"{CONF_PROVIDERS}/spotify--live", {"instance_id": "spotify--live"}
+    )
+    auth_manager.mass.config.set(f"{CONF_PLAYERS}/player_live", {"player_id": "player_live"})
+    user = await auth_manager.create_user(
+        username="stale",
+        provider_filter=["spotify--old", "spotify--live"],
+        player_filter=["player_gone", "player_live"],
+    )
+
+    await auth_manager._prune_stale_user_filters()
+
+    assert await _get_filters(auth_manager, user.user_id) == (
+        ["spotify--live"],
+        ["player_live"],
+    )
+
+
+async def test_prune_stale_user_filters_ignores_empty_config(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that filters are left alone when nothing is configured (yet).
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="noconfig",
+        provider_filter=["spotify--old"],
+        player_filter=["player_gone"],
+    )
+
+    await auth_manager._prune_stale_user_filters()
+
+    assert await _get_filters(auth_manager, user.user_id) == (["spotify--old"], ["player_gone"])

@@ -191,8 +191,8 @@ class TestReadCueFile:
         assert not content.startswith("\ufeff")
 
     @pytest.mark.asyncio
-    async def test_decodes_non_utf8_tolerantly(self, tmp_path: Path) -> None:
-        """Non-UTF-8 bytes are decoded without raising."""
+    async def test_decodes_latin1_bytes(self, tmp_path: Path) -> None:
+        """Bytes that are not valid UTF-8 keep their accented characters."""
         # 0xFC is "ü" in Latin-1 but invalid as a UTF-8 continuation byte
         (tmp_path / "a.cue").write_bytes(b'TITLE "M\xfcller"\n')
         provider = _make_provider(base_path=str(tmp_path))
@@ -205,10 +205,29 @@ class TestReadCueFile:
             file_size=(tmp_path / "a.cue").stat().st_size,
         )
         content = await provider._cue.read_cue_file(cue_item)
-        # ASCII surroundings are preserved; the non-UTF-8 byte may be replaced
-        # or decoded depending on what chardet detects
-        assert "TITLE" in content
-        assert "ller" in content
+        assert content == 'TITLE "Müller"\n'
+
+    @pytest.mark.asyncio
+    async def test_reads_cyrillic_cue_sheet(self, tmp_path: Path) -> None:
+        """
+        A CUE sheet in the local ANSI codepage keeps its titles readable.
+
+        Russian rips ship their CUE sheets in cp1251, so the titles have to come
+        through as Cyrillic instead of replacement characters (support #6093).
+        """
+        cue = 'PERFORMER "Король и Шут"\nTITLE "Как в старой сказке"\n'
+        (tmp_path / "a.cue").write_bytes(cue.encode("cp1251"))
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_item = FileSystemItem(
+            filename="a.cue",
+            relative_path="a.cue",
+            absolute_path=str(tmp_path / "a.cue"),
+            is_dir=False,
+            checksum="1",
+            file_size=(tmp_path / "a.cue").stat().st_size,
+        )
+        content = await provider._cue.read_cue_file(cue_item)
+        assert content == cue
 
 
 class TestFindCueAudioFile:

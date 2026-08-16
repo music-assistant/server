@@ -1,8 +1,8 @@
 {
   "config_entries": {
-    "force_raop": {
-      "label": "Force RAOP protocol",
-      "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."
+    "streaming_mode": {
+      "label": "Streaming mode",
+      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nOn devices that offer the NTP option, Music Assistant switches to 'AirPlay 2 - NTP timing' by itself when it measures that the device never answers the PTP clock (some AirPlay 2 TVs); set it back to Automatic to try PTP again."
     },
     "encryption": {
       "label": "Enable encryption",
@@ -91,6 +91,7 @@
   "errors": {
     "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
     "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+    "connection_refused": "The device refused the connection. Run the setup for this player to pair it again.",
     "show_dashboard_failed": "Failed to show the dashboard on {0}.",
     "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
     "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",

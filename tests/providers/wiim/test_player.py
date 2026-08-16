@@ -342,6 +342,27 @@ class TestSourceList:
         assert "futuremode" not in source_ids
 
 
+class TestVolumeCommand:
+    """Test the volume command reaches the device."""
+
+    @pytest.mark.asyncio
+    async def test_volume_set_delegates_to_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Setting the volume should reach the device and land in the player state."""
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        async def _apply_volume(volume_level: int) -> None:
+            mock_wiim_device.volume = volume_level
+
+        mock_wiim_device.async_set_volume = AsyncMock(side_effect=_apply_volume)
+        await player.volume_set(42)
+
+        mock_wiim_device.async_set_volume.assert_awaited_once_with(42)
+        assert player._attr_volume_level == 42
+
+
 class TestErrorHandling:
     """Test that command errors mark device unavailable."""
 
@@ -357,10 +378,6 @@ class TestErrorHandling:
         assert player._attr_available is True
         player.update_state.assert_called()
 
-    @pytest.mark.skip(
-        reason="volume_set inlines the HTTP fix from wiim PR#18 and no longer calls "
-        "async_set_volume; re-enable when wiim-sdk 0.1.5+ has been released"
-    )
     @pytest.mark.asyncio
     async def test_volume_set_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
@@ -378,7 +395,7 @@ class TestErrorHandling:
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
         """A speaker answering a volume command with something other than OK must not throw."""
-        mock_wiim_device._http_command_ok = AsyncMock(
+        mock_wiim_device.async_set_volume = AsyncMock(
             side_effect=WiimInvalidDataException("did not return 'OK'")
         )
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)

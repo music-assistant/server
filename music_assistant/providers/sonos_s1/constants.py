@@ -3,13 +3,7 @@
 from __future__ import annotations
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature
-from soco.core import (
-    MUSIC_SRC_AIRPLAY,
-    MUSIC_SRC_LINE_IN,
-    MUSIC_SRC_RADIO,
-    MUSIC_SRC_SPOTIFY_CONNECT,
-    MUSIC_SRC_TV,
-)
+from soco.core import MUSIC_SRC_LINE_IN, MUSIC_SRC_TV
 
 from music_assistant.models.player import PlayerSource
 
@@ -29,27 +23,15 @@ PLAYER_FEATURES = (
 )
 
 # Source Mapping
-SOURCES_MAP = {
-    MUSIC_SRC_LINE_IN: "Line-in",
-    MUSIC_SRC_TV: "TV",
-    MUSIC_SRC_RADIO: "Radio",
-    MUSIC_SRC_SPOTIFY_CONNECT: "Spotify",
-    MUSIC_SRC_AIRPLAY: "AirPlay",
-}
-
-SOURCE_AIRPLAY = "AirPlay"
 SOURCE_LINEIN = "Line-in"
-SOURCE_SPOTIFY_CONNECT = "Spotify Connect"
 SOURCE_TV = "TV"
 
-SOURCE_MAPPING = {
-    MUSIC_SRC_AIRPLAY: SOURCE_AIRPLAY,
+# Line-in and TV are the only sources this provider can report or switch to.
+LINEIN_SOURCE_MAPPING = {
     MUSIC_SRC_TV: SOURCE_TV,
     MUSIC_SRC_LINE_IN: SOURCE_LINEIN,
-    MUSIC_SRC_SPOTIFY_CONNECT: SOURCE_SPOTIFY_CONNECT,
 }
 
-LINEIN_SOURCES = (MUSIC_SRC_TV, MUSIC_SRC_LINE_IN)
 LINEIN_SOURCE_IDS = (SOURCE_TV, SOURCE_LINEIN)
 
 PLAYER_SOURCE_MAP = {
@@ -68,22 +50,6 @@ PLAYER_SOURCE_MAP = {
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
-    ),
-    SOURCE_AIRPLAY: PlayerSource(
-        id=SOURCE_AIRPLAY,
-        name="AirPlay",
-        passive=True,
-        can_play_pause=True,
-        can_next_previous=True,
-        can_seek=True,
-    ),
-    SOURCE_SPOTIFY_CONNECT: PlayerSource(
-        id=SOURCE_SPOTIFY_CONNECT,
-        name="Spotify Connect",
-        passive=True,
-        can_play_pause=True,
-        can_next_previous=True,
-        can_seek=True,
     ),
 }
 

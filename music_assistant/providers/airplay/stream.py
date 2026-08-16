@@ -38,6 +38,11 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    CONF_STREAMING_MODE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
+    STREAMING_MODE_AUTO,
     AirPlayRemoteCommand,
     ClockReadiness,
     StreamingProtocol,
@@ -67,6 +72,10 @@ if TYPE_CHECKING:
 # and only the pending ack is answered with a failure.
 CLI_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
 CLI_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+# A receiver that wants a password challenges with 401. A 403 is a flat refusal
+# of the pairing handshake itself, which no password can satisfy, so it must not
+# be read as a verdict on one.
+CLI_STATUS_REFUSED: Final[int] = 403
 CLI_ERROR_START_FAILED: Final[str] = "start_failed"
 CLI_ERROR_FLUSH_FAILED: Final[str] = "flush_failed"
 CLI_ERROR_ANNOUNCE_FAILED: Final[str] = "announce_failed"
@@ -991,8 +1000,15 @@ class AirPlayStream:
         airplay_info = self.player.airplay_discovery_info
         raop_info = self.player.raop_discovery_info
         target_protocol = self.player.protocol_override or self.player.protocol
+        streaming_mode = self.player.streaming_mode
+        timing_arg: str | None = None
         if self.player.protocol_override == StreamingProtocol.RAOP:
             protocol_arg = "raop"
+        elif streaming_mode == STREAMING_MODE_AP2_COMPAT:
+            protocol_arg = "airplay2-compat"
+        elif streaming_mode in (STREAMING_MODE_AP2_PTP, STREAMING_MODE_AP2_NTP):
+            protocol_arg = "airplay2"
+            timing_arg = "ptp" if streaming_mode == STREAMING_MODE_AP2_PTP else "ntp"
         elif target_protocol == StreamingProtocol.AIRPLAY2 and not raop_info:
             # With no RAOP fallback, force AirPlay 2 because featureless AP2-only
             # receivers cannot be identified by the binary's TXT-bit test.
@@ -1015,6 +1031,8 @@ class AirPlayStream:
             "--bitdepth",
             str(self.pcm_format.bit_depth),
         ]
+        if timing_arg:
+            args += ["--timing", timing_arg]
 
         # The binary owns the playback lead (2000 ms default, clamped to the
         # device-reported window) and there is no user override for it; the
@@ -1667,6 +1685,33 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
 
+    async def _restart_playback_on_ntp(self) -> None:
+        """
+        Restart this player's playback after its streaming mode switched to NTP.
+
+        The running session was spawned with PTP timing and needs a full cold
+        start to pick up the new mode, so the stream stops hard first; the
+        queue then restarts the current item. The receiver rendered nothing on
+        the stalled session, so restarting from the top loses no audio.
+        """
+        try:
+            queue = self.mass.player_queues.get_active_queue(self.player.player_id)
+            # Tear the whole owning session down, not just this stream: the
+            # session holds the audio source and ffmpeg feed, and a plain
+            # play_index would warm-replace onto the still-running (PTP)
+            # binary instead of cold-starting with the new timing.
+            if self.session is not None:
+                await self.session.stop()
+            else:
+                await self.stop(force=True)
+            if queue is None or queue.current_index is None:
+                return
+            await self.mass.player_queues.play_index(queue.queue_id, queue.current_index)
+        except Exception as err:
+            # Fire-and-forget heal: never let a failed restart replace one
+            # silent outcome with an unhandled-task error.
+            self.player.logger.warning("Restart on NTP timing failed: %s", err)
+
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -1776,6 +1821,8 @@ class AirPlayStream:
         timeout the callers already handle.
         """
         error = self._connect_error
+        if error and error.http_status == CLI_STATUS_REFUSED:
+            return self._connection_refused_error()
         if error and error.code == CLI_ERROR_AUTH_REQUIRED:
             return self._password_required_error()
         if error and error.code == CLI_ERROR_AUTH_FAILED:
@@ -1794,6 +1841,15 @@ class AirPlayStream:
             f"{self.player.display_name} requires a password. "
             "Run the setup for this player to enter it.",
             translation_key="password_required",
+        )
+
+    def _connection_refused_error(self) -> PlayerCommandFailed:
+        """Return the error for a device that declined the handshake outright."""
+        return PlayerCommandFailed(
+            f"{self.player.display_name} refused the connection. "
+            "Run the setup for this player to pair it again.",
+            translation_key="connection_refused",
+            translation_owner=self.player.translation_owner,
         )
 
     def _parse_error_status(self, line: str) -> None:
@@ -1833,13 +1889,20 @@ class AirPlayStream:
             self._announce_done.set()
             return
         self._connect_error = error
-        if error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED):
+        if (
+            error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED)
+            and error.http_status != CLI_STATUS_REFUSED
+        ):
             # The stored password is wrong, or the device demanded one we could
             # not supply (devices can enforce a password without announcing it -
             # e.g. an Apple TV with stale TXT records after the password was
             # enabled). Persist that so the player keeps offering its setup
             # action (across restarts) until a working password is entered,
             # instead of only failing at the next play attempt.
+            # A refusal is excluded: the binary reports one as an auth failure
+            # because it happens on the pairing leg, but the device turned the
+            # handshake away rather than judging a secret, and a player with no
+            # password would otherwise be left demanding one forever.
             self.player.set_password_invalid(True)
 
     def _parse_anchor_corrected(self, line: str) -> None:
@@ -1998,14 +2061,43 @@ class AirPlayStream:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True
-            self.player.logger.warning(
-                "%s has not answered the server's PTP clock (%s clock exchange(s), "
-                "probe streak %s ms), so it will not play any audio. Check that UDP "
-                "319/320 traffic can flow between the speaker and the server.",
-                self.player.display_name,
-                fields.get("exchanges", "?"),
-                fields.get("streak_ms", "?"),
+            ntp_offered = any(
+                option.value == STREAMING_MODE_AP2_NTP
+                for option in self.player.streaming_mode_options
             )
+            if (
+                self.player.streaming_mode == STREAMING_MODE_AUTO
+                and ntp_offered
+                and not self.player.synced_to
+                and not self.player.group_members
+            ):
+                # Measured truth: the device advertises PTP but never answers a
+                # probe (AirPlay 2 video-class TVs). Pin the visible streaming
+                # mode to NTP timing and restart playback on it, so the user
+                # hears music instead of silence — and can see and revert the
+                # decision in the player's advanced settings.
+                self.player.logger.warning(
+                    "%s never answered the server's PTP clock; switching this "
+                    "player to NTP timing and restarting playback.",
+                    self.player.display_name,
+                )
+                self.mass.config.set_raw_player_config_value(
+                    self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_NTP
+                )
+                self.mass.create_task(self._restart_playback_on_ntp())
+            else:
+                # A pinned mode is the user's explicit choice, and moving one
+                # member of a live sync group would desync it: report instead.
+                self.player.logger.warning(
+                    "%s has not answered the server's PTP clock (%s clock exchange(s), "
+                    "probe streak %s ms), so it will not play any audio. Check that UDP "
+                    "319/320 traffic can flow between the speaker and the server, or "
+                    "pin one of the offered streaming modes in the player's advanced "
+                    "settings.",
+                    self.player.display_name,
+                    fields.get("exchanges", "?"),
+                    fields.get("streak_ms", "?"),
+                )
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive. A stalled clock

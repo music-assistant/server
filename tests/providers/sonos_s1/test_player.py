@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
+from soco.core import SoCo
 from soco.exceptions import SoCoException
 
 from music_assistant.mass import MusicAssistant
@@ -20,6 +21,7 @@ from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import (
     AVAILABILITY_TIMEOUT,
     POLL_INTERVAL,
+    SOURCE_LINEIN,
     SUBSCRIPTION_SERVICES,
     TRANSITION_POLL_INTERVAL,
 )
@@ -173,6 +175,12 @@ def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
     sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
 
 
+def _set_track_info(sonos_player: SonosPlayer, uri: str, position: str = "") -> None:
+    """Make the mocked speaker report the given track uri, classified as SoCo would."""
+    sonos_player.soco.get_current_track_info.return_value = {"uri": uri, "position": position}
+    sonos_player.soco.music_source_from_uri = SoCo.music_source_from_uri
+
+
 def test_transitional_state_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
     """A transitional transport state keeps the last known state and is watched closely."""
     sonos_player._attr_playback_state = PlaybackState.IDLE
@@ -206,6 +214,50 @@ def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer
     sonos_player._handle_avtransport_event(event)
 
     assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
+
+
+def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> None:
+    """A speaker playing line-in reports it as its source and offers it in the source list."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source == SOURCE_LINEIN
+    assert [source.id for source in sonos_player._attr_source_list] == [SOURCE_LINEIN]
+
+
+def test_source_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """Stopping line-in empties the transport, which must not leave the source behind."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source is None
+
+
+def test_media_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """A stopped speaker must not keep reporting the track it was playing."""
+    _set_track_info(sonos_player, "http://192.168.1.2:8097/track.flac", position="0:00:42")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_current_media is None
+    assert sonos_player._attr_elapsed_time is None
+    assert sonos_player._attr_elapsed_time_last_updated is None
+
+
+def test_spotify_connect_is_not_reported_as_a_source(sonos_player: SonosPlayer) -> None:
+    """Line-in and TV are the only sources this provider reports."""
+    _set_track_info(sonos_player, "x-sonos-vli:RINCON_000E58AAAAAA01400:2,spotify:abc")
+
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source is None
+    assert sonos_player._attr_source_list == []
 
 
 async def test_repeated_commands_collapse_to_one_pending_poll(
