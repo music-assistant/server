@@ -117,6 +117,10 @@ def test_get_package_license(info: dict[str, Any], expected: str) -> None:
         "Apache 2.0 License",
         # a custom license alongside one we accept still leaves a usable option
         "MIT OR LicenseRef-Proprietary",
+        # an exception only widens what the license allows, so the license itself decides
+        "Zlib WITH LLVM-exception",
+        # prose is matched on its wording; the groups in it are not an expression to refuse
+        "MIT License (a) (b) (c) (d) (e) (f) (g) (h) (i) (j) (k) (l) and so on",
     ],
 )
 def test_compatible_licenses(license_str: str) -> None:
@@ -130,8 +134,13 @@ def test_compatible_licenses(license_str: str) -> None:
     [
         ("GPL-3.0-only", "Incompatible copyleft license (GPL-3.0-only)"),
         ("AGPL-3.0-only", "Incompatible copyleft license (AGPL-3.0-only)"),
-        # a permissive term must not mask a copyleft one it is combined with
+        # a permissive term must not mask a copyleft one it is combined with, whether or not the
+        # expression around it parses
         ("MIT AND GPL-3.0-only", "Incompatible copyleft license (MIT AND GPL-3.0-only)"),
+        ("(GPL-3.0-only AND MIT", "Incompatible copyleft license"),
+        ("LicenseRef-MIT Custom", "Unknown/unverified license"),
+        # only understood in part is not understood: "Zlib" alone would be compatible
+        ("Zlib plus custom terms", "Unknown/unverified license"),
         ("GNU General Public License v3 (GPLv3)", "Incompatible copyleft license"),
         ("Frobnicate-1.0", "Unknown/unverified license (Frobnicate-1.0)"),
         ("Other/Proprietary License", "Unknown/unverified license"),

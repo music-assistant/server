@@ -58,7 +58,7 @@ COMPATIBLE_SPDX_LICENSES = {
 # License families that are incompatible with the project (LGPL excluded)
 PROBLEMATIC_LICENSES = ("GPL", "AGPL", "SSPL")
 
-# Highest number of groups accepted in an SPDX expression
+# Deepest group nesting accepted in an SPDX expression
 MAX_SPDX_NESTING = 10
 
 # Common packages to check for typosquatting (popular Python packages)
@@ -169,19 +169,22 @@ def check_license_compatibility(license_str: str) -> tuple[bool, str]:
     if spdx_compatible:
         return True, f"Compatible ({license_str})"
 
-    # only fall back to plain substring matching when the string is not an SPDX expression we
-    # understand, so a copyleft term cannot be masked by a permissive one elsewhere in it
-    if spdx_compatible is None:
+    copyleft = "LGPL" not in license_upper and any(
+        problem in license_upper for problem in PROBLEMATIC_LICENSES
+    )
+
+    # fall back to plain substring matching for the strings the evaluator did not understand, but
+    # never when a copyleft or a PEP 639 custom license is named, as a permissive name in the
+    # string could be hiding it
+    if spdx_compatible is None and not copyleft and "LICENSEREF" not in license_upper:
         # ignore punctuation so spelling variants such as "MPL 2.0" match "MPL-2.0"
         squashed = re.sub(r"[^A-Z0-9]", "", license_upper)
         for compatible in COMPATIBLE_LICENSES:
             if re.sub(r"[^A-Z0-9]", "", compatible.upper()) in squashed:
                 return True, f"Compatible ({license_str})"
 
-    # Check for problematic licenses
-    for problem in PROBLEMATIC_LICENSES:
-        if problem in license_upper and "LGPL" not in license_upper:
-            return False, f"Incompatible copyleft license ({license_str})"
+    if copyleft:
+        return False, f"Incompatible copyleft license ({license_str})"
 
     # Unknown license
     return False, f"Unknown/unverified license ({license_str})"
@@ -486,9 +489,9 @@ def _evaluate_spdx_expression(license_str: str) -> bool | None:
     tokens = re.findall(r"\(|\)|[^\s()]+", license_str)
     if not tokens:
         return None
-    # real expressions nest a level or two at most; refuse the rest rather than recursing into
-    # them, and refuse rather than fall through, as the fallback would match on any name inside
-    if tokens.count("(") > MAX_SPDX_NESTING:
+    # real expressions nest a group or two at most; refuse anything deeper rather than recursing
+    # into it, and refuse outright as the fallback would match on a name nested inside
+    if _max_group_depth(tokens) > MAX_SPDX_NESTING:
         return False
     result = _evaluate_spdx_tokens(tokens)
     # anything left over means we did not understand the string as a whole
@@ -557,16 +560,28 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
             return None
         tokens.pop(0)
 
-    if not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]*", identifier):
-        return None
-    # PEP 639 reserves this prefix for custom licenses, which are never pre-approved
-    if identifier.startswith("LICENSEREF-"):
-        return False
     if identifier in COMPATIBLE_SPDX_LICENSES:
         return True
     if "LGPL" not in identifier and any(prob in identifier for prob in PROBLEMATIC_LICENSES):
         return False
     return None
+
+
+def _max_group_depth(tokens: list[str]) -> int:
+    """
+    Return how deeply the parentheses in an expression nest.
+
+    :param tokens: The tokens of the expression.
+    """
+    depth = 0
+    deepest = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif token == ")":
+            depth = max(0, depth - 1)
+    return deepest
 
 
 if __name__ == "__main__":
