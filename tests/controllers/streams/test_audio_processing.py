@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
@@ -30,6 +31,7 @@ from music_assistant_models.enums import (
     MediaType,
     VolumeNormalizationMode,
 )
+from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -926,6 +928,68 @@ async def test_stale_flow_generator_does_not_mutate_active_session() -> None:
 
     assert not queue.flow_mode
     assert queue_data.flow_mode_stream_log == ["current"]
+
+
+@pytest.mark.asyncio
+async def test_flow_source_error_skips_item_without_completing_it() -> None:
+    """An item-stream error skips to the next queue item; the flow itself continues."""
+    mass = MagicMock()
+    streamdetails = SimpleNamespace(
+        fade_in=False,
+        stream_error=False,
+        uri="audiobookshelf://book",
+        seek_position=0,
+        duration=3600,
+    )
+    queue_item = SimpleNamespace(
+        queue_item_id="item-1",
+        name="book",
+        media_type=MediaType.AUDIOBOOK,
+        streamdetails=streamdetails,
+        extra_attributes={},
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item.side_effect = QueueEmpty
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.streams.audio_processing.update_item_context = MagicMock()
+    mass.player_queues.queue_buffer_completed = MagicMock()
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+
+    async def _failed_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        yield b"buffered audio"
+        streamdetails.stream_error = True
+
+    audio.get_queue_item_stream = _failed_stream  # type: ignore[method-assign]
+    stream = audio.get_queue_flow_stream(
+        cast(
+            "Any",
+            SimpleNamespace(
+                queue_id="queue-1",
+                display_name="Queue",
+                flow_mode=False,
+                overlay_enabled=False,
+                overlay_source=None,
+            ),
+        ),
+        cast("Any", queue_item),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks == [b"buffered audio"]
+    # the flow ran to natural completion (next item lookup raised QueueEmpty)
+    mass.player_queues.queue_buffer_completed.assert_called_once()
+    # the play log entry is kept, honest about the partial amount actually sent
+    assert len(queue_data.flow_mode_stream_log) == 1
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed is not None
+    assert entry.seconds_streamed > 0
 
 
 def _manager_context(
