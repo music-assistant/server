@@ -378,10 +378,10 @@ class TapManager:
         if sendspin is None:
             msg = "Sendspin provider is not available"
             raise RuntimeError(msg)
-        # A tap registers as a real (visualizer-type) player rather than a
-        # headless client, so the player controller can group it and hand the
-        # target's output over to Sendspin. SendspinVisualizerPlayer keeps it
-        # out of the UI and Home Assistant, and gives it no controls.
+        # A tap registers as an ordinary Sendspin client, so the player
+        # controller can group it and hand the target's output over to
+        # Sendspin. The resulting SendspinVisualizerPlayer keeps it out of the
+        # UI and Home Assistant, and gives it no controls.
         support = ClientHelloVisualizerSupport(buffer_capacity=65536, rate_max=60, types=["beat"])
         hello = ClientHelloPayload(
             client_id=tap.client_id,
