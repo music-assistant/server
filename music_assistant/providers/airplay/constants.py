@@ -134,18 +134,14 @@ AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = ()
 # Per-player override of the splice receiver-queue depth in ms (0 = automatic).
 CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
-# Nothing holds that ack back, so the window only has to cover the command's trip
-# down the pipe and the answer coming back - unlike a join's ack below, which is
-# withheld whenever the receiver clock verification arms.
-AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 2000
-# How long a join START waits for the binary's [STATUS] started ack. That ack is
-# held back whenever the clock verification above arms, so the window must
-# cover the verification arm window plus a poll round on top of the commanded
-# anchor (which bounds the verification), where a plain START acks within the
-# command round-trip. On timeout the server falls back to trusting the commanded
-# instant, so a window shorter than the binary's verification silently maps the
-# joiner's content onto an instant the binary never used.
-AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 5000
+# A strict buffered receiver can reject its anchor until its clock is seated;
+# cliairplay then makes up to 12 attempts, 500 ms apart. Cover that 5.5-second
+# retry span plus control-response and status-delivery margin.
+AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 7000
+# A join can additionally withhold its ack while receiver-clock verification
+# settles. Keep its independently named bound aligned with the buffered retry
+# span too; command failures still answer either wait immediately.
+AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 7000
 # How far the content a corrected anchor actually cut may fall short of the cut
 # it asked for before the reported media position is re-based and the shortfall
 # reported. The binary derives the cut it took from the bytes it discarded, so a
