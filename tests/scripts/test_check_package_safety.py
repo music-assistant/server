@@ -113,6 +113,7 @@ def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) 
         ("MIT AND Frobnicate-1.0", False),
         # a malformed expression names nothing we can check, so it is not compatible either
         ("MIT OR AND", False),
+        ("MIT WITH OR", False),
         # "or later" is a single marker, not a way to dress up an unknown identifier
         ("MIT++++", False),
         ("LGPL-2.1+", True),
@@ -121,6 +122,8 @@ def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) 
         ("LicenseRef-Proprietary", False),
         ("0BSD", True),
         ("MIT OR Apache-2.0", True),
+        # an alternative we do not know does not spoil one we do
+        ("Frobnicate-1.0 OR MIT", True),
         ("Apache-2.0 WITH LLVM-exception", True),
     ],
 )
@@ -157,6 +160,7 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "MIT OR LicenseRef-Proprietary",
         # an exception only widens what the license allows, so the license itself decides
         "Zlib WITH LLVM-exception",
+        "LGPL-3.0-only WITH LGPL-3.0-linking-exception",
         # prose is matched on its wording; the groups in it are not an expression to refuse
         "MIT License (a) (b) (c) (d) (e) (f) (g) (h) (i) (j) (k) (l) and so on",
     ],
@@ -183,6 +187,9 @@ def test_compatible_licenses(license_str: str) -> None:
         ("GNU General Public License v3 (GPLv3)", "Incompatible copyleft license"),
         # an LGPL term in the string does not excuse a GPL one standing next to it
         ("LGPL plus GPL terms", "Incompatible copyleft license"),
+        # an exception widens a license, so a copyleft one cannot be hiding behind "WITH"
+        ("MIT WITH GPL-3.0-only", "Incompatible copyleft license"),
+        ("Apache-2.0 AND MIT WITH GPL-3.0-only", "Incompatible copyleft license"),
         ("LGPL-2.1-or-later AND GPL-3.0-only", "Incompatible copyleft license"),
         ("Frobnicate-1.0", "Unknown/unverified license (Frobnicate-1.0)"),
         ("Other/Proprietary License", "Unknown/unverified license"),

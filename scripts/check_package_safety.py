@@ -179,10 +179,7 @@ def check_license_compatibility(
     if spdx_compatible:
         return True, f"Compatible ({license_str})"
 
-    # drop the LGPL mentions before looking for the copyleft families we do not accept, so that a
-    # GPL term next to an LGPL one is still spotted
-    without_lgpl = license_upper.replace("LGPL", "")
-    copyleft = any(problem in without_lgpl for problem in PROBLEMATIC_LICENSES)
+    copyleft = _is_copyleft(license_upper)
 
     # an SPDX expression is a validated, machine-readable field: whatever the evaluator did not
     # accept in one names a license that is not on the allow list, so guessing from the wording
@@ -566,7 +563,7 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
 
     :param tokens: The remaining tokens of the expression.
     """
-    if not tokens or tokens[0] == ")" or tokens[0].upper() in ("AND", "OR", "WITH"):
+    if not tokens or _is_spdx_operator(tokens[0]):
         raise _SpdxSyntaxError
 
     if tokens[0] == "(":
@@ -581,15 +578,33 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
     # a "WITH <exception>" suffix only grants extra permissions, so the identifier decides
     if tokens and tokens[0].upper() == "WITH":
         tokens.pop(0)
-        if not tokens:
+        if not tokens or _is_spdx_operator(tokens[0]):
             raise _SpdxSyntaxError
-        tokens.pop(0)
+        # ...but a license we refuse is not an exception, whatever it is written behind
+        if _is_copyleft(tokens.pop(0).upper()):
+            return False
 
-    if identifier in COMPATIBLE_SPDX_LICENSES:
-        return True
-    if "LGPL" not in identifier and any(prob in identifier for prob in PROBLEMATIC_LICENSES):
-        return False
-    return None
+    return True if identifier in COMPATIBLE_SPDX_LICENSES else None
+
+
+def _is_spdx_operator(token: str) -> bool:
+    """
+    Return whether a token joins or closes expressions instead of naming a license.
+
+    :param token: The token to inspect.
+    """
+    return token == ")" or token.upper() in ("AND", "OR", "WITH")
+
+
+def _is_copyleft(license_upper: str) -> bool:
+    """
+    Return whether an upper-cased license string names a copyleft family we do not accept.
+
+    :param license_upper: The upper-cased license string to inspect.
+    """
+    # drop the LGPL mentions first, so that a GPL term next to an LGPL one is still spotted
+    without_lgpl = license_upper.replace("LGPL", "")
+    return any(problem in without_lgpl for problem in PROBLEMATIC_LICENSES)
 
 
 def _max_group_depth(tokens: list[str]) -> int:
