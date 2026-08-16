@@ -353,6 +353,10 @@ async def test_replace_next_over_a_dynamic_queue_drops_the_imposed_shuffle() -> 
     assert _queue(ctrl).smart_shuffle_active is False
     # the item playing, then the album in its own track order rather than the (reversed) shuffle
     assert _played_order(ctrl) == ["p1", *ALBUM_TRACKS]
+    # settled before the items were resolved: a shuffled queue asks the resolver to keep the items
+    # preceding a chosen track, an in-order one does not
+    resolve_call = ctrl._media_resolver._resolve_media_items.call_args
+    assert resolve_call.kwargs["keep_preceding_items"] is False
 
 
 async def test_replace_next_that_leaves_the_queue_dynamic_keeps_the_smart_mix() -> None:

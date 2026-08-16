@@ -1838,11 +1838,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
         if option == QueueOption.REPLACE_NEXT and queue.is_dynamic:
-            # the one staging option that replaces the queue's sources, so the smart mix may be on
-            # its way out. Its shuffle is never the user's own (a dynamic queue's toggle is locked),
-            # so it must not outlive the source that imposed it; `_enter_dynamic_mode` forces it
-            # back on if the new media leaves the queue dynamic.
-            self._reset_shuffle(queue_id)
+            # The one staging option that replaces the queue's sources, so the smart mix may be on
+            # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
+            # locked), so it must not outlive the source that imposed it. Recorded directly, as in
+            # the still-dynamic case below: the state is provisional until the sources are known,
+            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            queue.shuffle_enabled = False
             return
         if option not in (QueueOption.PLAY, QueueOption.REPLACE):
             # only the options that start playing the media right away are a new listening

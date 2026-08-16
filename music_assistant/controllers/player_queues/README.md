@@ -110,9 +110,9 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   stay in the queue are restored to their original order rather than left shuffled behind a queue
   that now reads unshuffled. The options that only stage items for later (*add* / *next* /
   *replace next*) leave the shuffle state alone. A dynamic queue is exempt: it is an always-on
-  smart mix and forces shuffle on. That imposed shuffle is dropped again as soon as the queue stops
-  being a smart mix — *replace next* is the only staging option that can take the dynamic source
-  away, so it settles the shuffle state like the starting options do.
+  smart mix and forces shuffle on. *Replace next* is the only staging option that can take that
+  dynamic source away, so it is the one exception: it switches the imposed shuffle back off, which
+  `_enter_dynamic_mode` restores if the new media leaves the queue dynamic.
 
 ## State and Persistence
 
