@@ -1847,11 +1847,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_data.shuffle_set_at is not None
                 and (time.monotonic() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
             )
-        # a dynamic queue is an always-on smart mix that locks the toggle, so leave it be
-        if queue.shuffle_enabled != shuffle and not queue.is_dynamic:
-            # routed through set_shuffle so switching shuffle off also restores the order of the
-            # items that stay in the queue: a play keeps them, and a tail left in shuffled order
-            # behind a queue that now reads unshuffled would contradict its own flag
-            await self.set_shuffle(queue_id, shuffle)
+        if queue.shuffle_enabled != shuffle:
+            if queue.is_dynamic:
+                # set_shuffle refuses a queue that is still a smart mix, but the media being
+                # started may well replace that dynamic source - and the items are resolved
+                # against this flag. Record the requested state directly: should the queue stay
+                # dynamic, `_enter_dynamic_mode` forces shuffle back on further down.
+                queue.shuffle_enabled = shuffle
+            else:
+                # routed through set_shuffle so switching shuffle off also restores the order of
+                # the items that stay in the queue: a play keeps them, and a tail left in shuffled
+                # order behind a queue that now reads unshuffled would contradict its own flag
+                await self.set_shuffle(queue_id, shuffle)
         # the intent belongs to this play command alone, whether or not it changed anything
         queue_data.shuffle_set_at = None

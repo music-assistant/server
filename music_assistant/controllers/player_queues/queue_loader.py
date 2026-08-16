@@ -848,6 +848,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             self.store_sources(queue, self._queue_data[queue_id].source_items + source_items)
         source_items = self._queue_data[queue_id].source_items
         queue.is_dynamic = has_dynamic_source(source_items)
+        # a queue that just gained or lost its dynamic source resolves smart shuffle differently
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
 
         if queue.is_dynamic:
             # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into a

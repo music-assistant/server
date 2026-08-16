@@ -302,12 +302,13 @@ async def test_replacing_a_dynamic_queue_drops_the_smart_mix_indicator() -> None
     assert _queue(ctrl).smart_shuffle_active is False
 
 
-async def test_playing_over_a_dynamic_queue_leaves_its_locked_shuffle_alone() -> None:
+async def test_playing_over_a_dynamic_queue_honours_an_explicit_play_in_order() -> None:
     """
-    A dynamic queue locks its shuffle toggle, so nothing may try to switch it off underneath.
+    An album played over a dynamic queue takes over from it, so it plays in the order asked for.
 
     Play does not clear the queue up front, so the queue is still dynamic when the shuffle state is
-    settled; asking to switch shuffle off there would be rejected as an invalid command.
+    settled - and a dynamic queue's toggle is locked, so the request cannot be routed through
+    set_shuffle. The requested state still has to reach the items, which are resolved against it.
     """
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
 
@@ -315,7 +316,10 @@ async def test_playing_over_a_dynamic_queue_leaves_its_locked_shuffle_alone() ->
 
     # the album took over as the queue's only source, so the queue is a plain one again
     assert _queue(ctrl).is_dynamic is False
-    assert _queue(ctrl).shuffle_enabled is True
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _queue(ctrl).smart_shuffle_active is False
+    # the flag alone proves little here: the album itself has to come out in its own order
+    assert _played_order(ctrl) == ALBUM_TRACKS
 
 
 async def test_playing_media_on_an_ended_queue_resets_shuffle() -> None:
