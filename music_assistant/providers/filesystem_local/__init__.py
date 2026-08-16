@@ -120,6 +120,7 @@ from .constants import (
 )
 from .cue import (
     CueSheetHandler,
+    cue_metadata_checksum,
     cue_referenced_audio_stem,
     make_cue_track_id,
     parse_cue_track_id,
@@ -1168,12 +1169,14 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             return
         is_cue = item.ext in CUE_EXTENSIONS and self.media_content_type == "music"
+        item_checksum = item.checksum
         if is_cue:
             cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             prev_checksum = cue_file_checksums.get(item.relative_path)
+            item_checksum = cue_metadata_checksum(item.checksum)
         else:
             prev_checksum = file_checksums.get(item.relative_path)
-        if item.checksum == prev_checksum:
+        if item_checksum == prev_checksum:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:

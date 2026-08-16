@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.cue import (
     CUE_TRACK_ID_DELIMITER,
     CueSheetHandler,
+    cue_metadata_checksum,
     make_cue_track_id,
     parse_cue_track_id,
 )
@@ -230,6 +232,28 @@ class TestReadCueFile:
         assert content == cue
 
 
+class TestLoadCueSheet:
+    """Tests for parsed CUE sheet caching."""
+
+    @pytest.mark.asyncio
+    async def test_versions_cache_entries(self, tmp_path: Path) -> None:
+        """Parsed metadata uses a checksum that changes with CUE handling."""
+        cue_item = _make_cue_item(tmp_path, SAMPLE_CUE)
+        provider = _make_provider(base_path=str(tmp_path))
+        cache_get = cast("AsyncMock", provider.mass.cache.get)
+        cache_set = cast("AsyncMock", provider.mass.cache.set)
+
+        await provider._cue.load_cue_sheet(cue_item)
+
+        expected_checksum = cue_metadata_checksum(cue_item.checksum)
+        get_call = cache_get.await_args
+        set_call = cache_set.await_args
+        assert get_call is not None
+        assert set_call is not None
+        assert get_call.kwargs["checksum"] == expected_checksum
+        assert set_call.kwargs["checksum"] == expected_checksum
+
+
 class TestFindCueAudioFile:
     """Tests for audio file resolution from a CUE sheet."""
 
@@ -368,6 +392,8 @@ class TestParseCueTracks:
         assert len(set(ids)) == 3
         for track, num in zip(tracks, [1, 2, 3], strict=True):
             assert track.item_id == make_cue_track_id(cue_item.relative_path, num)
+            mapping = next(iter(track.provider_mappings))
+            assert mapping.details == cue_metadata_checksum(cue_item.checksum)
         # ISRC from CUE propagates to each track
         for track in tracks:
             isrcs = [v for k, v in track.external_ids if k == ExternalID.ISRC]
@@ -852,7 +878,7 @@ class TestClassifyScanItemCue:
         items, unchanged, cur, stems = self._classify(
             provider,
             cue_item,
-            cue_file_checksums={"album.cue": "checksum-v1"},
+            cue_file_checksums={"album.cue": cue_metadata_checksum("checksum-v1")},
         )
         assert items == []
         assert unchanged == [cue_item]
@@ -863,6 +889,18 @@ class TestClassifyScanItemCue:
         """Changed checksum: prior value is forwarded so downstream overwrite=True."""
         provider = _make_provider()
         cue_item = self._cue_item("checksum-v2")
+        items, unchanged, _, _ = self._classify(
+            provider,
+            cue_item,
+            cue_file_checksums={"album.cue": cue_metadata_checksum("checksum-v1")},
+        )
+        assert items == [(cue_item, cue_metadata_checksum("checksum-v1"))]
+        assert unchanged == []
+
+    def test_legacy_checksum_forces_metadata_refresh(self) -> None:
+        """An unversioned mapping is reprocessed even when the file is unchanged."""
+        provider = _make_provider()
+        cue_item = self._cue_item("checksum-v1")
         items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
