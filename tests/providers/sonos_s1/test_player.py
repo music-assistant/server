@@ -175,9 +175,9 @@ def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
     sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
 
 
-def _set_track_uri(sonos_player: SonosPlayer, uri: str) -> None:
+def _set_track_info(sonos_player: SonosPlayer, uri: str, position: str = "") -> None:
     """Make the mocked speaker report the given track uri, classified as SoCo would."""
-    sonos_player.soco.get_current_track_info.return_value = {"uri": uri}
+    sonos_player.soco.get_current_track_info.return_value = {"uri": uri, "position": position}
     sonos_player.soco.music_source_from_uri = SoCo.music_source_from_uri
 
 
@@ -218,7 +218,7 @@ def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer
 
 def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> None:
     """A speaker playing line-in reports it as its source and offers it in the source list."""
-    _set_track_uri(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
 
     sonos_player._set_basic_track_info()
 
@@ -228,19 +228,31 @@ def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> 
 
 def test_source_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
     """Stopping line-in empties the transport, which must not leave the source behind."""
-    _set_track_uri(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
     sonos_player._set_basic_track_info()
 
-    _set_track_uri(sonos_player, "")
+    _set_track_info(sonos_player, "")
     sonos_player._set_basic_track_info()
 
     assert sonos_player._attr_active_source is None
+
+
+def test_media_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """A stopped speaker must not keep reporting the track it was playing."""
+    _set_track_info(sonos_player, "http://192.168.1.2:8097/track.flac", position="0:00:42")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
     assert sonos_player._attr_current_media is None
+    assert sonos_player._attr_elapsed_time is None
+    assert sonos_player._attr_elapsed_time_last_updated is None
 
 
 def test_spotify_connect_is_not_reported_as_a_source(sonos_player: SonosPlayer) -> None:
-    """S1 speakers cannot be controlled while streamed to, so such sources stay unreported."""
-    _set_track_uri(sonos_player, "x-sonos-vli:RINCON_000E58AAAAAA01400:2,spotify:abc")
+    """Line-in and TV are the only sources this provider reports."""
+    _set_track_info(sonos_player, "x-sonos-vli:RINCON_000E58AAAAAA01400:2,spotify:abc")
 
     sonos_player._set_basic_track_info()
 

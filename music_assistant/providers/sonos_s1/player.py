@@ -793,8 +793,8 @@ class SonosPlayer(Player):
             return
         uri = track_info["uri"]
         if not uri:
-            # an empty transport means nothing is loaded, so no source is active either;
-            # stopping a line-in source clears the transport, so this is a normal path
+            # no current track means nothing is loaded, so no source is active either.
+            # Stopping a line-in source empties the transport, so this is a normal path.
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self._attr_active_source = None
