@@ -154,6 +154,8 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "Apache Software License",
         "GNU Lesser General Public License v3 (LGPLv3)",
         "ISC License (ISCL)",
+        "PSFL",
+        "LGPLv2+",
         "The MIT License (MIT)",
         "CC0 1.0 Universal",
         # spelling variants of the same licenses
@@ -199,6 +201,8 @@ def test_compatible_licenses(license_str: str) -> None:
         ("This copyright notice shall be included in all copies", "Unknown/unverified license"),
         ("Redistribution is permitted for internal use only", "Unknown/unverified license"),
         ("SUBMITTED-1.0", "Unknown/unverified license"),
+        ("Mitigation License 1.0", "Unknown/unverified license"),
+        ("Internal use only, do not transmit", "Unknown/unverified license"),
         ("Other/Proprietary License", "Unknown/unverified license"),
         # a custom license is never pre-approved, not even when its name reads permissive
         (

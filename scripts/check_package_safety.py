@@ -593,10 +593,11 @@ def _names_license(license_upper: str, name: str) -> bool:
     :param name: The license name to look for, e.g. "MPL-2.0".
     """
     # tolerate spelling variants of the separators, so that "MPL 2.0" is read as "MPL-2.0", but
-    # only match from a word boundary, so the name cannot be assembled out of unrelated words
-    # ("this copyright" holding an "ISC", or "permitted" a "MIT")
+    # match on word boundaries, so the name cannot be assembled out of unrelated words ("this
+    # copyright" holding an "ISC", or "mitigation" a "MIT"). A single letter may follow, for the
+    # version and "License" markers real packages write ("LGPLv3", "PSFL")
     parts = [re.escape(part) for part in re.findall(r"[A-Z0-9]+", name.upper())]
-    return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}", license_upper) is not None
+    return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}(?![A-Z]{{2}})", license_upper) is not None
 
 
 def _is_spdx_operator(token: str) -> bool:
