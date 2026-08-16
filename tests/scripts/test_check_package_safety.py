@@ -131,6 +131,8 @@ def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) 
         ),
         ("0BSD", True),
         ("MIT OR Apache-2.0", True),
+        # a group has to be closed for what follows it to be read as part of the expression
+        ("(MIT) OR (Apache-2.0)", True),
         # an alternative we do not know does not spoil one we do
         ("Frobnicate-1.0 OR MIT", True),
         ("Apache-2.0 WITH LLVM-exception", True),
@@ -186,9 +188,11 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         # ...however the value joins them (uritemplate publishes the first)
         "BSD 3-Clause OR Apache-2.0",
         "MIT/Apache-2.0",
+        "MIT License AND Apache Software License",
         # a name holding a separator is still matched whole, before the value is split on one
         "zlib/libpng License",
         "GNU Library or Lesser General Public License (LGPL)",
+        "Historical Permission Notice and Disclaimer (HPND)",
         # a custom license alongside one we accept still leaves a usable option
         "MIT OR LicenseRef-Proprietary",
         # an exception only widens what the license allows, so the license itself decides

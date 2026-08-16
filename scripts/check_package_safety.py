@@ -677,7 +677,8 @@ def _names_license(license_str: str) -> bool:
     # only when every one of them is. The whole value is matched first, so that a name holding a
     # separator is not taken apart into pieces that name nothing
     names = [
-        _license_words(name) for name in re.split(r"[,/]|\bor\b", license_str, flags=re.IGNORECASE)
+        _license_words(name)
+        for name in re.split(r"[,/]|\band\b|\bor\b", license_str, flags=re.IGNORECASE)
     ]
     return known.issuperset(names)
 
