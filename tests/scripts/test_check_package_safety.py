@@ -70,6 +70,17 @@ def pypi_info(**overrides: Any) -> dict[str, Any]:
             ),
             "Apache Software License",
         ),
+        # two-part classifiers name a license too, and must not be hidden by a permissive one
+        (
+            pypi_info(
+                classifiers=[
+                    "License :: Other/Proprietary License",
+                    "License :: OSI Approved :: MIT License",
+                ]
+            ),
+            "Other/Proprietary License",
+        ),
+        (pypi_info(classifiers=["License :: Public Domain"]), "Public Domain"),
         # nothing at all to go on
         (pypi_info(), "Unknown"),
         (pypi_info(license="   "), "Unknown"),
@@ -123,6 +134,7 @@ def test_compatible_licenses(license_str: str) -> None:
         ("MIT AND GPL-3.0-only", "Incompatible copyleft license (MIT AND GPL-3.0-only)"),
         ("GNU General Public License v3 (GPLv3)", "Incompatible copyleft license"),
         ("Frobnicate-1.0", "Unknown/unverified license (Frobnicate-1.0)"),
+        ("Other/Proprietary License", "Unknown/unverified license"),
         # a custom license is never pre-approved, not even when its name reads permissive
         (
             "LicenseRef-Proprietary-MIT-Terms",

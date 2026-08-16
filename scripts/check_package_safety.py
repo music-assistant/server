@@ -29,6 +29,7 @@ COMPATIBLE_LICENSES = {
     "MPL-2.0",
     "Unlicense",
     "CC0",
+    "Public Domain",
 }
 
 # SPDX identifiers accepted in a PEP 639 `license_expression`
@@ -136,9 +137,10 @@ def get_package_license(info: dict[str, Any]) -> str:
 
     license_classifiers = []
     for classifier in info.get("classifiers") or []:
-        # the license itself is the last segment, e.g. "License :: OSI Approved :: MIT License"
+        # the license itself is the last segment, e.g. "License :: OSI Approved :: MIT License",
+        # except for "License :: OSI Approved", which names no license at all
         parts = [part.strip() for part in classifier.split("::")]
-        if parts[0] == "License" and len(parts) > 2:
+        if parts[0] == "License" and len(parts) > 1 and parts[-1] != "OSI Approved":
             license_classifiers.append(parts[-1])
 
     if license_classifiers:
