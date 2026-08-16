@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
@@ -266,10 +266,6 @@ class AirPlayStream:
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
         self._native_control_failure_handled: bool = False
-        self._recovery_generation: int = 0
-        self._recovery_task: asyncio.Task[None] | None = None
-        self._recovery_blocked: bool = False
-        self._recovery_waiting_to_resume: bool = False
 
     @property
     def running(self) -> bool:
@@ -285,21 +281,6 @@ class AirPlayStream:
     def connected(self) -> bool:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
-
-    def supersede_recovery(self) -> None:
-        """Prevent pending recovery from resuming playback from this stream."""
-        self._recovery_generation += 1
-        self._recovery_blocked = True
-        task = self._recovery_task
-        if task is None:
-            return
-        if task.done():
-            self._recovery_task = None
-            return
-        if task is asyncio.current_task() or not self._recovery_waiting_to_resume:
-            return
-        self._recovery_task = None
-        task.cancel()
 
     async def connect(
         self,
@@ -1610,10 +1591,6 @@ class AirPlayStream:
 
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time against the current start anchor's media position."""
-        # This process is audibly playing after the latest action, so a future
-        # terminal failure belongs to the current playback rather than stale work.
-        if not self._stopping and not self._stopped:
-            self._recovery_blocked = False
         # the binary's elapsed restarts at each START; report against its base
         elapsed_time += self._start_position
         # The binary only emits this status while actually playing, so it is
@@ -1738,29 +1715,6 @@ class AirPlayStream:
             # Fire-and-forget heal: never let a failed restart replace one
             # silent outcome with an unhandled-task error.
             self.player.logger.warning("Restart on NTP timing failed: %s", err)
-
-    async def _restart_playback_in_compatibility_mode(self, recovery_generation: int) -> None:
-        """Restart the active queue after switching to AirPlay compatibility mode."""
-        try:
-            queue = self.mass.player_queues.get_active_queue(self.player.player_id)
-            if self.session is not None:
-                await self.session.stop()
-            else:
-                await self.stop(force=True)
-            if (
-                queue is None
-                or recovery_generation != self._recovery_generation
-                or self.player.stream is not self
-            ):
-                return
-            self._recovery_waiting_to_resume = True
-            await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
-        except MusicAssistantError as err:
-            self.player.logger.warning("Restart in AirPlay compatibility mode failed: %s", err)
-        finally:
-            self._recovery_waiting_to_resume = False
-            if self._recovery_task is asyncio.current_task():
-                self._recovery_task = None
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
@@ -1964,29 +1918,12 @@ class AirPlayStream:
             return
         self.player.logger.warning(
             "%s stopped answering native AirPlay 2 control keepalives; switching this "
-            "player to compatibility mode.",
+            "player to compatibility mode for its next playback.",
             self.player.display_name,
         )
         self.mass.config.set_raw_player_config_value(
             self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
         )
-        session = self.session
-        if (
-            session is not None
-            and len(session.sync_clients) == 1
-            and not self.player.synced_to
-            and not self.player.group_members
-            and self.player.state.playback_state == PlaybackState.PLAYING
-            and not self._recovery_blocked
-            and not self._stopping
-            and not self._stopped
-        ):
-            # Native groups and Sendspin bridges already recover a dead transport
-            # in place. A standalone queue has no owner to restart it.
-            self._recovery_task = self.mass.create_task(
-                self._restart_playback_in_compatibility_mode(self._recovery_generation),
-                eager_start=False,
-            )
 
     def _parse_anchor_corrected(self, line: str) -> None:
         """

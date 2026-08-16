@@ -2,7 +2,7 @@
   "config_entries": {
     "streaming_mode": {
       "label": "Streaming mode",
-      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nMusic Assistant automatically switches away from a route that the device cannot keep alive: to 'AirPlay 2 - NTP timing' when an offered PTP clock never answers, or to 'AirPlay 2 - compatibility mode' when the native control channel repeatedly fails. Set it back to Automatic to retry the original route."
+      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nMusic Assistant automatically pins a safer route after a conclusive failure: 'AirPlay 2 - NTP timing' when an offered PTP clock never answers, or 'AirPlay 2 - compatibility mode' when the native control channel repeatedly fails. The next playback uses that route; set it back to Automatic to retry the original route."
     },
     "encryption": {
       "label": "Enable encryption",

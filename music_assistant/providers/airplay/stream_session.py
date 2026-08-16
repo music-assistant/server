@@ -1024,8 +1024,6 @@ class AirPlayStreamSession:
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
         airplay_player.release_foreign_mute_latch()
-        if airplay_player.stream:
-            airplay_player.stream.supersede_recovery()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)

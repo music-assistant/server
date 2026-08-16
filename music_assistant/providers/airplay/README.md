@@ -124,7 +124,7 @@ onto the binary's `--protocol`/`--timing` arguments. Music Assistant writes the
 setting itself when an automatic route has conclusively failed: a device that
 advertises PTP but never answers a clock probe is switched to "AirPlay 2 - NTP
 timing", while a native route whose control channel fails after its keepalive
-retries is switched to "AirPlay 2 - compatibility mode". Playback recovers on
+retries is switched to "AirPlay 2 - compatibility mode". The next playback uses
 the new route; setting the mode back to Automatic retries the original one.
 
 The selector is hidden only for RAOP-only devices (no alternative lane; a

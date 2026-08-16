@@ -183,7 +183,6 @@ async def test_prevent_playback_stops_unsynced_stream(
     player = make_player(mock_mass, synced_to=None)
     await replay(airplay_provider, build_dacp_request(_PREVENT_1))
     assert player.stream.prevent_playback is True
-    player.stream.supersede_recovery.assert_called_once_with()
     player.stream.stop.assert_called_once()
     mock_mass.players.cmd_ungroup.assert_not_called()
 
@@ -194,7 +193,6 @@ async def test_prevent_playback_ungroups_synced_player(
     """prevent-playback=1 on a synced player ungroups instead of stopping the stream."""
     player = make_player(mock_mass, synced_to="parent")
     await replay(airplay_provider, build_dacp_request(_PREVENT_1))
-    player.stream.supersede_recovery.assert_called_once_with()
     mock_mass.players.cmd_ungroup.assert_called_once_with(player.player_id)
     player.stream.stop.assert_not_called()
 
