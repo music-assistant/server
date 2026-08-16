@@ -33,7 +33,7 @@ colorlog==6.12.0
 cryptography==50.0.0
 deezer-python-gql==0.17.1
 defusedxml==0.7.1
-deno==2.7.12
+deno==2.9.5
 duration-parser==1.0.1
 fastmcp==3.4.4
 getmac==0.9.5
