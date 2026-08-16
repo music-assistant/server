@@ -46,6 +46,9 @@ STAGE_OPTIONS = [QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT]
 # a queue as an earlier shuffle left it: the list order deliberately disagrees with the sort order
 SHUFFLED_QUEUE = [("e1", 0), ("e4", 3), ("e2", 1), ("e5", 4), ("e3", 2)]
 
+# the managed pool a dynamic queue is playing when other media is staged over it
+POOL_TRACKS = ["p1", "p2", "p3"]
+
 
 def _track(item_id: str) -> Track:
     """Build a playable Track on the 'test' provider."""
@@ -152,6 +155,16 @@ def _load_shuffled_queue(ctrl: Any) -> None:
         items.append(item)
     ctrl._queue_data["q1"].items = items
     _queue(ctrl).items = len(items)
+
+
+def _load_dynamic_pool(ctrl: Any) -> None:
+    """Fill the queue with a dynamic queue's managed pool, its first item playing."""
+    ctrl._queue_data["q1"].items = [
+        QueueItem.from_media_item("q1", _track(item_id)) for item_id in POOL_TRACKS
+    ]
+    queue = _queue(ctrl)
+    queue.items = len(POOL_TRACKS)
+    queue.current_index = 0
 
 
 @pytest.mark.parametrize("option", START_OPTIONS)
@@ -320,6 +333,38 @@ async def test_playing_over_a_dynamic_queue_honours_an_explicit_play_in_order() 
     assert _queue(ctrl).smart_shuffle_active is False
     # the flag alone proves little here: the album itself has to come out in its own order
     assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+async def test_replace_next_over_a_dynamic_queue_drops_the_imposed_shuffle() -> None:
+    """
+    An album staged over a dynamic queue takes its source away, so the smart mix's shuffle goes too.
+
+    Staging normally leaves the shuffle state alone, but the shuffle a dynamic queue runs on is not
+    the user's own choice - its toggle is locked - so it must not silently reorder the album that
+    replaces it. Replace next is the only staging option that replaces the queue's sources.
+    """
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+
+    await ctrl.play_media("q1", _album(), QueueOption.REPLACE_NEXT)
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _queue(ctrl).smart_shuffle_active is False
+    # the item playing, then the album in its own track order rather than the (reversed) shuffle
+    assert _played_order(ctrl) == ["p1", *ALBUM_TRACKS]
+
+
+async def test_replace_next_that_leaves_the_queue_dynamic_keeps_the_smart_mix() -> None:
+    """Staging another dynamic source keeps the queue an always-on smart mix, shuffle included."""
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+
+    await ctrl.play_media("q1", _dynamic_playlist(), QueueOption.REPLACE_NEXT)
+
+    assert _queue(ctrl).is_dynamic is True
+    assert _queue(ctrl).shuffle_enabled is True
+    assert _queue(ctrl).smart_shuffle_active is True
 
 
 async def test_playing_media_on_an_ended_queue_resets_shuffle() -> None:

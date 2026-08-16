@@ -1835,12 +1835,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param option: The enqueue option this command resolved to.
         :param shuffle: Explicit shuffle request from the caller; None to derive it.
         """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        if option == QueueOption.REPLACE_NEXT and queue.is_dynamic:
+            # the one staging option that replaces the queue's sources, so the smart mix may be on
+            # its way out. Its shuffle is never the user's own (a dynamic queue's toggle is locked),
+            # so it must not outlive the source that imposed it; `_enter_dynamic_mode` forces it
+            # back on if the new media leaves the queue dynamic.
+            self._reset_shuffle(queue_id)
+            return
         if option not in (QueueOption.PLAY, QueueOption.REPLACE):
             # only the options that start playing the media right away are a new listening
             # session; staging items for later leaves the queue's shuffle state alone
             return
-        queue_data = self._queue_data[queue_id]
-        queue = queue_data.queue
         if shuffle is None:
             # Without an explicit request, shuffle only carries over when the user asked for it
             # moments ago: starting an album is otherwise expected to play it in track order,
