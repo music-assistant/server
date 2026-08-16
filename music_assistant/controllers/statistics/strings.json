@@ -1,0 +1,9 @@
+{
+  "statistics": "Statistics",
+  "statistics_description": "View listening statistics and analytics",
+  "period_today": "Today",
+  "period_week": "This Week",
+  "period_month": "This Month",
+  "period_year": "This Year",
+  "period_all_time": "All Time"
+}
