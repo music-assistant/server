@@ -242,7 +242,7 @@ async def test_new_speaker_is_registered(fixed_volume: bool) -> None:
         await provider._setup_player(soco)
 
     soco.get_speaker_info.assert_called_once()
-    player_cls.assert_called_once_with(provider, soco, fixed_volume)
+    player_cls.assert_called_once_with(provider, soco, fixed_volume=fixed_volume)
     player_cls.return_value.setup.assert_awaited_once()
 
 

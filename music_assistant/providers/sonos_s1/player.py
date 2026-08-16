@@ -89,9 +89,9 @@ class SonosPlayer(Player):
 
         # Set player attributes
         self._attr_supported_features = set(PLAYER_FEATURES)
+        # a speaker playing out at a fixed level (a Connect or Port wired into an amplifier)
+        # rejects volume commands, so it is left without volume and mute control at all
         if not fixed_volume:
-            # a speaker playing out at a fixed level (a Connect or Port wired into an
-            # amplifier) refuses volume commands, so it must not offer any volume control
             self._attr_supported_features |= {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
         # S1 hardware is fixed to 16-bit at 44.1/48 kHz
         self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]

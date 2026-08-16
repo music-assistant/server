@@ -195,7 +195,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not is_visible:
             return
         try:
-            sonos_player = SonosPlayer(self, soco, fixed_volume)
+            sonos_player = SonosPlayer(self, soco, fixed_volume=fixed_volume)
 
             # Register with Music Assistant
             await sonos_player.setup()
