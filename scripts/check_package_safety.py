@@ -57,6 +57,9 @@ COMPATIBLE_SPDX_LICENSES = {
 # License families that are incompatible with the project (LGPL excluded)
 PROBLEMATIC_LICENSES = ("GPL", "AGPL", "SSPL")
 
+# Highest number of groups accepted in an SPDX expression
+MAX_SPDX_NESTING = 10
+
 # Common packages to check for typosquatting (popular Python packages)
 POPULAR_PACKAGES = {
     "requests",
@@ -131,11 +134,20 @@ def get_package_license(info: dict[str, Any]) -> str:
     if license_str := (info.get("license") or "").strip():
         return license_str
 
+    license_classifiers = []
     for classifier in info.get("classifiers") or []:
         # the license itself is the last segment, e.g. "License :: OSI Approved :: MIT License"
         parts = [part.strip() for part in classifier.split("::")]
         if parts[0] == "License" and len(parts) > 2:
-            return parts[-1]
+            license_classifiers.append(parts[-1])
+
+    if license_classifiers:
+        # classifiers do not say how they relate to each other, so report the one that fails the
+        # compatibility check rather than letting a permissive entry hide a copyleft one
+        return next(
+            (name for name in license_classifiers if not check_license_compatibility(name)[0]),
+            license_classifiers[0],
+        )
 
     return "Unknown"
 
@@ -472,6 +484,10 @@ def _evaluate_spdx_expression(license_str: str) -> bool | None:
     tokens = re.findall(r"\(|\)|[^\s()]+", license_str)
     if not tokens:
         return None
+    # real expressions nest a level or two at most; refuse the rest rather than recursing into
+    # them, and refuse rather than fall through, as the fallback would match on any name inside
+    if tokens.count("(") > MAX_SPDX_NESTING:
+        return False
     result = _evaluate_spdx_tokens(tokens)
     # anything left over means we did not understand the string as a whole
     return None if tokens else result
@@ -541,6 +557,9 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
 
     if not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]*", identifier):
         return None
+    # PEP 639 reserves this prefix for custom licenses, which are never pre-approved
+    if identifier.startswith("LICENSEREF-"):
+        return False
     if identifier in COMPATIBLE_SPDX_LICENSES:
         return True
     if "LGPL" not in identifier and any(prob in identifier for prob in PROBLEMATIC_LICENSES):

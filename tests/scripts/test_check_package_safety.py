@@ -51,6 +51,25 @@ def pypi_info(**overrides: Any) -> dict[str, Any]:
             pypi_info(classifiers=["Programming Language :: Python", "License :: OSI Approved"]),
             "Unknown",
         ),
+        # several classifiers: the one that fails the check decides, whatever its position
+        (
+            pypi_info(
+                classifiers=[
+                    "License :: OSI Approved :: MIT License",
+                    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+                ]
+            ),
+            "GNU General Public License v3 (GPLv3)",
+        ),
+        (
+            pypi_info(
+                classifiers=[
+                    "License :: OSI Approved :: Apache Software License",
+                    "License :: OSI Approved :: MIT License",
+                ]
+            ),
+            "Apache Software License",
+        ),
         # nothing at all to go on
         (pypi_info(), "Unknown"),
         (pypi_info(license="   "), "Unknown"),
@@ -85,6 +104,8 @@ def test_get_package_license(info: dict[str, Any], expected: str) -> None:
         # spelling variants of the same licenses
         "MPL 2.0",
         "Apache 2.0 License",
+        # a custom license alongside one we accept still leaves a usable option
+        "MIT OR LicenseRef-Proprietary",
     ],
 )
 def test_compatible_licenses(license_str: str) -> None:
@@ -102,8 +123,15 @@ def test_compatible_licenses(license_str: str) -> None:
         ("MIT AND GPL-3.0-only", "Incompatible copyleft license (MIT AND GPL-3.0-only)"),
         ("GNU General Public License v3 (GPLv3)", "Incompatible copyleft license"),
         ("Frobnicate-1.0", "Unknown/unverified license (Frobnicate-1.0)"),
+        # a custom license is never pre-approved, not even when its name reads permissive
+        (
+            "LicenseRef-Proprietary-MIT-Terms",
+            "Unknown/unverified license (LicenseRef-Proprietary-MIT-Terms)",
+        ),
         ("Unknown", "No license information"),
         ("", "No license information"),
+        # nesting deep enough to exhaust the stack is refused, not approved on the name inside
+        ("(" * 333 + "MIT" + ")" * 333, "Unknown/unverified license"),
     ],
 )
 def test_incompatible_licenses(license_str: str, expected_status: str) -> None:
