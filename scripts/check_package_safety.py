@@ -38,26 +38,37 @@ COMPATIBLE_LICENSE_NAMES = {
     "Universal Permissive License (UPL)",
     "Zero-Clause BSD (0BSD)",
     "zlib/libpng License",
-    # spellings of the same licenses used in the free-form field
-    "Apache",
+    # spellings of the same licenses used in the free-form field. Only versioned names of the
+    # licenses whose versions differ in what they allow, so that an unversioned "Apache" cannot
+    # stand in for Apache-1.1 or an unversioned "MPL" for the reciprocal MPL-1.1
+    "2-Clause BSD",
+    "3-Clause BSD",
+    "Apache 2",
     "Apache 2.0",
+    "Apache License 2.0",
+    "Apache License, Version 2.0",
     "Apache Software License 2.0",
     "BSD",
+    "BSD-2",
     "BSD-2-Clause",
+    "BSD-3",
     "BSD-3-Clause",
     "CC0",
     "CC0 1.0",
     "CC0 1.0 Universal",
+    "Expat",
     "ISC",
     "ISCL",
     "LGPL",
     "LGPLv2",
     "LGPLv3",
     "MIT",
-    "MPL",
     "MPL 2.0",
+    "Modified BSD",
+    "New BSD",
     "PSF",
     "PSFL",
+    "Simplified BSD",
     "The MIT License (MIT)",
     "Unlicense",
     "Zlib",
@@ -244,14 +255,10 @@ def check_license_compatibility(
     # allow list, so reading such a value further would only weaken the check. A free-form field
     # is all we have to go on, but what we recognise in it must not end up approving a copyleft
     # license standing next to it
-    if spdx_compatible is None and not copyleft:
-        # a text spelling out a grant we accept states what the license gives, so it is read as
-        # that license even where its own wording happens to read like an expression
-        if _quotes_license_text(license_str):
-            return True, f"Compatible ({license_str})"
-        # a name is only the label of terms the value does not show, so it is not read out of
-        # the prose around it, nor out of an expression PyPI has already validated
-        if not spdx_expression and _names_license(license_str):
+    if spdx_compatible is None and not copyleft and not spdx_expression:
+        # a free-form field holds either the name of the license or the text of it; a name says
+        # nothing about terms written around it, and a text is read on the grant it spells out
+        if _names_license(license_str) or _quotes_license_text(license_str):
             return True, f"Compatible ({license_str})"
 
     if copyleft:
@@ -657,11 +664,17 @@ def _names_license(license_str: str) -> bool:
 
     :param license_str: The license string to read, e.g. "MIT License".
     """
-    # a value listing several licenses gives no reason to prefer one of them, so every one has
-    # to be acceptable
-    names = [_license_words(name) for name in license_str.split(",") if name.strip()]
     known = {_license_words(name) for name in COMPATIBLE_LICENSE_NAMES}
-    return bool(names) and known.issuperset(names)
+    if _license_words(license_str) in known:
+        return True
+
+    # a value naming several licenses, whether it combines them or offers a choice, is accepted
+    # only when every one of them is. The whole value is matched first, so that a name holding a
+    # separator is not taken apart into pieces that name nothing
+    names = [
+        _license_words(name) for name in re.split(r"[,/]|\bor\b", license_str, flags=re.IGNORECASE)
+    ]
+    return known.issuperset(names)
 
 
 def _quotes_license_text(license_str: str) -> bool:
@@ -680,9 +693,10 @@ def _license_words(value: str) -> str:
 
     :param value: The license string to normalise.
     """
-    # separators are spelled inconsistently ("MPL 2.0" for "MPL-2.0"), and both a leading "The"
-    # and a trailing "License" are noise the same name is written with and without
-    words = re.findall(r"[A-Z0-9]+", value.upper())
+    # separators are spelled inconsistently ("MPL 2.0" for "MPL-2.0"), "licence" and "license"
+    # are the same word, and both a leading "The" and a trailing "License" are noise the same
+    # name is written with and without
+    words = re.findall(r"[A-Z0-9]+", value.upper().replace("LICENCE", "LICENSE"))
     if words[:1] == ["THE"]:
         del words[0]
     if words[-1:] == ["LICENSE"]:

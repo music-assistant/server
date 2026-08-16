@@ -122,6 +122,13 @@ def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) 
         ("MIT OR (Apache-2.0", False),
         ("BSD-3-Clause-No-Nuclear-License-2014", False),
         ("LicenseRef-Proprietary", False),
+        # an expression is never license prose, so a custom identifier cannot smuggle in the
+        # wording of a grant to be read as the license it belongs to
+        (
+            "LicenseRef-Permission-is-hereby-granted-free-of-charge-to-any-person-obtaining-a"
+            "-copy-of-this-software-and-associated-documentation-files",
+            False,
+        ),
         ("0BSD", True),
         ("MIT OR Apache-2.0", True),
         # an alternative we do not know does not spoil one we do
@@ -167,8 +174,21 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "MPL 2.0",
         "Apache 2.0 License",
         "MIT license",
+        "The MIT License",
+        "MIT Licence",
+        # a name holding a comma is matched whole, before the value is read as a list
+        "Apache License, Version 2.0",
+        # spellings the BSD family is published under (protobuf, jsonpatch)
+        "3-Clause BSD License",
+        "Modified BSD License",
         # every license of a value that lists several (pycryptodome publishes this one)
         "BSD, Public Domain",
+        # ...however the value joins them (uritemplate publishes the first)
+        "BSD 3-Clause OR Apache-2.0",
+        "MIT/Apache-2.0",
+        # a name holding a separator is still matched whole, before the value is split on one
+        "zlib/libpng License",
+        "GNU Library or Lesser General Public License (LGPL)",
         # a custom license alongside one we accept still leaves a usable option
         "MIT OR LicenseRef-Proprietary",
         # an exception only widens what the license allows, so the license itself decides
@@ -258,6 +278,8 @@ def test_compatible_licenses(license_str: str) -> None:
         ("Frobnicate-1.0 OR Frobnicate-2.0", "Unknown/unverified license"),
         # a value that is only separators names nothing
         (",", "Unknown/unverified license"),
+        # a license we accept does not carry the one it is offered alongside
+        ("MIT or Proprietary Terms", "Unknown/unverified license"),
         # groups in prose are not an expression, and no longer a name to read out of it either
         ("MIT License (a) (b) (c) (d) (e) (f) (g) and so on", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
