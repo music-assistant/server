@@ -302,7 +302,7 @@ async def fetch_playlist(
         ) as resp:
             try:
                 raw_data = await resp.content.read(64 * 1024)
-                encoding = resp.charset or await detect_charset(raw_data)
+                encoding = await detect_charset(raw_data, preferred=resp.charset)
                 playlist_data = raw_data.decode(encoding, errors="replace")
             except (ValueError, UnicodeDecodeError) as err:
                 msg = f"Could not decode playlist {url}"

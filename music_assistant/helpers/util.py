@@ -1604,15 +1604,29 @@ async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     await agen.aclose()
 
 
-async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
+async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | None = None) -> str:
     """
     Detect the charset to decode the given raw text with.
 
     :param data: The raw text bytes to inspect.
     :param fallback: Charset to return when the charset can not be determined.
+    :param preferred: Charset declared by the source, taken over detection when usable.
     """
+    # a BOM outranks the declared charset: it names the very same UTF-8 but, unlike
+    # the declared name, also gets the marker itself stripped off the decoded text
     if data.startswith(codecs.BOM_UTF8):
         return "utf-8-sig"
+
+    if preferred:
+        # a declared charset is only worth anything if Python has a codec for it:
+        # servers do send misspelled or plain made-up names in their Content-Type
+        try:
+            codecs.lookup(preferred)
+        except LookupError:
+            LOGGER.debug("Ignoring unknown charset: %s", preferred)
+        else:
+            return preferred
+
     try:
         data.decode()
     except UnicodeDecodeError:
