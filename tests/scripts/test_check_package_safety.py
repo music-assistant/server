@@ -212,6 +212,8 @@ def test_compatible_licenses(license_str: str) -> None:
         ("Internal use only, do not transmit", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
         ("MIT AND Proprietary", "Unknown/unverified license"),
+        ("MIT AND(Proprietary)", "Unknown/unverified license"),
+        ("MIT AND (Proprietary", "Unknown/unverified license"),
         ("Other/Proprietary License", "Unknown/unverified license"),
         # a custom license is never pre-approved, not even when its name reads permissive
         (

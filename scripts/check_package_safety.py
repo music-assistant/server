@@ -174,13 +174,10 @@ def check_license_compatibility(
         return False, "No license information"
 
     license_upper = license_str.upper()
-    try:
-        spdx_compatible = _evaluate_spdx_expression(license_str)
-        # a value that reads as an expression joining licenses is precise enough to judge on the
-        # names in it alone, whichever field it came from
-        spdx_expression = spdx_expression or _joins_licenses(license_str)
-    except _SpdxSyntaxError:
-        spdx_compatible = None
+    spdx_compatible, joins_licenses = _evaluate_spdx_expression(license_str)
+    # a value that reads as an expression joining licenses is precise enough to judge on the
+    # names in it alone, whichever field it came from
+    spdx_expression = spdx_expression or joins_licenses
 
     if spdx_compatible:
         return True, f"Compatible ({license_str})"
@@ -497,27 +494,37 @@ class _SpdxSyntaxError(Exception):
     """Raised when a string does not follow the SPDX expression grammar."""
 
 
-def _evaluate_spdx_expression(license_str: str) -> bool | None:
+def _evaluate_spdx_expression(license_str: str) -> tuple[bool | None, bool]:
     """
     Check an SPDX license expression (PEP 639) against the allow list.
 
-    Returns None when it names a license that is neither known-compatible nor known-problematic,
-    and raises `_SpdxSyntaxError` when the string is not a well-formed expression.
+    Returns whether the expression is compatible, which is None when it names a license that is
+    neither known-compatible nor known-problematic or when the string is not an expression at
+    all, together with whether the part that did read as one joined several licenses.
 
     :param license_str: The license string to evaluate, e.g. "MIT OR Apache-2.0".
     """
     tokens = re.findall(r"\(|\)|[^\s()]+", license_str)
     if not tokens:
-        return None
+        return None, False
     # real expressions nest a group or two at most; refuse anything deeper rather than recursing
     # into it, and refuse outright as the fallback would match on a name nested inside
     if _max_group_depth(tokens) > MAX_SPDX_NESTING:
-        return False
-    result = _evaluate_spdx_tokens(tokens)
-    if tokens:
-        # anything left over means we did not understand the string as a whole
-        raise _SpdxSyntaxError
-    return result
+        return False, True
+
+    remaining = list(tokens)
+    try:
+        result = _evaluate_spdx_tokens(remaining)
+        if remaining:
+            # anything left over means we did not understand the string as a whole
+            raise _SpdxSyntaxError
+    except _SpdxSyntaxError:
+        result = None
+
+    # judge the shape on the tokens that were read as an expression, so that prose merely holding
+    # the word "and" is not mistaken for one, while a malformed expression still is
+    read = tokens[: len(tokens) - len(remaining)]
+    return result, any(token.upper() in ("AND", "OR", "WITH") for token in read)
 
 
 def _evaluate_spdx_tokens(tokens: list[str]) -> bool | None:
@@ -601,15 +608,6 @@ def _names_license(license_upper: str, name: str) -> bool:
     # version and "License" markers real packages write ("LGPLv3", "PSFL")
     parts = [re.escape(part) for part in re.findall(r"[A-Z0-9]+", name.upper())]
     return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}(?![A-Z]{{2}})", license_upper) is not None
-
-
-def _joins_licenses(license_str: str) -> bool:
-    """
-    Return whether a string uses SPDX operators to combine several licenses.
-
-    :param license_str: The license string to inspect.
-    """
-    return any(token.upper() in ("AND", "OR", "WITH") for token in license_str.split())
 
 
 def _is_spdx_operator(token: str) -> bool:
