@@ -300,6 +300,9 @@ async def fetch_playlist(
         async with mass.http_session.get(
             encoded_request_url(url), allow_redirects=True, timeout=ClientTimeout(total=5)
         ) as resp:
+            # an error page is still a body: without this check the HTML of a 404 or 503
+            # parses into entries whose paths are markup instead of stream urls
+            resp.raise_for_status()
             raw_data = await resp.content.read(64 * 1024)
             encoding = await detect_charset(raw_data, preferred=resp.charset)
             playlist_data = raw_data.decode(encoding, errors="replace")
