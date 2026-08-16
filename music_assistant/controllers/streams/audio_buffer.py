@@ -559,10 +559,11 @@ class AudioBuffer:
         """
         async with self._data_available:
             if len(self._chunks) == 0:
-                if self._eof_received or self.cancelled:
-                    raise AudioBufferEOF
+                # Producer errors also set EOF after buffered data; preserve the real failure.
                 if self._producer_error:
                     raise self._producer_error
+                if self._eof_received or self.cancelled:
+                    raise AudioBufferEOF
             if self.cancelled:
                 raise AudioBufferEOF
 

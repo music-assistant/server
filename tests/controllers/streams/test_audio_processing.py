@@ -931,8 +931,8 @@ async def test_stale_flow_generator_does_not_mutate_active_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flow_source_error_does_not_complete_queue_buffer() -> None:
-    """A swallowed item-stream error must not be reported as natural flow completion."""
+async def test_flow_source_error_skips_item_without_completing_it() -> None:
+    """An item-stream error skips to the next queue item; the flow itself continues."""
     mass = MagicMock()
     streamdetails = SimpleNamespace(
         fade_in=False,
@@ -982,8 +982,14 @@ async def test_flow_source_error_does_not_complete_queue_buffer() -> None:
     chunks = [chunk async for chunk in stream]
 
     assert chunks == [b"buffered audio"]
-    mass.player_queues.queue_buffer_completed.assert_not_called()
-    assert queue_data.flow_mode_stream_log == []
+    # the flow ran to natural completion (next item lookup raised QueueEmpty)
+    mass.player_queues.queue_buffer_completed.assert_called_once()
+    # the play log entry is kept, honest about the partial amount actually sent
+    assert len(queue_data.flow_mode_stream_log) == 1
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed is not None
+    assert entry.seconds_streamed > 0
 
 
 def _manager_context(

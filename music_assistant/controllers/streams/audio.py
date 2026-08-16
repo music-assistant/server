@@ -1449,6 +1449,13 @@ class StreamsAudio:
             the crossfade path to keep a track's replayed intro and its body on the same mode.
         :param session_id: Queue session that owns processing-detail updates.
         """
+        streamdetails = queue_item.streamdetails
+        assert streamdetails
+
+        # streamdetails are cached and reused for retries; reset this before any
+        # media-type-specific dispatch so AudioSource failures do not stick.
+        streamdetails.stream_error = False
+
         if queue_item.media_type == MediaType.AUDIO_SOURCE:
             async for chunk in self.get_audio_source_stream(
                 queue_item=queue_item,
@@ -1457,9 +1464,6 @@ class StreamsAudio:
             ):
                 yield chunk
             return
-
-        streamdetails = queue_item.streamdetails
-        assert streamdetails
         filter_params: list[str] = []
 
         logger = self.logger.getChild("queue_item_stream")
@@ -1621,9 +1625,9 @@ class StreamsAudio:
                     self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-            # if we received no audio and the buffer has a producer error,
-            # the error was swallowed by the FFmpeg stdin feeder - re-raise it
-            if bytes_received == 0 and audio_buffer.has_error:
+            # The FFmpeg stdin feeder swallows producer errors; re-raise even after
+            # partial audio so a failed source is not mistaken for a completed stream.
+            if audio_buffer.has_error:
                 raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
@@ -2350,32 +2354,25 @@ class StreamsAudio:
                     del crossfade_buffer[:pcm_sample_size]
                     await asyncio.sleep(0)
 
-            # An item stream can yield buffered audio and then report a source error. Do not let that
-            # swallowed error look like a naturally completed item or flow stream. Keep the existing
-            # zero-audio skip behavior below, which allows the flow to try the next queue item.
+            # A source error after partial audio must not look like a completed item.
+            # Progress reporting skips items with stream_error, so the item is not
+            # marked played; move on to the next queue item like the zero-audio path.
             if first_chunk_received and queue_track.streamdetails.stream_error:
                 if _superseded():
                     return
-                # Only remove the entry we appended above. A newer producer may have replaced the
-                # shared log while this source stream was awaiting data.
-                if (
-                    pq_data.flow_mode_stream_log
-                    and pq_data.flow_mode_stream_log[-1] is play_log_entry
-                ):
-                    pq_data.flow_mode_stream_log.pop()
                 self.logger.warning(
-                    "Queue flow for %s stopped after a stream error on %s (%s)",
-                    queue.display_name,
+                    "Track %s (%s) on queue %s aborted by a stream error - skipping",
                     queue_track.name,
                     queue_track.streamdetails.uri,
+                    queue.display_name,
                 )
-                # The previous track's tail is valid audio held back for a possible crossfade.
-                # Flush it, but never flush the failed track's partial crossfade buffer.
+                # the audio sent so far will still play out; keep the play log entry
+                # honest about how much of this item was actually streamed
+                play_log_entry.seconds_streamed = bytes_written / pcm_sample_size
                 if last_fadeout_part:
-                    for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
-                        yield pcm_slice
-                        await asyncio.sleep(0)
-                return
+                    # crossfade into this item never happened — undo the eager seek_position
+                    queue_track.streamdetails.seek_position = raw_seek_position
+                continue
 
             #### HANDLE END OF TRACK
             if not first_chunk_received:
