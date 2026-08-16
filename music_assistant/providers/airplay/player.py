@@ -162,10 +162,10 @@ class AirPlayPlayer(Player):
         legacy RAOP needs an advertised _raop service to fall back to. A
         RAOP-only device has no alternative lane and keeps Automatic only,
         which hides the entry entirely. Apple receivers get every lane except
-        NTP timing: they render silence on an NTP-timed realtime stream
-        (hardware-measured), while pinned PTP, the compatibility flow and
-        legacy RAOP are real escape hatches on networks where the PTP ports
-        are blocked.
+        NTP timing — they render silence on an NTP-timed realtime stream
+        (hardware-measured). Of their lanes, the compatibility flow and
+        legacy RAOP are the escapes for networks where the PTP ports are
+        blocked; pinning PTP is an explicit choice of the normal lane.
         """
         options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
         if not self._is_airplay2_capable:

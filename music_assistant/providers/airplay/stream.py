@@ -2092,7 +2092,8 @@ class AirPlayStream:
                     "%s has not answered the server's PTP clock (%s clock exchange(s), "
                     "probe streak %s ms), so it will not play any audio. Check that UDP "
                     "319/320 traffic can flow between the speaker and the server, or "
-                    "set the player's streaming mode to NTP timing.",
+                    "pin one of the offered streaming modes in the player's advanced "
+                    "settings.",
                     self.player.display_name,
                     fields.get("exchanges", "?"),
                     fields.get("streak_ms", "?"),

@@ -361,9 +361,10 @@ async def test_streaming_mode_on_apple_offers_no_ntp_lane() -> None:
     Apple devices get the entry as an escape hatch, minus the NTP lane.
 
     An Apple receiver renders silence on an NTP-timed realtime stream
-    (hardware-measured), so that lane is never offered; pinned PTP, the
-    compatibility flow and legacy RAOP remain available for networks where
-    the PTP ports are blocked.
+    (hardware-measured), so that lane is never offered; the compatibility
+    flow and legacy RAOP remain available as the escapes for networks where
+    the PTP ports are blocked, and pinning PTP stays possible as an explicit
+    choice of the normal lane.
     """
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)

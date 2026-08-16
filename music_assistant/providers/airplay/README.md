@@ -116,10 +116,10 @@ only used for devices that do not support it.
 
 The only user override is the advanced per-player `streaming_mode` selector. It
 pins the protocol/timing lane for a device whose automatic route misbehaves, and
-each option is offered only when the device advertises the capability: the
-AirPlay 2 lanes (PTP timing, NTP timing, compatibility mode) need AirPlay 2
-support, legacy RAOP needs an advertised `_raop` service, and genuine Apple
-receivers get no entry at all (always native AirPlay 2 with PTP). The modes map
+each option is offered only when the device can actually use it: the AirPlay 2
+lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
+and Apple receivers get every lane except NTP timing (they render silence on an
+NTP-timed realtime stream). The modes map
 onto the binary's `--protocol`/`--timing` arguments. Music Assistant writes the
 setting itself in exactly one case: a device that advertises PTP but is measured
 never answering a clock probe (AirPlay 2 video-class TVs) is switched to
