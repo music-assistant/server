@@ -128,7 +128,13 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
-from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from music_assistant.helpers.playlists import (
+    MAX_PLAYLIST_SIZE,
+    IsHLSPlaylist,
+    PlaylistItem,
+    parse_m3u,
+    parse_playlist_data,
+)
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -693,6 +699,8 @@ class StreamsAudio:
 
         stream_type = StreamType.HTTP
         timeout = ClientTimeout(total=None, connect=10, sock_read=5)
+        playlist_data: bytes | None = None
+        playlist_charset: str | None = None
 
         try:
             async with self._connect_radio_stream(
@@ -702,6 +710,19 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
+                if (
+                    url.endswith((".m3u", ".m3u8", ".pls"))
+                    or ".m3u?" in url
+                    or ".m3u8?" in url
+                    or ".pls?" in url
+                    or "audio/x-mpegurl" in headers.get("content-type", "")
+                    or "audio/x-scpls" in headers.get("content-type", "")
+                ):
+                    # take the playlist from this very response: a separate request would
+                    # go out with another user agent and stricter TLS than the rest of the
+                    # radio paths, so a host could answer it differently
+                    playlist_data = await resp.content.read(MAX_PLAYLIST_SIZE)
+                    playlist_charset = resp.charset
 
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
@@ -709,16 +730,9 @@ class StreamsAudio:
                 # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
                 stream_type = StreamType.IN_BAND
 
-            if (
-                url.endswith((".m3u", ".m3u8", ".pls"))
-                or ".m3u?" in url
-                or ".m3u8?" in url
-                or ".pls?" in url
-                or "audio/x-mpegurl" in headers.get("content-type", "")
-                or "audio/x-scpls" in headers.get("content-type", "")
-            ):
+            if playlist_data is not None:
                 try:
-                    substreams = await fetch_playlist(mass, url)
+                    substreams = await parse_playlist_data(url, playlist_data, playlist_charset)
                     if not any(x for x in substreams if x.length):
                         for line in substreams:
                             if not line.is_url:
