@@ -30,6 +30,11 @@ COMPATIBLE_LICENSES = {
     "Unlicense",
     "CC0",
     "Public Domain",
+    # compact spellings that would not survive the boundary check as a suffix of the name above
+    "PSFL",
+    "ISCL",
+    "LGPLv2",
+    "LGPLv3",
 }
 
 # SPDX identifiers accepted in a PEP 639 `license_expression`
@@ -603,11 +608,10 @@ def _names_license(license_upper: str, name: str) -> bool:
     :param name: The license name to look for, e.g. "MPL-2.0".
     """
     # tolerate spelling variants of the separators, so that "MPL 2.0" is read as "MPL-2.0", but
-    # match on word boundaries, so the name cannot be assembled out of unrelated words ("this
-    # copyright" holding an "ISC", or "mitigation" a "MIT"). A single letter may follow, for the
-    # version and "License" markers real packages write ("LGPLv3", "PSFL")
+    # match whole words only, so the name is neither assembled out of unrelated ones ("this
+    # copyright" holding an "ISC") nor read out of one that merely starts the same ("MITigation")
     parts = [re.escape(part) for part in re.findall(r"[A-Z0-9]+", name.upper())]
-    return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}(?![A-Z]{{2}})", license_upper) is not None
+    return re.search(rf"\b{r'[^A-Z0-9]*'.join(parts)}(?![A-Z0-9])", license_upper) is not None
 
 
 def _is_spdx_operator(token: str) -> bool:

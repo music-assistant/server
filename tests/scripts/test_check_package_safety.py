@@ -209,6 +209,9 @@ def test_compatible_licenses(license_str: str) -> None:
         ("Redistribution is permitted for internal use only", "Unknown/unverified license"),
         ("SUBMITTED-1.0", "Unknown/unverified license"),
         ("Mitigation License 1.0", "Unknown/unverified license"),
+        # a name that merely starts like one we know is not that license
+        ("MITX", "Unknown/unverified license"),
+        ("ISC2", "Unknown/unverified license"),
         ("Internal use only, do not transmit", "Unknown/unverified license"),
         # a value that joins licenses is read as an expression, whichever field it came from
         ("MIT AND Proprietary", "Unknown/unverified license"),
