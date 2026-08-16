@@ -19,7 +19,6 @@ from music_assistant_models.errors import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         ProviderConfig,
     )
 
@@ -27,25 +26,14 @@ if TYPE_CHECKING:
 def _with_translation_owner(
     entries: list[ConfigEntry],
     owner: str,
-    action: str | None,
-    values: dict[str, ConfigValueType] | None,
 ) -> list[ConfigEntry]:
-    """
-    Return copies of the entries stamped with the owner namespace used to resolve their strings.
-
-    During an action flow (action + values present) the current value is also populated from the
-    passed values.
-    """
-    populate = action is not None and values is not None
+    """Return entry copies stamped with the owner namespace used to resolve their strings."""
     result: list[ConfigEntry] = []
     for entry in entries:
         # replace() returns a copy so we never mutate the shared (often module-level) entry defs.
         # An entry that already declares an owner (e.g. an injected protocol entry that belongs to
         # its origin provider, not the host player) keeps it; everything else gets the passed owner.
-        copied = replace(entry, translation_owner=entry.translation_owner or owner)
-        if populate and values is not None and copied.value is None:
-            copied.value = values.get(copied.key, copied.default_value)
-        result.append(copied)
+        result.append(replace(entry, translation_owner=entry.translation_owner or owner))
     return result
 
 
@@ -63,13 +51,16 @@ def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
     """Derive the (lifecycle) status of a provider from its config and load state."""
     if not conf.enabled:
         return ProviderStatus.DISABLED
-    if is_loaded:
-        # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
-        return ProviderStatus.LOADED
+    # a recorded error wins over being loaded: a provider that hit a problem the user has to
+    # act on (e.g. one unloading itself after an auth failure) must not read as healthy, or
+    # the UI has no way to point at it - the status is what flags it in the providers list
     if conf.last_error is not None:
         if conf.last_error.error_code in _AUTH_ERROR_CODES:
             return ProviderStatus.AUTH_REQUIRED
         if conf.last_error.error_code == UnsupportedSystemError.error_code:
             return ProviderStatus.INCOMPATIBLE
         return ProviderStatus.ERROR
+    if is_loaded:
+        # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
+        return ProviderStatus.LOADED
     return ProviderStatus.LOADING

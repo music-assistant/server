@@ -6,13 +6,14 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     ItemMapping,
     Playlist,
@@ -21,8 +22,16 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
+from music_assistant.providers.music_quiz.constants import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES,
+    MAX_AI_RESPONSE_LINES,
+)
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -33,12 +42,12 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
 )
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
-from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
+from music_assistant.providers.music_quiz.quiz_types.base import (
+    MAX_SUGGESTION_COUNT,
+    has_untrusted_release_year,
+)
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
-    AI_ATTEMPTS_PER_PROVIDER,
-    AI_QUERY_TIMEOUT_SECONDS,
-    MAX_AI_PROMPT_BYTES,
-    MAX_AI_RESPONSE_BYTES,
+    AI_GENERATION_ATTEMPTS,
     MAX_ANSWER_LENGTH,
     MAX_METADATA_VALUE_LENGTH,
     MAX_QUESTION_LENGTH,
@@ -48,6 +57,7 @@ from music_assistant.providers.music_quiz.quiz_types.trivia import (
     TriviaQuizType,
     TriviaTarget,
     TriviaTrackFacts,
+    _has_untrusted_release_facts,
 )
 
 
@@ -104,6 +114,50 @@ def _track(
     return track
 
 
+def _full_album(
+    item_id: str,
+    name: str,
+    *,
+    album_type: AlbumType = AlbumType.ALBUM,
+    artists: Sequence[Artist | ItemMapping] = (),
+    year: int | None = None,
+    provider: str = "prov",
+) -> Album:
+    """Return a full album with configurable compilation evidence."""
+    return Album(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        album_type=album_type,
+        artists=UniqueList(artists),
+        year=year,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+    )
+
+
+def _album_artist(
+    item_id: str,
+    name: str,
+    *,
+    mbid: str | None = None,
+    provider: str = "prov",
+) -> Artist:
+    """Return a full album artist with optional MusicBrainz identity."""
+    return Artist(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
+        provider_mappings=set(),
+    )
+
+
 def _playlist(item_id: str = "playlist", provider: str = "prov") -> Playlist:
     """Return a minimal playlist source."""
     return Playlist(
@@ -126,10 +180,13 @@ def _ai_provider(
     instance_id: str = "ai--1",
     error: Exception | None = None,
 ) -> MagicMock:
-    """Return a mock AI_QUERY-capable plugin provider."""
+    """Return a mock AI_QUERY-capable plugin provider exposing a single engine."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = instance_id
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name=instance_id, provider=provider)]
+    )
     return provider
 
 
@@ -138,6 +195,7 @@ def _mass(providers: Sequence[object] | None = None) -> MagicMock:
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = list(providers or [])
     mass.music.search = AsyncMock()
+    mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     return mass
 
 
@@ -145,14 +203,23 @@ def _quiz(
     tracks: list[Track],
     *,
     providers: Sequence[object] | None = None,
+    ai_engine: str | None = None,
     round_count: int = 1,
     suggestion_count: int = 4,
     difficulty: str = MusicQuizDifficulty.NORMAL.value,
     language: str = DEFAULT_TRIVIA_LANGUAGE,
     play_reveal_audio: bool = True,
 ) -> tuple[TriviaQuizType, MagicMock]:
-    """Return a Trivia strategy backed by a selected-track pool."""
-    mass = _mass(providers if providers is not None else [_ai_provider()])
+    """
+    Return a Trivia strategy backed by a selected-track pool.
+
+    :param ai_engine: The configured engine uid; defaults to the engine of the first
+        given plugin provider, since a game always runs on one concrete selection.
+    """
+    ai_providers = list(providers if providers is not None else [_ai_provider()])
+    mass = _mass(ai_providers)
+    if ai_engine is None and ai_providers:
+        ai_engine = f"{cast('Any', ai_providers[0]).instance_id}/engine"
     config = MusicQuizConfig(
         round_count=round_count,
         suggestion_count=suggestion_count,
@@ -160,6 +227,7 @@ def _quiz(
         difficulty=difficulty,
         language=language,
         play_reveal_audio=play_reveal_audio,
+        ai_engine=ai_engine,
     )
     quiz = TriviaQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
@@ -179,6 +247,15 @@ def _valid_response(
     )
 
 
+def _prompt_payload(prompt: str) -> dict[str, Any]:
+    """Return the decoded grounded data block from a Trivia prompt."""
+    _, encoded_payload = prompt.split("BEGIN_UNTRUSTED_MUSIC_METADATA_JSON\n", 1)
+    encoded_block = encoded_payload.rsplit("\nEND_UNTRUSTED_MUSIC_METADATA_JSON", 1)[0]
+    payload = json_loads(encoded_block)
+    assert isinstance(payload, dict)
+    return payload
+
+
 def _all_facts() -> TriviaTrackFacts:
     """Return track facts supporting every Trivia target."""
     return TriviaTrackFacts(
@@ -187,6 +264,33 @@ def _all_facts() -> TriviaTrackFacts:
         artist="Massive Attack",
         album="Mezzanine",
         release_year=1998,
+    )
+
+
+def _grounded_fallback_facts() -> tuple[TriviaTrackFacts, ...]:
+    """Return distinct bounded facts supporting every Trivia target."""
+    return (
+        TriviaTrackFacts(
+            source_uri="prov://track/genesis",
+            title="Genesis",
+            artist="Justice",
+            album="Cross",
+            release_year=2007,
+        ),
+        TriviaTrackFacts(
+            source_uri="prov://track/midnight-city",
+            title="Midnight City",
+            artist="M83",
+            album="Hurry Up, We're Dreaming",
+            release_year=2011,
+        ),
+        TriviaTrackFacts(
+            source_uri="prov://track/roads",
+            title="Roads",
+            artist="Portishead",
+            album="Dummy",
+            release_year=1994,
+        ),
     )
 
 
@@ -205,6 +309,45 @@ def _correct_source_uri(state: MultipleChoiceRoundState) -> str:
     assert len(correct) == 1
     assert correct[0].uri is not None
     return correct[0].uri
+
+
+def _with_isrc(track: Track, isrc: str) -> Track:
+    """Return the given track carrying an ISRC."""
+    track.add_external_id(ExternalID.ISRC, isrc)
+    return track
+
+
+def _with_musicbrainz(
+    mass: MagicMock,
+    years: dict[str, int],
+    name_years: dict[tuple[str, str], int] | None = None,
+) -> MagicMock:
+    """
+    Attach a MusicBrainz provider to the mock MusicAssistant.
+
+    :param mass: Mock MusicAssistant to attach the provider to.
+    :param years: Release year per ISRC.
+    :param name_years: Release year per (artist name, track name), for tracks without an ISRC.
+    """
+    provider = MagicMock()
+    provider.get_release_year_by_isrc = AsyncMock(side_effect=lambda isrc: years.get(isrc))
+    provider.get_release_year_by_track_name = AsyncMock(
+        side_effect=lambda artist, track: (name_years or {}).get((artist, track))
+    )
+    mass.get_provider = MagicMock(
+        side_effect=lambda domain: provider if domain == "musicbrainz" else None
+    )
+    return provider
+
+
+def _year_question_provider() -> MagicMock:
+    """Return a mock AI provider that words one release year question."""
+    return _ai_provider(
+        _valid_response(
+            "In which year was this song first released?",
+            ["2011", "1994", "1987"],
+        )
+    )
 
 
 def test_registry_identity_and_config_are_trivia_specific() -> None:
@@ -398,7 +541,7 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
     assert source.uri is not None
     quiz = TriviaQuizType(
         mass,
-        MusicQuizConfig(round_count=1, source_uris=[source.uri]),
+        MusicQuizConfig(round_count=1, source_uris=[source.uri], ai_engine="ai--1/engine"),
     )
 
     await quiz.initialize()
@@ -499,6 +642,591 @@ def test_track_facts_use_earliest_valid_release_year_without_defaults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_compilation_album_omits_album_and_year_from_grounding() -> None:
+    """Exclude every release fact supplied with a typed compilation album."""
+    track = _track(
+        "everlasting-love",
+        "Everlasting Love",
+        "Sandra",
+        release_year=2012,
+    )
+    track.album = _full_album(
+        "party-hits-13",
+        "Party Hits 13",
+        album_type=AlbumType.COMPILATION,
+        artists=[_album_artist("album-artist", "Compilation Curator")],
+        year=2012,
+    )
+    quiz, mass = _quiz([track])
+    mass.music.albums.get = AsyncMock()
+    mass.music.tracks.get = AsyncMock()
+
+    eligible_tracks = await quiz._get_eligible_tracks()
+
+    assert track.uri is not None
+    facts = eligible_tracks[track.uri]
+    assert facts.album is None
+    assert facts.release_year is None
+    assert quiz._available_targets(facts) == (TriviaTarget.ARTIST, TriviaTarget.TITLE)
+    fact = quiz._select_fact(facts, 0)
+    assert fact.correct_answer == "Sandra"
+    assert _prompt_payload(quiz._build_prompt(fact))["track_metadata"] == {
+        "title": "Everlasting Love",
+        "artist": "Sandra",
+    }
+    mass.music.albums.get.assert_not_awaited()
+    mass.music.tracks.get.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "album_artists",
+    [
+        [_album_artist("va-name", "VARIOUS-ARTISTS")],
+        [
+            _album_artist(
+                "va-mbid",
+                "Artistes divers",
+                mbid=VARIOUS_ARTISTS_MBID,
+            )
+        ],
+        [
+            _album_artist("primary", "Primary Artist"),
+            _album_artist("va-multiple", VARIOUS_ARTISTS_NAME),
+        ],
+    ],
+    ids=["normalized-name", "canonical-mbid", "multiple-artists"],
+)
+def test_various_artists_album_omits_album_and_year(
+    album_artists: list[Artist],
+) -> None:
+    """Treat any canonical Various Artists album credit as compilation evidence."""
+    track = _track("compilation", "Selected Track", "Track Artist", release_year=2012)
+    track.album = _full_album(
+        "album",
+        "Compilation Album",
+        artists=album_artists,
+        year=2012,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album is None
+    assert facts.release_year is None
+    assert TriviaQuizType._available_targets(facts) == (
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("album_type", "album_artists", "expected_album"),
+    [
+        (AlbumType.LIVE, [], "The Long Night"),
+        (AlbumType.SOUNDTRACK, [], "The Long Night"),
+        (
+            AlbumType.LIVE,
+            [_album_artist("primary", "Primary Artist"), _album_artist("va", VARIOUS_ARTISTS_NAME)],
+            None,
+        ),
+        (AlbumType.SOUNDTRACK, [_album_artist("va", VARIOUS_ARTISTS_NAME)], None),
+    ],
+    ids=["live", "soundtrack", "live-various-artists", "soundtrack-various-artists"],
+)
+def test_live_and_soundtrack_album_names_stay_usable_answers(
+    album_type: AlbumType,
+    album_artists: list[Artist],
+    expected_album: str | None,
+) -> None:
+    """Keep a live or soundtrack album name as an answer while distrusting its own year."""
+    # the track carries no year of its own, so the album's year is the only one that could
+    # surface and a trusted album type would leak it into the grounding
+    track = _track("live", "Teardrop", "Massive Attack")
+    track.album = _full_album(
+        "the-long-night",
+        "The Long Night",
+        album_type=album_type,
+        artists=album_artists,
+        year=2015,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == expected_album
+    assert facts.release_year is None
+
+
+def test_trivia_album_distrust_stays_a_subset_of_untrusted_release_years() -> None:
+    """Pin Trivia's album distrust as a subset of the shared untrusted release year rule."""
+    artist_credits: dict[str, list[Artist]] = {
+        "own": [_album_artist("own", "Album Artist")],
+        "various": [_album_artist("va", VARIOUS_ARTISTS_NAME)],
+    }
+    distrusted = set()
+    for album_type in AlbumType:
+        for credit, album_artists in artist_credits.items():
+            album = _full_album(
+                "album", "Album", album_type=album_type, artists=album_artists, year=2015
+            )
+            if _has_untrusted_release_facts(album):
+                distrusted.add((album_type, credit))
+                # _track_facts only bypasses get_track_release_year for albums Trivia distrusts,
+                # so every such album must also be one whose own year is never trusted
+                assert has_untrusted_release_year(album)
+
+    assert (AlbumType.COMPILATION, "own") in distrusted
+    assert (AlbumType.ALBUM, "various") in distrusted
+    assert (AlbumType.LIVE, "various") in distrusted
+    assert (AlbumType.SOUNDTRACK, "various") in distrusted
+    assert (AlbumType.LIVE, "own") not in distrusted
+    assert (AlbumType.SOUNDTRACK, "own") not in distrusted
+
+
+def test_normal_full_album_retains_release_grounding() -> None:
+    """Keep album and earliest release year facts for a normal full album."""
+    track = _track("normal", "Teardrop", "Massive Attack", release_year=2001)
+    track.album = _full_album(
+        "mezzanine",
+        "Mezzanine",
+        album_type=AlbumType.ALBUM,
+        year=1998,
+    )
+    quiz, _ = _quiz([])
+
+    facts = quiz._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == "Mezzanine"
+    assert facts.release_year == 1998
+    assert quiz._available_targets(facts) == tuple(TriviaTarget)
+    fact = quiz._select_fact(facts, 2)
+    assert fact.correct_answer == "Mezzanine"
+    assert _prompt_payload(quiz._build_prompt(fact))["track_metadata"] == {
+        "title": "Teardrop",
+        "artist": "Massive Attack",
+        "album": "Mezzanine",
+        "release_year": 1998,
+    }
+
+
+def test_album_mapping_retains_release_grounding_without_compilation_evidence() -> None:
+    """Keep existing release facts when only an album mapping is available."""
+    track = _track(
+        "mapping",
+        "Mapped Track",
+        "Mapped Artist",
+        album=VARIOUS_ARTISTS_NAME,
+        album_year=2000,
+        release_year=2004,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == VARIOUS_ARTISTS_NAME
+    assert facts.release_year == 2000
+    assert TriviaQuizType._available_targets(facts) == tuple(TriviaTarget)
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_dates_a_reissue_album_mapping() -> None:
+    """Prefer the MusicBrainz recording year over a reissue year on an album mapping."""
+    track = _with_isrc(
+        _track("reissue", "Teardrop", "Massive Attack", album="Mezzanine", album_year=2007),
+        "ISRC-REISSUE",
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-REISSUE": 1998})
+
+    dated_track, _ = await quiz._musicbrainz_dated_track(track)
+    facts = quiz._track_facts(dated_track)
+
+    assert facts is not None
+    assert facts.release_year == 1998
+
+
+@pytest.mark.asyncio
+async def test_library_release_year_survives_a_later_musicbrainz_year() -> None:
+    """Keep the earliest known year when MusicBrainz only knows a later remaster."""
+    dated_album = _with_isrc(
+        _track("album-dated", "Penny Lane", "The Beatles", album="Past Masters", album_year=1967),
+        "ISRC-ALBUM-DATED",
+    )
+    dated_track = _with_isrc(
+        _track("track-dated", "Penny Lane", "The Beatles", release_year=1967),
+        "ISRC-TRACK-DATED",
+    )
+    quiz, mass = _quiz([dated_album, dated_track])
+    _with_musicbrainz(mass, {"ISRC-ALBUM-DATED": 2017, "ISRC-TRACK-DATED": 2017})
+
+    album_dated, album_year = await quiz._musicbrainz_dated_track(dated_album)
+    track_dated, track_year = await quiz._musicbrainz_dated_track(dated_track)
+    album_facts = quiz._track_facts(album_dated, musicbrainz_year=album_year)
+    track_facts = quiz._track_facts(track_dated, musicbrainz_year=track_year)
+
+    assert album_facts is not None
+    assert album_facts.release_year == 1967
+    assert track_facts is not None
+    assert track_facts.release_year == 1967
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_adds_a_year_target_to_an_undated_track() -> None:
+    """Offer a release year target once MusicBrainz dates a track the library left undated."""
+    track = _with_isrc(
+        _track("undated", "Teardrop", "Massive Attack", album="Mezzanine"),
+        "ISRC-UNDATED",
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-UNDATED": 1998})
+
+    undated_facts = quiz._track_facts(track)
+    dated_track, _ = await quiz._musicbrainz_dated_track(track)
+    dated_facts = quiz._track_facts(dated_track)
+
+    assert undated_facts is not None
+    assert undated_facts.release_year is None
+    assert quiz._available_targets(undated_facts) == (
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+        TriviaTarget.ALBUM,
+    )
+    assert dated_facts is not None
+    assert dated_facts.release_year == 1998
+    assert quiz._available_targets(dated_facts) == tuple(TriviaTarget)
+
+
+@pytest.mark.parametrize(
+    "library_year",
+    [1998, 1982, 1975, None],
+    ids=["reissue-year", "same-year", "earlier-year", "undated"],
+)
+@pytest.mark.asyncio
+async def test_compilation_release_year_uses_the_musicbrainz_recording_year(
+    library_year: int | None,
+) -> None:
+    """Answer a compilation year question with the MusicBrainz year whatever the library says."""
+    track = _with_isrc(
+        _track("compilation", "Africa", "Toto", release_year=library_year), "ISRC-COMP"
+    )
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-COMP": 1982})
+
+    dated_track, musicbrainz_year = await quiz._musicbrainz_dated_track(track)
+    facts = quiz._track_facts(dated_track, musicbrainz_year=musicbrainz_year)
+
+    assert facts is not None
+    assert facts.album is None
+    assert facts.release_year == 1982
+    assert quiz._available_targets(facts) == (
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+        TriviaTarget.YEAR,
+    )
+    fact = quiz._select_fact(facts, 2)
+    assert fact.target is TriviaTarget.YEAR
+    assert fact.correct_answer == "1982"
+
+
+@pytest.mark.asyncio
+async def test_compilation_release_year_rejects_an_implausible_musicbrainz_year() -> None:
+    """Keep a compilation year suppressed when MusicBrainz answers with an unusable year."""
+    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-COMP": 9999})
+
+    dated_track, musicbrainz_year = await quiz._musicbrainz_dated_track(track)
+    facts = quiz._track_facts(dated_track, musicbrainz_year=musicbrainz_year)
+
+    assert musicbrainz_year is None
+    assert facts is not None
+    assert facts.release_year is None
+    assert TriviaTarget.YEAR not in quiz._available_targets(facts)
+
+
+def test_compilation_release_year_stays_suppressed_without_dating() -> None:
+    """Keep the compilation's own year suppressed while MusicBrainz has not dated the track."""
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.release_year is None
+    assert TriviaTarget.YEAR not in TriviaQuizType._available_targets(facts)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_grounds_a_compilation_without_an_isrc_on_its_name_lookup() -> None:
+    """Ground a compilation round on the name lookup when the track carries no ISRC."""
+    # a compilation has no usable year of its own, so the name lookup is the only thing
+    # that can answer a release year question about tracks from an ISRC-less provider
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_grounds_a_dated_compilation_on_its_musicbrainz_year() -> None:
+    """Ground a compilation round on the MusicBrainz year while hiding the compilation album."""
+    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {"ISRC-COMP": 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_scores_and_grounds_the_musicbrainz_release_year() -> None:
+    """Score and ground a release year question on the MusicBrainz recording year."""
+    track = _with_isrc(_track("reissue", "Teardrop", release_year=2007), "ISRC-REISSUE")
+    provider = _year_question_provider()
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {"ISRC-REISSUE": 1998})
+
+    game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.answer_label == "1998"
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    assert _correct_source_uri(game_round.answer_state) == track.uri
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["question_target"] == TriviaTarget.YEAR
+    assert payload["correct_answer"] == "1998"
+    assert payload["track_metadata"]["release_year"] == 1998
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_keeps_library_years_without_musicbrainz() -> None:
+    """Ground a release year question on library metadata when MusicBrainz is unavailable."""
+    track = _with_isrc(_track("library", "Teardrop", release_year=1998), "ISRC-LIBRARY")
+    quiz, mass = _quiz([track], providers=[_year_question_provider()])
+    mass.get_provider = MagicMock(return_value=None)
+
+    game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.answer_label == "1998"
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_lookups_do_not_scale_with_the_source_pool() -> None:
+    """Date only the track that becomes the question, never the complete eligible pool."""
+    tracks = [
+        _with_isrc(
+            _track(
+                f"track-{index}",
+                f"Song {index}",
+                f"Artist {index}",
+                album=f"Album {index}",
+                album_year=2007,
+            ),
+            f"ISRC-{index}",
+        )
+        for index in range(60)
+    ]
+    quiz, mass = _quiz(tracks, providers=[_ai_provider(_valid_response())])
+    musicbrainz = _with_musicbrainz(mass, {f"ISRC-{index}": 1998 for index in range(60)})
+
+    await quiz.initialize()
+    await quiz.prepare_round(0, [])
+
+    assert musicbrainz.get_release_year_by_isrc.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_compilation_year_round_is_scored_on_the_musicbrainz_year() -> None:
+    """Score a compilation release year round on the MusicBrainz recording year."""
+    tracks = [
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", release_year=2012),
+            f"ISRC-{index}",
+        )
+        for index in range(3)
+    ]
+    for index, track in enumerate(tracks):
+        track.album = _full_album(
+            f"album-{index}",
+            f"Compilation {index}",
+            album_type=AlbumType.COMPILATION,
+            year=2012,
+        )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response("Who performs the selected song?", ["Portishead", "Radiohead", "Air"]),
+        _valid_response("Which title is this?", ["Teardrop", "Genesis", "Midnight City"]),
+        _valid_response("In which year did this first appear?", ["1975", "1991", "2003"]),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=3)
+    _with_musicbrainz(mass, {f"ISRC-{index}": 1982 for index in range(3)})
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+        year_round = await quiz.prepare_round(2, [first_round, second_round])
+
+    assert year_round.answer_label == "1982"
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["question_target"] == TriviaTarget.YEAR
+    assert payload["correct_answer"] == "1982"
+    assert payload["track_metadata"] == {
+        "title": "Song 2",
+        "artist": "Artist 2",
+        "release_year": 1982,
+    }
+
+
+@pytest.mark.asyncio
+async def test_compilation_year_round_prefers_the_older_of_both_lookups() -> None:
+    """Score a compilation year round on the older year, since a remaster carries its own ISRC."""
+    # the track carries the compilation's own date, which is exactly the year Trivia may not
+    # fall back on, so it must not decide whether the song is dated by name as well
+    tracks = [
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", release_year=2012),
+            f"ISRC-{index}",
+        )
+        for index in range(3)
+    ]
+    for index, track in enumerate(tracks):
+        track.album = _full_album(
+            f"album-{index}",
+            f"Compilation {index}",
+            album_type=AlbumType.COMPILATION,
+            year=2012,
+        )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response("Who performs the selected song?", ["Portishead", "Radiohead", "Air"]),
+        _valid_response("Which title is this?", ["Teardrop", "Genesis", "Midnight City"]),
+        _valid_response("In which year did this first appear?", ["1975", "1991", "2003"]),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=3)
+    _with_musicbrainz(
+        mass,
+        {f"ISRC-{index}": 2005 for index in range(3)},
+        name_years={(f"Artist {index}", f"Song {index}"): 1982 for index in range(3)},
+    )
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+        year_round = await quiz.prepare_round(2, [first_round, second_round])
+
+    assert year_round.answer_label == "1982"
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["correct_answer"] == "1982"
+
+
+@pytest.mark.asyncio
+async def test_undated_compilation_rounds_only_generate_artist_and_title_targets() -> None:
+    """Generate valid rounds without album or year targets while MusicBrainz cannot date them."""
+    first_track = _track("one", "First Song", "Artist One", release_year=2012)
+    first_track.album = _full_album(
+        "first-album",
+        "First Compilation",
+        album_type=AlbumType.COMPILATION,
+        year=2012,
+    )
+    second_track = _track("two", "Second Song", "Artist Two", release_year=2013)
+    second_track.album = _full_album(
+        "second-album",
+        "Second Compilation",
+        artists=[_album_artist("va", VARIOUS_ARTISTS_NAME)],
+        year=2013,
+    )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response(
+            "Who performs the selected song?",
+            ["Portishead", "Radiohead", "Air"],
+        ),
+        _valid_response(
+            "Which title was recorded by Artist Two?",
+            ["Teardrop", "Genesis", "Midnight City"],
+        ),
+    ]
+    quiz, _ = _quiz(
+        [first_track, second_track],
+        providers=[provider],
+        round_count=2,
+    )
+
+    facts_by_uri = await quiz._get_eligible_tracks()
+    for facts in facts_by_uri.values():
+        assert {quiz._select_fact(facts, round_index).target for round_index in range(8)} == {
+            TriviaTarget.ARTIST,
+            TriviaTarget.TITLE,
+        }
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda tracks: tracks[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+
+    assert first_round.answer_label == "Artist One"
+    assert second_round.answer_label == "Second Song"
+    prompt_payloads = [_prompt_payload(call.args[0]) for call in provider.ai_query.await_args_list]
+    assert [payload["question_target"] for payload in prompt_payloads] == [
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+    ]
+    assert all(set(payload["track_metadata"]) == {"title", "artist"} for payload in prompt_payloads)
+
+
+@pytest.mark.asyncio
 async def test_prepare_round_persists_unique_sources_across_fresh_strategies() -> None:
     """Derive used tracks from persisted correct suggestions during fresh prefetch."""
     first_track = _track("one", "Teardrop", "Massive Attack")
@@ -518,6 +1246,7 @@ async def test_prepare_round_persists_unique_sources_across_fresh_strategies() -
         round_count=2,
         suggestion_count=4,
         source_uris=["prov://playlist/source"],
+        ai_engine="ai--1/engine",
     )
     mass = _mass([provider])
     first_quiz = TriviaQuizType(mass, config)
@@ -572,6 +1301,30 @@ async def test_prepare_round_randomly_selects_from_unused_tracks() -> None:
     assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
     assert _correct_source_uri(game_round.answer_state) == tracks[1].uri
     assert len(choose.call_args.args[0]) == 2
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_prefers_track_not_used_by_previous_game() -> None:
+    """Deprioritize a previous game's track when another grounded track is available."""
+    recent = _track("recent", "Teardrop", "Massive Attack")
+    fresh = _track("fresh", "Genesis", "Justice")
+    provider = _ai_provider(
+        _valid_response(
+            "Who performs the selected track Genesis?",
+            ["Daft Punk", "Air", "Phoenix"],
+        )
+    )
+    quiz, _ = _quiz([recent, fresh], providers=[provider])
+    assert recent.uri is not None
+    quiz.add_recent_track_uris([recent.uri])
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.track_uri == fresh.uri
 
 
 @pytest.mark.asyncio
@@ -755,6 +1508,353 @@ def test_strict_generation_parser_accepts_exact_valid_shape() -> None:
     )
 
 
+@pytest.mark.parametrize("fence", ["```json", "```"])
+def test_strict_generation_parser_accepts_fenced_response(fence: str) -> None:
+    """Parse a valid response wrapped in a code fence with or without a language tag."""
+    quiz, _ = _quiz([])
+
+    result = quiz._parse_generation(f"{fence}\n{_valid_response()}\n```\n", _artist_fact())
+
+    assert result == TriviaGeneration(
+        question="Which artist recorded this selected track?",
+        wrong_answers=("Portishead", "Radiohead", "Air"),
+    )
+
+
+def test_strict_generation_parser_enforces_size_and_line_limits() -> None:
+    """Reject responses outside their explicit resource limits."""
+    quiz, _ = _quiz([])
+    oversized_response = "x" * (MAX_AI_RESPONSE_BYTES + 1)
+    too_many_lines = "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES + 1))
+
+    with pytest.raises(ValueError, match="size"):
+        quiz._parse_generation(oversized_response, _artist_fact())
+    with pytest.raises(ValueError, match="line"):
+        quiz._parse_generation(too_many_lines, _artist_fact())
+
+
+def test_strict_generation_parser_limits_the_original_response() -> None:
+    """Enforce the size and line limits before a code fence is stripped."""
+    quiz, _ = _quiz([])
+    oversized_response = f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```"
+    too_many_lines = "```json\n" + "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES)) + "\n```"
+
+    with pytest.raises(ValueError, match="size"):
+        quiz._parse_generation(oversized_response, _artist_fact())
+    with pytest.raises(ValueError, match="line"):
+        quiz._parse_generation(too_many_lines, _artist_fact())
+
+
+@pytest.mark.asyncio
+async def test_generation_repairs_duplicate_answers_from_cached_grounding() -> None:
+    """Keep valid AI answers and fill duplicate slots without another AI or source call."""
+    tracks = [
+        _track("correct", "Teardrop", "Massive Attack"),
+        _track("fallback-1", "Roads", "Portishead"),
+        _track("fallback-2", "All I Need", "Air"),
+        _track("fallback-3", "Hell Is Round the Corner", "Tricky"),
+    ]
+    provider = _ai_provider(
+        _valid_response(
+            wrong_answers=["Massive Attack", "Radiohead", "radio-head"],
+        )
+    )
+    quiz, mass = _quiz(tracks, providers=[provider])
+    mass.music.albums.get = AsyncMock()
+    mass.music.tracks.get = AsyncMock()
+    facts_by_uri = await quiz._get_eligible_tracks()
+    assert tracks[0].uri is not None
+    fact = TriviaFact(TriviaTarget.ARTIST, "Massive Attack", facts_by_uri[tracks[0].uri])
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.shuffle",
+        side_effect=lambda _tracks: None,
+    ) as shuffle:
+        result = await quiz._generate_question(fact)
+
+    assert result.wrong_answers == ("Radiohead", "Portishead", "Air")
+    provider.ai_query.assert_awaited_once()
+    shuffle.assert_called_once()
+    prompt = provider.ai_query.await_args.args[0]
+    assert "Portishead" not in prompt
+    assert "Air" not in prompt
+    assert "Tricky" not in prompt
+    mass.music.albums.get.assert_not_awaited()
+    mass.music.tracks.get.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generation_defers_grounded_work_until_repair_is_needed() -> None:
+    """Avoid fallback iteration and shuffling until valid AI answers leave empty slots."""
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response(),
+        _valid_response(
+            wrong_answers=["Massive Attack", "massive-attack", "MASSIVE ATTACK"],
+        ),
+    ]
+    quiz, _ = _quiz([], providers=[provider])
+    grounded_tracks = MagicMock()
+    grounded_tracks.__iter__.return_value = iter(_grounded_fallback_facts())
+    eligible_tracks = MagicMock()
+    eligible_tracks.values.return_value = grounded_tracks
+    quiz._eligible_tracks = eligible_tracks
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.shuffle",
+        side_effect=lambda _values: None,
+    ) as shuffle:
+        valid_result = await quiz._generate_question(_artist_fact())
+        grounded_tracks.__iter__.assert_not_called()
+        shuffle.assert_not_called()
+
+        repaired_result = await quiz._generate_question(_artist_fact())
+
+    assert valid_result.wrong_answers == ("Portishead", "Radiohead", "Air")
+    assert repaired_result.wrong_answers == ("Justice", "M83", "Portishead")
+    assert provider.ai_query.await_count == 2
+    assert eligible_tracks.values.call_count == 2
+    grounded_tracks.__iter__.assert_called_once()
+    shuffle.assert_called_once()
+
+
+def test_generation_repair_skips_normalized_near_and_fallback_collisions() -> None:
+    """Continue scanning grounded facts after normalized and near-answer collisions."""
+    quiz, _ = _quiz([])
+    colliding_facts = tuple(
+        replace(
+            _all_facts(),
+            source_uri=f"prov://track/{index}",
+            artist=artist,
+        )
+        for index, artist in enumerate(
+            ["PORTISHEAD!", "Portishead Live at Roseland", "Radiohead", "Air"]
+        )
+    )
+    response = _valid_response(
+        wrong_answers=["massive-attack", "Portishead", "Portishead Live"],
+    )
+
+    result = quiz._parse_generation(response, _artist_fact(), colliding_facts)
+
+    assert result.wrong_answers[0] == "Portishead"
+    assert set(result.wrong_answers) == {"Portishead", "Radiohead", "Air"}
+
+
+@pytest.mark.parametrize(
+    ("target", "correct_answer", "expected"),
+    [
+        (TriviaTarget.ARTIST, "Massive Attack", ("Justice", "M83", "Portishead")),
+        (TriviaTarget.TITLE, "Teardrop", ("Genesis", "Midnight City", "Roads")),
+        (
+            TriviaTarget.ALBUM,
+            "Mezzanine",
+            ("Cross", "Hurry Up, We're Dreaming", "Dummy"),
+        ),
+        (TriviaTarget.YEAR, "1998", ("2007", "2011", "1994")),
+    ],
+)
+def test_generation_repair_uses_only_same_target_grounding(
+    target: TriviaTarget,
+    correct_answer: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Fill every Trivia target only from grounded values of that target."""
+    quiz, _ = _quiz([])
+    fact = TriviaFact(target, correct_answer, _all_facts())
+    response = _valid_response(
+        question="Which answer matches the selected metadata?",
+        wrong_answers=[correct_answer, correct_answer.upper(), correct_answer],
+    )
+
+    result = quiz._parse_generation(response, fact, _grounded_fallback_facts())
+
+    assert set(result.wrong_answers) == set(expected)
+    assert all(isinstance(answer, str) for answer in result.wrong_answers)
+
+
+@pytest.mark.parametrize(
+    ("target", "correct_answer", "excluded_value", "expected"),
+    [
+        (
+            TriviaTarget.ALBUM,
+            "Mezzanine",
+            "Party Hits 13",
+            ("Cross", "Hurry Up, We're Dreaming", "Dummy"),
+        ),
+        (TriviaTarget.YEAR, "1998", "2012", ("2007", "2011", "1994")),
+    ],
+)
+def test_generation_repair_excludes_compilation_release_facts(
+    target: TriviaTarget,
+    correct_answer: str,
+    excluded_value: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Keep compilation-suppressed album and year values out of grounded fallback."""
+    compilation = _track(
+        "compilation-fallback",
+        "Everlasting Love",
+        "Sandra",
+        release_year=2012,
+    )
+    compilation.album = _full_album(
+        "party-hits-13",
+        "Party Hits 13",
+        album_type=AlbumType.COMPILATION,
+        year=2012,
+    )
+    compilation_facts = TriviaQuizType._track_facts(compilation)
+    assert compilation_facts is not None
+    response = _valid_response(
+        question="Which answer matches the selected metadata?",
+        wrong_answers=[correct_answer, correct_answer, correct_answer],
+    )
+    quiz, _ = _quiz([])
+
+    result = quiz._parse_generation(
+        response,
+        TriviaFact(target, correct_answer, _all_facts()),
+        (compilation_facts, *_grounded_fallback_facts()),
+    )
+
+    assert set(result.wrong_answers) == set(expected)
+    assert excluded_value not in result.wrong_answers
+
+
+@pytest.mark.asyncio
+async def test_generation_retries_when_grounded_repair_is_insufficient() -> None:
+    """Retry after a valid response cannot be completed from grounded metadata."""
+    insufficient = _valid_response(
+        wrong_answers=["Massive Attack", "massive-attack", "MASSIVE ATTACK"],
+    )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [insufficient, _valid_response()]
+    quiz, _ = _quiz([], providers=[provider])
+    quiz._eligible_tracks = {
+        _all_facts().source_uri: _all_facts(),
+        "prov://track/one-fallback": replace(
+            _all_facts(),
+            source_uri="prov://track/one-fallback",
+            artist="Justice",
+        ),
+    }
+
+    result = await quiz._generate_question(_artist_fact())
+
+    assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_fails_when_all_grounded_repairs_are_insufficient() -> None:
+    """Keep the localized failure after every semantic repair exhausts its grounding."""
+    insufficient = _valid_response(
+        wrong_answers=["Massive Attack", "massive-attack", "MASSIVE ATTACK"],
+    )
+    provider = _ai_provider(insufficient)
+    quiz, _ = _quiz([], providers=[provider])
+    quiz._eligible_tracks = {
+        "prov://track/one-fallback": replace(
+            _all_facts(),
+            source_uri="prov://track/one-fallback",
+            artist="Justice",
+        )
+    }
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.parametrize(
+    "wrong_answers",
+    [
+        "Portishead",
+        ["Portishead", "Radiohead"],
+        ["Portishead", "Radiohead", "Air", "Tricky"],
+        ["Portishead", 42, "Air"],
+        ["Portishead", " ", "Air"],
+        ["Portishead\nLive", "Radiohead", "Air"],
+        ["x" * (MAX_ANSWER_LENGTH + 1), "Radiohead", "Air"],
+    ],
+)
+def test_generation_does_not_repair_malformed_wrong_answer_lists(
+    wrong_answers: object,
+) -> None:
+    """Reject malformed answer lists even when grounded fallback is sufficient."""
+    quiz, _ = _quiz([])
+    response = json_dumps(
+        {
+            "question": "Which artist recorded this selected track?",
+            "wrong_answers": wrong_answers,
+        }
+    )
+
+    with pytest.raises((TypeError, ValueError)):
+        quiz._parse_generation(response, _artist_fact(), _grounded_fallback_facts())
+
+
+@pytest.mark.asyncio
+async def test_next_round_repairs_duplicate_answers_without_extra_source_calls() -> None:
+    """Prepare the next Trivia round from cached grounding without an AI retry."""
+    tracks = [
+        _track("1", "Teardrop", "Massive Attack"),
+        _track("2", "Genesis", "Justice"),
+        _track("3", "Midnight City", "M83"),
+        _track("4", "Roads", "Portishead"),
+    ]
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response(
+            "Who performs the selected track?",
+            ["Portishead", "Radiohead", "Air"],
+        ),
+        _valid_response(
+            "Which title was recorded by Justice?",
+            ["Genesis", "Teardrop", "teardrop!"],
+        ),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=2)
+    mass.music.albums.get = AsyncMock()
+    mass.music.tracks.get = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+            side_effect=lambda candidates: candidates[0],
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.shuffle",
+            side_effect=lambda _tracks: None,
+        ),
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+
+    assert provider.ai_query.await_count == 2
+    assert second_round.answer_label == "Genesis"
+    assert isinstance(second_round.answer_state, MultipleChoiceRoundState)
+    assert {suggestion.label for suggestion in second_round.answer_state.suggestions} == {
+        "Genesis",
+        "Teardrop",
+        "Midnight City",
+        "Roads",
+    }
+    assert _correct_source_uri(second_round.answer_state) == tracks[1].uri
+    assert all(
+        suggestion.uri is None
+        for suggestion in second_round.answer_state.suggestions
+        if not suggestion.is_correct
+    )
+    mass.music.albums.get.assert_not_awaited()
+    mass.music.tracks.get.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("question", "answer"),
     [
@@ -861,6 +1961,8 @@ def test_answer_leak_detection_supports_non_space_scripts(
             }
         ),
         "x" * (MAX_AI_RESPONSE_BYTES + 1),
+        "```json\nnot json\n```",
+        "Here is the JSON you asked for:\n```json\n" + _valid_response() + "\n```",
         42,
     ],
 )
@@ -882,71 +1984,83 @@ async def test_generation_retries_invalid_response_then_accepts_valid_response()
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
-async def test_generation_uses_deterministic_provider_fallback() -> None:
-    """Try plugin providers by instance ID and fall back after bounded invalid output."""
-    first = _ai_provider("invalid", instance_id="ai--a")
-    second = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[second, first])
-
-    result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert first.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    second.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_falls_back_after_provider_exception() -> None:
-    """Continue to the next AI plugin when a provider query raises."""
-    failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--a")
-    working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[working, failing])
-
-    result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    working.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_times_out_stalled_provider_before_fallback() -> None:
-    """Bound each AI attempt so a stalled provider cannot block game management."""
-
-    async def _stall(_prompt: str) -> str:
-        await asyncio.Event().wait()
-        raise AssertionError
-
-    stalled = _ai_provider(instance_id="ai--a")
-    stalled.ai_query.side_effect = _stall
-    working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[working, stalled])
-
-    with patch(
-        "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
-        AI_QUERY_TIMEOUT_SECONDS / 30_000,
-    ):
-        result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert stalled.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    working.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_surfaces_localized_failure_after_all_providers() -> None:
-    """Fail explicitly after every provider exhausts its bounded attempts."""
-    invalid = _ai_provider("invalid", instance_id="ai--a")
-    failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[failing, invalid])
+async def test_generation_stays_on_the_configured_engine() -> None:
+    """Another available engine never answers for the engine the game was configured with."""
+    configured = _ai_provider("invalid", instance_id="ai--a")
+    other = _ai_provider(_valid_response(), instance_id="ai--b")
+    quiz, _ = _quiz([], providers=[configured, other])
 
     with pytest.raises(InvalidDataError) as error:
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert invalid.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert configured.ai_query.await_count == AI_GENERATION_ATTEMPTS
+    other.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generation_retries_after_provider_exception() -> None:
+    """A raising query costs one attempt, leaving the next one to succeed."""
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [RuntimeError("provider failed"), _valid_response()]
+    quiz, _ = _quiz([], providers=[provider])
+
+    result = await quiz._generate_question(_artist_fact())
+
+    assert result.question == "Which artist recorded this selected track?"
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_times_out_a_stalled_provider() -> None:
+    """Bound each AI attempt so a stalled provider cannot block game management."""
+
+    async def _stall(_prompt: str, **_kwargs: Any) -> str:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    stalled = _ai_provider()
+    stalled.ai_query.side_effect = _stall
+    quiz, _ = _quiz([], providers=[stalled])
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
+            AI_QUERY_TIMEOUT_SECONDS / 30_000,
+        ),
+        pytest.raises(InvalidDataError) as error,
+    ):
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert stalled.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_surfaces_localized_failure_after_all_attempts() -> None:
+    """Fail explicitly once the configured engine exhausts its bounded attempts."""
+    invalid = _ai_provider("invalid")
+    quiz, _ = _quiz([], providers=[invalid])
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert invalid.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_requires_the_configured_engine_to_exist() -> None:
+    """A configured engine that vanished fails the round instead of using another one."""
+    other = _ai_provider(_valid_response(), instance_id="ai--b")
+    quiz, _ = _quiz([], providers=[other], ai_engine="ai--a/engine")
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_ai_provider_required"
+    other.ai_query.assert_not_awaited()

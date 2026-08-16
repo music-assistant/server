@@ -1,8 +1,8 @@
 """
-Radio Playlists provider for Music Assistant.
+Endless Mix Playlists provider for Music Assistant.
 
-Generates dynamic "radio" playlists from a seed media item (artist / album / track / genre /
-playlist) — a mix of the seed's own tracks and similar tracks. A radio playlist is a normal dynamic
+Generates dynamic "endless mix" playlists from a seed media item (artist / album / track / genre /
+playlist) — a mix of the seed's own tracks and similar tracks. An endless mix is a normal dynamic
 playlist (``is_dynamic=True``): the queue and the rest of Music Assistant treat it exactly like any
 other provider's dynamic playlist (a station, a smart playlist). The playlist's ``item_id`` is the
 seed item's own URI, so ``radio_playlist://playlist/<seed-uri>`` round-trips straight back to the
@@ -39,7 +39,7 @@ from music_assistant.helpers.track_filter import get_track_filter
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
@@ -54,16 +54,6 @@ async def setup(
     return RadioPlaylistProvider(mass, manifest, config, set())
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider (none needed)."""
-    return ()
-
-
 def radio_playlist_uri(seed: MediaItemType) -> str:
     """
     Return the radio-playlist URI for a seed media item.
@@ -76,6 +66,10 @@ def radio_playlist_uri(seed: MediaItemType) -> str:
 class RadioPlaylistProvider(PluginProvider):
     """Always-on provider that generates dynamic radio playlists from a seed media item."""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider (none needed)."""
+        return ()
+
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """
         Return the (virtual, dynamic) radio playlist for the given seed.
@@ -86,7 +80,7 @@ class RadioPlaylistProvider(PluginProvider):
         playlist = Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
-            name=f"{seed.name} Radio",
+            name=f"{seed.name} Endless Mix",
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_playlist_id,
@@ -157,10 +151,8 @@ class RadioPlaylistProvider(PluginProvider):
         if active_filter is not None:
             base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
         dynamic_tracks: set[Track] = set()
-        for allow_lookup in (False, True):
-            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
-                break
-            for base_track in base_tracks:
+        for base_track in base_tracks:
+            for allow_lookup in (False, True):
                 try:
                     similar = await self.mass.music.tracks.similar_tracks(
                         base_track.item_id,
@@ -169,17 +161,20 @@ class RadioPlaylistProvider(PluginProvider):
                         preferred_provider_instances=preferred_provider_instances,
                     )
                 except MusicAssistantError:
-                    # best-effort: a base track without a similar-tracks-capable provider
-                    # shouldn't abort generation (base tracks can still carry the playlist)
                     continue
-                for track in similar:
-                    if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
-                        continue
-                    if active_filter is not None and not active_filter.allows(track):
-                        continue
-                    dynamic_tracks.add(track)
-                if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                eligible_tracks = {
+                    track
+                    for track in similar
+                    if track not in base_tracks
+                    and track not in dynamic_tracks
+                    and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
+                    and (active_filter is None or active_filter.allows(track))
+                }
+                if eligible_tracks:
+                    dynamic_tracks.update(eligible_tracks)
                     break
+            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                break
 
         result: list[Track] = []
         dynamic_tracks_list = list(dynamic_tracks)

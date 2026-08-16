@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -26,9 +33,11 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -39,6 +48,7 @@ from .constants import (
     DEFAULT_LIMIT,
     PLAYLIST_TRACK_FETCH_LIMIT,
     PLAYLIST_TRACKS_PAGE_SIZE,
+    QUALITY_HIGH,
     QUALITY_LOSSLESS,
     SYNTHESIS_PLAYLIST_IDS,
 )
@@ -60,9 +70,24 @@ class ZvukMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._client
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_HIGH,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No Zvuk Music token provided")
 
@@ -356,30 +381,6 @@ class ZvukMusicProvider(MusicProvider):
 
     # Library methods
 
-    async def _iter_batched(
-        self,
-        ids: list[str],
-        fetcher: Any,
-        parser: Any,
-        item_type: str,
-    ) -> AsyncGenerator[Any]:
-        """
-        Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
-
-        :param ids: List of item IDs to fetch.
-        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
-        :param parser: Callable(provider, raw_item) → MA media item.
-        :param item_type: Human-readable type name for debug log messages.
-        """
-        for i in range(0, len(ids), DEFAULT_LIMIT):
-            batch = ids[i : i + DEFAULT_LIMIT]
-            items = await fetcher(batch)
-            for item in items:
-                try:
-                    yield parser(self, item)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library %s: %s", item_type, err)
-
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Zvuk Music."""
         collection = await self.client.get_collection()
@@ -432,71 +433,45 @@ class ZvukMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing synthesis playlist: %s", err)
 
-    async def _get_for_you_playlists(self) -> list[Playlist]:
-        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
-        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
-        result: list[Playlist] = []
-        for simple_pl in synthesis_playlists:
-            try:
-                result.append(parse_playlist(self, simple_pl))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing synthesis playlist: %s", err)
-        return result
-
-    async def _get_editorial_playlists(self) -> list[Playlist]:
-        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
-        editorial_ids = await self.client.get_editorial_playlist_ids()
-        if not editorial_ids:
-            return []
-        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
-        result: list[Playlist] = []
-        for full_pl in full_playlists:
-            try:
-                result.append(parse_playlist(self, full_pl))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing editorial playlist: %s", err)
-        return result
-
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Return personalized and editorial playlist recommendations.
+        Return the available recommendation rows, without items.
 
-        Returns two folders:
-        - "Made for you": Zvuk's AI-generated personalized playlists.
-        - "Collections": Editorial genre-themed curated playlists.
+        Two rows:
+        - "for_you" ("Made for you"): Zvuk's AI-generated personalized playlists.
+        - "editorial" ("Collections"): Editorial genre-themed curated playlists.
         """
-        folders: list[RecommendationFolder] = []
+        return [
+            RecommendationFolder(
+                item_id="for_you",
+                provider=self.instance_id,
+                name="Made for you",
+                translation_key="made_for_you",
+                icon="mdi-playlist-music",
+            ),
+            RecommendationFolder(
+                item_id="editorial",
+                provider=self.instance_id,
+                name="Collections",
+                subtitle="Editorial playlists from Zvuk by genre",
+                translation_key="editorial",
+                icon="mdi-music-box-multiple",
+            ),
+        ]
 
-        # Folder 1: Personalized synthesis playlists ("Made for you")
-        for_you_items = await self._get_for_you_playlists()
-        if for_you_items:
-            folders.append(
-                RecommendationFolder(
-                    item_id="for_you",
-                    provider=self.instance_id,
-                    name="Made for you",
-                    translation_key="made_for_you",
-                    icon="mdi-playlist-music",
-                    items=for_you_items,  # type: ignore[arg-type]
-                )
-            )
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items for a single recommendation row.
 
-        # Folder 2: Editorial curated playlists ("Collections")
-        editorial_items = await self._get_editorial_playlists()
-        if editorial_items:
-            folders.append(
-                RecommendationFolder(
-                    item_id="editorial",
-                    provider=self.instance_id,
-                    name="Collections",
-                    subtitle="Editorial playlists from Zvuk by genre",
-                    translation_key="editorial",
-                    icon="mdi-music-box-multiple",
-                    items=editorial_items,  # type: ignore[arg-type]
-                )
-            )
-
-        return folders
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == "for_you":
+            return UniqueList(await self._get_for_you_playlists())
+        if item_id == "editorial":
+            return UniqueList(await self._get_editorial_playlists())
+        return UniqueList()
 
     async def browse(self, path: str) -> list[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -612,7 +587,7 @@ class ZvukMusicProvider(MusicProvider):
             ),
         }
         if is_zvuk:
-            token = self.config.get_value(CONF_TOKEN)
+            token = self.get_setup_value(CONF_TOKEN)
             if not token:
                 return str(path)
             headers["X-Auth-Token"] = str(token)
@@ -666,13 +641,6 @@ class ZvukMusicProvider(MusicProvider):
         if media_type == MediaType.PLAYLIST:
             return await self.client.unlike_playlist(prov_item_id)
         return False
-
-    def _get_provider_item_id(self, item: MediaItemType) -> str | None:
-        """Get provider item ID from media item."""
-        for mapping in item.provider_mappings:
-            if mapping.provider_instance == self.instance_id:
-                return mapping.item_id
-        return item.item_id if item.provider == self.instance_id else None
 
     # Playlist management
 
@@ -811,3 +779,59 @@ class ZvukMusicProvider(MusicProvider):
             allow_seek=True,
             can_seek=True,
         )
+
+    async def _iter_batched(
+        self,
+        ids: list[str],
+        fetcher: Any,
+        parser: Any,
+        item_type: str,
+    ) -> AsyncGenerator[Any]:
+        """
+        Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
+
+        :param ids: List of item IDs to fetch.
+        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
+        :param parser: Callable(provider, raw_item) → MA media item.
+        :param item_type: Human-readable type name for debug log messages.
+        """
+        for i in range(0, len(ids), DEFAULT_LIMIT):
+            batch = ids[i : i + DEFAULT_LIMIT]
+            items = await fetcher(batch)
+            for item in items:
+                try:
+                    yield parser(self, item)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing library %s: %s", item_type, err)
+
+    async def _get_for_you_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
+        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
+        result: list[Playlist] = []
+        for simple_pl in synthesis_playlists:
+            try:
+                result.append(parse_playlist(self, simple_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing synthesis playlist: %s", err)
+        return result
+
+    async def _get_editorial_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
+        editorial_ids = await self.client.get_editorial_playlist_ids()
+        if not editorial_ids:
+            return []
+        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
+        result: list[Playlist] = []
+        for full_pl in full_playlists:
+            try:
+                result.append(parse_playlist(self, full_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing editorial playlist: %s", err)
+        return result
+
+    def _get_provider_item_id(self, item: MediaItemType) -> str | None:
+        """Get provider item ID from media item."""
+        for mapping in item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                return mapping.item_id
+        return item.item_id if item.provider == self.instance_id else None

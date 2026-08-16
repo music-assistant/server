@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
@@ -19,6 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
+from .dsp import ComplexFilter, ComplexFilterInput
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -26,9 +27,26 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 LOGGER = logging.getLogger("ffmpeg")
-MINIMAL_FFMPEG_VERSION = 6
+MINIMAL_FFMPEG_VERSION = 7
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
+DEFAULT_MP3_BIT_RATE: Final[int] = 320
+
+# FFmpeg's mono->stereo rematrix spreads a source at 1/sqrt(2) per channel; this factor
+# restores its original level. _get_channel_conform_filter avoids the same loss on the
+# main decode path by duplicating the channel instead.
+_MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5
+
+# FFmpeg applies these to the single input they precede, not to the command as a whole,
+# so every input we open has to bring its own copy.
+_INPUT_READ_ARGS: Final[list[str]] = [
+    "-protocol_whitelist",
+    "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
+    "-probesize",
+    "8096",
+    "-analyzeduration",
+    "500000",  # 0.5 seconds should be enough to detect the format
+]
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -81,8 +99,7 @@ class FFMpeg(AsyncProcess):
         audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
         output_format: AudioFormat,
-        filter_params: list[str] | None = None,
-        extra_args: list[str] | None = None,
+        filter_params: Sequence[str | ComplexFilter] | None = None,
         extra_input_args: list[str] | None = None,
         extra_output_args: list[str] | None = None,
         audio_output: str | int = "-",
@@ -94,7 +111,6 @@ class FFMpeg(AsyncProcess):
             input_format=input_format,
             output_format=output_format,
             filter_params=filter_params or [],
-            extra_args=extra_args or [],
             input_path=audio_input if isinstance(audio_input, str) else "-",
             output_path=audio_output if isinstance(audio_output, str) else "-",
             extra_input_args=extra_input_args or [],
@@ -117,6 +133,9 @@ class FFMpeg(AsyncProcess):
         self.parsed_duration: int | None = None
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
+        # holds the detached abort-on-corrupt-stream task from _log_reader_task so it
+        # isn't garbage collected mid-flight; not otherwise awaited
+        self._abort_task: asyncio.Task[None] | None = None
         # ffmpeg emits 'Input #N, ...' and 'Output #N, ...' headers before each block of
         # 'Stream #' lines; we track which block the next stream line belongs to.
         # Defaults to "input" so a stray Stream # line before any header still routes there.
@@ -188,6 +207,7 @@ class FFMpeg(AsyncProcess):
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""
         decode_errors = 0
+        decode_errors_reported = False
         async for line in self.iter_stderr():
             if self.collect_log_history:
                 self.log_history.append(line)
@@ -200,8 +220,17 @@ class FFMpeg(AsyncProcess):
 
             if "Invalid data found when processing input" in line:
                 decode_errors += 1
-            if decode_errors >= 50:
-                self.logger.error(line)
+            if decode_errors >= 50 and not decode_errors_reported:
+                # stream is too corrupted to bother decoding further: report once (instead
+                # of promoting every remaining line to ERROR) and abort. close() awaits
+                # this very stderr reader task, and a task awaiting itself raises
+                # RuntimeError, so the abort must run as a detached task rather than be
+                # awaited here.
+                decode_errors_reported = True
+                self.logger.error(
+                    "Excessive decode errors (%d+) for this stream; aborting", decode_errors
+                )
+                self._abort_task = asyncio.create_task(self.close())
 
             # Log reconnection events for radio streams
             if "Opening" in line or "Reconnect" in line or "reconnect" in line:
@@ -358,8 +387,7 @@ async def get_ffmpeg_stream(
     audio_input: AsyncGenerator[bytes] | str,
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str] | None = None,
-    extra_args: list[str] | None = None,
+    filter_params: Sequence[str | ComplexFilter] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
@@ -375,7 +403,6 @@ async def get_ffmpeg_stream(
         input_format=input_format,
         output_format=output_format,
         filter_params=filter_params,
-        extra_args=extra_args,
         extra_input_args=extra_input_args,
         extra_output_args=extra_output_args,
         collect_log_history=True,
@@ -384,6 +411,11 @@ async def get_ffmpeg_stream(
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
         if ffmpeg_proc.returncode not in (None, 0) or ffmpeg_proc.concat_error:
             # unclean exit of ffmpeg - raise error with log tail
             log_lines = -20 if ffmpeg_proc.concat_error else -5
@@ -402,8 +434,9 @@ async def get_ffmpeg_overlay_stream(
     Mix a looping audio overlay into a PCM audio stream.
 
     The overlay is looped for the full duration of the main stream and the mixed
-    output has the exact same PCM format and duration as the main input. If the
-    overlay input fails mid-stream, the main audio continues unaffected.
+    output has the exact same PCM format and duration as the main input. For a stereo
+    output, a mono overlay mixes in at the same level as an equivalent stereo one. If
+    the overlay input fails mid-stream, the main audio continues unaffected.
 
     :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
     :param overlay_input: File path or URL of the overlay audio.
@@ -412,56 +445,64 @@ async def get_ffmpeg_overlay_stream(
     :param pcm_format: PCM format of both the main input and the mixed output.
     :param chunk_size: Optional exact chunk size for the yielded audio.
     """
-    # the overlay is passed as an extra (first) ffmpeg input, infinitely looped;
-    # the main audio arrives on stdin. amix with duration=first follows the main
-    # input's length, normalize=0 keeps the original levels (no averaging).
-    overlay_input_args = []
-    if overlay_input.startswith("http"):
-        overlay_input_args += [
-            "-reconnect",
-            "1",
-            "-reconnect_delay_max",
-            "10",
-            "-reconnect_streamed",
-            "1",
-        ]
-    overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
-    channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
-    # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
-    # fade-in) so it becomes audible right away; it is a no-op for sources that
-    # already start at full level. It runs before volume so detection is based on
-    # the source's own levels rather than the scaled output.
-    filter_complex = (
-        f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
-        f"volume={overlay_volume / 100},"
-        f"aresample={pcm_format.sample_rate},"
-        f"aformat=channel_layouts={channel_layout}[overlay];"
-        "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
-    )
     async with FFMpeg(
         audio_input=audio_input,
-        # The overlay is input 0, so ffmpeg probes it before the PCM input and
-        # mutates input_format with its metadata. Keep that mutation local.
+        # ffmpeg mirrors the metadata it probes from the input onto input_format,
+        # so hand it a copy to keep that mutation off the caller's format.
         input_format=copy(pcm_format),
         output_format=pcm_format,
-        extra_input_args=overlay_input_args,
-        extra_output_args=["-filter_complex", filter_complex, "-map", "[mixed]"],
+        filter_params=[_build_overlay_mixer(overlay_input, pcm_format, overlay_volume)],
         collect_log_history=True,
     ) as ffmpeg_proc:
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
         if ffmpeg_proc.returncode not in (None, 0):
             # unclean exit of ffmpeg - raise error with log tail
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
             raise AudioError(log_tail)
 
 
-def get_ffmpeg_args(  # noqa: PLR0915
+def get_ffmpeg_resample_filter(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str],
-    extra_args: list[str] | None = None,
+    filter_params: Sequence[str | ComplexFilter],
+) -> str | None:
+    """
+    Return the resampling and dithering filter required for a format conversion.
+
+    :param input_format: Format entering FFmpeg.
+    :param output_format: Requested FFmpeg output format.
+    :param filter_params: Filters that run before resampling.
+    """
+    if input_format.sample_rate == output_format.sample_rate and not (
+        input_format.bit_depth > 16 and output_format.bit_depth == 16
+    ):
+        return None
+    libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
+    # loudnorm and libsoxr cannot be combined due to https://trac.ffmpeg.org/ticket/11323
+    if libsoxr_support and not any(
+        "loudnorm" in value for value in filter_params if isinstance(value, str)
+    ):
+        resample_filter = "aresample=resampler=soxr:precision=30"
+    else:
+        resample_filter = "aresample=resampler=swr"
+    if input_format.sample_rate != output_format.sample_rate:
+        resample_filter += f":osr={output_format.sample_rate}"
+    if output_format.bit_depth == 16 and input_format.bit_depth > 16:
+        resample_filter += ":osf=s16:dither_method=triangular_hp"
+    return resample_filter
+
+
+def get_ffmpeg_args(
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+    filter_params: Sequence[str | ComplexFilter],
     input_path: str = "-",
     output_path: str = "-",
     extra_input_args: list[str] | None = None,
@@ -469,33 +510,25 @@ def get_ffmpeg_args(  # noqa: PLR0915
     loglevel: str = "error",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
-    if extra_args is None:
-        extra_args = []
+    filter_params = list(filter_params)
     if extra_input_args is None:
         extra_input_args = []
     if extra_output_args is None:
         extra_output_args = []
-    # generic args
-    generic_args = [
+    # the binary plus the options that apply to the command as a whole
+    global_args = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         loglevel,
         "-nostats",
         "-ignore_unknown",
-        "-protocol_whitelist",
-        "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
-        "-probesize",
-        "8096",
-        "-analyzeduration",
-        "500000",  # 0.5 seconds should be enough to detect the format
     ]
-    # collect input args
-    if "-f" in extra_input_args:
-        # input format is already specified in the extra input args
-        input_args = extra_input_args
-    else:
-        input_args = [*extra_input_args]
+    # collect args for the main input, mirroring how _build_filtergraph_args opens the
+    # extra inputs: the read args lead the group so the caller can still override them
+    input_args = [*_INPUT_READ_ARGS, *extra_input_args]
+    if "-f" not in extra_input_args:
+        # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
             # append reconnect options for direct stream from http
             input_args += [
@@ -516,12 +549,16 @@ def get_ffmpeg_args(  # noqa: PLR0915
                 "-reconnect_on_http_error",
                 "5xx,429",
             ]
+            if "-post_data" in extra_input_args:
+                # ffmpeg does not include Range headers on POST reconnects, so byte-range
+                # seeking via reconnect is not available. Mark the stream non-seekable so
+                # demuxers do not attempt end-of-file probes (e.g. OGG duration detection)
+                # that would trigger Range-less restarts from byte 0. MA-initiated seeks
+                # still work via -ss decode-and-discard.
+                input_args += ["-seekable", "0"]
         if input_format.content_type.is_pcm():
             input_args += [
-                "-ac",
-                str(input_format.channels),
-                "-channel_layout",
-                "mono" if input_format.channels == 1 else "stereo",
+                *get_ffmpeg_channel_args(input_format),
                 "-ar",
                 str(input_format.sample_rate),
                 "-acodec",
@@ -536,14 +573,9 @@ def get_ffmpeg_args(  # noqa: PLR0915
         input_args += ["-i", input_path]
 
     # collect output args
-    output_args = [
-        "-ac",
-        str(output_format.channels),
-        "-channel_layout",
-        "mono" if output_format.channels == 1 else "stereo",
-    ]
+    output_args = get_ffmpeg_channel_args(output_format)
     if output_path.upper() == "NULL":
-        # devnull stream
+        # devnull stream: nothing is encoded here, so there is no channel count to declare
         output_path = "-"
         output_args = ["-f", "null"]
     elif output_format.content_type.is_pcm():
@@ -557,7 +589,8 @@ def get_ffmpeg_args(  # noqa: PLR0915
             output_format.content_type.value,
         ]
     elif output_format.content_type == ContentType.NUT:
-        # passthrough-mode (for creating the cache) using NUT container
+        # passthrough-mode (for creating the cache) using NUT container.
+        # -acodec copy leaves the source untouched, so there is no channel count to declare
         output_args = [
             "-vn",
             "-dn",
@@ -568,12 +601,12 @@ def get_ffmpeg_args(  # noqa: PLR0915
             "nut",
         ]
     elif output_format.content_type == ContentType.AAC:
-        output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
+        output_args += ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
     elif output_format.content_type == ContentType.MP3:
-        output_args = ["-f", "mp3", "-b:a", "320k"]
+        output_args += ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
     elif output_format.content_type == ContentType.WAV:
         pcm_format = ContentType.from_bit_depth(output_format.bit_depth)
-        output_args = [
+        output_args += [
             "-ar",
             str(output_format.sample_rate),
             "-acodec",
@@ -601,43 +634,38 @@ def get_ffmpeg_args(  # noqa: PLR0915
     # append (final) output path at the end of the args
     output_args.append(output_path)
 
-    # edge case: source file is not stereo - downmix to stereo
-    if input_format.channels > 2 and output_format.channels == 2:
-        filter_params = [
-            "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
-            *filter_params,
-        ]
+    # runs ahead of the caller's own filters, so channel-aware ones such as the
+    # per-channel preamp see the conformed layout instead of the source layout
+    if channel_filter := _get_channel_conform_filter(input_format.channels, output_format.channels):
+        filter_params = [channel_filter, *filter_params]
 
-    # determine if we need to do resampling (or dithering)
-    if input_format.sample_rate != output_format.sample_rate or (
-        input_format.bit_depth > 16 and output_format.bit_depth == 16
+    if resample_filter := get_ffmpeg_resample_filter(
+        input_format,
+        output_format,
+        filter_params,
     ):
-        libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
-        # prefer resampling with libsoxr due to its high quality
-        # but skip if loudnorm filter is present, due to this bug:
-        # https://trac.ffmpeg.org/ticket/11323
-        loudnorm_present = any("loudnorm" in f for f in filter_params)
-        if libsoxr_support and not loudnorm_present:
-            resample_filter = "aresample=resampler=soxr:precision=30"
-        else:
-            resample_filter = "aresample=resampler=swr"
-
-        # sample rate conversion
-        if input_format.sample_rate != output_format.sample_rate:
-            resample_filter += f":osr={output_format.sample_rate}"
-
-        # bit depth conversion: apply dithering when going down to 16 bits
-        # this is only needed when we need to back to 16 bits
-        # when going from 32bits FP to 24 bits no dithering is needed
-        if output_format.bit_depth == 16 and input_format.bit_depth > 16:
-            resample_filter += ":osf=s16:dither_method=triangular_hp"
-
         filter_params.append(resample_filter)
 
-    if filter_params and "-filter_complex" not in extra_args:
-        extra_args += ["-af", ",".join(filter_params)]
+    # a complex fragment brings its own inputs, which must follow the main input
+    filter_input_args, filter_args = (
+        _build_filtergraph_args(filter_params) if filter_params else ([], [])
+    )
 
-    return generic_args + input_args + extra_args + output_args
+    return global_args + input_args + filter_input_args + filter_args + output_args
+
+
+def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
+    """
+    Return the FFmpeg channel count/layout arguments for the given audio format.
+
+    The layout is only named for channel counts that map to exactly one layout.
+
+    :param audio_format: Format to describe.
+    """
+    args = ["-ac", str(audio_format.channels)]
+    if layout := _get_channel_layout_name(audio_format.channels):
+        args += ["-channel_layout", layout]
+    return args
 
 
 async def check_ffmpeg_version() -> None:
@@ -683,3 +711,175 @@ async def check_ffmpeg_version() -> None:
         version,
         "with libsoxr support" if libsoxr_support else "",
     )
+
+
+def _get_channel_layout_name(channels: int) -> str | None:
+    """
+    Return FFmpeg's layout name for a channel count, or None when it has no unambiguous one.
+
+    :param channels: Number of channels to name.
+    """
+    if channels == 1:
+        return "mono"
+    if channels == 2:
+        return "stereo"
+    # a wider count maps to several possible layouts (5.1 vs 5.1(side), 7.1 vs 7.1(wide), ...)
+    # and a named layout wins over -ac, so naming the wrong one would make FFmpeg misread the
+    # stream as that layout. Left unnamed, it derives the default for the count itself.
+    return None
+
+
+def _get_channel_conform_filter(input_channels: int, output_channels: int) -> str | None:
+    """
+    Return the filter that maps the source onto the output channel count, if one is needed.
+
+    :param input_channels: Channel count entering FFmpeg.
+    :param output_channels: Channel count the output is encoded at.
+    :return: The filter to run before any caller supplied ones, or None when the
+        source already carries the requested channel count.
+    """
+    if input_channels > 2 and output_channels <= 2:
+        # a single channel output needs this fold too, otherwise a mono/left/right pan
+        # would only see the front channels and silently drop the center and surround.
+        # aformat leaves the rematrix to ffmpeg, which picks the correct coefficients
+        # for whatever layout the input turns out to have (and, for an integer output,
+        # scales them to stay clip-safe). A fixed pan expression, naming channels that
+        # a given layout may not even have, can do neither.
+        return "aformat=channel_layouts=stereo"
+    if input_channels == 1 and output_channels > 1:
+        # duplicate rather than leaving the widening to ffmpeg, whose rematrix
+        # spreads the source at 1/sqrt(2) per channel and so costs 3 dB
+        return "pan=stereo|c0=c0|c1=c0"
+    return None
+
+
+def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str:
+    """
+    Return the filter that scales an overlay source to the requested loudness.
+
+    :param overlay_volume: Requested overlay loudness in percent.
+    :param output_channels: Channel count of the mixed output.
+    """
+    gain = overlay_volume / 100
+    if output_channels != 2:
+        # a mono source widened to more than two channels is routed to the centre at full
+        # level, so only a stereo output loses any. No overlay call site is non-stereo today.
+        return f"volume={gain}"
+    # nb_channels is evaluated where this filter sits, ahead of any layout conversion, so it
+    # still reports the source's own count: only a mono source is scaled up, leaving a stereo
+    # one and its image untouched. Comma-free, as a comma would end this filter in the graph.
+    return f"volume={gain}*{_MONO_WIDEN_COMPENSATION}^not(nb_channels-1)"
+
+
+def _build_overlay_mixer(
+    overlay_input: str, pcm_format: AudioFormat, overlay_volume: int
+) -> ComplexFilter:
+    """
+    Build the filter that mixes a looping audio overlay into the main audio.
+
+    :param overlay_input: File path or URL of the overlay audio.
+    :param pcm_format: PCM format of the main input and the mixed output.
+    :param overlay_volume: Overlay loudness relative to the main audio in percent.
+    """
+    input_args = []
+    if overlay_input.startswith("http"):
+        input_args += [
+            "-reconnect",
+            "1",
+            "-reconnect_delay_max",
+            "10",
+            "-reconnect_streamed",
+            "1",
+        ]
+    input_args += ["-stream_loop", "-1"]
+    # conform the overlay to the main stream's layout so amix sees two matching inputs;
+    # an unnameable count is left to FFmpeg's own negotiation
+    layout = _get_channel_layout_name(pcm_format.channels)
+    conform_filter = f",aformat=channel_layouts={layout}" if layout else ""
+    return ComplexFilter(
+        # the main audio is amix's first input, so duration=first follows its length;
+        # normalize=0 keeps the original levels (no averaging)
+        body="amix=inputs=2:duration=first:normalize=0",
+        inputs=[
+            ComplexFilterInput(
+                path=overlay_input,
+                # silenceremove strips a near-silent intro from the overlay source (e.g. a
+                # soft fade-in) so it becomes audible right away; it is a no-op for sources
+                # that already start at full level. It runs before volume so detection is
+                # based on the source's own levels rather than the scaled output. volume
+                # in turn has to stay ahead of the resample and conform steps, which
+                # replace the source's own channel count with the output's.
+                filters=(
+                    f"silenceremove=start_periods=1:start_threshold=-40dB,"
+                    f"{_get_overlay_volume_filter(overlay_volume, pcm_format.channels)},"
+                    f"aresample={pcm_format.sample_rate}"
+                    f"{conform_filter}"
+                ),
+                input_args=input_args,
+            )
+        ],
+    )
+
+
+def _build_filtergraph_args(
+    filter_params: list[str | ComplexFilter],
+) -> tuple[list[str], list[str]]:
+    """
+    Render a DSP filter chain to FFmpeg command-line arguments.
+
+    :param filter_params: Ordered chain of plain filter strings and/or complex
+        fragments that need extra audio inputs.
+    :return: Extra input arguments to append after the main input, and the
+        filter arguments themselves.
+    """
+    if not any(isinstance(item, ComplexFilter) for item in filter_params):
+        simple = [item for item in filter_params if isinstance(item, str) and item]
+        return [], (["-af", ",".join(simple)] if simple else [])
+
+    input_args: list[str] = []
+    parts: list[str] = []
+    pending: list[str] = []
+    current = "0:a"
+    counter = 0
+    # the main input is 0, so extra inputs are numbered from 1 in the order added
+    next_input = 1
+
+    def next_label() -> str:
+        nonlocal counter
+        counter += 1
+        return f"dsp{counter}"
+
+    def flush_pending() -> None:
+        nonlocal current
+        if not pending:
+            return
+        label = next_label()
+        parts.append(f"[{current}]{','.join(pending)}[{label}]")
+        current = label
+        pending.clear()
+
+    for item in filter_params:
+        if isinstance(item, str):
+            if item:
+                pending.append(item)
+            continue
+        # a complex fragment closes the current simple run, adds its own inputs to
+        # the command, then consumes the main pad plus those inputs
+        flush_pending()
+        source_labels: list[str] = []
+        for extra_input in item.inputs:
+            input_args += [*_INPUT_READ_ARGS, *extra_input.input_args, "-i", extra_input.path]
+            source = f"{next_input}:a"
+            next_input += 1
+            if extra_input.filters:
+                label = next_label()
+                parts.append(f"[{source}]{extra_input.filters}[{label}]")
+                source = label
+            source_labels.append(source)
+        label = next_label()
+        inputs = f"[{current}]" + "".join(f"[{sl}]" for sl in source_labels)
+        parts.append(f"{inputs}{item.body}[{label}]")
+        current = label
+    flush_pending()
+
+    return input_args, ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]

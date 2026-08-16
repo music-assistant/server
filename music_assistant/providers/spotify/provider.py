@@ -12,7 +12,9 @@ from datetime import datetime
 from typing import Any, cast
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -49,20 +51,22 @@ from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_CLIENT_ID,
+    CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
+    CREDENTIALS_FILE,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
 )
 from .helpers import get_librespot_binary, get_spotify_token
@@ -107,6 +111,32 @@ class SpotifyProvider(MusicProvider):
     dev_session_active: bool = False
     throttler: ThrottlerManager
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Authentication is handled by the setup flow (see setup_flow.py); only the genuine
+        options are configurable here.
+        """
+        # audiobook progress sync is only offered where the account's region supports audiobooks
+        audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SYNC_PODCAST_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="sync_options",
+            ),
+            ConfigEntry(
+                key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="sync_options",
+                hidden=not audiobooks_supported,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
@@ -117,12 +147,14 @@ class SpotifyProvider(MusicProvider):
 
         # check if we have a librespot binary for this arch
         self._librespot_bin = await get_librespot_binary()
+        # playback authorization is independent of the Web API tokens
+        await self._setup_librespot_auth()
         # try login which will raise if it fails (logs in global session)
         await self.login()
 
         # Check if user has a custom client ID with valid dev token
-        client_id = self.config.get_value(CONF_CLIENT_ID)
-        dev_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
+        dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
 
         if client_id and dev_token and self._sp_user:
             await self.login_dev()
@@ -593,23 +625,40 @@ class SpotifyProvider(MusicProvider):
             await self.get_playlist(prov_playlist_id)
             use_global = await self._playlist_requires_global_token(prov_playlist_id)
 
-        result: list[Track] = []
         page_size = 50
         offset = page * page_size
+        known_global = use_global
 
-        meta = await self._get_playlist_pagination_meta(uri, page, use_global)
-        cache_checksum = meta["etag"]
-        total = meta["total"]
+        while True:
+            try:
+                meta = await self._get_playlist_pagination_meta(uri, page, use_global)
+                cache_checksum = meta["etag"]
+                total = meta["total"]
 
-        # Spotify has started returning 5xx for offset >= total on some
-        # playlists (notably algorithmic ones like Daily Mix). The retry
-        # storm that follows surfaces as "No playable items found".
-        if total and offset >= total:
-            return result
+                # Spotify has started returning 5xx for offset >= total on some
+                # playlists (notably algorithmic ones like Daily Mix). The retry
+                # storm that follows surfaces as "No playable items found".
+                if total and offset >= total:
+                    spotify_result = {"total": total, "items": []}
+                else:
+                    spotify_result = await self._get_data_with_caching(
+                        uri,
+                        cache_checksum,
+                        limit=page_size,
+                        offset=offset,
+                        use_global_session=use_global,
+                    )
+                break
+            except MediaNotFoundError:
+                if use_global or not self.dev_session_active:
+                    raise
+                # Development Mode exposes metadata but restricts items for non-owned playlists.
+                use_global = True
 
-        spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
-        )
+        if use_global and not known_global:
+            await self._set_playlist_requires_global_token(prov_playlist_id)
+
+        result: list[Track] = []
         total = spotify_result.get("total", 0)
         items = spotify_result.get("items", [])
         # playlists/{id}/items is transitioning from item["track"] to item["item"]
@@ -869,7 +918,7 @@ class SpotifyProvider(MusicProvider):
                 # If the stored token was rotated while this refresh was in flight, the token
                 # we tried is merely stale, so keep the newer one instead of forcing re-auth.
                 if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_GLOBAL, refresh_token):
-                    self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
+                    self._update_setup_data(CONF_REFRESH_TOKEN_GLOBAL, None)
                     if self.available:
                         self.unload_with_error(err)
             elif self.available:
@@ -882,17 +931,11 @@ class SpotifyProvider(MusicProvider):
         # persist immediately to ensure the new token survives a crash within the debounced-save
         # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
         token_rotated = auth_info["refresh_token"] != refresh_token
-        self._update_config_value(
+        self._update_setup_data(
             CONF_REFRESH_TOKEN_GLOBAL,
             auth_info["refresh_token"],
-            encrypted=True,
             immediate=token_rotated,
         )
-
-        # Setup librespot with global token only if dev token is not configured
-        # (if dev token exists, librespot will be set up in login_dev instead)
-        if not self.config.get_value(CONF_REFRESH_TOKEN_DEV):
-            await self._setup_librespot_auth(auth_info["access_token"])
 
         # get logged-in user info
         if not self._sp_user:
@@ -921,7 +964,7 @@ class SpotifyProvider(MusicProvider):
         # read the refresh token from the persisted store rather than the in-memory config copy,
         # which can lag a rotation and would make us refresh with a stale (revoked) token
         refresh_token = self._stored_refresh_token(CONF_REFRESH_TOKEN_DEV)
-        client_id = self.config.get_value(CONF_CLIENT_ID)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
         if not refresh_token or not client_id:
             raise LoginFailed("Developer authentication not configured")
 
@@ -939,8 +982,8 @@ class SpotifyProvider(MusicProvider):
                 # If the stored token was rotated while this refresh was in flight, the token
                 # we tried is merely stale, so keep the newer one instead of forcing re-auth.
                 if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_DEV, refresh_token):
-                    self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
-                    self._update_config_value(CONF_CLIENT_ID, None)
+                    self._update_setup_data(CONF_REFRESH_TOKEN_DEV, None)
+                    self._update_setup_data(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
@@ -952,15 +995,11 @@ class SpotifyProvider(MusicProvider):
         # persist immediately to ensure the new token survives a crash within the debounced-save
         # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
         token_rotated = auth_info["refresh_token"] != refresh_token
-        self._update_config_value(
+        self._update_setup_data(
             CONF_REFRESH_TOKEN_DEV,
             auth_info["refresh_token"],
-            encrypted=True,
             immediate=token_rotated,
         )
-
-        # Setup librespot with dev token (preferred over global token)
-        await self._setup_librespot_auth(auth_info["access_token"])
 
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
@@ -1052,35 +1091,34 @@ class SpotifyProvider(MusicProvider):
 
         return items_received
 
-    async def _setup_librespot_auth(self, access_token: str) -> None:
+    async def _setup_librespot_auth(self) -> None:
         """
-        Set up librespot authentication with the given access token.
+        Install the stored playback credential into librespot's cache directory.
 
-        :param access_token: Spotify access token to use for librespot authentication.
+        :raises LoginFailed: When no playback credential is configured, which requires the
+            user to re-run the setup flow.
         """
         if self._librespot_bin is None:
             raise LoginFailed("Librespot binary not available")
+        credentials = self.get_setup_value(CONF_LIBRESPOT_CREDENTIALS)
+        if not credentials:
+            # Spotify's login5 refuses credentials minted with any client id other than the one
+            # librespot presents, so installs predating the dedicated playback credential (and
+            # anything cached from before) cannot stream and must authorize playback again.
+            raise LoginFailed(
+                "Spotify playback authorization required",
+                translation_key="playback_auth_required",
+                translation_owner="provider.spotify",
+            )
+        await asyncio.to_thread(self._write_librespot_credentials, self.cache_dir, str(credentials))
 
-        args = [
-            self._librespot_bin,
-            "--cache",
-            self.cache_dir,
-            "--check-auth",
-        ]
-        ret_code, stdout = await check_output(*args)
-        if ret_code != 0:
-            # cached librespot creds are invalid, re-authenticate
-            # we can use the check-token option to send a new token to librespot
-            # librespot will then get its own token from spotify (somehow) and cache that.
-            args += [
-                "--access-token",
-                access_token,
-            ]
-            ret_code, stdout = await check_output(*args)
-            if ret_code != 0:
-                # this should not happen, but guard it just in case
-                err_str = stdout.decode("utf-8").strip()
-                raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
+    @staticmethod
+    def _write_librespot_credentials(cache_dir: str, credentials: str) -> None:
+        """Write the stored credential to librespot's cache, replacing any stale one."""
+        os.makedirs(cache_dir, exist_ok=True)
+        credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
+        with open(credentials_file, "w", encoding="utf-8") as fileobj:
+            fileobj.write(credentials)
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """
@@ -1566,12 +1604,13 @@ class SpotifyProvider(MusicProvider):
         """
         Return the currently persisted refresh token, or None if not set.
 
-        :param key: Config key of the refresh token to read.
+        Reads through the live setup_data (kept in sync with a just-rotated token) so a
+        refresh never uses a stale, revoked token from a lagging in-memory config copy.
+
+        :param key: Setup data key of the refresh token to read.
         """
-        raw_stored = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
-        if not raw_stored:
-            return None
-        return self.mass.config.decrypt_string(cast("str", raw_stored))
+        token = self.get_setup_value(key)
+        return cast("str", token) if token else None
 
     def _refresh_token_superseded(self, key: str, used_token: str) -> bool:
         """

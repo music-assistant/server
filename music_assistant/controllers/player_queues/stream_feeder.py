@@ -98,13 +98,43 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
-            if (
-                not queue.active
-                or queue_data.session_id != session_id
-                or queue.state != PlaybackState.PLAYING
+            # Player state updates can lag behind queue loading, so wait before validating.
+            async with self.mass.players.wait_for_player_update(
+                queue_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
             ):
-                # queue is not active anymore or session_id does not match, so we bail out
+                pass
+
+            player = self.mass.players.get_player(queue_id)
+            if (
+                player is None
+                or player.state.playback_state != PlaybackState.PLAYING
+                or player.state.active_source not in (queue.queue_id, None)
+                or queue_data.session_id != session_id
+                or queue.flow_mode
+            ):
+                # nothing re-attempts this handover, so a skip here means the player runs out
+                # of audio when the current track ends - leave a trace of why it was skipped
+                self.logger.debug(
+                    "Not enqueuing next track %s on queue %s "
+                    "(state: %s, source: %s, same session: %s, flow mode: %s)",
+                    next_item.name,
+                    queue.display_name,
+                    player.state.playback_state if player else "player unavailable",
+                    player.state.active_source if player else None,
+                    queue_data.session_id == session_id,
+                    queue.flow_mode,
+                )
                 return
+
+            current_item = queue.current_item
+            if current_item is None:
+                return
+            current_next = self.get_next_item(queue_id, current_item.queue_item_id)
+            if current_next is None or current_next.queue_item_id != next_item.queue_item_id:
+                return
+
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),

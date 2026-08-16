@@ -8,8 +8,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     UnsupportedFeaturedException,
@@ -29,6 +30,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     SoundEffect,
     Track,
+    UniqueList,
 )
 
 from music_assistant.constants import (
@@ -79,6 +81,16 @@ class MusicProvider(Provider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return True
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """
+        Return all supported artist types by this provider.
+
+        Note, that this property currently is only used, to verify support of artists with
+        ArtistType.AUTHOR or ArtistType.NARRATOR.
+        """
+        return {ArtistType.SINGER}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -251,6 +263,17 @@ class MusicProvider(Provider):
         page: int = 0,
     ) -> Sequence[PlaylistPlayableItem]:
         """Get all playlist tracks for given playlist id."""
+        raise NotImplementedError
+
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station.
+
+        Only called for a Radio with `is_dynamic` set. Every call returns a new batch;
+        there is no stable listing and no pagination.
+
+        :param prov_radio_id: The provider's ID of the radio station.
+        """
         raise NotImplementedError
 
     async def get_podcast_episodes(
@@ -531,7 +554,7 @@ class MusicProvider(Provider):
         """
         return path
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """
         Browse this provider's items.
 
@@ -606,14 +629,11 @@ class MusicProvider(Provider):
             return [x async for x in self.get_sound_effects()]
         if subpath == "recommendations" and sub_subpath:
             # recommendations contents listing
-            recommendations = await self.recommendations()
-            for rec in recommendations:
-                if rec.item_id == sub_subpath:
-                    return rec.items
+            return await self.get_recommendation_items(sub_subpath)
         if subpath == "recommendations":
             # Main recommendations listing
             result: list[BrowseFolder] = []
-            recommendations = await self.recommendations()
+            recommendations = await self.get_recommendations()
             for rec in recommendations:
                 result.append(
                     BrowseFolder(
@@ -733,16 +753,34 @@ class MusicProvider(Provider):
             return await self.browse(folders[0].path)
         return folders
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get this provider's recommendations.
+        Get this provider's available recommendation rows, without items.
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
+
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        Live backend fetches belong here. Will only be called if
+        ProviderFeature.RECOMMENDATIONS is declared.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return UniqueList()
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
@@ -1036,33 +1074,42 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.TRACK, prov_track.uri, err)
 
     def _validate_audiobook_author_narrator_types(self, prov_item: Audiobook) -> None:
-        """Validate that authors/narrators types match the provider's supported features."""
-        if ProviderFeature.AUTHOR_AUDIOBOOKS in self.supported_features and not all(
-            isinstance(author, Artist) for author in prov_item.authors
+        """
+        Validate of correct artist and artist types.
+
+        If a provider supports artists of type Author or Narrator, they have to be part of an audiobook instance.
+        Otherwise only strings are allowed.
+        """
+        if ArtistType.AUTHOR in self.supported_artist_types and not all(
+            (isinstance(author, Artist) and author.artist_type == ArtistType.AUTHOR)
+            for author in prov_item.authors
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} supports ProviderFeature.AUTHOR_AUDIOBOOKS, but"
-                f" item {prov_item.name} does not exclusively provide Artist instances."
+            raise InvalidDataError(
+                f"Provider {self.name} supports ArtistType.AUTHOR, but"
+                f" item {prov_item.name} does not exclusively provide Artist instances "
+                "with ArtistType.AUTHOR set."
             )
-        if ProviderFeature.NARRATOR_AUDIOBOOKS in self.supported_features and not all(
-            isinstance(narrator, Artist) for narrator in prov_item.narrators
+        if ArtistType.NARRATOR in self.supported_artist_types and not all(
+            (isinstance(narrator, Artist) and narrator.artist_type == ArtistType.NARRATOR)
+            for narrator in prov_item.narrators
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} supports ProviderFeature.NARRATOR_AUDIOBOOKS, but"
-                f" item {prov_item.name} does not exclusively provide Artist instances."
+            raise InvalidDataError(
+                f"Provider {self.name} supports ArtistType.NARRATOR, but"
+                f" item {prov_item.name} does not exclusively provide Artist instances "
+                "with ArtistType.NARRATOR set."
             )
-        if ProviderFeature.AUTHOR_AUDIOBOOKS not in self.supported_features and not all(
+        if ArtistType.AUTHOR not in self.supported_artist_types and not all(
             isinstance(author, str) for author in prov_item.authors
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} does not support ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+            raise InvalidDataError(
+                f"Provider {self.name} does not support artists of type author, but"
                 f" item {prov_item.name} does not exclusively provide strings."
             )
-        if ProviderFeature.NARRATOR_AUDIOBOOKS not in self.supported_features and not all(
+        if ArtistType.NARRATOR not in self.supported_artist_types and not all(
             isinstance(narrator, str) for narrator in prov_item.narrators
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} does not support ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+            raise InvalidDataError(
+                f"Provider {self.name} does not support artists of type narrator, but"
                 f" item {prov_item.name} does not exclusively provide strings."
             )
 
@@ -1104,9 +1151,8 @@ class MusicProvider(Provider):
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
                     else:
-                        # detect a change in ProviderFeature
-                        # (stored authors/narrators are plain strings but the provider
-                        # now supplies full Artist objects)
+                        # Detect, if stored authors/narrators are plain strings but the provider
+                        # now supplies full Artist objects, i.e. artist support changed.
                         prov_author = prov_item.authors[0] if prov_item.authors else None
                         prov_narrator = prov_item.narrators[0] if prov_item.narrators else None
                         if (sync_details.author_is_str and not isinstance(prov_author, str)) or (
@@ -1436,7 +1482,21 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif self._library_item_needs_update(library_item, prov_item):
+                    elif prov_item.is_dynamic and (
+                        not library_item.is_dynamic
+                        or prov_item.name != library_item.name
+                        or prov_item.metadata.images != library_item.metadata.images
+                    ):
+                        # must overwrite: merging keeps mappings that serve the wrong tracks
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True  # overwrite re-inserts the rows
+                        library_item = await self.mass.music.radio.update_item_in_library(
+                            library_item.item_id, prov_item, overwrite=True
+                        )
+                    elif self._library_item_needs_update(library_item, prov_item) or (
+                        library_item.is_dynamic and not prov_item.is_dynamic
+                    ):
+                        # a station leaving dynamic mode is no longer provider-owned, so merge
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )

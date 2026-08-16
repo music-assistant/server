@@ -19,6 +19,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -30,7 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.util import parse_title_and_version
 
@@ -221,7 +222,7 @@ class RadioArtworkMixin:
         ):
             if queue.current_item and queue.current_item.media_item:
                 if station_image := queue.current_item.media_item.image:
-                    return station_image.path
+                    return self.get_image_url(station_image)
         return None
 
     @staticmethod

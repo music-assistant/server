@@ -1,10 +1,10 @@
 {
   "config_entries": {
     "sxm_email_address": {
-      "label": "Username"
+      "label": "[%key:common::config_entries::username::label%]"
     },
     "sxm_password": {
-      "label": "Password"
+      "label": "[%key:common::config_entries::password::label%]"
     },
     "sxm_region": {
       "label": "Region",

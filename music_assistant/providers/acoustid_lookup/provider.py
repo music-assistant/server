@@ -9,23 +9,24 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-import chromaprint
 import numpy as np
-from music_assistant_models.enums import ExternalID, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, StreamType
 from music_assistant_models.errors import (
     MusicAssistantError,
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+    UnsupportedSystemError,
 )
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import import_module_in_thread, parse_title_and_version
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -94,6 +95,60 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """Initialize the provider with an empty per-session state container."""
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
+        # Populated once a real chromaprint fingerprinter is built; stays empty while no
+        # native fingerprinter exists, in which case its errors cannot be raised either.
+        self._fingerprint_errors: tuple[type[BaseException], ...] = ()
+
+    async def handle_async_init(self) -> None:
+        """
+        Handle async initialization of the provider.
+
+        :raises UnsupportedSystemError: When the chromaprint native library is missing.
+        """
+        # pyacoustid binds libchromaprint through ctypes at import time, so this import is
+        # what surfaces a missing native library. Route it through the shared import
+        # executor to keep the dlopen off the event loop; it also warms sys.modules so the
+        # per-session import in _create_fingerprinter is a plain lookup.
+        try:
+            await import_module_in_thread("chromaprint")
+        except ImportError as err:
+            msg = (
+                "AcoustID needs the chromaprint library, which is not installed on this "
+                "system. See the Music Assistant documentation for how to install it."
+            )
+            raise UnsupportedSystemError(msg) from err
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                default_value=None,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_MIN_SCORE,
+                type=ConfigEntryType.FLOAT,
+                default_value=DEFAULT_MIN_SCORE,
+                range=(0, 1),
+                required=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ANALYSE_STREAMING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_WRITE_TAGS_BACK,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
 
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """
@@ -121,9 +176,10 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 data.error = f"pcm conversion failed: {err}"
                 return
 
+        feed_errors: tuple[type[BaseException], ...] = (*self._fingerprint_errors, TypeError)
         try:
             data.fingerprinter.feed(pcm_chunk)
-        except (chromaprint.FingerprintError, TypeError) as err:
+        except feed_errors as err:
             self.logger.debug("Chromaprint rejected PCM chunk for %s: %s", session_id, err)
             data.error = f"feed failed: {err}"
             return
@@ -344,6 +400,9 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         :param sample_rate: Audio sample rate in Hz.
         :param channels: Number of audio channels.
         """
+        import chromaprint  # noqa: PLC0415
+
+        self._fingerprint_errors = (chromaprint.FingerprintError,)
         try:
             fp = chromaprint.Fingerprinter()
             fp.start(int(sample_rate), int(channels))
@@ -366,7 +425,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
 
         try:
             fingerprint_raw = data.fingerprinter.finish()
-        except chromaprint.FingerprintError as err:
+        except self._fingerprint_errors as err:
             self.logger.debug("Chromaprint failed to produce a fingerprint: %s", err)
             return None
 

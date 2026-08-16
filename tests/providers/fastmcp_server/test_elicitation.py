@@ -69,6 +69,36 @@ async def test_clear_queue_blocked_when_user_declines(mock_mass: MagicMock) -> N
     mock_mass.player_queues.clear.assert_not_called()
 
 
+async def test_remove_item_runs_when_user_accepts(mock_mass: MagicMock) -> None:
+    """User accepts the elicitation prompt → remove_item dispatches to MA."""
+    queue = MagicMock(queue_id="q1", current_index=0, index_in_buffer=0)
+    mock_mass.player_queues.get = MagicMock(return_value=queue)
+    mock_mass.player_queues.index_by_id = MagicMock(side_effect=[2, None])
+    mcp = _server(mock_mass, require_confirmation=True)
+
+    async with Client(mcp, elicitation_handler=_accepter()) as client:
+        result = await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["item-1"]},
+        )
+    mock_mass.player_queues.delete_item.assert_called_once_with("q1", "item-1")
+    assert result.data.removed == ["item-1"]
+
+
+async def test_remove_item_blocked_when_user_declines(mock_mass: MagicMock) -> None:
+    """User declines → tool raises ToolError, no MA call is made."""
+    mock_mass.player_queues.get = MagicMock(return_value=MagicMock(queue_id="q1"))
+    mcp = _server(mock_mass, require_confirmation=True)
+
+    async with Client(mcp, elicitation_handler=_decliner()) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                "queue_remove_item",
+                {"queue_id": "q1", "item_ids": ["item-1"]},
+            )
+    mock_mass.player_queues.delete_item.assert_not_called()
+
+
 async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
     """With require_confirmation=False, elicitation is skipped entirely."""
     mock_mass.player_queues.clear = MagicMock()

@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import CrossfadeMode
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
+    CONF_HTTP_PROFILE,
+    CONF_ICON,
     CONF_LINKED_PROTOCOL_IDS,
+    CONF_NFS_SUBFOLDER_MIGRATED,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
@@ -30,7 +36,420 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_SONG_RECENCY,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 LOGGER = logging.getLogger(__name__)
+
+# removed player config key, only referenced by its migration
+LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
+
+# shared prefix of the removed per-player Bose SoundTouch preset keys
+LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
+
+# removed hass provider config keys, only referenced by their migration
+LEGACY_CONF_TTS_ENTITY = "tts_entity"
+LEGACY_CONF_AI_TASK_ENTITY = "ai_task_entity"
+
+# engine selection keys of the providers that consume the plugin engines
+CONF_AI_ENGINE = "ai_engine"
+CONF_TTS_ENGINE = "tts_engine"
+
+
+# Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
+# stored icon values already in this set are never touched by the icon migration.
+_CANONICAL_ICON_IDS: frozenset[str] = frozenset(
+    (
+        "homepod-mini",
+        "sonos",
+        "mac",
+        "apple-tv",
+        "google-nest",
+        "voice-pe",
+        "wiim",
+        "speaker",
+        "speakers",
+        "soundbar",
+        "radio",
+        "tv",
+        "monitor",
+        "laptop",
+        "smartphone",
+        "tablet",
+        "headphones",
+        "bluetooth",
+        "airplay",
+        "cast",
+        "car",
+        "music",
+        "vinyl",
+        "mic",
+        "volume",
+        "living-room",
+        "bedroom",
+        "bathroom",
+        "toilet",
+        "kitchen",
+        "office",
+        "hallway",
+        "garden",
+        "outdoor",
+        "sun",
+        "home",
+        "building",
+    )
+)
+
+# Legacy stored player icon values (mdi-* names and pre-1.0 picker names) mapped to
+# the closest canonical id of the shared icon set. Sourced from
+# https://github.com/music-assistant/shared-icons/blob/main/migration/legacy-map.json
+_LEGACY_ICON_MAP: dict[str, str] = {
+    "apple-homepod-mini": "homepod-mini",
+    "appletv": "apple-tv",
+    "armchair": "living-room",
+    "audio-lines": "volume",
+    "bath": "bathroom",
+    "bed": "bedroom",
+    "bed-double": "bedroom",
+    "bed-single": "bedroom",
+    "bluetooth-speaker": "bluetooth",
+    "boom-box": "radio",
+    "boombox": "radio",
+    "briefcase": "office",
+    "building-2": "building",
+    "cassette-tape": "music",
+    "chef-hat": "kitchen",
+    "cooking-pot": "kitchen",
+    "disc": "vinyl",
+    "disc-2": "vinyl",
+    "disc-3": "vinyl",
+    "disc-album": "vinyl",
+    "door-closed": "hallway",
+    "door-open": "hallway",
+    "drum": "music",
+    "flower": "garden",
+    "flower-2": "garden",
+    "guitar": "music",
+    "headset": "headphones",
+    "homepod": "homepod-mini",
+    "hotel": "building",
+    "house": "home",
+    "lamp-desk": "office",
+    "lamp-floor": "living-room",
+    "laptop-2": "laptop",
+    "laptop-minimal": "laptop",
+    "leaf": "garden",
+    "mdi-airplay": "airplay",
+    "mdi-album": "vinyl",
+    "mdi-amplifier": "speaker",
+    "mdi-antenna": "radio",
+    "mdi-apple": "apple-tv",
+    "mdi-apple-airplay": "airplay",
+    "mdi-audio-video": "speaker",
+    "mdi-audio-video-remote": "speaker",
+    "mdi-balcony": "outdoor",
+    "mdi-bathtub": "bathroom",
+    "mdi-bathtub-outline": "bathroom",
+    "mdi-bed": "bedroom",
+    "mdi-bed-empty": "bedroom",
+    "mdi-bed-king": "bedroom",
+    "mdi-bed-queen": "bedroom",
+    "mdi-bluetooth": "bluetooth",
+    "mdi-bluetooth-audio": "bluetooth",
+    "mdi-bookshelf": "office",
+    "mdi-boombox": "radio",
+    "mdi-briefcase": "office",
+    "mdi-bullhorn": "volume",
+    "mdi-bunk-bed": "bedroom",
+    "mdi-car": "car",
+    "mdi-car-estate": "car",
+    "mdi-car-hatchback": "car",
+    "mdi-car-side": "car",
+    "mdi-cast": "cast",
+    "mdi-cast-audio": "cast",
+    "mdi-cast-connected": "cast",
+    "mdi-cast-variant": "airplay",
+    "mdi-cellphone": "smartphone",
+    "mdi-cellphone-sound": "smartphone",
+    "mdi-cellphone-wireless": "smartphone",
+    "mdi-chair-rolling": "office",
+    "mdi-chef-hat": "kitchen",
+    "mdi-city": "building",
+    "mdi-coat-rack": "hallway",
+    "mdi-coffee": "kitchen",
+    "mdi-coffee-maker": "kitchen",
+    "mdi-countertop": "kitchen",
+    "mdi-desk": "office",
+    "mdi-desk-lamp": "office",
+    "mdi-desktop-classic": "monitor",
+    "mdi-desktop-mac": "mac",
+    "mdi-desktop-tower": "monitor",
+    "mdi-desktop-tower-monitor": "monitor",
+    "mdi-disc": "vinyl",
+    "mdi-disc-player": "vinyl",
+    "mdi-domain": "building",
+    "mdi-door": "hallway",
+    "mdi-door-closed": "hallway",
+    "mdi-door-open": "hallway",
+    "mdi-earbuds": "headphones",
+    "mdi-earbuds-outline": "headphones",
+    "mdi-flower": "garden",
+    "mdi-flower-outline": "garden",
+    "mdi-flower-tulip": "garden",
+    "mdi-forest": "outdoor",
+    "mdi-fridge": "kitchen",
+    "mdi-fridge-outline": "kitchen",
+    "mdi-garage": "car",
+    "mdi-garage-variant": "car",
+    "mdi-google-assistant": "google-nest",
+    "mdi-google-home": "google-nest",
+    "mdi-grass": "garden",
+    "mdi-grill": "outdoor",
+    "mdi-guitar-acoustic": "music",
+    "mdi-guitar-electric": "music",
+    "mdi-headphones": "headphones",
+    "mdi-headset": "headphones",
+    "mdi-home": "home",
+    "mdi-home-city": "building",
+    "mdi-home-modern": "home",
+    "mdi-home-outline": "home",
+    "mdi-home-variant": "home",
+    "mdi-hot-tub": "bathroom",
+    "mdi-karaoke": "mic",
+    "mdi-laptop": "laptop",
+    "mdi-laptop-mac": "mac",
+    "mdi-microphone": "mic",
+    "mdi-microphone-variant": "mic",
+    "mdi-monitor": "monitor",
+    "mdi-monitor-speaker": "speaker",
+    "mdi-music": "music",
+    "mdi-music-box": "music",
+    "mdi-music-circle": "music",
+    "mdi-music-clef-treble": "music",
+    "mdi-music-note": "music",
+    "mdi-nature": "outdoor",
+    "mdi-office-building": "building",
+    "mdi-office-building-outline": "building",
+    "mdi-palm-tree": "outdoor",
+    "mdi-patio-heater": "outdoor",
+    "mdi-piano": "music",
+    "mdi-pine-tree": "outdoor",
+    "mdi-podcast": "mic",
+    "mdi-pool": "outdoor",
+    "mdi-pot-steam": "kitchen",
+    "mdi-projector": "tv",
+    "mdi-projector-screen": "tv",
+    "mdi-radio": "radio",
+    "mdi-radio-tower": "radio",
+    "mdi-record": "vinyl",
+    "mdi-record-player": "vinyl",
+    "mdi-saxophone": "music",
+    "mdi-shower": "bathroom",
+    "mdi-shower-head": "bathroom",
+    "mdi-silverware": "kitchen",
+    "mdi-silverware-fork": "kitchen",
+    "mdi-silverware-fork-knife": "kitchen",
+    "mdi-silverware-variant": "kitchen",
+    "mdi-sofa": "living-room",
+    "mdi-sofa-outline": "living-room",
+    "mdi-sofa-single": "living-room",
+    "mdi-soundbar": "soundbar",
+    "mdi-speaker": "speaker",
+    "mdi-speaker-bluetooth": "bluetooth",
+    "mdi-speaker-multiple": "speakers",
+    "mdi-speaker-wireless": "speaker",
+    "mdi-sprout": "garden",
+    "mdi-stairs": "hallway",
+    "mdi-stove": "kitchen",
+    "mdi-surround-sound": "speakers",
+    "mdi-tablet": "tablet",
+    "mdi-television": "tv",
+    "mdi-television-box": "tv",
+    "mdi-television-classic": "tv",
+    "mdi-television-guide": "tv",
+    "mdi-theater": "tv",
+    "mdi-toilet": "toilet",
+    "mdi-tree": "outdoor",
+    "mdi-tree-outline": "outdoor",
+    "mdi-truck": "car",
+    "mdi-trumpet": "music",
+    "mdi-turntable": "vinyl",
+    "mdi-violin": "music",
+    "mdi-volume-high": "volume",
+    "mdi-volume-low": "volume",
+    "mdi-volume-medium": "volume",
+    "mdi-watering-can": "garden",
+    "mdi-weather-sunny": "sun",
+    "mdi-white-balance-sunny": "sun",
+    "megaphone": "volume",
+    "mic-vocal": "mic",
+    "microphone": "mic",
+    "microwave": "kitchen",
+    "monitor-speaker": "speaker",
+    "music-2": "music",
+    "music-3": "music",
+    "music-4": "music",
+    "piano": "music",
+    "podcast": "mic",
+    "projector": "tv",
+    "radio-receiver": "radio",
+    "radio-tower": "radio",
+    "refrigerator": "kitchen",
+    "screen-share": "cast",
+    "shower-head": "bathroom",
+    "sofa": "living-room",
+    "speaker-group": "speakers",
+    "speaker-loud": "volume",
+    "speaker-multiple": "speakers",
+    "sprout": "garden",
+    "television": "tv",
+    "tent-tree": "outdoor",
+    "toilet": "toilet",
+    "tree": "outdoor",
+    "tree-deciduous": "outdoor",
+    "tree-pine": "outdoor",
+    "trees": "outdoor",
+    "tv-2": "tv",
+    "tv-minimal": "tv",
+    "tv-minimal-play": "tv",
+    "utensils": "kitchen",
+    "utensils-crossed": "kitchen",
+    "volume-1": "volume",
+    "volume-2": "volume",
+}
+
+# Config keys each provider's setup flow owns: the keys it reads back with
+# get_setup_value / get_provider_setup_value (and rotates via _update_setup_data) from
+# `setup_data` rather than `values`. The one-off migrate_provider_setup_data step below
+# moves these keys from the raw `values` dict into `setup_data` (encrypting string values
+# at rest) for installs that were configured before setup flows existed. Keys that stayed
+# regular options (quality, sync toggles, output settings, ...) are intentionally absent:
+# they keep being read via get_config_value from `values`.
+# The literal strings are the persisted config keys, not the CONF_* symbol names; some
+# providers redefine common names (e.g. the Hue bridge stores its user under
+# "hue_username", the scrobblers under "_username", Open Subsonic its url under "baseURL").
+# Notes on the non-obvious entries:
+# - the filesystem providers' "content_type" is also surfaced by get_config_entries, but
+#   only as a read-only mirror that carries the setup value as its default (so it is never
+#   persisted back to values), so moving it to setup_data is safe and required (it is read
+#   via get_provider_setup_value).
+# - hass "url"/"token"/"verify_ssl": on a Home Assistant add-on these come from fixed
+#   (hidden) config entries whose values equal what a stored copy would hold, so moving a
+#   stored copy is a harmless no-op there while restoring normal installs.
+# - plex_connect's "plex_provider_id"/"mass_player_id" are not secrets, but its setup flow
+#   collects them (the options are only known from live server state), so they live in
+#   setup_data like any other flow-collected value.
+# - spotify is deliberately absent: its own _migrate_legacy_token still reads the legacy
+#   "refresh_token" and "client_id" from `values`, so this migration must not move them.
+# TODO: remove after 2.13 release
+PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
+    "alexa": ("url", "username", "password", "api_url", "api_username", "api_password"),
+    "amplipi": ("host",),
+    "apple_music": ("music_app_token", "music_user_token", "music_user_manual_token"),
+    "airplay_receiver": ("mass_player_id", "airplay_name"),
+    "ard_audiothek": ("email", "password", "token", "user_id", "token_expiry", "display_name"),
+    "ariacast_receiver": ("mass_player_id",),
+    "audible": ("auth_file", "locale"),
+    "audiobookshelf": ("url", "username", "password", "token", "api_token", "verify_ssl"),
+    "bandcamp": ("identity",),
+    "bbc_sounds": ("username", "password"),
+    "bose_soundtouch": ("app_key",),
+    "deezer": ("arl_token",),
+    "digitally_incorporated": ("listen_key",),
+    "emby": ("ip_address", "username", "password"),
+    "filesystem_google_drive": (
+        "content_type",
+        "client_id",
+        "client_secret",
+        "folder_id",
+        "refresh_token",
+    ),
+    "filesystem_local": ("content_type", "path"),
+    "filesystem_nfs": ("content_type", "host", "export_path", "subfolder", "nfs_version"),
+    "filesystem_onedrive": (
+        "content_type",
+        "client_id",
+        "client_secret",
+        "folder_id",
+        "refresh_token",
+    ),
+    "filesystem_smb": (
+        "content_type",
+        "host",
+        "share",
+        "username",
+        "password",
+        "subfolder",
+        "smb_version",
+    ),
+    "gpodder": ("url", "username", "password", "device_id", "token", "url_nc", "verify_ssl"),
+    "hass": ("url", "token", "verify_ssl"),
+    "hue_entertainment": ("bridge_host", "hue_username", "hue_clientkey", "bridge_id"),
+    "ibroadcast": ("username", "password"),
+    "jellyfin": ("url", "username", "password", "verify_ssl"),
+    "kion_music": ("token",),
+    "lastfm_scrobble": ("_provider", "_api_session_key", "_username", "_api_key", "_api_secret"),
+    "listenbrainz_scrobble": ("_user_token", "api_base_url"),
+    "musicme": ("username", "password"),
+    "neteasecloudmusic": ("api_base_url", "cookie", "uid"),
+    "nicovideo": ("mail", "password", "user_session"),
+    "nugs": ("username", "password"),
+    "opensubsonic": ("username", "password", "baseURL", "port", "path"),
+    "pandora": ("username", "password"),
+    "plex": (
+        "token",
+        "local_server_ip",
+        "local_server_port",
+        "local_server_ssl",
+        "local_server_verify_cert",
+        "library_id",
+        "library_type",
+    ),
+    "plex_connect": ("plex_provider_id", "mass_player_id"),
+    "pocketcasts": ("username", "password"),
+    "podcast_index": ("api_key", "api_secret"),
+    "podcastfeed": ("feed_url",),
+    "qobuz": ("username", "password"),
+    "qqmusic": ("uin", "musicid", "musickey", "login_type", "credential_json"),
+    "siriusxm": ("sxm_email_address", "sxm_password", "sxm_region"),
+    "soundcloud": ("client_id", "authorization"),
+    "spotify_connect": ("mass_player_id", "publish_name"),
+    "teddycloud": ("url",),
+    "tidal": ("auth_token", "refresh_token", "expiry_time", "user_id"),
+    "tunein": ("username",),
+    "vban_receiver": (
+        "bind_ip",
+        "bind_port",
+        "sender_host",
+        "vban_stream_name",
+        "audio_format",
+        "sample_rate",
+        "audio_channels",
+    ),
+    "webdav": ("content_type", "url", "username", "password", "verify_ssl"),
+    "yandex_music": ("token", "x_token", "refresh_token"),
+    "yandex_smarthome": (
+        "connection_type",
+        "cloud_instance_id",
+        "cloud_instance_password",
+        "cloud_connection_token",
+        "skill_id",
+        "skill_token",
+        "direct_access_token",
+        "direct_client_secret",
+    ),
+    "yandex_station": (
+        "ym_instance",
+        "music_token",
+        "x_token",
+        "refresh_token",
+        "remember_session",
+    ),
+    "yandex_ynison": ("ym_instance", "token", "x_token", "mass_player_id", "publish_name"),
+    "yousee": ("username", "password"),
+    "ytmusic": ("username", "cookie", "po_token_server_url"),
+    "zvuk_music": ("token",),
+}
 
 
 async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
@@ -153,7 +572,256 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_local_audio_attribution_stubs(data):
         changed = True
 
+    # Drop ghost players that were discovered from this server's own AirPlay Receiver
+    # (shairport-sync) advertisements before discovery learned to filter them out.
+    # TODO: remove after 2.10 release
+    if _migrate_airplay_receiver_ghost_players(data):
+        changed = True
+
+    # Give Apple TVs paired before native power control existed the current
+    # default ("native") instead of the stale "none" that hid their power button.
+    # TODO: remove after 2.11 release
+    if _migrate_airplay_apple_power_control(data):
+        changed = True
+
+    # Drop the stored value of the removed output limiter player setting; clipping protection
+    # is now an explicit Safety Limiter DSP filter instead of a fixed output stage.
+    # TODO: remove after 2.10 release
+    if _migrate_output_limiter(data):
+        changed = True
+
+        # Move player-owned credential/pairing keys (AirPlay creds, Fully Kiosk / MPD password)
+    # from the player config `values` into the player's encrypted `setup_data`, so those reads
+    # switch to Player.get_setup_value now that pairing/credentials are owned by the setup flows.
+    # TODO: remove after 2.11 release
+    if _migrate_player_setup_data(data):
+        changed = True
+
+    # Drop the per-player Bose SoundTouch preset mappings; presets are now mapped once on
+    # the provider config and shared by all its speakers.
+    # TODO: remove after 2.11 release
+    if _migrate_bose_soundtouch_presets(data):
+        changed = True
+
+    # Rewrite stored player icons from legacy values (mdi-* names and pre-1.0 picker
+    # names) to canonical ids of the shared icon set; unmappable mdi-* picks drop
+    # back to the player-type default.
+    # TODO: remove after 2.12 release
+    if _migrate_player_icons(data):
+        changed = True
+
+    # Drop the stored HTTP profile of Bluesound players; the setting is no longer offered
+    # because BluOS only plays back correctly on the forced content length profile.
+    # TODO: remove after 2.12 release
+    if _migrate_bluesound_http_profile(data):
+        changed = True
+
+    # Drop disabled protocol player configs that lost their parent player: the device they
+    # belong to can never register again while such a config lingers, and it is not shown
+    # in the UI so there is no way to enable it again.
+    # TODO: remove after 2.12 release
+    if _migrate_orphaned_disabled_protocol_configs(data):
+        changed = True
+
+    # Clear the stored name of players that were never renamed, so an updated default
+    # name is no longer shadowed by the auto-generated name stored at creation time.
+    # TODO: remove after 2.12 release
+    if _migrate_unrenamed_player_names(data):
+        changed = True
+
     return changed
+
+
+def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
+    """
+    Move each provider's setup-flow-owned keys from `values` to `setup_data` in-place.
+
+    Runs after encryption is initialized (unlike migrate()), so string values are
+    encrypted at rest with the given callback - matching how the setup flows persist
+    collected values. Returns True if anything changed.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param encrypt: Callback that encrypts a string value (idempotent for already
+        encrypted values), used to encrypt migrated string values at rest.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    changed = False
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict):
+            continue
+        owned_keys = PROVIDER_SETUP_FLOW_KEYS.get(provider_cfg.get("domain", ""))
+        if not owned_keys:
+            continue
+        values = provider_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        movable_keys = [key for key in owned_keys if key in values]
+        setup_data = provider_cfg.get("setup_data")
+        needs_airplay_default = provider_cfg.get("domain") == "airplay_receiver" and (
+            not isinstance(setup_data, dict) or "airplay_name" not in setup_data
+        )
+        if not movable_keys and not needs_airplay_default:
+            continue
+        if not isinstance(setup_data, dict):
+            setup_data = {}
+            provider_cfg["setup_data"] = setup_data
+        for key in movable_keys:
+            # a value already collected into setup_data wins; only drop the stale copy
+            if key not in setup_data:
+                value = values[key]
+                setup_data[key] = encrypt(value) if isinstance(value, str) else value
+            del values[key]
+        if needs_airplay_default and "airplay_name" not in setup_data:
+            setup_data["airplay_name"] = encrypt("Music Assistant")
+        changed = True
+    if changed:
+        LOGGER.info("Migrated provider setup values into setup_data")
+    return changed
+
+
+# TODO: remove after 2.10 release
+def migrate_nfs_subfolder_into_export_path(
+    data: dict[str, Any],
+    encrypt: Callable[[str], str],
+    decrypt: Callable[[str], str],
+) -> bool:
+    """
+    Fold a stored NFS `subfolder` into its `export_path`, once.
+
+    The provider mounts the export as configured and scans the subfolder inside that mount, so
+    folding the two keys into one keeps an existing instance mounting what it already mounts.
+    Runs after encryption is initialized, like migrate_provider_setup_data, because both keys
+    live encrypted in `setup_data`.
+
+    Guarded by CONF_NFS_SUBFOLDER_MIGRATED so it cannot run twice: a subfolder stored
+    afterwards means "scan this path inside the mount" and must never be folded. Returns True
+    when the settings were modified, including the first run's marker.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param encrypt: Callback that encrypts a string value at rest.
+    :param decrypt: Callback that decrypts a stored string value (a no-op for plain values).
+    """
+    if data.get(CONF_NFS_SUBFOLDER_MIGRATED):
+        return False
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    changed = False
+    for instance_id, provider_cfg in all_provider_configs.items():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "filesystem_nfs":
+            continue
+        setup_data = provider_cfg.get("setup_data")
+        if not isinstance(setup_data, dict):
+            continue
+        stored_subfolder = setup_data.get("subfolder")
+        stored_export_path = setup_data.get("export_path")
+        if not isinstance(stored_subfolder, str) or not isinstance(stored_export_path, str):
+            continue
+        try:
+            subfolder = decrypt(stored_subfolder).strip()
+            export_path = decrypt(stored_export_path)
+        except InvalidDataError:
+            # one unreadable instance must not fail config setup for the whole server; it
+            # still surfaces the problem at its own setup. Name it without its values.
+            LOGGER.warning(
+                "Could not read the stored NFS paths of %s; skipping its subfolder migration",
+                instance_id,
+            )
+            continue
+        if not subfolder or not export_path:
+            # an empty export path is broken either way and must not become a relative one
+            continue
+        # must come out as <export_path>/<subfolder> so the mount source is unchanged
+        setup_data["export_path"] = encrypt(str(PurePosixPath(export_path) / subfolder.lstrip("/")))
+        del setup_data["subfolder"]
+        changed = True
+    if changed:
+        LOGGER.info("Migrated NFS provider subfolder into the export path")
+    # claim the marker even when nothing was folded, so a subfolder stored later is safe
+    data[CONF_NFS_SUBFOLDER_MIGRATED] = True
+    return True
+
+
+# TODO: remove after 2.10 release
+def migrate_hass_engine_selection(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
+    """
+    Hand the removed Home Assistant TTS/AI entity choice over to the providers consuming it.
+
+    The Home Assistant plugin exposes every TTS/AI entity as a selectable engine now and each
+    consuming provider picks one itself, so the single choice that used to live on the plugin
+    is copied to the installed consumers that have no choice of their own yet. Providers
+    installed later pick an engine themselves at load. Returns True if anything changed.
+
+    Runs after encryption is initialized (like migrate_provider_setup_data), since the ai_radio
+    selection belongs in its encrypted `setup_data`.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param encrypt: Callback that encrypts a string value, used for the values that land in
+        `setup_data`.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    hass_configs = {
+        instance_id: provider_cfg
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == "hass"
+    }
+    if len(hass_configs) > 1:
+        # there is no correct winner between several choices, so let the user pick per provider
+        LOGGER.warning(
+            "Skipped migrating the Home Assistant TTS/AI entity selection: "
+            "%s Home Assistant configurations found, select the engines manually",
+            len(hass_configs),
+        )
+        return False
+    changed = False
+    for instance_id, hass_cfg in hass_configs.items():
+        values = hass_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        if not any(key in values for key in (LEGACY_CONF_TTS_ENTITY, LEGACY_CONF_AI_TASK_ENTITY)):
+            continue
+        tts_entity = values.pop(LEGACY_CONF_TTS_ENTITY, None)
+        ai_task_entity = values.pop(LEGACY_CONF_AI_TASK_ENTITY, None)
+        changed = True
+        if isinstance(ai_task_entity, str) and ai_task_entity:
+            ai_engine = f"{instance_id}/{ai_task_entity}"
+            _set_engine_selection(
+                all_provider_configs, "music_quiz", "values", CONF_AI_ENGINE, ai_engine
+            )
+            _set_engine_selection(
+                all_provider_configs, "smart_playlist", "values", CONF_AI_ENGINE, ai_engine
+            )
+            _set_engine_selection(
+                all_provider_configs, "ai_radio", "setup_data", CONF_AI_ENGINE, encrypt(ai_engine)
+            )
+        if isinstance(tts_entity, str) and tts_entity:
+            _set_engine_selection(
+                all_provider_configs,
+                "ai_radio",
+                "setup_data",
+                CONF_TTS_ENGINE,
+                encrypt(f"{instance_id}/{tts_entity}"),
+            )
+        LOGGER.info("Migrated the Home Assistant TTS/AI entity selection to the plugin engines")
+    return changed
+
+
+def _set_engine_selection(
+    all_provider_configs: dict[str, Any], domain: str, section: str, key: str, value: str
+) -> None:
+    """Store an engine selection on each config of the given domain that has none of its own."""
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != domain:
+            continue
+        section_values = provider_cfg.get(section)
+        if not isinstance(section_values, dict):
+            section_values = {}
+            provider_cfg[section] = section_values
+        section_values.setdefault(key, value)
 
 
 def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:
@@ -444,7 +1112,7 @@ def _absorb_universal_player_config(
         other_values = other_cfg.get("values")
         if not isinstance(other_values, dict):
             continue
-        for key in ("group_members", "dynamic_group_members", "allowed_members"):
+        for key in ("group_members", "allowed_members"):
             members = other_values.get(key)
             if isinstance(members, list) and universal_id in members:
                 other_values[key] = [player_id if pid == universal_id else pid for pid in members]
@@ -567,3 +1235,393 @@ def _migrate_fully_kiosk_multi_instance(data: dict[str, Any]) -> bool:
         len(legacy_ids),
     )
     return True
+
+
+def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
+    """
+    Remove ghost players left behind by this server's own AirPlay Receiver instances.
+
+    The AirPlay provider could discover the server's own AirPlay Receiver
+    (shairport-sync) advertisements as regular AirPlay players. shairport-sync
+    derives its device id from the receiver name plus a host interface MAC, which
+    can change per boot (e.g. virtual interface MACs), so every restart could mint
+    a new player id: the previous ids linger as permanently unavailable players and
+    universal player wrappers. Discovery now filters these advertisements out; this
+    migration drops the leftovers.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_provider_configs, dict) or not isinstance(all_player_configs, dict):
+        return False
+    # the advertised name of every enabled receiver instance
+    # (key and default mirror the airplay_receiver provider's config entry).
+    # Disabled instances are skipped, consistent with the discovery filter: they
+    # run no daemon and cannot have produced the ghosts, so their name is too weak
+    # a signal to delete a config on (it could be a legitimate same-named device).
+    receiver_names: set[str] = set()
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "airplay_receiver":
+            continue
+        if not provider_cfg.get("enabled", True):
+            continue
+        setup_data = provider_cfg.get("setup_data")
+        if isinstance(setup_data, dict) and "airplay_name" in setup_data:
+            # New setup-flow instances cannot have produced legacy ghosts. Their
+            # encrypted receiver name is unavailable during this early migration.
+            continue
+        provider_values = provider_cfg.get("values")
+        airplay_name = (
+            provider_values.get("airplay_name") if isinstance(provider_values, dict) else None
+        )
+        receiver_names.add(str(airplay_name) if airplay_name else "Music Assistant")
+    if not receiver_names:
+        return False
+    # the Sendspin bridge of such a ghost registered under "<name> (AirPlay)"
+    bridge_names = {f"{name} (AirPlay)" for name in receiver_names}
+
+    # First identify the ghost protocol endpoints: the discovered AirPlay player and
+    # its Sendspin bridge, each matched by its own advertised (receiver) name.
+    endpoint_ghost_ids: set[str] = set()
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        default_name = player_cfg.get("default_name")
+        provider = player_cfg.get("provider")
+        if (
+            player_id.startswith("ap") and provider == "airplay" and default_name in receiver_names
+        ) or (
+            player_id.startswith("spb_") and provider == "sendspin" and default_name in bridge_names
+        ):
+            endpoint_ghost_ids.add(player_id)
+
+    # Then add the universal player wrappers that exclusively wrap those endpoints.
+    # A wrapper is only removed when it links at least one confirmed ghost endpoint
+    # and nothing else, so a real player that merely shares the receiver name (with
+    # no or different linked protocols) is never deleted.
+    ghost_ids = set(endpoint_ghost_ids)
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if not (
+            player_id.startswith("up")
+            and player_cfg.get("provider") == "universal_player"
+            and player_cfg.get("default_name") in receiver_names | bridge_names
+        ):
+            continue
+        values = player_cfg.get("values")
+        linked = values.get(CONF_LINKED_PROTOCOL_IDS) if isinstance(values, dict) else None
+        if isinstance(linked, list) and linked and all(pid in endpoint_ghost_ids for pid in linked):
+            ghost_ids.add(player_id)
+    if not ghost_ids:
+        return False
+
+    for player_id in ghost_ids:
+        del all_player_configs[player_id]
+        # drop dead per-queue and DSP state along with the player config
+        for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
+            tree = data.get(tree_key)
+            if isinstance(tree, dict):
+                tree.pop(player_id, None)
+    # strip dangling references to the removed ghosts from group configurations
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        for key in ("group_members", "allowed_members"):
+            members = values.get(key)
+            if isinstance(members, list) and any(pid in ghost_ids for pid in members):
+                values[key] = [pid for pid in members if pid not in ghost_ids]
+    LOGGER.info(
+        "Removed %d ghost player config(s) left behind by this server's own "
+        "AirPlay Receiver instances",
+        len(ghost_ids),
+    )
+    return True
+
+
+def _migrate_airplay_apple_power_control(data: dict[str, Any]) -> bool:
+    """
+    Enable native power control for Apple TVs paired before the feature existed.
+
+    Native on/off (Companion) power control was added to Apple TVs later, but
+    players configured earlier kept the power_control default from that time
+    ("none"), so the power button stayed hidden. Flip that stale default to
+    "native" for paired Apple devices (those with Companion credentials, i.e.
+    the ones that actually gained the feature); a device that turns out not to
+    support power degrades back to "none" at runtime.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if not str(player_cfg.get("provider", "")).startswith("airplay"):
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict) or not values.get("companion_credentials"):
+            continue
+        if values.get("power_control") != PLAYER_CONTROL_NONE:
+            continue
+        values["power_control"] = PLAYER_CONTROL_NATIVE
+        LOGGER.info("Enabled native power control for paired Apple device %s", player_id)
+        changed = True
+    return changed
+
+
+def _migrate_output_limiter(data: dict[str, Any]) -> bool:
+    """Remove the stored values of the removed per-player output limiter setting."""
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if isinstance(player_values, dict) and LEGACY_CONF_OUTPUT_LIMITER in player_values:
+            del player_values[LEGACY_CONF_OUTPUT_LIMITER]
+            changed = True
+    if changed:
+        LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
+    return changed
+
+
+# the only HTTP profile BluOS devices play back correctly on
+FORCED_HTTP_PROFILE = "forced_content_length"
+
+
+def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
+    """
+    Drop a stored HTTP profile that Bluesound players can no longer select.
+
+    BluOS keeps looping the audio on any profile other than the forced content length one,
+    so the setting is no longer offered. A player left on another profile would stay broken
+    with no way back, so that pick is removed.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        if not str(player_cfg.get("provider", "")).startswith("bluesound"):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
+            del player_values[CONF_HTTP_PROFILE]
+            changed = True
+    if changed:
+        LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_unrenamed_player_names(data: dict[str, Any]) -> bool:
+    """
+    Clear the stored name of player configs that hold the default name verbatim.
+
+    Player configs used to store the name a player was created with as both the custom
+    and the default name, which makes a never-renamed player indistinguishable from a
+    renamed one and lets the creation-time name shadow every later default name.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        # a config without a default name would be left without any name at all
+        if not (default_name := player_cfg.get("default_name")):
+            continue
+        if player_cfg.get("name") != default_name:
+            continue
+        player_cfg["name"] = None
+        changed = True
+    return changed
+
+
+def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
+    """
+    Remove disabled protocol player configs that no longer belong to a player.
+
+    A protocol player is only ever presented as part of the player that owns it, so a
+    disabled config that outlived its owner keeps the device from registering again while
+    offering no way to enable it.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    linked_ids: set[str] = set()
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
+            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
+    orphaned: list[str] = []
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if player_cfg.get("player_type") != "protocol":
+            continue
+        if player_cfg.get("enabled", True):
+            continue
+        # a player owns a protocol player from either side of the link
+        if player_id in linked_ids:
+            continue
+        player_values = player_cfg.get("values")
+        parent_id = (
+            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
+        )
+        if parent_id in all_player_configs:
+            continue
+        orphaned.append(player_id)
+    dsp_configs = data.get(CONF_PLAYER_DSP)
+    for player_id in orphaned:
+        del all_player_configs[player_id]
+        if isinstance(dsp_configs, dict):
+            dsp_configs.pop(player_id, None)
+        LOGGER.warning("Removed orphaned player configuration %s", player_id)
+    return bool(orphaned)
+
+
+def _migrate_bose_soundtouch_presets(data: dict[str, Any]) -> bool:
+    """
+    Remove the per-player Bose SoundTouch preset mappings.
+
+    The physical preset buttons are now mapped once on the provider config, so the same
+    button plays the same content on every speaker. The old per-player values are dropped
+    rather than promoted: several speakers can hold conflicting mappings and there is no
+    correct winner, so the user maps the buttons once more on the provider.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if str(player_cfg.get("provider", "")).split("--", 1)[0] != "bose_soundtouch":
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        preset_keys = [key for key in values if key.startswith(LEGACY_BOSE_PRESET_KEY_PREFIX)]
+        if not preset_keys:
+            continue
+        for key in preset_keys:
+            del values[key]
+        LOGGER.info(
+            "Removed the per-player preset mappings for Bose SoundTouch player %s; "
+            "map the preset buttons on the provider settings instead",
+            player_id,
+        )
+        changed = True
+    return changed
+
+
+_PLAYER_SETUP_DATA_KEYS: dict[str, tuple[str, ...]] = {
+    "airplay": (
+        "raop_credentials",
+        "airplay_credentials",
+        "companion_credentials",
+        "mrp_credentials",
+        "native_mrp_credentials",
+    ),
+    "fully_kiosk": ("password",),
+    "mpd": ("password",),
+}
+
+
+_PLAYER_DEAD_SETUP_KEYS: dict[str, tuple[str, ...]] = {
+    "airplay": ("ap2password",),
+}
+
+
+def _migrate_player_setup_data(data: dict[str, Any]) -> bool:
+    """
+    Move player-owned credential/pairing keys from player `values` into `setup_data`.
+
+    Idempotent (only moves a key still present in `values` and absent from `setup_data`)
+    and multi-instance safe (matches on the player provider domain). Values are moved
+    as-is: they are already encrypted SECURE_STRINGs, which is exactly the at-rest form
+    setup_data expects. Also drops keys that are dead now (never read at runtime).
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        domain = str(player_cfg.get("provider", "")).split("--", 1)[0]
+        move_keys = _PLAYER_SETUP_DATA_KEYS.get(domain, ())
+        dead_keys = _PLAYER_DEAD_SETUP_KEYS.get(domain, ())
+        if not move_keys and not dead_keys:
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        setup_data = player_cfg.get("setup_data")
+        if not isinstance(setup_data, dict):
+            setup_data = {}
+        moved = False
+        for key in move_keys:
+            if key not in values:
+                continue
+            value = values.pop(key)
+            moved = True
+            # a stored null is just dropped; only real values move across
+            if value is not None and key not in setup_data:
+                setup_data[key] = value
+        for key in dead_keys:
+            if key in values:
+                del values[key]
+                moved = True
+        if moved:
+            if setup_data:
+                player_cfg["setup_data"] = setup_data
+            LOGGER.info(
+                "Migrated credential/pairing values into setup_data for player %s", player_id
+            )
+            changed = True
+    return changed
+
+
+def _migrate_player_icons(data: dict[str, Any]) -> bool:
+    """Rewrite legacy stored player icon values to canonical shared-icon-set ids."""
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        icon = values.get(CONF_ICON)
+        if not isinstance(icon, str) or icon in _CANONICAL_ICON_IDS:
+            continue
+        if (replacement := _LEGACY_ICON_MAP.get(icon)) is not None:
+            values[CONF_ICON] = replacement
+            LOGGER.info("Migrated icon %s to %s for player %s", icon, replacement, player_id)
+            changed = True
+        elif icon.startswith("mdi-"):
+            # no close equivalent in the shared icon set: drop the stored value
+            # so the player-type default applies
+            del values[CONF_ICON]
+            LOGGER.info("Dropped legacy icon %s for player %s", icon, player_id)
+            changed = True
+        # any other unknown value is left in place: clients render the fallback icon
+        # for unknown ids and the value may become a valid id in a future icon set
+    return changed

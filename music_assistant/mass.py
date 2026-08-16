@@ -8,7 +8,10 @@ import logging
 import os
 import pathlib
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+import time
+from base64 import b64encode
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -17,8 +20,18 @@ from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderError
-from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    CoreState,
+    EventType,
+    ProviderFeature,
+    ProviderIconVariant,
+    ProviderType,
+)
 from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InvalidToken,
+    LoginFailed,
     MusicAssistantError,
     SetupFailedError,
     UnsupportedSystemError,
@@ -40,6 +53,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.metadata import MetaDataController
@@ -57,7 +71,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
-from music_assistant.helpers.images import get_icon_string
+from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.util import (
     TaskManager,
     get_package_version,
@@ -94,6 +108,14 @@ LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
+# These bounds guard against a wedged provider, they are not a performance budget: several
+# providers load at once on a busy event loop, so a step can take much longer in wall clock
+# time than it takes on its own. Keep them generous enough that a slow host never trips them.
+PROVIDER_SETUP_TIMEOUT = 120
+# Generous enough for the slowest hosts to load their ML models, but bounded so a wedged
+# provider fails to load instead of holding up startup forever.
+PROVIDER_ASYNC_INIT_TIMEOUT = 300
+PROVIDER_LOAD_CONCURRENCY = 8
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -130,6 +152,54 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
     return ProviderError(error_code=999, message=message)
 
 
+def _provider_error_traceback(exc: BaseException) -> BaseException | None:
+    """Return the exception to log a traceback for, or None when its message says enough."""
+    # a handled condition (auth required, unsupported system, ...) explains itself, but anything
+    # unexpected - or a setup failure wrapping an underlying error - can only be diagnosed from a
+    # traceback, and by the time it is reported the user rarely still has verbose logging on
+    if not isinstance(exc, MusicAssistantError) or exc.__cause__ is not None:
+        return exc
+    return exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None
+
+
+@asynccontextmanager
+async def _provider_load_step(
+    domain: str, action: str, timeout: int | None = None
+) -> AsyncIterator[None]:
+    """
+    Name a provider load step, so any failure in it surfaces as a usable setup failure.
+
+    :param domain: Domain of the provider being loaded, used in the error message.
+    :param action: Verb describing the step, used in the error message.
+    :param timeout: Seconds to allow the step before it is treated as failed, if bounded.
+    """
+    timeout_cm: asyncio.Timeout | None = None
+    try:
+        if timeout is None:
+            yield
+        else:
+            async with asyncio.timeout(timeout) as timeout_cm:
+                yield
+    except TimeoutError as err:
+        if timeout_cm is not None and timeout_cm.expired():
+            msg = f"Provider {domain} did not {action} within {timeout} seconds"
+        else:
+            # a timeout from the provider's own code (an http call, say) carries no message
+            # of its own: name the step it happened in instead of blaming our own bound
+            msg = f"Provider {domain} timed out while trying to {action}"
+        raise SetupFailedError(msg) from err
+    except MusicAssistantError:
+        # already carries a message (and a translation key) meant for the user
+        raise
+    except Exception as err:
+        if str(err):
+            raise
+        # an exception without a message (a bare TimeoutError from an http call, say) would
+        # otherwise reach the user as nothing but its class name, with no hint of what failed
+        msg = f"Provider {domain} failed to {action}: {type(err).__name__}"
+        raise SetupFailedError(msg) from err
+
+
 class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
@@ -146,6 +216,7 @@ class MusicAssistant:
     streams: StreamsController
     translations: TranslationController
     diagnostics: DiagnosticsController
+    dashboard: DashboardController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -160,6 +231,7 @@ class MusicAssistant:
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._provider_manifests: dict[str, ProviderManifest] = {}
+        self._provider_icons: dict[str, dict[ProviderIconVariant, tuple[str, bytes]]] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task[Any]] = {}
         self._tracked_timers: dict[str, asyncio.TimerHandle] = {}
@@ -202,20 +274,7 @@ class MusicAssistant:
         )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
-        self.cache = CacheController(self)
-        self.tasks = TasksController(self)
-        self.webserver = WebserverController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.player_queues = PlayerQueuesController(self)
-        self.streams = StreamsController(self)
-        self.translations = TranslationController(self)
-        self.diagnostics = DiagnosticsController(self)
-        # add manifests for core controllers
-        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
-            controller: CoreController = getattr(self, controller_name)
-            self._provider_manifests[controller.domain] = controller.manifest
+        await self._load_core_controllers()
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
@@ -238,6 +297,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
+            tg.create_task(setup_controller(self.dashboard))
 
         for controller_name in (
             "cache",
@@ -280,20 +340,31 @@ class MusicAssistant:
             *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
             return_exceptions=True,
         )
-        # stop core controllers
-        await self.discovery.close()
-        await self.streams.close()
-        await self.webserver.close()
-        await self.tasks.close()
-        await self.metadata.close()
-        await self.music.close()
-        await self.player_queues.close()
-        await self.players.close()
-        await self.translations.close()
-        await self.diagnostics.close()
-        # cleanup cache and config
-        await self.config.close()
-        await self.cache.close()
+        # stop core controllers, cache and config last because the others rely on them.
+        # a failed startup may not have created (or fully set up) every controller, so
+        # each one is closed independently: leaving a database open here would keep its
+        # worker thread alive and stop the process from ever exiting.
+        for controller_name in (
+            "discovery",
+            "streams",
+            "webserver",
+            "tasks",
+            "metadata",
+            "music",
+            "player_queues",
+            "players",
+            "translations",
+            "diagnostics",
+            "dashboard",
+            "config",
+            "cache",
+        ):
+            if (controller := getattr(self, controller_name, None)) is None:
+                continue
+            try:
+                await controller.close()
+            except Exception:
+                LOGGER.exception("Error while closing the %s controller", controller_name)
         # close/cleanup shared http sessions
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
@@ -354,6 +425,18 @@ class MusicAssistant:
             status=self._state,
         )
 
+    @api_command("time", authenticated=False)
+    def get_server_time(self) -> float:
+        """
+        Return the current server time as UTC timestamp (seconds since epoch).
+
+        Clients compare server-provided timestamps (such as `elapsed_time_last_updated`)
+        against their own clock. Round-tripping this command lets a client estimate the
+        offset between the two clocks and correct for it, so a device with an unsynced
+        clock still renders playback progress and countdowns correctly.
+        """
+        return time.time()
+
     @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
         """Return all Provider manifests."""
@@ -367,6 +450,46 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
+    def get_provider_icon_data(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> str | None:
+        """
+        Return a provider icon variant as a base64 data URI.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        icon = self.get_provider_icon(provider, variant)
+        if icon is None:
+            return None
+        mime, data = icon
+        return f"data:{mime};base64,{b64encode(data).decode('ascii')}"
+
+    def get_provider_icon(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> tuple[str, bytes] | None:
+        """
+        Return the (mime, bytes) for a provider icon variant.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        domain = provider
+        if domain not in self._provider_icons:
+            try:
+                domain = self.get_provider_manifest(provider).domain
+            except KeyError:
+                return None
+        icons = self._provider_icons.get(domain)
+        if not icons:
+            return None
+        return icons.get(variant)
 
     @api_command("providers", required_scope=Scope.PROVIDERS_READ)
     def get_providers(
@@ -581,6 +704,7 @@ class MusicAssistant:
         task_id: str | None = None,
         abort_existing: bool = False,
         eager_start: bool = True,
+        log_exceptions: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """
@@ -595,6 +719,9 @@ class MusicAssistant:
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
                            when creating multiple tasks in sequence.
+        :param log_exceptions: Set to False when the caller awaits the task and reports
+                               its failures itself; the task then logs at debug level
+                               instead of warning.
         :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
@@ -626,15 +753,22 @@ class MusicAssistant:
             task_id = uuid4().hex
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
-            self._tracked_tasks.pop(task_id, None)
-            # log unhandled exceptions
-            if (
-                LOGGER.isEnabledFor(logging.DEBUG)
-                and not _task.cancelled()
-                and (err := _task.exception())
-            ):
+            # done callbacks run one event loop iteration after the task finished, so a
+            # caller may already have replaced the entry with a new task under the same
+            # task_id - only untrack when the entry still points at this task
+            if self._tracked_tasks.get(task_id) is _task:
+                del self._tracked_tasks[task_id]
+            if _task.cancelled():
+                return
+            # always retrieve the exception, otherwise asyncio logs a noisy
+            # "Task exception was never retrieved" error at garbage collection time
+            if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
-                LOGGER.warning(
+                # a failure the waiters report themselves is demoted rather than dropped:
+                # work that outlives every waiter (join_task keeps it running) would
+                # otherwise fail without a trace anywhere
+                LOGGER.log(
+                    logging.WARNING if log_exceptions else logging.DEBUG,
                     "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
@@ -761,16 +895,53 @@ class MusicAssistant:
             )
             raise
 
-        # (re)load any dependants
-        prov_configs = await self.config.get_provider_configs(include_values=True)
+        # (re)load any dependents. The provider itself is loaded at this point, so a problem
+        # in this scan belongs to a dependent (or to nothing at all) and must never be
+        # recorded against - and thus flag - the provider we just loaded successfully.
+        try:
+            # resolving option values here would call get_config_entries() on every loaded
+            # provider (some of which do network i/o), for values _load_provider does not
+            # read: it seeds the stored raw values itself and rehydrates once the instance
+            # exists. Only the manifest-related fields below are needed to spot a dependent.
+            prov_configs = await self.config.get_provider_configs()
+        except Exception as exc:
+            LOGGER.warning(
+                "Error looking up dependents of provider(instance) %s: %s",
+                prov_conf.name or prov_conf.instance_id,
+                str(exc) or exc.__class__.__name__,
+                exc_info=_provider_error_traceback(exc),
+            )
+            return
         for dep_prov_conf in prov_configs:
             if not dep_prov_conf.enabled:
                 continue
             manifest = self.get_provider_manifest(dep_prov_conf.domain)
             if not manifest.depends_on:
                 continue
-            if manifest.depends_on == prov_conf.domain:
-                await self._load_provider(dep_prov_conf)
+            if manifest.depends_on != prov_conf.domain:
+                continue
+            try:
+                # the scan above skipped the config values, but the load path does need them:
+                # a provider reads config (e.g. its log level) while it is being constructed.
+                # Resolve them here, for this single dependent instead of for every provider.
+                dep_conf = await self.config.get_provider_config(dep_prov_conf.instance_id)
+            except KeyError:
+                # config was removed while we were scanning
+                continue
+            try:
+                await self._load_provider(dep_conf)
+            except Exception as exc:
+                # record the failure against the provider that hit it: attributing it to the
+                # provider we just loaded (which is fine) flags the wrong one in the UI
+                self.config.update_provider_last_error(
+                    dep_prov_conf.instance_id, _provider_error_from_exc(exc)
+                )
+                LOGGER.warning(
+                    "Error loading provider(instance) %s: %s",
+                    dep_prov_conf.name or dep_prov_conf.instance_id,
+                    str(exc) or exc.__class__.__name__,
+                    exc_info=_provider_error_traceback(exc),
+                )
 
     async def load_provider(
         self,
@@ -828,7 +999,14 @@ class MusicAssistant:
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
-            will_retry = allow_retry and isinstance(exc, MusicAssistantError)
+            will_retry = (
+                allow_retry
+                and isinstance(exc, MusicAssistantError)
+                and not isinstance(
+                    exc,
+                    (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
+                )
+            )
             if will_retry:
                 self.call_later(
                     120,
@@ -842,8 +1020,7 @@ class MusicAssistant:
                 prov_conf.name or prov_conf.instance_id,
                 str(exc) or exc.__class__.__name__,
                 " (will be retried later)" if will_retry else "",
-                # log full stack trace if verbose logging is enabled
-                exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+                exc_info=_provider_error_traceback(exc),
             )
             return
 
@@ -856,8 +1033,14 @@ class MusicAssistant:
 
     async def unload_provider(self, instance_id: str, is_removed: bool = False) -> None:
         """Unload a provider."""
-        self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
+        # this waits (bounded) for a running sync to unwind: provider.unload() below tears
+        # down state the sync may still be using, such as the mount of a network share
+        await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
+            # mark the provider as on its way out before anything is torn down: the steps
+            # below have await points, so without this a callback that is still in flight
+            # could register a player back onto a provider that is already gone
+            provider.unloading = True
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
@@ -866,11 +1049,16 @@ class MusicAssistant:
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
-            if is_player_provider(provider):
-                # unregister all players of this provider
-                for player in provider.players:
-                    await self.players.unregister(player.player_id, permanent=is_removed)
             try:
+                if is_player_provider(provider):
+                    # unregister all players of this provider, straight from the registry: the
+                    # provider's own players listing hides disabled and still-initializing
+                    # players, which must be unregistered here too so their on_unload runs
+                    # and no stale entry is left behind
+                    for player in list(self.players):
+                        if player.provider.instance_id != instance_id:
+                            continue
+                        await self.players.unregister(player.player_id, permanent=is_removed)
                 await provider.unload(is_removed)
             except Exception as err:
                 LOGGER.warning(
@@ -949,6 +1137,7 @@ class MusicAssistant:
             self.webserver.auth,
             self.streams.audio_analysis,
             self.diagnostics,
+            self.dashboard,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -972,6 +1161,29 @@ class MusicAssistant:
                         obj.api_cmd, obj, authenticated, required_scope, allow_impersonation, alias
                     )
 
+    async def _load_core_controllers(self) -> None:
+        """Instantiate the core controllers and register their manifests and icons."""
+        self.cache = CacheController(self)
+        self.tasks = TasksController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.player_queues = PlayerQueuesController(self)
+        self.streams = StreamsController(self)
+        self.translations = TranslationController(self)
+        self.diagnostics = DiagnosticsController(self)
+        self.dashboard = DashboardController(self)
+        # add manifests for core controllers
+        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
+            controller: CoreController = getattr(self, controller_name)
+            self._provider_manifests[controller.domain] = controller.manifest
+            # load icon image(s) shipped alongside the controller module
+            controller_dir = os.path.dirname(inspect.getfile(type(controller)))
+            if icons := await detect_provider_icons(controller_dir):
+                self._provider_icons[controller.domain] = icons
+                controller.manifest.icon_images = list(icons)
+
     async def _load_builtin_providers(self) -> None:
         """
         Load all builtin providers.
@@ -989,7 +1201,8 @@ class MusicAssistant:
             await self.config.create_builtin_provider_config(prov_manifest.domain)
 
         # load all configured (and enabled) builtin providers
-        prov_configs = await self.config.get_provider_configs(include_values=True)
+        # (only manifest-related fields are read here, so the option values are not resolved)
+        prov_configs = await self.config.get_provider_configs()
         builtin_configs: list[ProviderConfig] = [
             prov_conf
             for prov_conf in prov_configs
@@ -1048,7 +1261,8 @@ class MusicAssistant:
             self.config.set(CONF_DEFAULT_PROVIDERS_SETUP, default_providers_setup)
             self.config.save(True)
         # load all configured (and enabled) regular (non-builtin) providers
-        prov_configs = await self.config.get_provider_configs(include_values=True)
+        # (only manifest-related fields are read here, so the option values are not resolved)
+        prov_configs = await self.config.get_provider_configs()
         other_configs: list[ProviderConfig] = [
             prov_conf
             for prov_conf in prov_configs
@@ -1058,14 +1272,15 @@ class MusicAssistant:
                 or not manifest.builtin
             )
         ]
-        # load providers concurrently via tasks
-        async with TaskManager(self, 2) as tg:
+        # load providers concurrently via tasks, bounded so a host with many providers does
+        # not import every provider module at once (a torch-backed one costs hundreds of MB)
+        async with TaskManager(self, PROVIDER_LOAD_CONCURRENCY) as tg:
             for prov_conf in other_configs:
                 # Use a task so we can load multiple providers at once.
                 # If a provider fails, that will not block the loading of other providers.
                 # For providers just auto-set-up as a default, drop the config again if the
                 # host does not meet their requirements (rather than retry a broken provider).
-                tg.create_task(
+                await tg.create_task_with_limit(
                     self.load_provider(
                         prov_conf.instance_id,
                         allow_retry=True,
@@ -1082,12 +1297,9 @@ class MusicAssistant:
             msg = "Provider is disabled"
             raise SetupFailedError(msg)
 
-        # validate config
-        try:
-            conf.validate()
-        except (KeyError, ValueError, AttributeError, TypeError) as err:
-            msg = "Configuration is invalid"
-            raise SetupFailedError(msg) from err
+        # The config is validated after the instance is created and its config rehydrated
+        # (see below): the full options entries - and thus which values are required - are
+        # only known once the instance exists.
 
         domain = conf.domain
         prov_manifest = self._provider_manifests.get(domain)
@@ -1107,33 +1319,95 @@ class MusicAssistant:
             # automatically when the dependency is loaded
             return
 
+        # seed the config with its stored raw values so any construction-time option reads
+        # in setup()/__init__ see them (the fully-typed entries are only resolvable once the
+        # instance exists, and are applied by rehydrate_provider_config just below)
+        self.config.seed_stored_config_values(conf)
+
         # try to setup the module
-        prov_mod = await load_provider_module(domain, prov_manifest.requirements)
+        # (unbounded: this may still have to install the provider's requirements)
+        async with _provider_load_step(domain, "import its module"):
+            prov_mod = await load_provider_module(domain, prov_manifest.requirements)
+        async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
+            provider = await prov_mod.setup(self, prov_manifest, conf)
+
+        # The instance now exists, so its full (options) config entries can be resolved
+        # (get_config_entries is an instance method). Rehydrate the config values from
+        # storage against those entries and validate the complete config, before async
+        # init so get_config_value reads there see the stored values.
+        async with _provider_load_step(domain, "resolve its configuration", PROVIDER_SETUP_TIMEOUT):
+            await self.config.rehydrate_provider_config(provider)
         try:
-            async with asyncio.timeout(30):
-                provider = await prov_mod.setup(self, prov_manifest, conf)
-        except TimeoutError as err:
-            msg = f"Provider {domain} did not load within 30 seconds"
+            provider.config.validate()
+        except (KeyError, ValueError, AttributeError, TypeError) as err:
+            # name the offending entry: the generic message alone gives no clue which
+            # value is missing or malformed when a provider refuses to load
+            msg = f"Configuration is invalid: {err}"
             raise SetupFailedError(msg) from err
 
         # run async setup
-        await provider.handle_async_init()
+        async with _provider_load_step(domain, "initialize", PROVIDER_ASYNC_INIT_TIMEOUT):
+            await provider.handle_async_init()
 
-        # if we reach this point, the provider loaded successfully
+        await self._register_loaded_provider(provider, conf)
+
+    async def _register_loaded_provider(
+        self, provider: ProviderInstanceType, conf: ProviderConfig
+    ) -> None:
+        """Register a provider that finished its setup and run its post-load steps."""
+        # the instance is now live: register it so the post-load steps below can resolve it
         self._providers[provider.instance_id] = provider
-        LOGGER.info(
-            "Loaded %s provider %s",
-            provider.type.value,
-            provider.name,
-        )
         provider.available = True
 
         # adapt logging name if needed
         provider._set_log_level_from_config(provider.config)
 
+        try:
+            async with _provider_load_step(
+                provider.domain, "finish loading", PROVIDER_SETUP_TIMEOUT
+            ):
+                await self._update_available_providers_cache()
+                if isinstance(provider, MusicProvider):
+                    await self.music.on_provider_loaded(provider)
+                if isinstance(provider, PlayerProvider):
+                    await self.players.on_provider_loaded(provider)
+        except Exception:
+            # a provider that did not finish loading must not stay registered: it would
+            # report status LOADED while an error is recorded against it, which leaves the
+            # user with a warning they can only find by opening the provider's own settings
+            try:
+                await self.unload_provider(provider.instance_id)
+            except Exception as unload_err:
+                # the load failure is the one worth reporting, so keep it as the raised error
+                LOGGER.warning(
+                    "Error unloading provider %s: %s",
+                    provider.name,
+                    unload_err,
+                    exc_info=unload_err,
+                )
+            raise
+
+        # if we reach this point, the provider loaded successfully
+        LOGGER.info(
+            "Loaded %s provider %s",
+            provider.type.value,
+            provider.name,
+        )
+
         # execute post load actions
         async def _on_provider_loaded() -> None:
-            await provider.loaded_in_mass()
+            try:
+                await provider.loaded_in_mass()
+            except Exception as err:
+                # the provider stays registered and available either way, so the steps
+                # below still run: an event left unset makes every waiter pay the full
+                # timeout, on every attempt, until the provider reloads
+                LOGGER.warning(
+                    "Error in the post load step of provider %s: %s",
+                    provider.name,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
             provider.initialized.set()
             self.get_provider_ready_event(provider.domain).set()
             await self.run_provider_discovery(provider.instance_id)
@@ -1146,11 +1420,6 @@ class MusicAssistant:
         # clear any previous error in config and signal update
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
-        await self._update_available_providers_cache()
-        if isinstance(provider, MusicProvider):
-            await self.music.on_provider_loaded(provider)
-        if isinstance(provider, PlayerProvider):
-            await self.players.on_provider_loaded(provider)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
@@ -1166,21 +1435,16 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
-                    # check for icon.svg file
-                    if not provider_manifest.icon_svg:
-                        icon_path = os.path.join(provider_path, "icon.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg = await get_icon_string(icon_path)
-                    # check for dark_icon file
-                    if not provider_manifest.icon_svg_dark:
-                        icon_path = os.path.join(provider_path, "icon_dark.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # check for icon_monochrome file
-                    if not provider_manifest.icon_svg_monochrome:
-                        icon_path = os.path.join(provider_path, "icon_monochrome.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg_monochrome = await get_icon_string(icon_path)
+                    # detect provider icon image variants (svg preferred over png)
+                    icons = await detect_provider_icons(provider_path)
+                    if icons:
+                        self._provider_icons[provider_manifest.domain] = icons
+                        provider_manifest.icon_images = list(icons)
+                    # detect a setup_flow.py module by its mere presence: importing it
+                    # here would trigger installing the provider's requirements
+                    provider_manifest.has_setup_flow = await isfile(
+                        os.path.join(provider_path, "setup_flow.py")
+                    )
                     # override Home Assistant provider if we're running as add-on
                     if provider_manifest.domain == "hass" and self.running_as_hass_addon:
                         provider_manifest.builtin = True
@@ -1247,4 +1511,9 @@ class MusicAssistant:
         if self._state == new_state:
             return
         self._state = new_state
+        if not hasattr(self, "webserver"):
+            # a startup that failed before the core controllers were created has no
+            # server info to report and no subscribers to report it to, while the state
+            # itself must still change so that shutdown can run to completion
+            return
         self.signal_event(EventType.CORE_STATE_UPDATED, data=self.get_server_info())

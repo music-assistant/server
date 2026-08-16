@@ -1,7 +1,8 @@
-"""Regression tests for universal player external-source delegation (#5443)."""
+"""Tests for the universal player."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,7 +28,7 @@ def _make_mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
@@ -49,8 +50,34 @@ def _make_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
     config.instance_id = "universal_player"
     config.name = None
     provider.config = config
-    provider._universal_player_locks = {}
+    provider._lock = asyncio.Lock()
     return provider
+
+
+def _make_protocol_player(
+    player_id: str,
+    domain: str,
+    *,
+    needs_setup: bool = False,
+    setup_reason: str | None = None,
+) -> MagicMock:
+    """Return a reachable protocol player, optionally still awaiting its setup."""
+    player = MagicMock(spec=Player)
+    player.player_id = player_id
+    player.available = True
+    player.available_for_playback = not needs_setup
+    player.needs_setup = needs_setup
+    player.setup_reason = setup_reason
+    provider = MagicMock()
+    provider.domain = domain
+    player.provider = provider
+    return player
+
+
+def _register_players(mass: MagicMock, *players: MagicMock) -> None:
+    """Make the given players resolvable by id on the mass mock."""
+    registry = {player.player_id: player for player in players}
+    mass.players.get_player = MagicMock(side_effect=lambda pid, *_a, **_kw: registry.get(pid))
 
 
 def _make_chromecast_player(
@@ -61,22 +88,17 @@ def _make_chromecast_player(
     features: set[PlayerFeature],
 ) -> MagicMock:
     """Return a chromecast-domain protocol player with the given active source and features."""
-    player = MagicMock(spec=Player)
-    player.player_id = player_id
-    player.available = True
+    player = _make_protocol_player(player_id, "chromecast")
     player.active_source = active_source
     player.playback_state = PlaybackState.PLAYING
     player.supported_features = features
-    provider = MagicMock()
-    provider.domain = "chromecast"
-    player.provider = provider
     player.play = AsyncMock()
     player.pause = AsyncMock()
     player.stop = AsyncMock()
     player.next_track = AsyncMock()
     player.previous_track = AsyncMock()
     player.seek = AsyncMock()
-    mass.players.get_player = MagicMock(return_value=player)
+    _register_players(mass, player)
     return player
 
 
@@ -168,3 +190,30 @@ def test_no_features_without_external_source() -> None:
     )
     universal = _make_universal_player(mass, ["cc_1"])
     assert universal.supported_features == set()
+
+
+def test_setup_needed_when_only_protocol_awaits_setup() -> None:
+    """A wrapper whose only protocol still needs setup reports it, including the reason."""
+    mass = _make_mock_mass()
+    airplay = _make_protocol_player(
+        "ap_1", "airplay", needs_setup=True, setup_reason="pairing_required"
+    )
+    _register_players(mass, airplay)
+    universal = _make_universal_player(mass, ["ap_1"])
+    assert universal.available is False
+    assert universal.needs_setup is True
+    assert universal.setup_reason == "pairing_required"
+
+
+def test_no_setup_needed_while_another_protocol_is_usable() -> None:
+    """A wrapper that can play through another protocol does not ask for setup."""
+    mass = _make_mock_mass()
+    airplay = _make_protocol_player(
+        "ap_1", "airplay", needs_setup=True, setup_reason="pairing_required"
+    )
+    chromecast = _make_protocol_player("cc_1", "chromecast")
+    _register_players(mass, airplay, chromecast)
+    universal = _make_universal_player(mass, ["ap_1", "cc_1"])
+    assert universal.available is True
+    assert universal.needs_setup is False
+    assert universal.setup_reason is None

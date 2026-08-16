@@ -6,6 +6,7 @@ This document provides an overview of the Music Assistant Streams Controller arc
 
 - [Overview](#overview)
 - [Network Architecture](#network-architecture)
+- [Inbound Audio](#inbound-audio)
 - [Core Components](#core-components)
 - [AudioBuffer](#audiobuffer)
 - [StreamsAudio](#streamsaudio)
@@ -35,6 +36,19 @@ The streams controller runs its own dedicated HTTP-only webserver on a separate 
 - **No SSL/TLS**: Many audio players (especially embedded devices) have limited resources and struggle with SSL handshakes. Since the stream server only runs on the internal network, encryption is unnecessary.
 - **No authentication**: Players need to access streams without credentials. Instead, stream URLs include a **session ID** that is validated on each request to prevent stale or invalid stream attempts.
 - **Separate port**: Keeps audio streaming isolated from the API, allowing independent scaling and configuration.
+
+## Inbound Audio
+
+Live announcements (`live_announcements.py`) are the one path where audio travels *into* the stream server rather than out of it: a client pushes raw PCM while a user speaks, and it is played on a player as an ordinary announcement.
+
+This splits across both webservers, because neither can do the job alone:
+
+- The **inbound** half is a WebSocket on the main webserver. Audio from a client is a privileged action, so it needs the authentication and the SSL support that the stream server deliberately does not have. Browsers additionally require a secure context to reach a microphone at all, which only the main webserver can offer.
+- The **outbound** half is an ordinary stream server route serving the buffered speech as a WAV. The announcement renderer only ever pulls its audio from a URL, so exposing the clip as one keeps live announcements on exactly the same path as every other announcement.
+
+The announcement is dispatched only once the clip is complete, not while it is still being spoken. Players that announce natively need the whole clip up front: AirPlay renders it to a file and schedules a single synchronized instant across every group member from its exact duration, and Sonos needs the duration to know how long the clip runs. Handing them a clip that is still growing gives one player type a head start and truncates another, so every player gets the same finished clip instead.
+
+A session is identified by an unguessable id that appears only in the stream URL, and it is dropped as soon as the announcement has been played.
 
 ## Core Components
 
@@ -106,9 +120,13 @@ Supporting modules in `helpers/`:
 - **Stream acquisition**: `get_media_stream`, `get_stream_details`, radio/HTTP/file stream helpers
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
-- **DSP and filters**: `get_player_filter_params`, `get_player_dsp_details`, `get_stream_dsp_details`
+- **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
 - **Crossfade management**: `crossfade_allowed`, `clear_crossfade_data`
 - **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
+
+`AudioProcessingManager`, initialized as `self.audio_processing` on the
+StreamsController, combines queue processing and per-player output plans into complete
+`AudioProcessingChain` snapshots attached to `StreamDetails`.
 
 ## Streaming Pipeline
 
@@ -176,7 +194,7 @@ audio stream:
 |------|-------------|-------------|
 | Queue tracks | Yes (SEEKABLE) | Regular track playback with full buffering |
 | Radio streams | Yes (ROLLING) | Short rolling buffer, non-seekable |
-| Announcements | No | Short one-off audio (TTS), streamed directly |
+| Announcements | Yes (SEEKABLE) | Short one-off audio (TTS), rendered once and shared by all consumers |
 | Plugin sources | No | Real-time audio (microphone, aux), streamed directly |
 
 ## Configuration

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from asyncio import TaskGroup
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
-from urllib.parse import urlencode
 
 from libopensonic import AsyncConnection as SonicConnection
+from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
     AuthError,
     CredentialError,
@@ -16,7 +15,8 @@ from libopensonic.errors import (
     SonicError,
 )
 from libopensonic.media import PodcastChannel
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
@@ -28,14 +28,18 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemType,
     Playlist,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -58,6 +62,7 @@ from .parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_radio,
     parse_structured_lyrics,
     parse_track,
 )
@@ -66,17 +71,19 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from libopensonic.media import AlbumID3 as SonicAlbum
-    from libopensonic.media import ArtistID3 as SonicArtist
+    from libopensonic.media import ArtistWithAlbumsID3 as SonicArtist
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicItem
+    from libopensonic.media import InternetRadioStation as SonicRadio
     from libopensonic.media import Lyrics as SonicLyrics
     from libopensonic.media import OpenSubsonicExtension, StructuredLyrics
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
-
 CONF_BASE_URL = "baseURL"
+CONF_API_KEY = "api_key"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_ENABLE_RADIO_STATIONS = "enable_radio_stations"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
@@ -97,53 +104,145 @@ class OpenSonicProvider(MusicProvider):
 
     conn: SonicConnection
     _enable_podcasts: bool = True
+    _enable_radio_stations: bool = True
     _show_faves: bool = True
     _show_new: bool = True
     _show_played: bool = True
     _reco_limit: int = 10
     _pagination_size: int = 200
     _id_lyrics: bool = False
+    _direct_podcast_episode: bool = False
     _raw_file: bool = True
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_PODCASTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_RADIO_STATIONS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_LEGACY_AUTH,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_RECO_FAVES,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_NEW_ALBUMS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_PLAYED_ALBUMS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_RECO_SIZE,
+                type=ConfigEntryType.INTEGER,
+                required=True,
+                default_value=10,
+            ),
+            ConfigEntry(
+                key=CONF_RAW_FILE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_PAGE_SIZE,
+                type=ConfigEntryType.INTEGER,
+                required=True,
+                default_value=200,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
-        port = self.config.get_value(CONF_PORT)
+        port = self.get_setup_value(CONF_PORT)
         port = int(str(port)) if port is not None else 443
-        path = self.config.get_value(CONF_PATH)
+        path = self.get_setup_value(CONF_PATH)
+
         if path is None:
             path = ""
-        self.conn = SonicConnection(
-            str(self.config.get_value(CONF_BASE_URL)),
-            username=str(self.config.get_value(CONF_USERNAME)),
-            password=str(self.config.get_value(CONF_PASSWORD)),
-            legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
-            port=port,
-            server_path=str(path),
-            app_name="Music Assistant",
-        )
+
+        api_key = self.get_setup_value(CONF_API_KEY)
+        username = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
+
+        if api_key:
+            self.conn = SonicConnection(
+                str(self.get_setup_value(CONF_BASE_URL)),
+                api_key=str(api_key),
+                port=port,
+                server_path=str(path),
+                use_get=True,
+                app_name="Music Assistant",
+            )
+        elif username and password:
+            self.conn = SonicConnection(
+                str(self.get_setup_value(CONF_BASE_URL)),
+                username=str(username),
+                password=str(password),
+                legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
+                port=port,
+                server_path=str(path),
+                use_get=True,
+                app_name="Music Assistant",
+            )
+        else:
+            msg = f"No credentials for {self.get_setup_value(CONF_BASE_URL)}, provide an API key or username and password."
+            raise LoginFailed(
+                msg,
+                translation_key="connect_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[self.get_setup_value(CONF_BASE_URL)],
+            )
+
         try:
             success = await self.conn.ping()
             if not success:
                 raise CredentialError
         except (AuthError, CredentialError) as e:
             msg = (
-                f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
+                f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."
             )
             raise LoginFailed(
                 msg,
                 translation_key="connect_failed",
                 translation_owner=self.translation_owner,
-                translation_args=[self.config.get_value(CONF_BASE_URL)],
+                translation_args=[self.get_setup_value(CONF_BASE_URL)],
             ) from e
-        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == "songLyrics":
+                if entry.name == OpenSubsonicExtensions.SONG_LYRICS:
                     self._id_lyrics = True
-                    break
+                elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
+                    self._direct_podcast_episode = True
         except OSError:
             self.logger.info("Failed to query server for OpenSubsonic extensions")
+
+        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+        self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
@@ -172,37 +271,72 @@ class OpenSonicProvider(MusicProvider):
         """
         return False
 
-    async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
-        chan_id, ep_id = eid.split(EP_CHAN_SEP)
-        chan = await self.conn.get_podcasts(inc_episodes=True, pid=chan_id)
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
 
-        if not chan[0].episode:
-            raise MediaNotFoundError(f"Missing episode list for podcast channel '{chan[0].id}'")
-
-        for episode in chan[0].episode:
-            if episode.id == ep_id:
-                return episode
-
-        msg = f"Can't find episode {ep_id} in podcast {chan_id}"
-        raise MediaNotFoundError(msg)
-
-    def _set_loudness(self, item: SonicItem) -> None:
-        if item.replay_gain and item.replay_gain.track_gain is not None:
-            # Convert ReplayGain values (gain in dB) to integrated loudness (LUFS)
-            track_loudness = -18 - item.replay_gain.track_gain
-            album_loudness = (
-                -18 - item.replay_gain.album_gain
-                if item.replay_gain.album_gain is not None
-                else None
-            )
-            self.mass.create_task(
-                self.mass.streams.audio_analysis.set_track_loudness(
-                    item.id,
-                    self.instance_id,
-                    track_loudness,
-                    album_loudness,
+        These can be favorited items, recently added albums, newest podcast episodes,
+        and most played albums.  What is included is configured with the provider.
+        """
+        recos: list[RecommendationFolder] = []
+        if self._enable_podcasts:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_newest_podcasts",
+                    provider=self.instance_id,
+                    name="Newest Podcast Episodes",
+                    translation_key="episodes_recently_added",
                 )
             )
+        if self._show_faves:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_starred_albums",
+                    provider=self.instance_id,
+                    name="Starred Items",
+                    translation_key="starred_items",
+                )
+            )
+        if self._show_new:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_new_albums",
+                    provider=self.instance_id,
+                    name="New Albums",
+                    translation_key="recently_added_albums",
+                )
+            )
+        if self._show_played:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_most_played",
+                    provider=self.instance_id,
+                    name="Most Played Albums",
+                    translation_key="most_played_albums",
+                )
+            )
+        return recos
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == "subsonic_newest_podcasts" and self._enable_podcasts:
+            folder = await self._podcast_recommendations()
+        elif item_id == "subsonic_starred_albums" and self._show_faves:
+            folder = await self._favorites_recommendation()
+        elif item_id == "subsonic_new_albums" and self._show_new:
+            folder = await self._new_recommendations()
+        elif item_id == "subsonic_most_played" and self._show_played:
+            folder = await self._played_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
 
     async def resolve_image(self, path: str) -> bytes | Any:
         """Return the image."""
@@ -236,7 +370,9 @@ class OpenSonicProvider(MusicProvider):
         )
 
         if answer.artist:
-            ar = [parse_artist(self.instance_id, entry) for entry in answer.artist]
+            ar = [
+                parse_artist(self.instance_id, entry, logger=self.logger) for entry in answer.artist
+            ]
         else:
             ar = []
 
@@ -249,8 +385,7 @@ class OpenSonicProvider(MusicProvider):
             tr = []
             for entry in answer.song:
                 self._set_loudness(entry)
-                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-                tr.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+                tr.append(parse_track(self.logger, self.instance_id, entry))
         else:
             tr = []
 
@@ -290,7 +425,7 @@ class OpenSonicProvider(MusicProvider):
                 continue
 
             for artist in index.artist:
-                yield parse_artist(self.instance_id, artist)
+                yield parse_artist(self.instance_id, artist, logger=self.logger)
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """
@@ -321,6 +456,22 @@ class OpenSonicProvider(MusicProvider):
         results = await self.conn.get_playlists()
         for entry in results:
             yield parse_playlist(self.instance_id, entry)
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Provide a generator for library radio stations."""
+        if not self._enable_radio_stations:
+            return
+        stations: list[SonicRadio] = await self.conn.get_internet_radio_stations()
+        for entry in stations:
+            yield parse_radio(self.instance_id, entry)
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Return the requested radio station."""
+        async for station in self.get_library_radios():
+            if station.item_id == prov_radio_id:
+                return station
+        msg = f"Radio {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """
@@ -432,7 +583,7 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from e
-        return parse_artist(self.instance_id, sonic_artist, sonic_info)
+        return parse_artist(self.instance_id, sonic_artist, sonic_info, logger=self.logger)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_track(self, prov_track_id: str) -> Track:
@@ -540,18 +691,14 @@ class OpenSonicProvider(MusicProvider):
         if not sonic_playlist.entry:
             return result
 
-        album: Album | None = None
         for index, sonic_song in enumerate(sonic_playlist.entry, 1):
-            aid = sonic_song.album_id or sonic_song.parent
-            if not aid:
-                self.logger.warning("Unable to find album for track %s", sonic_song.id)
-            if aid is not None and (not album or album.item_id != aid):
-                album = await self.get_album(prov_album_id=aid)
+            # A playlist can hold thousands of tracks, so we must not trigger a per-track
+            # metadata fetch here: parse_track derives the album reference from the playlist
+            # entry itself, and lyrics are fetched on demand when a track is played (get_track).
+            # Fetching album + lyrics per entry turned a single getPlaylist call into thousands
+            # of serial requests, making large playlists take minutes to start.
             self._set_loudness(sonic_song)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
-            track = parse_track(
-                self.logger, self.instance_id, sonic_song, album=album, lyrics=lyrics
-            )
+            track = parse_track(self.logger, self.instance_id, sonic_song)
             track.position = index
             result.append(track)
         return result
@@ -572,8 +719,7 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+            tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
     @use_cache(3600 * 3)  # cache for 3 hours
@@ -671,20 +817,27 @@ class OpenSonicProvider(MusicProvider):
                 item.id,
                 item.content_type,
             )
+        elif media_type == MediaType.RADIO:
+            async for station in self.get_library_radios():
+                if station.item_id == item_id:
+                    return StreamDetails(
+                        item_id=item_id,
+                        provider=self.instance_id,
+                        allow_seek=False,
+                        can_seek=False,
+                        media_type=MediaType.RADIO,
+                        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                        stream_type=StreamType.HTTP,
+                        path=station.uri or "",
+                    )
+            msg = f"Radio {item_id} not found"
+            raise MediaNotFoundError(msg)
         else:
             msg = f"Unsupported media type encountered '{media_type}'"
             raise UnsupportedFeaturedException(msg)
 
-        # The stream URL carries no query string; id/auth/format all travel in the POST body
-        # so they never end up in proxy logs, server logs, or a `ps aux` listing. ffmpeg is
-        # handed the URL as its input and re-sends this same body on every Range-based reconnect
-        # it issues while seeking, so seeking is handled entirely by ffmpeg's own demuxer rather
-        # than the transcodeOffset extension.
         fmat = "raw" if self._raw_file else None
-        url, params = self.conn.get_stream_url(item.id, tformat=fmat, estimate_length=True)
-        # ffmpeg's -post_data is a binary AVOption: it must be given as a hex string of the
-        # raw bytes, a plain string value is silently rejected ("Invalid argument").
-        post_data = urlencode(params).encode().hex()
+        url, _ = self.conn.get_stream_url(item.id, tformat=fmat, estimate_length=True)
 
         return StreamDetails(
             item_id=item.id,
@@ -700,14 +853,6 @@ class OpenSonicProvider(MusicProvider):
             ),
             stream_type=StreamType.HTTP,
             path=url,
-            extra_input_args=[
-                "-method",
-                "POST",
-                "-content_type",
-                "application/x-www-form-urlencoded",
-                "-post_data",
-                post_data,
-            ],
             duration=item.duration or 0,
         )
 
@@ -794,122 +939,6 @@ class OpenSonicProvider(MusicProvider):
         # If we get here, there is no bookmark
         return (False, 0, None)
 
-    async def _get_podcast_channel_async(self, chan_id: str) -> PodcastChannel | None:
-        if cache := await self.mass.cache.get(
-            key=chan_id,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCAST_CHANNEL,
-            base_class=PodcastChannel,
-        ):
-            return cache
-        if channels := await self.conn.get_podcasts(inc_episodes=True, pid=chan_id):
-            channel = channels[0]
-            await self.mass.cache.set(
-                key=chan_id,
-                data=channel.to_dict(),
-                provider=self.instance_id,
-                expiration=600,
-                category=CACHE_CATEGORY_PODCAST_CHANNEL,
-            )
-            return channel
-        return None
-
-    async def _podcast_recommendations(self) -> RecommendationFolder:
-        podcasts: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_newest_podcasts",
-            provider=self.domain,
-            name="Newest Podcast Episodes",
-            translation_key="episodes_recently_added",
-        )
-        sonic_episodes = await self.conn.get_newest_podcasts(count=self._reco_limit)
-        for ep in sonic_episodes:
-            if channel_info := await self._get_podcast_channel_async(ep.channel_id):
-                self._set_loudness(ep)
-                podcasts.items.append(parse_epsiode(self.instance_id, ep, channel_info))
-        return podcasts
-
-    async def _favorites_recommendation(self) -> RecommendationFolder:
-        faves: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_starred_albums",
-            provider=self.domain,
-            name="Starred Items",
-            translation_key="starred_items",
-        )
-        starred = await self.conn.get_starred2()
-        if starred.album:
-            for sonic_album in starred.album[: self._reco_limit]:
-                faves.items.append(parse_album(self.logger, self.instance_id, sonic_album))
-        if starred.artist:
-            for sonic_artist in starred.artist[: self._reco_limit]:
-                faves.items.append(parse_artist(self.instance_id, sonic_artist))
-        if starred.song:
-            for sonic_song in starred.song[: self._reco_limit]:
-                self._set_loudness(sonic_song)
-                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
-                faves.items.append(
-                    parse_track(self.logger, self.instance_id, sonic_song, lyrics=lyrics)
-                )
-        return faves
-
-    async def _new_recommendations(self) -> RecommendationFolder:
-        new_stuff: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_new_albums",
-            provider=self.domain,
-            name="New Albums",
-            translation_key="recently_added_albums",
-        )
-        new_albums = await self.conn.get_album_list2(ltype="newest", size=self._reco_limit)
-        for sonic_album in new_albums:
-            new_stuff.items.append(parse_album(self.logger, self.instance_id, sonic_album))
-        return new_stuff
-
-    async def _played_recommendations(self) -> RecommendationFolder:
-        recent: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_most_played",
-            provider=self.domain,
-            name="Most Played Albums",
-            translation_key="most_played_albums",
-        )
-        albums = await self.conn.get_album_list2(ltype="frequent", size=self._reco_limit)
-        for sonic_album in albums:
-            recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
-        return recent
-
-    @use_cache(3600 * 3, cache_checksum="v2")  # cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Provide recommendations.
-
-        These can provide favorited items, recently added albums, newest podcast episodes,
-        and most played albums.  What is included is configured with the provider.
-        """
-        recos: list[RecommendationFolder] = []
-
-        podcasts = None
-        faves = None
-        new_stuff = None
-        played = None
-        async with TaskGroup() as grp:
-            if self._enable_podcasts:
-                podcasts = grp.create_task(self._podcast_recommendations())
-            if self._show_faves:
-                faves = grp.create_task(self._favorites_recommendation())
-            if self._show_new:
-                new_stuff = grp.create_task(self._new_recommendations())
-            if self._show_played:
-                played = grp.create_task(self._played_recommendations())
-
-        if podcasts:
-            recos.append(podcasts.result())
-        if faves:
-            recos.append(faves.result())
-        if new_stuff:
-            recos.append(new_stuff.result())
-        if played:
-            recos.append(played.result())
-
-        return recos
-
     async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
         """
         Get lyrics for a track.
@@ -934,3 +963,128 @@ class OpenSonicProvider(MusicProvider):
         if not lyrics:
             return None
         return parse_structured_lyrics(lyrics[0])
+
+    async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
+        chan_id, ep_id = eid.split(EP_CHAN_SEP)
+
+        if self._direct_podcast_episode:
+            try:
+                return await self.conn.get_podcast_episode(ep_id)
+            except DataNotFoundError as e:
+                msg = f"Can't find episode {ep_id} in podcast {chan_id}"
+                raise MediaNotFoundError(msg) from e
+
+        chan = await self.conn.get_podcasts(inc_episodes=True, pid=chan_id)
+
+        if not chan[0].episode:
+            raise MediaNotFoundError(f"Missing episode list for podcast channel '{chan[0].id}'")
+
+        for episode in chan[0].episode:
+            if episode.id == ep_id:
+                return episode
+
+        msg = f"Can't find episode {ep_id} in podcast {chan_id}"
+        raise MediaNotFoundError(msg)
+
+    def _set_loudness(self, item: SonicItem) -> None:
+        if item.replay_gain and item.replay_gain.track_gain is not None:
+            # Convert ReplayGain values (gain in dB) to integrated loudness (LUFS)
+            track_loudness = -18 - item.replay_gain.track_gain
+            album_loudness = (
+                -18 - item.replay_gain.album_gain
+                if item.replay_gain.album_gain is not None
+                else None
+            )
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item.id,
+                    self.instance_id,
+                    track_loudness,
+                    album_loudness,
+                )
+            )
+
+    async def _get_podcast_channel_async(self, chan_id: str) -> PodcastChannel | None:
+        if cache := await self.mass.cache.get(
+            key=chan_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_CHANNEL,
+            base_class=PodcastChannel,
+        ):
+            return cache
+        if channels := await self.conn.get_podcasts(inc_episodes=True, pid=chan_id):
+            channel = channels[0]
+            await self.mass.cache.set(
+                key=chan_id,
+                data=channel.to_dict(),
+                provider=self.instance_id,
+                expiration=600,
+                category=CACHE_CATEGORY_PODCAST_CHANNEL,
+            )
+            return channel
+        return None
+
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
+    async def _podcast_recommendations(self) -> RecommendationFolder:
+        podcasts: RecommendationFolder = RecommendationFolder(
+            item_id="subsonic_newest_podcasts",
+            provider=self.instance_id,
+            name="Newest Podcast Episodes",
+            translation_key="episodes_recently_added",
+        )
+        sonic_episodes = await self.conn.get_newest_podcasts(count=self._reco_limit)
+        for ep in sonic_episodes:
+            if channel_info := await self._get_podcast_channel_async(ep.channel_id):
+                self._set_loudness(ep)
+                podcasts.items.append(parse_epsiode(self.instance_id, ep, channel_info))
+        return podcasts
+
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
+    async def _favorites_recommendation(self) -> RecommendationFolder:
+        faves: RecommendationFolder = RecommendationFolder(
+            item_id="subsonic_starred_albums",
+            provider=self.instance_id,
+            name="Starred Items",
+            translation_key="starred_items",
+        )
+        starred = await self.conn.get_starred2()
+        if starred.album:
+            for sonic_album in starred.album[: self._reco_limit]:
+                faves.items.append(parse_album(self.logger, self.instance_id, sonic_album))
+        if starred.artist:
+            for sonic_artist in starred.artist[: self._reco_limit]:
+                faves.items.append(parse_artist(self.instance_id, sonic_artist, logger=self.logger))
+        if starred.song:
+            for sonic_song in starred.song[: self._reco_limit]:
+                self._set_loudness(sonic_song)
+                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
+                faves.items.append(
+                    parse_track(self.logger, self.instance_id, sonic_song, lyrics=lyrics)
+                )
+        return faves
+
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
+    async def _new_recommendations(self) -> RecommendationFolder:
+        new_stuff: RecommendationFolder = RecommendationFolder(
+            item_id="subsonic_new_albums",
+            provider=self.instance_id,
+            name="New Albums",
+            translation_key="recently_added_albums",
+        )
+        new_albums = await self.conn.get_album_list2(ltype="newest", size=self._reco_limit)
+        for sonic_album in new_albums:
+            new_stuff.items.append(parse_album(self.logger, self.instance_id, sonic_album))
+        return new_stuff
+
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
+    async def _played_recommendations(self) -> RecommendationFolder:
+        recent: RecommendationFolder = RecommendationFolder(
+            item_id="subsonic_most_played",
+            provider=self.instance_id,
+            name="Most Played Albums",
+            translation_key="most_played_albums",
+        )
+        albums = await self.conn.get_album_list2(ltype="frequent", size=self._reco_limit)
+        for sonic_album in albums:
+            recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
+        return recent

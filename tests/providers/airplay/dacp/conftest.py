@@ -32,7 +32,7 @@ def mock_mass() -> MagicMock:
     mass.players.get_active_queue = MagicMock(
         return_value=MagicMock(queue_id="q1", shuffle_enabled=False)
     )
-    mass.players.all_players = MagicMock(return_value=[])
+    mass.players.iter_players = MagicMock(return_value=[])
     mass.player_queues = MagicMock()
     mass.player_queues.set_shuffle = AsyncMock()
     mass.call_later = MagicMock()
@@ -69,7 +69,10 @@ def airplay_provider(
     handle_async_init (DACP server / zeroconf) is intentionally not called; only the
     request handler is exercised. The default logger level keeps VERBOSE capture off.
     """
-    return AirPlayProvider(mock_mass, manifest_mock, config_mock)
+    provider = AirPlayProvider(mock_mass, manifest_mock, config_mock)
+    provider._bridge_manager = MagicMock()
+    provider._bridge_manager.get_transport_command_target.return_value = None
+    return provider
 
 
 def make_player(  # noqa: PLR0913
@@ -129,5 +132,5 @@ def make_player(  # noqa: PLR0913
         player.stream = stream
     else:
         player.stream = None
-    mass.players.all_players.return_value = [player]
+    mass.players.iter_players.return_value = [player]
     return player

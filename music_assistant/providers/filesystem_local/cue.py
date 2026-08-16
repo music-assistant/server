@@ -41,7 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.cue_sheet import CueSheet, CueTrack, parse_cue_sheet
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.helpers.tags import AudioTags, async_parse_tags
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.util import detect_charset
 
 from .constants import CACHE_CATEGORY_CUE_SHEETS, TRACK_EXTENSIONS
@@ -408,11 +408,9 @@ class CueSheetHandler:
         if cue_sheet.sort_title:
             tags.tags["albumsort"] = cue_sheet.sort_title
         if cue_sheet.performers:
-            # plural form so AudioTags.album_artists sees every value; tags.tags is
-            # typed dict[str, str] but accepts list[str] at runtime for Vorbis multi.
-            # TODO: remove the type: ignore once AudioTags.tags is retyped upstream.
+            # plural form so AudioTags.album_artists sees every value
             tags.tags.pop("albumartist", None)
-            tags.tags["albumartists"] = list(cue_sheet.performers)  # type: ignore[assignment]
+            tags.tags["albumartists"] = list(cue_sheet.performers)
         if cue_sheet.album_artist_sort_names:
             tags.tags["albumartistsort"] = ";".join(cue_sheet.album_artist_sort_names)
         if cue_sheet.musicbrainz_albumartistids:
@@ -497,9 +495,9 @@ class CueSheetHandler:
             track.album = ctx.album
         for isrc in cue_track.isrcs:
             track.external_ids.add((ExternalID.ISRC, isrc))
-        if cue_track.musicbrainz_recordingid:
-            # the setter runs UUID validation and keeps external_ids in sync
-            track.mbid = cue_track.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(cue_track.musicbrainz_recordingid, cue_item.relative_path):
+            # the setter keeps external_ids in sync
+            track.mbid = recording_mbid
         if cue_track.musicbrainz_releasetrackid:
             track.external_ids.add((ExternalID.MB_TRACK, cue_track.musicbrainz_releasetrackid))
         if ctx.embedded_image is not None:

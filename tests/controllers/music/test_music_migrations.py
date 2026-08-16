@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,7 @@ from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLOG,
     DB_TABLE_SETTINGS,
@@ -47,12 +49,25 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     for table in MEDIA_TABLES:
         await db.execute(
             f"CREATE TABLE {table}([item_id] INTEGER PRIMARY KEY, "
-            "[external_ids] json NOT NULL DEFAULT '[]')"
+            "[external_ids] json NOT NULL DEFAULT '[]'"
+            # every playlists table at the schema versions under test carries this column
+            + (
+                ", [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]'"
+                if table == "playlists"
+                else ""
+            )
+            + ")"
         )
     await db.execute(
         f"CREATE TABLE {DB_TABLE_EXTERNAL_ID_LOOKUP}([media_type] TEXT NOT NULL, "
         "[external_id_type] TEXT NOT NULL, [external_id] TEXT NOT NULL, "
         "[item_id] INTEGER NOT NULL)"
+    )
+    # tests that exercise a specific playlog layout replace this stand-in
+    await db.execute(
+        f"CREATE TABLE {DB_TABLE_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
+        "[playback_speed] REAL NOT NULL DEFAULT 1.0, "
+        "UNIQUE(userid))"
     )
     await db.commit()
     yield db
@@ -91,6 +106,7 @@ def _playlog_entry(userid: str, timestamp: int = 100) -> dict[str, object]:
 
 async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
     """Create the playlog table as it exists on pre-userid installs."""
+    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
     # original table layout (schema version <= 22) with the 3-column UNIQUE constraint
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
@@ -120,6 +136,14 @@ async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
         f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
     )
     await database.commit()
+
+
+async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:
+    """Return the column names of the given table."""
+    return {
+        column["name"]
+        for column in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+    }
 
 
 async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
@@ -162,6 +186,7 @@ async def test_migration_leaves_correct_playlog_untouched(
     database: DatabaseConnection,
 ) -> None:
     """A playlog table that already has the 4-column constraint is not rebuilt."""
+    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,18 +289,61 @@ async def test_migrate_database_backfills_external_id_lookup(
     # the external_ids columns (and their unusable indexes) are dropped;
     # the lookup table is now the single source of truth
     for table in MEDIA_TABLES:
-        columns = {
-            column["name"]
-            for column in await music.database.get_rows_from_query(
-                f"PRAGMA table_info({table})", limit=0
-            )
-        }
-        assert "external_ids" not in columns
+        assert "external_ids" not in await _table_columns(music.database, table)
     old_indexes = await music.database.get_rows_from_query(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_external_ids_idx'"
     )
     assert not old_indexes
     await music.database.close()
+
+
+async def test_migration_repairs_null_smart_fades_centroids(
+    database: DatabaseConnection,
+) -> None:
+    """Null spectral centroid values in legacy Smart Fades analysis rows become 0.0."""
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [aa_provider_domain] TEXT NOT NULL,
+            [analysis_data] json NOT NULL)"""
+    )
+    rows = {
+        1: ("smart_fades", '{"spectral_centroid": [1.5, null, 2.5, null], "bpm": 120}'),
+        2: ("smart_fades", '{"spectral_centroid": [1.0, 2.0], "bpm": 100}'),
+        # null centroids from another analysis provider must not be touched
+        3: ("other_domain", '{"spectral_centroid": [null], "bpm": 100}'),
+        # a corrupt payload must not abort the migration
+        4: ("smart_fades", '{"spectral_centroid": [null'),
+        # a non-array centroid value must not be touched
+        5: ("smart_fades", '{"spectral_centroid": null, "bpm": 90}'),
+        # "null" appearing only inside a string value must not trigger a rewrite
+        6: ("smart_fades", '{"spectral_centroid": [3.5], "key": "nullish"}'),
+    }
+    for row_id, (domain, analysis_data) in rows.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} (id, aa_provider_domain, analysis_data) "
+            "VALUES (:id, :domain, :analysis_data)",
+            {"id": row_id, "domain": domain, "analysis_data": analysis_data},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=52,
+        create_tables=AsyncMock(),
+    )
+
+    repaired = {
+        row["id"]: row["analysis_data"] for row in await database.get_rows(DB_TABLE_AUDIO_ANALYSIS)
+    }
+    assert json.loads(repaired[1]) == {"spectral_centroid": [1.5, 0.0, 2.5, 0.0], "bpm": 120}
+    # untouched rows must not be rewritten at all, hence the exact-string compare
+    for untouched_id in (2, 3, 4, 5, 6):
+        assert repaired[untouched_id] == rows[untouched_id][1]
 
 
 async def test_migration_populates_fts_tables(database: DatabaseConnection) -> None:
@@ -310,3 +378,167 @@ async def test_migration_populates_fts_tables(database: DatabaseConnection) -> N
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'albums_fts'"
     )
     assert not rows
+
+
+async def test_migration_rewrites_apple_music_artwork_to_tokens(
+    database: DatabaseConnection,
+) -> None:
+    """Persisted (expired) blobstore artwork URLs are rewritten to resolvable tokens."""
+    await database.execute("ALTER TABLE albums ADD COLUMN metadata json")
+    await database.execute(
+        "CREATE TABLE provider_mappings([media_type] TEXT, [item_id] INTEGER, "
+        "[provider_domain] TEXT, [provider_instance] TEXT, [provider_item_id] TEXT)"
+    )
+    signed_url = "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=dead"
+    metadata = {
+        "images": [
+            {
+                "type": "thumb",
+                "path": signed_url,
+                "provider": "apple_music--1",
+                "remotely_accessible": True,
+            },
+            {
+                "type": "fanart",
+                "path": "https://tadb/fanart.jpg",
+                "provider": "theaudiodb",
+                "remotely_accessible": True,
+            },
+            {
+                "type": "thumb",
+                "path": signed_url,
+                "provider": "apple_music--removed",
+                "remotely_accessible": True,
+            },
+        ]
+    }
+    await database.execute(
+        "INSERT INTO albums (item_id, metadata) VALUES (1, :metadata)",
+        {"metadata": json.dumps(metadata)},
+    )
+    # an unrelated row without apple artwork must be left untouched
+    await database.execute(
+        "INSERT INTO albums (item_id, metadata) VALUES (2, :metadata)",
+        {"metadata": json.dumps({"images": [{"path": "https://x/y.jpg", "provider": "spotify"}]})},
+    )
+    await database.execute(
+        "INSERT INTO provider_mappings "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) "
+        "VALUES ('album', 1, 'apple_music', 'apple_music--1', 'l.abc123')"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=54,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, metadata FROM albums ORDER BY item_id"
+    )
+    images = json.loads(rows[0]["metadata"])["images"]
+    # the mapped entry became a token, the metadata-provider entry survived and
+    # the entry whose apple instance no longer exists was dropped
+    assert [(img["path"], img["provider"], img["remotely_accessible"]) for img in images] == [
+        ("album/l.abc123", "apple_music--1", False),
+        ("https://tadb/fanart.jpg", "theaudiodb", True),
+    ]
+    assert json.loads(rows[1]["metadata"])["images"] == [
+        {"path": "https://x/y.jpg", "provider": "spotify"}
+    ]
+
+
+async def test_migration_strips_sound_effect_from_playlists(
+    database: DatabaseConnection,
+) -> None:
+    """The sound effect media type is removed from the stored playlists."""
+    await database.execute(
+        "INSERT INTO playlists (item_id, supported_mediatypes) VALUES "
+        '(1, \'["track","sound_effect","radio"]\'), '
+        "(2, '[\"track\"]'), "
+        "(3, 'corrupt value naming sound_effect'), "
+        "(4, '[\"sound_effect\"]')"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=55,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, supported_mediatypes FROM playlists ORDER BY item_id"
+    )
+    assert json.loads(rows[0]["supported_mediatypes"]) == ["track", "radio"]
+    # playlists without the media type, and rows we cannot parse, are left alone
+    assert json.loads(rows[1]["supported_mediatypes"]) == ["track"]
+    assert rows[2]["supported_mediatypes"] == "corrupt value naming sound_effect"
+    # a playlist left with nothing yields an empty list, not NULL (the column is NOT NULL)
+    assert json.loads(rows[3]["supported_mediatypes"]) == []
+
+
+async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
+    database: DatabaseConnection,
+) -> None:
+    """A stable database gets the columns its own schema version made it skip."""
+    # the stable branch numbers its schema versions independently: its v43 already has the
+    # 4-column playlog constraint, but never got playback_speed or the playlist translation
+    # columns, which this branch gates behind steps a v43 database no longer runs
+    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [item_id] TEXT NOT NULL,
+            [provider] TEXT NOT NULL,
+            [media_type] TEXT NOT NULL,
+            [name] TEXT NOT NULL,
+            [image] json,
+            [timestamp] INTEGER DEFAULT 0,
+            [fully_played] BOOLEAN,
+            [seconds_played] INTEGER,
+            [userid] TEXT NOT NULL,
+            [queue_id] TEXT,
+            [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+            UNIQUE(item_id, provider, media_type, userid));"""
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=43,
+        create_tables=AsyncMock(),
+    )
+
+    assert {"translation_key", "translation_params"} <= await _table_columns(database, "playlists")
+    assert "playback_speed" in await _table_columns(database, DB_TABLE_PLAYLOG)
+
+
+async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConnection) -> None:
+    """A pre-58 database gets the radios.is_dynamic column, mirroring the playlist one."""
+    assert "is_dynamic" not in await _table_columns(database, "radios")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=57,
+        create_tables=AsyncMock(),
+    )
+
+    assert "is_dynamic" in await _table_columns(database, "radios")

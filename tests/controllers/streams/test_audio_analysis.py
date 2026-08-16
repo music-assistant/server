@@ -60,18 +60,16 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
 
 def test_ensure_inference_runtime_configured_is_idempotent() -> None:
-    """The inference runtime (torch + native BLAS caps) is configured once per controller."""
+    """The inference runtime (torch thread caps) is configured once per controller."""
     controller = _make_controller()
     with (
         patch("torch.set_num_threads") as set_threads,
         patch("torch.set_num_interop_threads"),
-        patch("threadpoolctl.threadpool_limits") as blas_limits,
         patch("torch.backends.nnpack.set_flags"),
     ):
         controller.ensure_inference_runtime_configured()
         controller.ensure_inference_runtime_configured()
     set_threads.assert_called_once()
-    blas_limits.assert_called_once()
     if controller.analysis_executor is not None:
         controller.analysis_executor.shutdown(wait=False)
 
@@ -82,7 +80,6 @@ def test_ensure_inference_runtime_creates_solo_lock_and_executor() -> None:
     with (
         patch("torch.set_num_threads"),
         patch("torch.set_num_interop_threads"),
-        patch("threadpoolctl.threadpool_limits"),
         patch("torch.backends.nnpack.set_flags"),
     ):
         controller.ensure_inference_runtime_configured()
@@ -120,7 +117,6 @@ async def test_analysis_concurrency_capped_at_half_cores(
         ),
         patch("torch.set_num_threads"),
         patch("torch.set_num_interop_threads"),
-        patch("threadpoolctl.threadpool_limits"),
         patch("torch.backends.nnpack.set_flags"),
     ):
         controller.ensure_inference_runtime_configured()

@@ -15,7 +15,7 @@ exclude-contributors:
   - dependabot[bot]
   - github-actions
   - github-actions[bot]
-  - music-assistant-machine
+  - musicassistant-bot[bot]
 
 categories:
 
@@ -44,6 +44,7 @@ categories:
       - 'ci'
       - 'documentation'
       - 'maintenance'
+      - 'refactor'
       - 'dependencies'
 
 template: |

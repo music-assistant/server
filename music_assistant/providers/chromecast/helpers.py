@@ -2,28 +2,107 @@
 
 from __future__ import annotations
 
+import threading
+import time
 import urllib.error
-from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, cast
+from dataclasses import asdict, dataclass, replace
+from ipaddress import IPv6Address, ip_address
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
+from pychromecast.models import HostServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
+from .constants import DASHBOARD_NAMESPACE, MASS_APP_ID
+
 if TYPE_CHECKING:
+    from pychromecast import Chromecast
     from pychromecast.controllers.media import MediaStatus, MediaStatusListener
     from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
-    from pychromecast.models import CastInfo, HostServiceInfo, MDNSServiceInfo
+    from pychromecast.models import CastInfo, MDNSServiceInfo
     from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
     from zeroconf import Zeroconf
 
     from .player import ChromecastPlayer
 
 DEFAULT_PORT = 8009
+DASHBOARD_NAMESPACE_POLL_INTERVAL = 0.1
+
+
+def send_show_dashboard(
+    chromecast: Chromecast,
+    url: str,
+    timeout: float = 30.0,
+    force_launch: bool = False,
+) -> None:
+    """
+    Launch the MA cast receiver app and send it a show_dashboard message.
+
+    Blocking call, run from an executor.
+
+    :param chromecast: Connected Chromecast to show the dashboard on.
+    :param url: Fully-qualified dashboard URL for the receiver to load.
+    :param timeout: Seconds to wait for the app launch and the dashboard namespace.
+    :param force_launch: Start a new session even when the receiver already reports
+        the app as running.
+    :raises TimeoutError: If the receiver app did not launch (in time), or the
+        dashboard namespace never became available.
+    """
+    launched = threading.Event()
+    launch_success = False
+
+    def _on_launched(success: bool, _response: dict[str, Any] | None) -> None:
+        nonlocal launch_success
+        launch_success = success
+        launched.set()
+
+    deadline = time.monotonic() + timeout
+    chromecast.socket_client.receiver_controller.launch_app(
+        MASS_APP_ID, force_launch=force_launch, callback_function=_on_launched
+    )
+    if not launched.wait(timeout):
+        msg = f"Timed out launching app on {chromecast.name}"
+        raise TimeoutError(msg)
+    if not launch_success:
+        msg = f"Launching app on {chromecast.name} failed"
+        raise TimeoutError(msg)
+
+    # tiny race: the namespace only appears once the socket client has processed
+    # the same receiver status that completes the launch callback
+    while DASHBOARD_NAMESPACE not in chromecast.socket_client.app_namespaces:
+        if time.monotonic() >= deadline:
+            msg = f"Timed out waiting for the dashboard namespace on {chromecast.name}"
+            raise TimeoutError(msg)
+        time.sleep(DASHBOARD_NAMESPACE_POLL_INTERVAL)
+
+    chromecast.socket_client.send_app_message(
+        DASHBOARD_NAMESPACE, {"type": "show_dashboard", "url": url}
+    )
+
+
+def send_hide_dashboard(chromecast: Chromecast) -> bool:
+    """
+    Send a hide_dashboard message to an already-running MA receiver app.
+
+    Blocking call, run from an executor. Does not launch the app: if the
+    receiver isn't already showing a dashboard, there is nothing to hide.
+
+    :param chromecast: Connected Chromecast to hide the dashboard on.
+    :return: Whether a hide_dashboard message was sent.
+    """
+    if (
+        chromecast.app_id != MASS_APP_ID
+        or DASHBOARD_NAMESPACE not in chromecast.socket_client.app_namespaces
+    ):
+        return False
+
+    chromecast.socket_client.send_app_message(DASHBOARD_NAMESPACE, {"type": "hide_dashboard"})
+    return True
 
 
 @dataclass
@@ -171,6 +250,34 @@ def get_mac_address(
     return None
 
 
+def without_ipv6_host_services(cast_info: CastInfo) -> CastInfo:
+    """
+    Return the cast info without the host services pychromecast cannot connect to.
+
+    Returns the given cast info unchanged when there is nothing to drop.
+
+    :param cast_info: Cast info as reported by discovery.
+    """
+    # pychromecast connects over AF_INET, so a native IPv6 address never resolves.
+    # IPv4-mapped addresses do, so those are kept.
+    reachable: set[HostServiceInfo | MDNSServiceInfo] = set()
+    for service in cast_info.services:
+        if isinstance(service, HostServiceInfo):
+            try:
+                address = ip_address(service.host)
+            except ValueError:
+                # a hostname instead of an IP literal, left for pychromecast to resolve
+                address = None
+            if isinstance(address, IPv6Address) and address.ipv4_mapped is None:
+                continue
+        reachable.add(service)
+    # keep the original services when none are reachable, so the socket client can
+    # still pick up the IPv4 address once discovery reports it
+    if not reachable or reachable == cast_info.services:
+        return cast_info
+    return replace(cast_info, services=reachable)
+
+
 class CastStatusListener:
     """
     Helper class to handle pychromecast status callbacks.
@@ -287,9 +394,12 @@ class CastStatusListener:
 
     def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
         """Call when media failed to load."""
-        self.castplayer.logger.warning(
-            "Load media failed: %s - error code: %s", queue_item_id, error_code
-        )
+        if not self._valid:
+            return
+        # NOTE: pychromecast only calls this when the receiver includes a detailed
+        # error code in its LOAD_FAILED message; receivers that omit it are caught
+        # by the idleReason ERROR handling in the media status instead.
+        self.castplayer.on_load_media_failed(queue_item_id, error_code)
 
     def invalidate(self) -> None:
         """

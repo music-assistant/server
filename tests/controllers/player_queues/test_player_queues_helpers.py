@@ -25,9 +25,11 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
+    find_dynamic_source,
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
+    is_dynamic_source,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -44,6 +46,16 @@ _PROVIDER_MAPPINGS = {
 
 def _playlist(*, is_dynamic: bool, name: str = "PL") -> Playlist:
     return Playlist(
+        item_id=name.lower(),
+        provider="test",
+        name=name,
+        provider_mappings=_PROVIDER_MAPPINGS,
+        is_dynamic=is_dynamic,
+    )
+
+
+def _radio(*, is_dynamic: bool, name: str = "R") -> Radio:
+    return Radio(
         item_id=name.lower(),
         provider="test",
         name=name,
@@ -77,6 +89,17 @@ def _queue() -> PlayerQueue:
     return PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
 
 
+def _queue_data(
+    *,
+    source_items: list[MediaItemType] | None = None,
+    enqueued_media_items: list[MediaItemType] | None = None,
+) -> PlayerQueueData:
+    queue_data = PlayerQueueData(queue=_queue())
+    queue_data.source_items = source_items or []
+    queue_data.enqueued_media_items = enqueued_media_items or []
+    return queue_data
+
+
 class TestHasDynamicSource:
     """Tests for has_dynamic_source."""
 
@@ -108,6 +131,66 @@ class TestHasDynamicSource:
     def test_non_playlist_item(self) -> None:
         """A non-playlist media item is not a dynamic source."""
         assert has_dynamic_source([_track("Song")]) is False
+
+
+class TestIsDynamicSource:
+    """Tests for is_dynamic_source."""
+
+    def test_dynamic_playlist(self) -> None:
+        """A dynamic playlist supplies its own on-demand feed."""
+        assert is_dynamic_source(_playlist(is_dynamic=True)) is True
+
+    def test_non_dynamic_playlist(self) -> None:
+        """A non-dynamic playlist is not a dynamic source."""
+        assert is_dynamic_source(_playlist(is_dynamic=False)) is False
+
+    def test_dynamic_radio(self) -> None:
+        """A dynamic radio station supplies its own on-demand feed."""
+        assert is_dynamic_source(_radio(is_dynamic=True)) is True
+
+    def test_non_dynamic_radio(self) -> None:
+        """A non-dynamic (live-stream) radio is not a dynamic source."""
+        assert is_dynamic_source(_radio(is_dynamic=False)) is False
+
+    def test_track(self) -> None:
+        """A track is never a dynamic source."""
+        assert is_dynamic_source(_track("Song")) is False
+
+
+class TestFindDynamicSource:
+    """Tests for find_dynamic_source."""
+
+    def test_dynamic_radio_source(self) -> None:
+        """A dynamic radio station is found, so an idle queue can refill from it."""
+        station = _radio(is_dynamic=True)
+        queue_data = _queue_data(source_items=[station])
+        assert find_dynamic_source(queue_data) is station
+
+    def test_dynamic_playlist_source(self) -> None:
+        """A dynamic playlist is found the same way."""
+        playlist = _playlist(is_dynamic=True)
+        queue_data = _queue_data(source_items=[playlist])
+        assert find_dynamic_source(queue_data) is playlist
+
+    def test_prefers_the_last_added_source(self) -> None:
+        """The most recently added dynamic source wins."""
+        first = _playlist(is_dynamic=True, name="A")
+        last = _radio(is_dynamic=True, name="B")
+        queue_data = _queue_data(source_items=[first, _track("Song"), last])
+        assert find_dynamic_source(queue_data) is last
+
+    def test_falls_back_to_enqueued_items(self) -> None:
+        """A queue without dynamic sources falls back to what was enqueued on it."""
+        station = _radio(is_dynamic=True)
+        queue_data = _queue_data(source_items=[_track("Song")], enqueued_media_items=[station])
+        assert find_dynamic_source(queue_data) is station
+
+    def test_no_dynamic_source(self) -> None:
+        """A queue of finite items has nothing to refill from."""
+        queue_data = _queue_data(
+            source_items=[_playlist(is_dynamic=False)], enqueued_media_items=[_track("Song")]
+        )
+        assert find_dynamic_source(queue_data) is None
 
 
 class TestGetCurrentPlaybackSpeed:
@@ -146,14 +229,25 @@ class _FakeLock:
         return False
 
 
+class _FakePlayer:
+    def __init__(self, player_id: str) -> None:
+        self.player_id = player_id
+
+
 class _FakePlayers:
+    def __init__(self, player_ids: set[str]) -> None:
+        self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+
     def get_player_lock(self, queue_id: str, purpose: object) -> _FakeLock:
         return _FakeLock()
 
+    def get_player(self, player_id: str) -> _FakePlayer | None:
+        return self._players.get(player_id)
+
 
 class _FakeMass:
-    def __init__(self) -> None:
-        self.players = _FakePlayers()
+    def __init__(self, player_ids: set[str]) -> None:
+        self.players = _FakePlayers(player_ids)
 
 
 class _FakeQueue:
@@ -164,16 +258,21 @@ class _FakeQueue:
 class _FakeController:
     """Minimal stand-in exposing only what handle_play_action touches."""
 
-    def __init__(self, queues: dict[str, _FakeQueue]) -> None:
-        self.mass = _FakeMass()
+    def __init__(self, queues: dict[str, _FakeQueue], with_players: bool = True) -> None:
+        self.mass = _FakeMass(set(queues) if with_players else set())
         self._queue_data = {
             queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))
             for queue_id, queue in queues.items()
         }
-        self.signal_calls: list[str] = []
+        self.calls: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
-        self.signal_calls.append(queue_id)
+        self.calls.append(f"signal:{queue_id}")
+
+    def on_player_update(
+        self, player: _FakePlayer, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        self.calls.append(f"refresh:{player.player_id}")
 
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
@@ -214,7 +313,7 @@ class TestHandlePlayAction:
         sink: list[bool] = []
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "missing", sink) == "done"
         assert sink == [False]
-        assert ctrl.signal_calls == []
+        assert ctrl.calls == []
 
     async def test_sets_and_clears_flag(self) -> None:
         """The in-progress flag is set during the action and cleared afterwards."""
@@ -224,9 +323,19 @@ class TestHandlePlayAction:
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
         assert sink == [True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
-        # signalled once on entry and once on exit
-        assert ctrl.signal_calls == ["q1", "q1"]
+        # signalled once on entry and once on exit, with the queue recalculated
+        # from the player in between so the exit signal carries the result
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_clears_flag_without_player(self) -> None:
+        """A queue without a registered player still clears and signals."""
+        queue = _FakeQueue()
+        ctrl = _FakeController({"q1": queue}, with_players=False)
+        sink: list[bool] = []
+        assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl.calls == ["signal:q1", "signal:q1"]
 
     async def test_nested_actions_refcount(self) -> None:
         """Nested actions keep the flag set until the outermost one finishes."""
@@ -238,7 +347,7 @@ class TestHandlePlayAction:
         assert sink == [True, True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # only the outermost entry/exit signal an update (inner sees it already in progress)
-        assert ctrl.signal_calls == ["q1", "q1"]
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_flag_cleared_on_exception(self) -> None:

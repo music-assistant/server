@@ -10,36 +10,20 @@ from music_assistant_models.enums import ContentType, ExternalID, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.providers.tidal.constants import OPEN_API_URL
 from music_assistant.providers.tidal.streaming import TidalStreamingManager
 
 
 @pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.config.get_value.return_value = "HIGH"
-    provider.api = AsyncMock()
-    provider.api.OPEN_API_URL = "https://openapi.tidal.com/v2"
+def provider_mock(provider_mock: Mock) -> Mock:
+    """Return the shared provider mock with the streaming quality and throttler bypass wired."""
+    provider_mock.config.get_value.return_value = "HIGH"
 
-    # Mock throttler bypass as async context manager using MagicMock
-    bypass_ctx = MagicMock()
-    bypass_ctx.__aenter__ = AsyncMock(return_value=None)
-    bypass_ctx.__aexit__ = AsyncMock(return_value=None)
-    provider.api.throttler = Mock()
-    provider.api.throttler.bypass = Mock(return_value=bypass_ctx)
+    # the streaming manager enters api.throttler.bypass() as an async context manager,
+    # which a MagicMock supports out of the box
+    provider_mock.api.throttler.bypass = Mock(return_value=MagicMock())
 
-    provider.get_track = AsyncMock()
-
-    # Mock mass
-    provider.mass = Mock()
-    provider.mass.cache.get = AsyncMock(return_value=None)
-    provider.mass.cache.set = AsyncMock()
-    provider.mass.cache.delete = AsyncMock()
-    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
-
-    return provider
+    return provider_mock
 
 
 @pytest.fixture
@@ -62,16 +46,13 @@ async def test_get_stream_details_lossless(
 ) -> None:
     """Test get_stream_details with LOSSLESS quality."""
     provider_mock.get_track.return_value = mock_track
-    provider_mock.api.get.return_value = (
-        {
-            "manifestMimeType": "application/vnd.tidal.bts",
-            "urls": ["https://example.com/stream.flac"],
-            "audioQuality": "LOSSLESS",
-            "sampleRate": 44100,
-            "bitDepth": 16,
-        },
-        None,
-    )
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/vnd.tidal.bts",
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
 
     stream_details = await streaming_manager.get_stream_details("123")
 
@@ -334,7 +315,7 @@ async def test_get_track_by_isrc_cache_miss_lookup_success(
     provider_mock.api.get.assert_called_with(
         "tracks",
         params={"filter[isrc]": "US1234567890"},
-        base_url=provider_mock.api.OPEN_API_URL,
+        base_url=OPEN_API_URL,
     )
 
     # Verify cache set
@@ -437,23 +418,14 @@ async def test_get_stream_details_with_isrc_fallback(
     lib_track.external_ids = [(ExternalID.ISRC, "US1234567890")]
     provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = lib_track
 
-    provider_mock.api.get.return_value = (
-        {"data": [{"id": 456}]},  # ISRC lookup response
-        None,
-    )
-
-    # Stream details
     provider_mock.api.get.side_effect = [
-        ({"data": [{"id": 456}]}, None),  # ISRC lookup
-        (
-            {  # Stream details
-                "urls": ["https://example.com/stream.flac"],
-                "audioQuality": "LOSSLESS",
-                "sampleRate": 44100,
-                "bitDepth": 16,
-            },
-            None,
-        ),
+        {"data": [{"id": 456}]},  # ISRC lookup
+        {  # Stream details
+            "urls": ["https://example.com/stream.flac"],
+            "audioQuality": "LOSSLESS",
+            "sampleRate": 44100,
+            "bitDepth": 16,
+        },
     ]
 
     stream_details = await streaming_manager.get_stream_details("123")

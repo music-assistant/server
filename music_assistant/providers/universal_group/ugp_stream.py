@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
+
+    from music_assistant.helpers.dsp import ComplexFilter
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -38,11 +40,15 @@ class UGPStream:
         audio_source: AsyncGenerator[bytes],
         audio_format: AudioFormat,
         base_pcm_format: AudioFormat,
+        queue_id: str | None,
+        session_id: str | None,
     ) -> None:
         """Initialize UGP Stream."""
         self.audio_source = audio_source
         self.input_format = audio_format
         self.base_pcm_format = base_pcm_format
+        self.queue_id = queue_id
+        self.session_id = session_id
         self.subscribers: list[Callable[[bytes], Awaitable[None]]] = []
         self._task: asyncio.Task[None] | None = None
         self._done: asyncio.Event = asyncio.Event()
@@ -85,7 +91,7 @@ class UGPStream:
             del queue
 
     async def get_stream(
-        self, output_format: AudioFormat, filter_params: list[str] | None = None
+        self, output_format: AudioFormat, filter_params: Sequence[str | ComplexFilter] | None = None
     ) -> AsyncGenerator[bytes]:
         """Subscribe to the client specific audio stream."""
         # start the runner as soon as the (first) client connects

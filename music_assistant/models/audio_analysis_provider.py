@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant.helpers.util import join_task
 from music_assistant.models.audio_analysis import AudioAnalysisError
 
 from .provider import Provider
@@ -418,8 +419,28 @@ class AudioAnalysisProvider(Provider):
             semaphore.release()
             raise
         future.add_done_callback(_release)
-        # shield: a cancelled awaiter leaves the thread and its slot held until the work finishes.
-        return await asyncio.shield(future)
+        # join: a cancelled awaiter leaves the thread and its slot held until the work finishes.
+        return await join_task(future)
+
+    async def _run_offloaded_timed(
+        self, func: Callable[..., _T], /, *args: Any, **kwargs: Any
+    ) -> tuple[_T, float]:
+        """
+        Run a blocking analysis function offloaded, returning its result and execution seconds.
+
+        Same slot semantics as ``_run_offloaded``; the returned seconds cover only the
+        callable's own execution, never the time spent queued for a slot.
+
+        :param func: The blocking callable to run off the event loop.
+        :param args: Positional arguments passed to func.
+        :param kwargs: Keyword arguments passed to func.
+        """
+
+        def _timed() -> tuple[_T, float]:
+            start = time.perf_counter()
+            return func(*args, **kwargs), time.perf_counter() - start
+
+        return await self._run_offloaded(_timed)
 
     async def _record_failure(
         self,

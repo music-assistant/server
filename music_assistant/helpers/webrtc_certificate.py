@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import stat
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -21,10 +21,6 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from music_assistant.helpers.datetime import utc
-
-if TYPE_CHECKING:
-    from aiortc import RTCConfiguration, RTCPeerConnection
-    from aiortc.rtcdtlstransport import RTCCertificate
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +38,7 @@ def _generate_certificate() -> tuple[ec.EllipticCurvePrivateKey, x509.Certificat
 
     :return: Tuple of (private_key, certificate).
     """
-    # Generate ECDSA key (SECP256R1 - same as aiortc default)
+    # Generate ECDSA key (SECP256R1 - the standard WebRTC DTLS curve)
     private_key = ec.generate_private_key(ec.SECP256R1())
 
     now = utc()
@@ -88,10 +84,12 @@ def _save_certificate(
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    key_path.write_bytes(key_pem)
-
-    # Set restrictive permissions on private key (owner read/write only)
-    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    fd = os.open(key_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        # O_TRUNC keeps a pre-existing file's mode, so tighten permissions on the
+        # fd before any key byte is written (owner read/write only)
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        f.write(key_pem)
 
 
 def _load_certificate(
@@ -119,6 +117,19 @@ def _load_certificate(
         if not isinstance(private_key, ec.EllipticCurvePrivateKey):
             LOGGER.warning("WebRTC private key is not an EC key, will regenerate")
             return None
+
+        # cert and key are written as two separate files; a crash between the writes
+        # leaves a mismatched pair that would otherwise fail every DTLS handshake
+        if private_key.public_key() != cert.public_key():
+            LOGGER.warning("WebRTC private key does not match certificate, will regenerate")
+            return None
+
+        # older versions wrote the key with umask permissions before chmoding it;
+        # a crash in that window left it world-readable, and a valid pair is never
+        # rewritten, so repair permissions on load (owner read/write only)
+        mode = stat.S_IRUSR | stat.S_IWUSR
+        if stat.S_IMODE(key_path.stat().st_mode) != mode:
+            key_path.chmod(mode)
 
         return private_key, cert
     except Exception as err:
@@ -170,37 +181,19 @@ def _remote_id_from_certificate(cert: x509.Certificate) -> str:
     :return: Custom base32-encoded (with 9s instead of 2s) Remote ID string
         (26 characters, uppercase, no-padding).
     """
-    # SHA-256 over the DER certificate, matching aiortc's certificate_digest; take the
-    # first 128 bits and base32-encode (with 9s instead of 2s) without padding.
+    # SHA-256 over the DER certificate, matching the DTLS certificate digest so Remote IDs
+    # stay stable; take the first 128 bits and base32-encode (with 9s instead of 2s), no padding.
     digest = cert.fingerprint(hashes.SHA256())
     return base64.b32encode(digest[:16]).decode("ascii").rstrip("=").replace("2", "9")
 
 
-def get_or_create_webrtc_certificate(storage_path: str) -> RTCCertificate:
-    """
-    Get or create a persistent WebRTC DTLS certificate.
-
-    Loads an existing certificate from disk if available and valid, otherwise
-    generates a new certificate and saves it.
-
-    :param storage_path: Directory to store/load the certificate files.
-    :return: RTCCertificate instance for use with WebRTC.
-    """
-    # imported here so importing this module never pulls in aiortc/PyAV (~51MB);
-    # only the (rarely-used) WebRTC paths actually need it
-    from aiortc.rtcdtlstransport import RTCCertificate  # noqa: PLC0415
-
-    private_key, cert = _get_or_create_certificate(storage_path)
-    return RTCCertificate(key=private_key, cert=cert)
-
-
 def get_or_create_remote_id(storage_path: str) -> str:
     """
-    Return the stable Remote ID for this instance without importing aiortc.
+    Return the stable Remote ID for this instance without loading the WebRTC lib.
 
     Loads (or creates and persists) the WebRTC DTLS certificate and derives the
     Remote ID from it, so the always-on remote_access/info endpoint can report the
-    Remote ID even when remote access is disabled and aiortc was never loaded.
+    Remote ID even when remote access is disabled and the native lib was never loaded.
 
     :param storage_path: Directory to store/load the certificate files.
     :return: The Remote ID derived from the persistent certificate.
@@ -209,21 +202,18 @@ def get_or_create_remote_id(storage_path: str) -> str:
     return _remote_id_from_certificate(cert)
 
 
-def create_peer_connection_with_certificate(
-    certificate: RTCCertificate,
-    configuration: RTCConfiguration | None = None,
-) -> RTCPeerConnection:
+def get_or_create_webrtc_certificate_pems(storage_path: str) -> tuple[str, str]:
     """
-    Create an RTCPeerConnection with a custom persistent certificate.
+    Get or create the persistent WebRTC DTLS certificate as PEM strings.
 
-    :param certificate: The RTCCertificate to use for DTLS.
-    :param configuration: Optional RTCConfiguration with ICE servers.
-    :return: RTCPeerConnection configured with the provided certificate.
+    :param storage_path: Directory to store/load the certificate files.
+    :return: Tuple of (certificate_pem, private_key_pem).
     """
-    from aiortc import RTCPeerConnection  # noqa: PLC0415
-
-    pc = RTCPeerConnection(configuration=configuration)
-    # Replace the auto-generated certificate with our persistent one
-    # Uses name-mangled private attribute access
-    pc._RTCPeerConnection__certificates = [certificate]  # type: ignore[attr-defined]
-    return pc
+    private_key, cert = _get_or_create_certificate(storage_path)
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem

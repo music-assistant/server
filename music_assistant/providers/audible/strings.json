@@ -16,28 +16,20 @@
         "br": "Brazil"
       }
     },
-    "authenticate": {
-      "label": "(Re)Authenticate with Audible",
-      "description": "This button will redirect you to Audible to authenticate."
-    },
     "post_login_url": {
-      "label": "Post Login Url"
+      "label": "Redirect URL"
     },
-    "verify_link": {
-      "label": "Verify Audible URL",
-      "description": "This button will check the url and register this provider."
+    "intro": {
+      "label": "Pick your Audible marketplace and continue. You will be sent to Amazon to sign in; after signing in you land on a 'page not found' page (that is expected) whose URL you paste back here on the next step."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose your Audible marketplace"
     },
-    "code_verifier": {
-      "label": "Code Verifier"
-    },
-    "serial": {
-      "label": "Serial"
-    },
-    "login_url": {
-      "label": "Login Url"
-    },
-    "auth_file": {
-      "label": "Authentication File"
+    "authenticate": {
+      "title": "Sign in to Audible",
+      "description": "Open the sign-in page, log in, then paste the resulting redirect URL."
     }
   },
   "media": {

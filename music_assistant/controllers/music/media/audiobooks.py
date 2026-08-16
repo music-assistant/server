@@ -5,20 +5,21 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from json import loads as json_loads
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudiobookSummary,
     ItemMapping,
     ItemMappingSummary,
+    MediaCollection,
     ProviderMapping,
     UniqueList,
 )
-from music_assistant_models.media_items.helpers import AudiobookCollection
 
 from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
@@ -29,7 +30,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import (
     compare_audiobook,
     compare_media_item,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -63,9 +63,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         api_base = self.api_base
         self.mass.register_api_command(
             f"music/{api_base}/audiobook_versions", self.versions, required_scope=Scope.LIBRARY_READ
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/collections", self.collections, required_scope=Scope.LIBRARY_READ
         )
 
     @property
@@ -148,6 +145,59 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             """
         return query, params
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[False] = False,
+            **kwargs: Any,
+        ) -> list[Audiobook]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[True],
+            **kwargs: Any,
+        ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: bool,
+            **kwargs: Any,
+        ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
+
     async def library_items(
         self,
         favorite: bool | None = None,
@@ -158,11 +208,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
-        without_collections: bool | None = None,
         *,
         summary: bool = True,
+        collapse_collections: bool = False,
         **kwargs: Any,
-    ) -> list[Audiobook]:
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Get in-database audiobooks.
 
@@ -173,17 +223,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
-        :param without_collections: Do not return audiobooks which are part of a collection
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param collapse_collections: Collapse available collections. Items in a collection won't
+            be returned individually.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
-        if without_collections:
-            extra_query_parts = [
-                "WHERE (json_extract(audiobooks.metadata, '$.collections') IS NULL "
-                "OR json_extract(audiobooks.metadata, '$.collections') = '[]')",
-            ]
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -197,6 +243,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            collapse_collections=collapse_collections,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -215,6 +262,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 extra_query_params=extra_query_params,
                 in_library_only=True,
                 summary=summary,
+                collapse_collections=collapse_collections,
             )
         return result
 
@@ -306,54 +354,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_audiobook.item_id, match)
                 cur_provider_domains.add(provider.domain)
-
-    async def collections(
-        self,
-    ) -> list[AudiobookCollection]:
-        """Get all available audiobook collections."""
-        # key is the collections' title
-        collections_dict: dict[str, list[Audiobook]] = {}
-        audiobooks_with_collections = await self.get_library_items_by_query(
-            extra_query_parts=[
-                "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
-                "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
-            ],
-        )
-        for audiobook in audiobooks_with_collections:
-            if audiobook.metadata.collections is None:
-                # this should never happen
-                continue
-            for collection_info in audiobook.metadata.collections:
-                audiobook_list = collections_dict.get(collection_info.title, [])
-                audiobook_list.append(audiobook)
-                collections_dict[collection_info.title] = audiobook_list
-
-        result: list[AudiobookCollection] = []
-        # Sort collections, first by number then alphabetically
-        for collection_title, audiobook_list in collections_dict.items():
-            audiobooks_with_number: list[tuple[Audiobook, float]] = []
-            audiobooks_with_string: list[tuple[Audiobook, str]] = []
-            audiobooks_with_none: list[Audiobook] = []
-            for audiobook in audiobook_list:
-                assert audiobook.metadata.collections is not None  # for type checking
-                collection_info = next(
-                    x for x in audiobook.metadata.collections if x.title == collection_title
-                )
-                if collection_info.sequence is None:
-                    audiobooks_with_none.append(audiobook)
-                    continue
-                try:
-                    sort_by = float(collection_info.sequence)
-                    audiobooks_with_number.append((audiobook, sort_by))
-                except ValueError:
-                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
-            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
-            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
-            final_list.extend(audiobooks_with_none)
-
-            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
-
-        return result
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
@@ -477,6 +477,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             # audiobooks have no image picker, so keep the cover in sync with the
             # provider instead of accumulating merged entries
             metadata.images = update.metadata.images
+        if not overwrite and update.metadata.collections is not None:
+            # always update collections to prevent stale empty ones
+            metadata.collections = update.metadata.collections
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name

@@ -23,6 +23,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     ShelfSchedule,
     TempoPlan,
     TransitionPlan,
+    TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
 
@@ -46,6 +47,7 @@ def _eq_plan() -> EqPlan:
 
 def _plan(**overrides: object) -> TransitionPlan:
     defaults: dict[str, object] = {
+        "tier": TransitionTier.FULL_BLEND,
         "fade_out_window": 40.0,
         "crossfade_duration": 10.0,
         "eq_plan": _eq_plan(),
@@ -153,6 +155,14 @@ class TestTransitionRenderer:
         assert isinstance(crossfade, CrossfadeFilter)
         assert crossfade.crossfade_samples == 10 * PCM.sample_rate
         assert timing.crossfade_duration == pytest.approx(10.0)
+
+    def test_fadeout_curve_flows_into_the_crossfade_filter(self) -> None:
+        """The plan's fadeout_curve becomes the acrossfade filter's c1 curve."""
+        plan = _plan(fadeout_curve="nofade")
+        filters, _ = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        crossfade = filters[-1]
+        assert isinstance(crossfade, CrossfadeFilter)
+        assert "c1=nofade" in crossfade.apply("[fadein]", "[fadeout]")[0]
 
     def test_stretch_savings_shorten_fadeout_accounting(self) -> None:
         """A speed-up ramp removes time from the rendered fade-out total."""

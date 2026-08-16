@@ -14,7 +14,7 @@
     },
     "require_confirmation": {
       "label": "Confirm destructive operations",
-      "description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag."
+      "description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_item, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag."
     },
     "enforce_audience": {
       "label": "Enforce token audience (RFC 8707)",
@@ -31,6 +31,10 @@
     "lean_admin_schema": {
       "label": "Lean schemas for Config/Debug tools",
       "description": "Omit machine-readable output schemas from the Config and Debug tools to shrink the per-request context they cost. Leave off for Claude clients (which defer tool schemas anyway); enable only for MCP hosts that load every schema up-front. Tool results are unaffected — only the structured-output type hints are dropped."
+    },
+    "meta_tool_discovery": {
+      "label": "Simplified tool discovery",
+      "description": "Expose only three meta-tools (search_tools, get_tool_schema, call_tool) instead of the full tool list. Agents discover capabilities on demand via ranked search, fetch one schema at a time, and execute through the call_tool proxy — cutting the per-session context cost for MCP hosts that load every tool schema up-front. Permission flags and destructive-operation confirmation still apply to proxied calls. Leave off for hosts that defer tool schemas natively (e.g. Claude)."
     },
     "trust_forwarded_proto": {
       "label": "Trust reverse-proxy forwarded scheme",
@@ -165,7 +169,16 @@
     "mcp_resources": "MCP Resources",
     "mcp_config": "Config"
   },
+  "setup_flow": {
+    "connect": {
+      "title": "Connect an MCP client",
+      "description": "Open the Connect Wizard, choose your AI client and generate its Music Assistant configuration. Setup completes automatically when the configuration is ready."
+    }
+  },
   "manifest": {
     "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
+  },
+  "errors": {
+    "connect_wizard_unavailable": "The Connect Wizard could not be opened; check the provider logs."
   }
 }

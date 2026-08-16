@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -43,11 +44,11 @@ from music_assistant.helpers.compare import (
     compare_artists,
     compare_media_item,
     compare_track,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase, TrackSyncDetails
@@ -277,6 +278,13 @@ class TracksController(MediaControllerBase[Track]):
                     "(json_extract(tracks.metadata, '$.explicit') IS NULL "
                     "OR json_extract(tracks.metadata, '$.explicit') = 0)"
                 )
+
+        if (order_by and "track_artist_name" in order_by) or (search and " - " in search):
+            extra_join_parts.append(
+                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                "JOIN artists ON artists.item_id = track_artists.artist_id "
+            )
+
         if search and " - " in search:
             # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
@@ -286,14 +294,8 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts.append(
                 search_name_match_clause("tracks", title_str, "search_title", extra_query_params)
             )
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
-                "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND "
-                + search_name_match_clause(
-                    "artists", artist_str, "search_artist", extra_query_params
-                )
+            extra_query_parts.append(
+                search_name_match_clause("artists", artist_str, "search_artist", extra_query_params)
             )
         result = await self.get_library_items_by_query(
             favorite=favorite,
@@ -313,14 +315,23 @@ class TracksController(MediaControllerBase[Track]):
         if search and len(result) < 25 and not offset:
             # append artist items to result
             artist_search_str = create_safe_string(search, True, True)
-            extra_join_parts.append(
-                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
-                "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND "
-                + search_name_match_clause(
-                    "artists", artist_search_str, "search_artist", extra_query_params
+            if order_by and "track_artist_name" in order_by:
+                # JOIN already exists for sorting, only add WHERE clause
+                extra_query_parts.append(
+                    search_name_match_clause(
+                        "artists", artist_search_str, "search_artist", extra_query_params
+                    )
                 )
-            )
+            else:
+                # JOIN not yet added, add it with the search condition
+                extra_join_parts.append(
+                    "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                    "JOIN artists ON artists.item_id = track_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", artist_search_str, "search_artist", extra_query_params
+                    )
+                )
             existing_uris = {item.uri for item in result}
             for _track in await self.get_library_items_by_query(
                 favorite=favorite,
@@ -681,6 +692,11 @@ class TracksController(MediaControllerBase[Track]):
         if not item.artists:
             msg = "Track is missing artist(s)"
             raise InvalidDataError(msg)
+        # normalize synced lyrics so clients only need a minimal single-timestamp LRC parser
+        # promoting LRC formatted text stored in the plain lyrics tag
+        item.metadata.lrc_lyrics = normalize_lrc_lyrics(
+            item.metadata.lrc_lyrics or extract_lrc_lyrics(item.metadata.lyrics)
+        )
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -719,6 +735,9 @@ class TracksController(MediaControllerBase[Track]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        metadata.lrc_lyrics = normalize_lrc_lyrics(
+            metadata.lrc_lyrics or extract_lrc_lyrics(metadata.lyrics)
+        )
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name

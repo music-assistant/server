@@ -13,6 +13,9 @@ validated to exist and the referencing key is omitted from the generated source,
 translates the shared string once while the server resolves the owner's key at runtime via its
 owner -> common fallback.
 
+A duplicated key inside an authoring file would silently lose strings (JSON parsers keep only
+the last value), so the build fails loudly on duplicate keys at any nesting depth.
+
 Standalone (no ``music_assistant`` imports) so it runs under any music-assistant-models version
 and without the full server import chain.
 
@@ -23,6 +26,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -51,10 +55,23 @@ REFERENCE_PATTERN = re.compile(r"^\[%key:(.+)%\]$")
 def build_translations_source() -> dict[str, str]:
     """Assemble the flat English source from all authoring strings.json files."""
     raw: dict[str, str] = {}
+    duplicates: list[str] = []
     for prefix, path in _collect_source_files():
         with open(path, "rb") as file:
-            data = orjson.loads(file.read())
+            content = file.read()
+        # orjson below silently keeps the last value when an object repeats a key, which
+        # would drop strings from the generated source; detect duplicates loudly instead.
+        rel_path = os.path.relpath(path, _REPO_ROOT)
+        try:
+            duplicates.extend(
+                f"{rel_path}: {key_path}" for key_path in _find_duplicate_keys(content)
+            )
+            data = orjson.loads(content)
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            raise ValueError(f"{rel_path}: {err}") from err
         _flatten_into(data, prefix, raw)
+    if duplicates:
+        raise ValueError("Duplicate strings.json key(s):\n  " + "\n  ".join(sorted(duplicates)))
     return _resolve_references(raw)
 
 
@@ -89,6 +106,35 @@ def _iter_subdirs(path: str) -> list[str]:
         for entry in os.listdir(path)  # noqa: PTH208
         if not entry.startswith(".") and os.path.isdir(os.path.join(path, entry))
     ]
+
+
+class _RawJsonObject(list[tuple[str, Any]]):
+    """A JSON object kept as its raw key/value pairs, so duplicate keys stay observable."""
+
+
+def _find_duplicate_keys(content: bytes) -> list[str]:
+    """
+    Return the dotted key path of every duplicated object key in a JSON document.
+
+    :param content: The raw JSON document to inspect.
+    """
+    duplicates: list[str] = []
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, _RawJsonObject):
+            seen: set[str] = set()
+            for key, value in node:
+                key_path = f"{path}.{key}" if path else key
+                if key in seen:
+                    duplicates.append(key_path)
+                seen.add(key)
+                _walk(value, key_path)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                _walk(value, f"{path}[{index}]")
+
+    _walk(json.loads(content, object_pairs_hook=_RawJsonObject), "")
+    return duplicates
 
 
 def _flatten_into(data: dict[str, Any], prefix: str, out: dict[str, str]) -> None:

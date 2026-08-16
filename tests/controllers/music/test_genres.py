@@ -1,16 +1,14 @@
 """
 Integration tests for the GenreController (V3 schema).
 
-Uses the ``mass`` fixture from ``tests/conftest.py`` which creates a full
-MusicAssistant instance with a real SQLite database in a temporary directory.
+Uses a database-only MusicAssistant instance with a real SQLite database in a
+temporary directory.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
-from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -19,6 +17,7 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -44,7 +43,6 @@ from music_assistant.constants import (
     DEFAULT_PODCAST_GENRE_MAPPING,
 )
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
 # ---------------------------------------------------------------------------
@@ -52,21 +50,10 @@ from music_assistant.mass import MusicAssistant
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="class")
-async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant]:
-    """Class-scoped MusicAssistant instance (one per test class)."""
-    tmp_path = tmp_path_factory.mktemp("genre_tests")
-    storage_path = tmp_path / "data"
-    cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
-    logging.getLogger("aiosqlite").level = logging.INFO
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
-    await mass_instance.start()
-    try:
-        yield mass_instance
-    finally:
-        await mass_instance.stop()
+@pytest.fixture(scope="class", name="mass")
+def mass_fixture(music_mass_class: MusicAssistant) -> MusicAssistant:
+    """Return the class-scoped database-only Music Assistant fixture."""
+    return music_mass_class
 
 
 @pytest.fixture(scope="class")

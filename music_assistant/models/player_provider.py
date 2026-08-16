@@ -68,9 +68,25 @@ class PlayerProvider(Provider):
         # For providers that support dynamic discovery of players via mdns,
         # there is no need to implement this method.
 
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve an image from an image path.
+
+        :param path: Provider-specific image path.
+        :return: Raw image bytes or a URL/local path accessible from the server.
+        """
+        return path
+
     @property
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
-        return self.mass.players.all_players(
-            provider_filter=self.instance_id, return_protocol_players=True
+        # a provider owns these players, so it always sees all of them - narrowing this
+        # to what some user happens to see corrupts the provider's own bookkeeping, such
+        # as the grouping options it derives from this list. Note this still hides
+        # disabled and still-initializing players; teardown needs those too and therefore
+        # walks the registry itself (see mass.unload_provider).
+        return list(
+            self.mass.players.iter_players(
+                provider_filter=self.instance_id, return_protocol_players=True
+            )
         )

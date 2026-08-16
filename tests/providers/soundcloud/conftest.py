@@ -1,8 +1,8 @@
-"""Shared fixtures for the Soundcloud provider tests."""
+"""Shared fixtures for Soundcloud provider tests."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,22 +11,15 @@ from music_assistant.providers.soundcloud import SUPPORTED_FEATURES, SoundcloudM
 
 @pytest.fixture
 def provider() -> SoundcloudMusicProvider:
-    """Return a Soundcloud provider instance with a mocked API client."""
-    mass = AsyncMock()
-    mass.http_session = MagicMock()
-    manifest = MagicMock()
+    """Create a real SoundcloudMusicProvider with mocked dependencies."""
+    mass = Mock()
+    manifest = Mock()
     manifest.domain = "soundcloud"
-    config = MagicMock()
-    config.instance_id = "soundcloud--test"
-    config.get_value.return_value = "GLOBAL"
-    prov = SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    prov._soundcloud = AsyncMock()
-    prov._soundcloud.client_id = "test-client-id"
-    prov._soundcloud.headers = {"Authorization": "OAuth test-token"}
-    prov._soundcloud.get_user_details.return_value = {
-        "id": 1,
-        "username": "Some Artist",
-        "permalink": "some-artist",
-    }
-    prov._user_id = "1"
-    return prov
+    config = Mock()
+    config.instance_id = "soundcloud--test123"
+    config.name = "Soundcloud Test"
+    config.enabled = True
+    config.get_value.side_effect = lambda key, default=None: {
+        "log_level": "GLOBAL",
+    }.get(key, default)
+    return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)

@@ -6,20 +6,28 @@ import asyncio
 import logging
 import random
 import re
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Album
 
 from music_assistant.helpers.json import (
     JSON_DECODE_EXCEPTIONS,
     SerializableType,
     json_dumps,
     json_loads,
+    strip_code_fence,
 )
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
+from music_assistant.providers.music_quiz.ai_guards import (
+    ai_prompt_exceeds_limit,
+    validate_ai_response,
+)
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
@@ -32,11 +40,13 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
     MAX_SUGGESTION_COUNT,
     QuizType,
     get_track_release_year,
+    has_untrusted_release_year,
+    has_various_artists_credit,
 )
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
-    answer_labels_are_too_close,
     build_suggestions,
+    filter_suggestion_candidates,
     normalize_answer_label,
 )
 
@@ -44,19 +54,19 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.plugin import AIEngine
     from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizGame
 
 LOGGER = logging.getLogger(__name__)
 
-AI_ATTEMPTS_PER_PROVIDER = 2
-AI_QUERY_TIMEOUT_SECONDS = 30.0
-MAX_AI_PROMPT_BYTES = 8192
-MAX_AI_RESPONSE_BYTES = 4096
+AI_GENERATION_ATTEMPTS = 2
 MAX_METADATA_VALUE_LENGTH = 500
 MAX_ANSWER_LENGTH = 200
 MAX_QUESTION_LENGTH = 300
 MAX_TRIVIA_LANGUAGE_TAG_LENGTH = 16
 TRIVIA_REVEAL_AUTO_ADVANCE_SECONDS = 15.0
+# album types whose release year is untrusted while their name remains a usable Trivia answer
+TRUSTED_ALBUM_NAME_TYPES: Final = frozenset({AlbumType.LIVE, AlbumType.SOUNDTRACK})
 SYSTEM_RANDOM = random.SystemRandom()
 _LANGUAGE_TAG_PATTERN = re.compile(
     r"(?P<language>[A-Za-z]{2,3})"
@@ -130,13 +140,13 @@ class TriviaQuizType(QuizType):
         return self.config.play_reveal_audio
 
     @classmethod
-    def is_available(cls, mass: MusicAssistant) -> bool:
+    async def is_available(cls, mass: MusicAssistant) -> bool:
         """
-        Return whether a loaded AI plugin can generate Trivia questions.
+        Return whether an available AI engine can generate Trivia questions.
 
         :param mass: MusicAssistant instance.
         """
-        return bool(cls._get_ai_providers(mass))
+        return bool(await get_ai_engines(mass))
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -202,9 +212,17 @@ class TriviaQuizType(QuizType):
             "play_reveal_audio": game.config.play_reveal_audio,
         }
 
+    def get_recent_track_uris(self, rounds: list[MusicQuizRound]) -> set[str]:
+        """
+        Return the grounded source tracks represented by earlier Trivia rounds.
+
+        :param rounds: Trivia rounds from an earlier game.
+        """
+        return self._used_source_uris(rounds)
+
     async def initialize(self) -> None:
         """Validate AI availability and enough grounded content for the complete game."""
-        self._require_ai_providers()
+        await self._require_ai_engine()
         eligible_tracks = await self._get_eligible_tracks()
         if len(eligible_tracks) < self.config.round_count:
             raise InvalidDataError(
@@ -213,6 +231,7 @@ class TriviaQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
                 translation_args=[self.config.round_count],
             )
+        await super().initialize()
 
     async def prepare_round(
         self, round_index: int, previous_rounds: list[MusicQuizRound]
@@ -232,8 +251,11 @@ class TriviaQuizType(QuizType):
 
         used_source_uris = self._used_source_uris(previous_rounds)
         facts_by_uri = await self._get_eligible_tracks()
+        source_pool = await self._get_source_track_pool()
         available_tracks = [
-            facts for uri, facts in sorted(facts_by_uri.items()) if uri not in used_source_uris
+            facts
+            for uri, facts in sorted(facts_by_uri.items())
+            if uri not in used_source_uris and uri in source_pool
         ]
         if not available_tracks:
             raise InvalidDataError(
@@ -243,7 +265,21 @@ class TriviaQuizType(QuizType):
                 translation_args=[self.config.round_count],
             )
 
-        track_facts = SYSTEM_RANDOM.choice(available_tracks)
+        preferred_tracks = self._recency_candidates(
+            [source_pool[facts.source_uri] for facts in available_tracks]
+        )
+        preferred_uris = {track.uri for track in preferred_tracks if track.uri}
+        track_facts = SYSTEM_RANDOM.choice(
+            [facts for facts in available_tracks if facts.source_uri in preferred_uris]
+        )
+        # an album can carry a reissue year, which would be scored as the correct answer to a
+        # release year question; dating only the track that becomes this round's question keeps
+        # the lookups bounded where dating the eligible pool would not
+        dated_track, musicbrainz_year = await self._musicbrainz_dated_track(
+            source_pool[track_facts.source_uri]
+        )
+        dated_facts = self._track_facts(dated_track, musicbrainz_year=musicbrainz_year)
+        track_facts = dated_facts or track_facts
         fact = self._select_fact(track_facts, round_index)
         generation = await self._generate_question(fact)
         correct = SuggestionCandidate(
@@ -280,51 +316,40 @@ class TriviaQuizType(QuizType):
     async def _generate_question(self, fact: TriviaFact) -> TriviaGeneration:
         """Return validated AI wording and distractors for a server-selected fact."""
         prompt = self._build_prompt(fact)
-        if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
+        if ai_prompt_exceeds_limit(prompt):
             raise self._generation_error()
-        for provider in self._require_ai_providers():
-            for _attempt in range(AI_ATTEMPTS_PER_PROVIDER):
-                try:
-                    async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS):
-                        response = await provider.ai_query(prompt)
-                except Exception as err:
-                    LOGGER.debug(
-                        "Trivia generation failed via %s (%s)",
-                        provider.instance_id,
-                        type(err).__name__,
-                    )
-                    continue
-                try:
-                    return self._parse_generation(response, fact)
-                except (TypeError, ValueError) as err:
-                    LOGGER.debug(
-                        "Trivia provider %s returned an invalid response: %s",
-                        provider.instance_id,
-                        err,
-                    )
+        grounded_tracks = self._eligible_tracks.values() if self._eligible_tracks else ()
+        engine = await self._require_ai_engine()
+        for _attempt in range(AI_GENERATION_ATTEMPTS):
+            try:
+                async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS):
+                    response = await engine.provider.ai_query(prompt, engine_id=engine.id)
+            except Exception as err:
+                LOGGER.debug(
+                    "Trivia generation failed via %s (%s)",
+                    engine.uid,
+                    type(err).__name__,
+                )
+                continue
+            try:
+                return self._parse_generation(response, fact, grounded_tracks)
+            except (TypeError, ValueError) as err:
+                LOGGER.debug(
+                    "Trivia engine %s returned an invalid response: %s",
+                    engine.uid,
+                    err,
+                )
         raise self._generation_error()
 
-    def _require_ai_providers(self) -> list[PluginProvider]:
-        """Return loaded AI plugin providers in deterministic fallback order."""
-        providers = self._get_ai_providers(self.mass)
-        if providers:
-            return providers
+    async def _require_ai_engine(self) -> AIEngine:
+        """Return the configured AI engine, or raise when it is not available."""
+        engine = await resolve_ai_engine(self.mass, self.config.ai_engine)
+        if engine is not None:
+            return engine
         raise InvalidDataError(
-            "Trivia requires a loaded plugin provider with AI query support",
+            "Trivia requires an available AI engine",
             translation_key="music_quiz_trivia_ai_provider_required",
             translation_owner=TRANSLATION_OWNER,
-        )
-
-    @staticmethod
-    def _get_ai_providers(mass: MusicAssistant) -> list[PluginProvider]:
-        """Return loaded AI plugin providers in deterministic fallback order."""
-        return sorted(
-            (
-                provider
-                for provider in mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
-                if isinstance(provider, PluginProvider)
-            ),
-            key=lambda provider: provider.instance_id,
         )
 
     def _build_prompt(self, fact: TriviaFact) -> str:
@@ -366,14 +391,16 @@ class TriviaQuizType(QuizType):
             "END_UNTRUSTED_MUSIC_METADATA_JSON"
         )
 
-    def _parse_generation(self, response: object, fact: TriviaFact) -> TriviaGeneration:
+    def _parse_generation(
+        self,
+        response: object,
+        fact: TriviaFact,
+        grounded_tracks: Collection[TriviaTrackFacts] = (),
+    ) -> TriviaGeneration:
         """Parse and validate one strict AI Trivia response."""
-        if not isinstance(response, str):
-            raise TypeError("response must be a string")
-        if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
-            raise ValueError("response exceeds the size limit")
+        response_text = validate_ai_response(response)
         try:
-            payload = json_loads(response)
+            payload = json_loads(strip_code_fence(response_text))
         except JSON_DECODE_EXCEPTIONS as err:
             raise ValueError("response is not valid JSON") from err
         if not isinstance(payload, dict) or payload.keys() != {"question", "wrong_answers"}:
@@ -407,13 +434,11 @@ class TriviaQuizType(QuizType):
                 raise ValueError("wrong answer exceeds the length limit")
             if "\n" in answer or "\r" in answer:
                 raise ValueError("wrong answers must be single-line strings")
-            if any(
-                answer_labels_are_too_close(answer, existing_answer)
-                for existing_answer in (fact.correct_answer, *parsed_answers)
-            ):
-                raise ValueError("wrong answers must be distinct from every answer")
             parsed_answers.append(answer)
-        return TriviaGeneration(question=question, wrong_answers=tuple(parsed_answers))
+        return TriviaGeneration(
+            question=question,
+            wrong_answers=self._repair_wrong_answers(parsed_answers, fact, grounded_tracks),
+        )
 
     def _select_fact(self, track: TriviaTrackFacts, round_index: int) -> TriviaFact:
         """Select a supported factual target deterministically for a round."""
@@ -421,18 +446,69 @@ class TriviaQuizType(QuizType):
         if not targets:
             raise InvalidDataError("Trivia track has no supported factual targets")
         target = targets[round_index % len(targets)]
+        correct_answer = self._target_value(track, target)
+        assert correct_answer is not None
+        return TriviaFact(target=target, correct_answer=correct_answer, track=track)
+
+    @classmethod
+    def _repair_wrong_answers(
+        cls,
+        wrong_answers: Sequence[str],
+        fact: TriviaFact,
+        grounded_tracks: Collection[TriviaTrackFacts],
+    ) -> tuple[str, ...]:
+        """Return distinct wrong answers completed with same-target grounded facts."""
+        expected_count = len(wrong_answers)
+        correct = SuggestionCandidate(label=fact.correct_answer)
+        candidates = filter_suggestion_candidates(
+            correct,
+            (SuggestionCandidate(label=answer) for answer in wrong_answers),
+            limit=expected_count,
+        )
+        if len(candidates) == expected_count:
+            return tuple(candidate.label for candidate in candidates)
+
+        grounded_values: list[str] = []
+        seen_values: set[str] = set()
+        for track in grounded_tracks:
+            if (value := cls._target_value(track, fact.target)) is None:
+                continue
+            normalized_value = normalize_answer_label(value)
+            if not normalized_value or normalized_value in seen_values:
+                continue
+            seen_values.add(normalized_value)
+            grounded_values.append(value)
+        SYSTEM_RANDOM.shuffle(grounded_values)
+
+        def iter_candidates() -> Iterator[SuggestionCandidate]:
+            yield from candidates
+            for value in grounded_values:
+                yield SuggestionCandidate(label=value)
+
+        candidates = filter_suggestion_candidates(
+            correct,
+            iter_candidates(),
+            limit=expected_count,
+        )
+        if len(candidates) != expected_count:
+            raise ValueError("wrong answers could not be completed from grounded metadata")
+        return tuple(candidate.label for candidate in candidates)
+
+    @staticmethod
+    def _target_value(track: TriviaTrackFacts, target: TriviaTarget) -> str | None:
+        """Return the available value for one Trivia target."""
+        if target not in TriviaQuizType._available_targets(track):
+            return None
         if target == TriviaTarget.ARTIST:
             assert track.artist is not None
-            correct_answer = track.artist
-        elif target == TriviaTarget.TITLE:
-            correct_answer = track.title
-        elif target == TriviaTarget.ALBUM:
+            return track.artist
+        if target == TriviaTarget.TITLE:
+            return track.title
+        if target == TriviaTarget.ALBUM:
             assert track.album is not None
-            correct_answer = track.album
-        else:
-            assert track.release_year is not None
-            correct_answer = str(track.release_year)
-        return TriviaFact(target=target, correct_answer=correct_answer, track=track)
+            return track.album
+        assert track.release_year is not None
+        return str(track.release_year)
 
     def _used_source_uris(self, previous_rounds: list[MusicQuizRound]) -> set[str]:
         """Return source URIs persisted in validated Trivia round history."""
@@ -474,18 +550,32 @@ class TriviaQuizType(QuizType):
         return used_source_uris
 
     @staticmethod
-    def _track_facts(track: Track) -> TriviaTrackFacts | None:
-        """Return bounded factual metadata available on a selected track."""
+    def _track_facts(
+        track: Track, *, musicbrainz_year: int | None = None
+    ) -> TriviaTrackFacts | None:
+        """
+        Return bounded factual metadata available on a selected track.
+
+        :param track: Selected source track to read the facts from.
+        :param musicbrainz_year: Release year MusicBrainz knows for the track's recording, which
+            is the only year usable when the track's album carries untrusted release facts.
+        """
         if not track.uri or not (title := _bounded_metadata_value(track.name)):
             return None
         artist = _bounded_metadata_value(track.artist_str or None)
-        album = _bounded_metadata_value(track.album.name if track.album else None)
+        album = track.album
+        untrusted_album = isinstance(album, Album) and _has_untrusted_release_facts(album)
         facts = TriviaTrackFacts(
             source_uri=track.uri,
             title=title,
             artist=artist,
-            album=album,
-            release_year=get_track_release_year(track),
+            album=(
+                None if untrusted_album else _bounded_metadata_value(album.name if album else None)
+            ),
+            # on such an album both available years are unusable: the album carries the reissue
+            # year and the track its position on that reissue, so only the year MusicBrainz knows
+            # for the recording can answer a release year question
+            release_year=(musicbrainz_year if untrusted_album else get_track_release_year(track)),
         )
         return facts if TriviaQuizType._available_targets(facts) else None
 
@@ -527,6 +617,23 @@ def _bounded_metadata_value(value: str | None) -> str | None:
     if not value or not (cleaned := value.strip()):
         return None
     return cleaned if len(cleaned) <= MAX_METADATA_VALUE_LENGTH else None
+
+
+def _has_untrusted_release_facts(album: Album) -> bool:
+    """
+    Return whether Trivia must omit the release facts supplied with an album.
+
+    :param album: Full album metadata attached to a selected Trivia track.
+    """
+    if not has_untrusted_release_year(album):
+        return False
+    # the name of a live album or soundtrack still answers "which album is this from?", so such
+    # an album is only untrusted here when it also carries a Various Artists credit. Remaining a
+    # strict subset of has_untrusted_release_year is what keeps an album's own untrusted year out
+    # of the trusted release year branch in _track_facts.
+    if album.album_type in TRUSTED_ALBUM_NAME_TYPES:
+        return has_various_artists_credit(album)
+    return True
 
 
 def _normalize_trivia_language(language: str) -> str:

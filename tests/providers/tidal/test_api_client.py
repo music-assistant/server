@@ -1,7 +1,7 @@
 """Test Tidal API Client."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from aiohttp import ClientResponse
@@ -12,22 +12,6 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.providers.tidal.api_client import TidalAPIClient
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.auth = AsyncMock()
-    provider.auth.ensure_valid_token.return_value = True
-    provider.auth.access_token = "token"
-    provider.auth.session_id = "session"
-    provider.auth.country_code = "US"
-    provider.mass = Mock()
-    provider.mass.http_session = AsyncMock()
-    provider.mass.metadata.locale = "en_US"
-    provider.logger = Mock()
-    return provider
 
 
 @pytest.fixture
@@ -55,16 +39,44 @@ async def test_get_success(api_client: TidalAPIClient, provider_mock: Mock) -> N
 
 
 async def test_get_401_error(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test GET request with 401 error."""
+    """Test GET request with 401 error and a failing token refresh."""
     response = AsyncMock(spec=ClientResponse)
     response.status = 401
 
     request_ctx = AsyncMock()
     request_ctx.__aenter__.return_value = response
     provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
+    provider_mock.auth.refresh_token.return_value = False
 
     with pytest.raises(LoginFailed):
         await api_client.get("test/endpoint")
+
+    provider_mock.auth.refresh_token.assert_called_once()
+
+
+async def test_get_401_refreshes_token_and_retries(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test that a 401 response forces a token refresh and retries the request once."""
+    response_401 = AsyncMock(spec=ClientResponse)
+    response_401.status = 401
+
+    response_ok = AsyncMock(spec=ClientResponse)
+    response_ok.status = 200
+    response_ok.json.return_value = {"data": "test"}
+
+    ctx1 = AsyncMock()
+    ctx1.__aenter__.return_value = response_401
+    ctx2 = AsyncMock()
+    ctx2.__aenter__.return_value = response_ok
+    provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2])
+    provider_mock.auth.refresh_token.return_value = True
+
+    result = await api_client.get("test/endpoint")
+
+    assert result == {"data": "test"}
+    provider_mock.auth.refresh_token.assert_called_once()
+    assert provider_mock.mass.http_session.request.call_count == 2
 
 
 async def test_get_404_error(api_client: TidalAPIClient, provider_mock: Mock) -> None:
@@ -83,8 +95,7 @@ async def test_get_404_error(api_client: TidalAPIClient, provider_mock: Mock) ->
 
 async def test_get_429_error(api_client: TidalAPIClient, provider_mock: Mock) -> None:
     """Test GET request with 429 error."""
-    with patch("asyncio.sleep"):
-        response = AsyncMock(spec=ClientResponse)
+    response = AsyncMock(spec=ClientResponse)
     response.status = 429
     response.headers = {"Retry-After": "10"}
 
@@ -145,6 +156,33 @@ async def test_paginate(api_client: TidalAPIClient, provider_mock: Mock) -> None
     assert len(items) == 4
     assert items[0]["id"] == 1
     assert items[3]["id"] == 4
+
+
+async def test_paginate_preserves_params_across_pages(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test that caller-supplied params are sent on every page, not just the first."""
+    response1 = AsyncMock(spec=ClientResponse)
+    response1.status = 200
+    response1.json.return_value = {"items": [{"id": 1}, {"id": 2}]}
+
+    response2 = AsyncMock(spec=ClientResponse)
+    response2.status = 200
+    response2.json.return_value = {"items": []}
+
+    ctx1 = AsyncMock()
+    ctx1.__aenter__.return_value = response1
+    ctx2 = AsyncMock()
+    ctx2.__aenter__.return_value = response2
+    provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2])
+
+    items: list[dict[str, Any]] = []
+    async for item in api_client.paginate("test/endpoint", limit=2, params={"order": "DATE"}):
+        items.append(item)
+
+    assert len(items) == 2
+    for call in provider_mock.mass.http_session.request.call_args_list:
+        assert call[1]["params"]["order"] == "DATE"
 
 
 async def test_delete_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:

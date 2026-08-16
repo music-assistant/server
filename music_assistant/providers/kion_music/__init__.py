@@ -2,30 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
-
-from .constants import (
-    CONF_ACTION_CLEAR_AUTH,
-    CONF_BASE_URL,
-    CONF_CODECS,
-    CONF_LIKED_TRACKS_MAX_TRACKS,
-    CONF_MY_WAVE_MAX_TRACKS,
-    CONF_QUALITY,
-    CONF_TOKEN,
-    CONF_TRANSPORT,
-    DEFAULT_BASE_URL,
-    QUALITY_BALANCED,
-    QUALITY_EFFICIENT,
-    QUALITY_HIGH,
-    QUALITY_LOSSLESS,
-    TRANSPORT_ENCRAW,
-    TRANSPORT_RAW,
-)
 from .provider import KionMusicProvider
 
 if TYPE_CHECKING:
@@ -59,98 +39,3 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return KionMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    if values is None:
-        values = {}
-
-    # Handle clear auth action
-    if action == CONF_ACTION_CLEAR_AUTH:
-        values[CONF_TOKEN] = None
-
-    # Check if user is authenticated
-    is_authenticated = bool(values.get(CONF_TOKEN))
-
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        # Authentication
-        ConfigEntry(
-            key=CONF_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-            hidden=is_authenticated,
-            value=cast("str", values.get(CONF_TOKEN)) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_CLEAR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_CLEAR_AUTH,
-            hidden=not is_authenticated,
-        ),
-        # Quality
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(QUALITY_EFFICIENT),
-                ConfigValueOption(QUALITY_BALANCED),
-                ConfigValueOption(QUALITY_HIGH),
-                ConfigValueOption(QUALITY_LOSSLESS),
-            ],
-            default_value=QUALITY_BALANCED,
-        ),
-        # My Mix maximum tracks (advanced)
-        ConfigEntry(
-            key=CONF_MY_WAVE_MAX_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            range=(10, 1000),
-            default_value=150,
-            required=False,
-            advanced=True,
-        ),
-        # Liked Tracks maximum tracks (advanced)
-        ConfigEntry(
-            key=CONF_LIKED_TRACKS_MAX_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            range=(50, 2000),
-            default_value=500,
-            required=False,
-            advanced=True,
-        ),
-        # Transport mode (advanced)
-        ConfigEntry(
-            key=CONF_TRANSPORT,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(TRANSPORT_RAW),
-                ConfigValueOption(TRANSPORT_ENCRAW),
-            ],
-            default_value=TRANSPORT_RAW,
-            required=False,
-            advanced=True,
-        ),
-        # Custom codecs override (advanced)
-        ConfigEntry(
-            key=CONF_CODECS,
-            type=ConfigEntryType.STRING,
-            default_value="",
-            required=False,
-            advanced=True,
-        ),
-        # API Base URL (advanced)
-        ConfigEntry(
-            key=CONF_BASE_URL,
-            type=ConfigEntryType.STRING,
-            translation_params=[DEFAULT_BASE_URL],
-            default_value=DEFAULT_BASE_URL,
-            required=False,
-            advanced=True,
-        ),
-    )

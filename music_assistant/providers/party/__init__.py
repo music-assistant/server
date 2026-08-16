@@ -13,18 +13,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
@@ -65,12 +63,10 @@ CONF_ANTI_BURN_IN = "anti_burn_in"
 # Custom party settings
 CONF_PARTY_NAME = "party_name"
 CONF_PARTY_QR_TEXT = "qr_text"
+CONF_PARTY_DURATION = "party_duration"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
 CONF_SHOW_PROGRESS_BAR = "show_progress_bar"
 CONF_PREVENT_DUPLICATE_TRACKS = "prevent_duplicate_tracks"
-# Actions
-CONF_ACTION_ENABLE_GUEST_ACCESS = "action_enable_guest_access"
-CONF_ACTION_DISABLE_GUEST_ACCESS = "action_disable_guest_access"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -146,261 +142,234 @@ async def setup(
     return PartyPlugin(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: ID of an existing provider instance (None if new instance setup).
-    :param action: Optional action key called from config entries UI.
-    :param values: The (intermediate) raw values for config entries sent with the action.
-    """
-    if values is None:
-        values = {}
-
-    # Handle guest access toggle actions
-    if action == CONF_ACTION_ENABLE_GUEST_ACCESS:
-        values[CONF_ENABLE_GUEST_ACCESS] = True
-    elif action == CONF_ACTION_DISABLE_GUEST_ACCESS:
-        values[CONF_ENABLE_GUEST_ACCESS] = False
-
-    guest_access_enabled = bool(values.get(CONF_ENABLE_GUEST_ACCESS, False))
-
-    return (
-        ConfigEntry(
-            key=CONF_PARTY_MODE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=SharedPlaybackMode.VENUE.value,
-            options=[
-                ConfigValueOption(SharedPlaybackMode.VENUE.value),
-                ConfigValueOption(SharedPlaybackMode.REMOTE.value),
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_PLAYER,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value=CONF_PARTY_PLAYER_AUTO,
-            depends_on=CONF_PARTY_MODE,
-            depends_on_value=SharedPlaybackMode.VENUE.value,
-            options=[
-                ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
-                *[
-                    ConfigValueOption(player.player_id, title=player.display_name)
-                    for player in sorted(
-                        mass.players.all_players(False, False),
-                        key=lambda p: p.display_name.lower(),
-                    )
-                ],
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_NAME,
-            type=ConfigEntryType.STRING,
-            default_value="",
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            hidden=True,
-            value=guest_access_enabled,
-            immediate_apply=True,
-        ),
-        # Guest access disabled state
-        ConfigEntry(
-            key="guest_disabled_note",
-            type=ConfigEntryType.LABEL,
-            required=False,
-            hidden=guest_access_enabled,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            hidden=guest_access_enabled,
-            immediate_apply=True,
-        ),
-        # Guest access enabled state
-        ConfigEntry(
-            key="guest_enabled_note",
-            type=ConfigEntryType.ALERT,
-            required=False,
-            hidden=not guest_access_enabled,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            hidden=not guest_access_enabled,
-            immediate_apply=True,
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_QR_TEXT,
-            type=ConfigEntryType.STRING,
-            default_value="",
-            required=False,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-        ),
-        ConfigEntry(
-            key=CONF_HIDE_BACK_BUTTON,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SHOW_PROGRESS_BAR,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_KARAOKE_MODE,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="karaoke",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_HIGHLIGHT_AHEAD,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            depends_on=CONF_PARTY_KARAOKE_MODE,
-            category="karaoke",
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_ANTI_BURN_IN,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_RATE_LIMITING,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="guest_features",
-        ),
-        # Add to Queue feature
-        ConfigEntry(
-            key=CONF_ENABLE_ADD_QUEUE,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PREVENT_DUPLICATE_TRACKS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            depends_on=CONF_ENABLE_ADD_QUEUE,
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_ADD_QUEUE_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=10,
-            depends_on=CONF_ENABLE_ADD_QUEUE,
-            range=(5, 50),
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
-            type=ConfigEntryType.INTEGER,
-            default_value=2,
-            depends_on=CONF_ENABLE_ADD_QUEUE,
-            range=(1, 30),
-            advanced=True,
-            category="guest_features",
-        ),
-        # Boost feature (priority queue jumping)
-        ConfigEntry(
-            key=CONF_ENABLE_BOOST,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_BOOST_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=1,
-            depends_on=CONF_ENABLE_BOOST,
-            range=(1, 10),
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_BOOST_REFILL_MINUTES,
-            type=ConfigEntryType.INTEGER,
-            default_value=20,
-            depends_on=CONF_ENABLE_BOOST,
-            range=(5, 120),
-            advanced=True,
-            category="guest_features",
-        ),
-        # Skip Song feature
-        ConfigEntry(
-            key=CONF_ENABLE_SKIP_SONG,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_SKIP_SONG_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=1,
-            depends_on=CONF_ENABLE_SKIP_SONG,
-            range=(1, 5),
-            advanced=True,
-            category="guest_features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
-            type=ConfigEntryType.INTEGER,
-            default_value=60,
-            depends_on=CONF_ENABLE_SKIP_SONG,
-            range=(15, 180),
-            advanced=True,
-            category="guest_features",
-        ),
-        # Badge color configuration
-        ConfigEntry(
-            key=CONF_REQUEST_BADGE_COLOR,
-            type=ConfigEntryType.STRING,
-            default_value="#2D6A4F",  # Green
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS],
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_BOOST_BADGE_COLOR,
-            type=ConfigEntryType.STRING,
-            default_value="#B55522",  # Orange
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS],
-            advanced=True,
-        ),
-    )
-
-
 class PartyPlugin(PluginProvider):
     """Party plugin provider for Music Assistant."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        guest_access_enabled = bool(self.get_config_value(CONF_ENABLE_GUEST_ACCESS, False))
+
+        return (
+            ConfigEntry(
+                key=CONF_PARTY_MODE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=SharedPlaybackMode.VENUE.value,
+                options=[
+                    ConfigValueOption(SharedPlaybackMode.VENUE.value),
+                    ConfigValueOption(SharedPlaybackMode.REMOTE.value),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_PLAYER,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=CONF_PARTY_PLAYER_AUTO,
+                depends_on=CONF_PARTY_MODE,
+                depends_on_value=SharedPlaybackMode.VENUE.value,
+                options=[
+                    ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
+                    *[
+                        ConfigValueOption(player.player_id, title=player.display_name)
+                        for player in sorted(
+                            self.mass.players.all_players(False, False),
+                            key=lambda p: p.display_name.lower(),
+                        )
+                    ],
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_NAME,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_DURATION,
+                type=ConfigEntryType.INTEGER,
+                default_value=guest_access.DEFAULT_JOIN_CODE_EXPIRY_HOURS,
+                range=(1, 168),
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GUEST_ACCESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                immediate_apply=True,
+            ),
+            # Guest access disabled state
+            ConfigEntry(
+                key="guest_disabled_note",
+                type=ConfigEntryType.LABEL,
+                required=False,
+                hidden=guest_access_enabled,
+            ),
+            # Guest access enabled state
+            ConfigEntry(
+                key="guest_enabled_note",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not guest_access_enabled,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_QR_TEXT,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+            ),
+            ConfigEntry(
+                key=CONF_HIDE_BACK_BUTTON,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_SHOW_PROGRESS_BAR,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_KARAOKE_MODE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="karaoke",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_HIGHLIGHT_AHEAD,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_PARTY_KARAOKE_MODE,
+                category="karaoke",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ANTI_BURN_IN,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_RATE_LIMITING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            # Add to Queue feature
+            ConfigEntry(
+                key=CONF_ENABLE_ADD_QUEUE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PREVENT_DUPLICATE_TRACKS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_ADD_QUEUE,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_ADD_QUEUE_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=10,
+                depends_on=CONF_ENABLE_ADD_QUEUE,
+                range=(5, 50),
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=2,
+                depends_on=CONF_ENABLE_ADD_QUEUE,
+                range=(1, 30),
+                advanced=True,
+                category="guest_features",
+            ),
+            # Boost feature (priority queue jumping)
+            ConfigEntry(
+                key=CONF_ENABLE_BOOST,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_BOOST_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                depends_on=CONF_ENABLE_BOOST,
+                range=(1, 10),
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_BOOST_REFILL_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=20,
+                depends_on=CONF_ENABLE_BOOST,
+                range=(5, 120),
+                advanced=True,
+                category="guest_features",
+            ),
+            # Skip Song feature
+            ConfigEntry(
+                key=CONF_ENABLE_SKIP_SONG,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_SKIP_SONG_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                depends_on=CONF_ENABLE_SKIP_SONG,
+                range=(1, 5),
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=60,
+                depends_on=CONF_ENABLE_SKIP_SONG,
+                range=(15, 180),
+                advanced=True,
+                category="guest_features",
+            ),
+            # Badge color configuration
+            ConfigEntry(
+                key=CONF_REQUEST_BADGE_COLOR,
+                type=ConfigEntryType.STRING,
+                default_value="#2D6A4F",  # Green
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                options=[
+                    ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS
+                ],
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_BOOST_BADGE_COLOR,
+                type=ConfigEntryType.STRING,
+                default_value="#B55522",  # Orange
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                options=[
+                    ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS
+                ],
+                advanced=True,
+            ),
+        )
 
     def __init__(
         self,
@@ -454,17 +423,19 @@ class PartyPlugin(PluginProvider):
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/listen_in", self.listen_in, required_scope=Scope.QUEUES_CONTROL
+                "party/listen_in", self.listen_in, required_scope=Scope.PLAYERS_CONTROL
             )
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/stop_listen_in", self.stop_listen_in, required_scope=Scope.QUEUES_CONTROL
+                "party/stop_listen_in",
+                self.stop_listen_in,
+                required_scope=Scope.PLAYERS_CONTROL,
             )
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/can_listen_in", self.can_listen_in, required_scope=Scope.QUEUES_CONTROL
+                "party/can_listen_in", self.can_listen_in, required_scope=Scope.PLAYERS_CONTROL
             )
         )
 
@@ -492,9 +463,12 @@ class PartyPlugin(PluginProvider):
         # 1. The plugin is being removed entirely (is_removed=True)
         # 2. Guest access is disabled in config (provider reload with disabled setting)
         # This ensures guests are immediately disconnected when access is revoked
-        # Note: We read the LIVE config value since self.config is a snapshot from init
+        # Note: We read the LIVE stored value, which also covers reloads that are triggered
+        # outside of a config save. The default must match the config entry's default_value:
+        # only values that differ from their default are persisted, so switching guest access
+        # off drops the key entirely.
         guest_access_enabled = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=True
+            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=False
         )
         if is_removed or not guest_access_enabled:
             self.logger.debug("Revoking guest tokens...")
@@ -520,7 +494,10 @@ class PartyPlugin(PluginProvider):
             self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
         )
         code = await guest_access.get_or_create_join_code(
-            self.mass, guest_user, device_name="Party Guest"
+            self.mass,
+            guest_user,
+            device_name="Party Guest",
+            expires_in_hours=cast("int", self.config.get_value(CONF_PARTY_DURATION)),
         )
         return guest_access.build_join_url(self.mass, code)
 
@@ -616,8 +593,6 @@ class PartyPlugin(PluginProvider):
         :param boost: If True, insert at the front of the guest section (play next).
         :returns: Result dict with success status and queue position info.
         """
-        self._validate_guest_access()
-
         # Check if guest access is enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
@@ -701,7 +676,6 @@ class PartyPlugin(PluginProvider):
         :param queue_item_id: The queue_item_id of the item to boost.
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
         if not self.config.get_value(CONF_ENABLE_BOOST):
@@ -860,17 +834,6 @@ class PartyPlugin(PluginProvider):
             )
 
     @staticmethod
-    def _validate_guest_access() -> None:
-        """
-        Validate the current user is an authenticated dedicated guest.
-
-        :raises InvalidDataError: If the user is not a dedicated guest.
-        """
-        user = get_current_user()
-        if not user or user.role != UserRole.GUEST:
-            raise InvalidDataError("This endpoint is only available to party guests")
-
-    @staticmethod
     def _queue_contains_uri(queue_items: list[QueueItem], uri: str) -> bool:
         """Return whether the queue already contains the given item URI."""
         return any(queue_item.uri == uri for queue_item in queue_items)
@@ -909,8 +872,6 @@ class PartyPlugin(PluginProvider):
 
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
-
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
@@ -946,7 +907,6 @@ class PartyPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         :returns: Result dict with success status and the party queue ID.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
 
@@ -972,8 +932,6 @@ class PartyPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
-
         async with self._session_lock:
             if self._session is not None:
                 await self._session.remove_guest_listener(web_player_id)
@@ -987,7 +945,6 @@ class PartyPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return False
 

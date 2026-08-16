@@ -3,23 +3,43 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+    UnsupportedFeaturedException,
+)
+from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress_from_index,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_radio,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.helpers.playlists import generate_m3u, media_item_to_playlist_item
+from music_assistant.helpers.playlists import (
+    PlaylistItem,
+    ProviderMappingInfo,
+    construct_media_item_from_playlist_item,
+    generate_m3u,
+    media_item_to_playlist_item,
+    parse_m3u,
+)
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
@@ -27,8 +47,9 @@ from .base import MediaControllerBase
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from music_assistant_models.background_task import BackgroundTask
+
     from music_assistant import MusicAssistant
-    from music_assistant.providers.builtin import BuiltinProvider
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -48,6 +69,11 @@ class RadioController(MediaControllerBase[Radio]):
             f"music/{api_base}/radio_versions", self.versions, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
+            f"music/{api_base}/radio_tracks",
+            self.radio_tracks,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/export_radios", self.export_radios, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
@@ -62,28 +88,81 @@ class RadioController(MediaControllerBase[Radio]):
         query = f"""
         SELECT
             {self._summary_base_columns()},
+            {self.db_table}.is_dynamic,
             json_extract({self.db_table}.metadata, '$.description') AS description,
             {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table}"""
         return query, {}
 
+    async def radio_tracks(self, item_id: str, provider_instance_id_or_domain: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station.
+
+        :param item_id: The provider (or library) item id of the station.
+        :param provider_instance_id_or_domain: The provider instance id or domain the
+            item id belongs to ("library" for a library item).
+        """
+        radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        return await self.dynamic_tracks(radio)
+
+    async def dynamic_tracks(self, radio: Radio) -> list[Track]:
+        """
+        Return a fresh batch of tracks for an already resolved dynamic radio station.
+
+        :param radio: The dynamic station to fetch the next batch for.
+        """
+        if not radio.is_dynamic:
+            raise UnsupportedFeaturedException(f"{radio.name} is not a dynamic radio station")
+        provider_instance_id_or_domain, item_id = (
+            self._select_provider_id(radio)
+            if radio.provider == "library"
+            else (radio.provider, radio.item_id)
+        )
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
+        return await cast("MusicProvider", provider).get_dynamic_radio_tracks(item_id)
+
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
-        radios = await self.library_items(limit=10000, offset=0, summary=False)
-        items = [media_item_to_playlist_item(radio) for radio in radios]
+        items: list[PlaylistItem] = []
+        async for radio in self.iter_library_items():
+            entry = media_item_to_playlist_item(radio)
+            if radio.favorite:
+                # favorite is library-level user state, so only a library export carries it
+                entry.metadata = {**(entry.metadata or {}), "favorite": "true"}
+            items.append(entry)
         return generate_m3u("Radio Stations", items)
 
-    async def import_radios(self, m3u_data: str) -> int:
+    async def import_radios(self, m3u_data: str) -> BackgroundTask:
         """
-        Import radio stations from M3U8 format.
+        Queue importing radio stations from M3U8 format.
+
+        Any station that can not be imported is reported as a failure on the returned
+        task, and the remaining stations are still imported.
 
         :param m3u_data: The M3U8 data as a string.
+        :return: Managed background task performing the import.
+        :raises InvalidDataError: The M3U data holds no entries.
         """
-        provider = self.mass.get_provider("builtin")
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError("Builtin provider is not available")
-        builtin_prov = cast("BuiltinProvider", provider)
-        return await builtin_prov.import_radios(m3u_data)
+        parsed_items = parse_m3u(m3u_data)
+        if not parsed_items:
+            msg = "No items found in M3U data"
+            raise InvalidDataError(msg)
+        user = get_current_user()
+        return self.mass.tasks.run_background_task(
+            name=f"Import {len(parsed_items)} radio stations",
+            handler=lambda: self._handle_import_radios(parsed_items),
+            translation_key="import_radios",
+            translation_owner=self.translation_owner,
+            translation_args=[len(parsed_items)],
+            user_id=user.user_id if user else None,
+            metadata={
+                "task_domain": "radio_import",
+                "item_count": len(parsed_items),
+            },
+            allow_retry=True,
+            priority=True,
+        )
 
     async def versions(
         self,
@@ -92,6 +171,9 @@ class RadioController(MediaControllerBase[Radio]):
     ) -> list[Radio]:
         """Return all versions of a radio station we can find on all providers."""
         radio = await self.get(item_id, provider_instance_id_or_domain)
+        if radio.is_dynamic:
+            # a dynamic station is its provider's own, so a same-named station is a different one
+            return []
         # perform a search on all provider(types) to collect all versions/variants
         all_versions = {
             prov_item.item_id: prov_item
@@ -157,6 +239,9 @@ class RadioController(MediaControllerBase[Radio]):
         """
         if db_radio.provider != "library":
             return  # Matching only supported for database items
+        if db_radio.is_dynamic:
+            # matching a dynamic station by name would link an unrelated radio stream to it
+            return
 
         # try to find match on all providers
         cur_provider_domains = {x.provider_domain for x in db_radio.provider_mappings}
@@ -190,6 +275,7 @@ class RadioController(MediaControllerBase[Radio]):
                     item.sort_name if item.sort_name is not None else "", True, True
                 ),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "is_dynamic": item.is_dynamic,
             },
         )
         # update/set external id lookup table
@@ -224,6 +310,7 @@ class RadioController(MediaControllerBase[Radio]):
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
+                "is_dynamic": update.is_dynamic,
             },
         )
         # update/set external id lookup table
@@ -242,5 +329,77 @@ class RadioController(MediaControllerBase[Radio]):
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
         """Parse a raw summary db row into a RadioSummary object."""
         item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item.is_dynamic = bool(db_row["is_dynamic"])
         item.metadata.description = db_row["description"]
         return item
+
+    async def _handle_import_radios(self, parsed_items: list[PlaylistItem]) -> None:
+        """Add the parsed M3U entries to the library, one station at a time."""
+        total = len(parsed_items)
+        for index, item in enumerate(parsed_items):
+            update_current_task_progress_from_index(
+                index, total, f"Importing station {index + 1}/{total}"
+            )
+            label = (item.metadata or {}).get("name") or item.title or item.path
+            try:
+                await self._import_radio_item(item)
+            except MusicAssistantError as err:
+                report_current_task_failure(f"{label}: {err}")
+            except Exception as err:
+                # a transient fault such as a provider timeout must not abandon the
+                # stations queued behind it, but it is a real fault worth a log line
+                self.logger.warning(
+                    "Error importing radio station %s: %s",
+                    label,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
+                report_current_task_failure(f"{label}: {err}")
+        update_current_task_progress_from_index(total, total, "Import complete")
+
+    async def _import_radio_item(self, item: PlaylistItem) -> None:
+        """Resolve a single parsed M3U entry against its provider and add it to the library."""
+        if not item.providers:
+            # a plain third-party M3U carries no #EXTPROV, so recover the mapping from the
+            # path, which parse_uri normalises into a provider and its native item_id
+            if not item.is_url:
+                msg = f"{item.path} is not a stream URL"
+                raise InvalidDataError(msg)
+            media_type, prov_lookup, prov_item_id = await parse_uri(item.path)
+            if media_type not in (MediaType.RADIO, MediaType.UNKNOWN):
+                msg = f"{item.path} is a {media_type.value}, not a radio station"
+                raise InvalidDataError(msg)
+            provider = self.mass.get_provider(prov_lookup, provider_type=MusicProvider)
+            if not provider:
+                msg = f"Provider {prov_lookup} is not available"
+                raise ProviderUnavailableError(msg)
+            # a retry re-runs this handler over the same parsed items, so build a new
+            # entry rather than writing the resolved mapping back into the shared one
+            item = replace(
+                item,
+                providers=[
+                    ProviderMappingInfo(
+                        domain=provider.domain,
+                        item_id=prov_item_id,
+                        instance_id=provider.instance_id,
+                    )
+                ],
+            )
+        radio = construct_media_item_from_playlist_item(item, self.mass, MediaType.RADIO)
+        if not isinstance(radio, Radio):
+            msg = f"{item.path} is not a radio station"
+            raise InvalidDataError(msg)
+        if not any(mapping.available for mapping in radio.provider_mappings):
+            msg = f"No available provider for radio station {radio.name}"
+            raise ProviderUnavailableError(msg)
+        library_item = await self.mass.music.add_item_to_library(radio)
+        # a station owned by another provider is refetched from it, so the library item comes
+        # back with only that provider's mapping; reattach the ones the file recorded for the
+        # other providers it is loaded on, which the refetch has no way to know about
+        await self.add_provider_mappings(
+            library_item.item_id, [pm for pm in radio.provider_mappings if pm.available]
+        )
+        # the refetch also discards anything set on the object passed in, so the exported
+        # favorite goes onto the library item
+        if (item.metadata or {}).get("favorite") == "true":
+            await self.set_favorite(library_item.item_id, True)

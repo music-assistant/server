@@ -126,7 +126,7 @@ def test_linear_release_filters_prs_merged_before_previous_tag(
         ],
     )
     repo = FakeRepo(
-        comparisons={("2.9.0b1", "dev"): comparison},
+        comparisons={("2.9.0b1", "headsha"): comparison},
         pulls={
             200: FakePR(200, datetime(2026, 6, 5, tzinfo=UTC)),
             150: FakePR(150, datetime(2026, 1, 10, tzinfo=UTC)),
@@ -134,7 +134,7 @@ def test_linear_release_filters_prs_merged_before_previous_tag(
         tag_commits={"2.9.0b1": tag_commit},
     )
 
-    prs = generate_notes.get_prs_between_tags(repo, "2.9.0b1", "dev")
+    prs = generate_notes.get_prs_between_tags(repo, "2.9.0b1", "headsha")
 
     assert [pr.number for pr in prs] == [200]
 
@@ -173,7 +173,7 @@ def test_minor_release_with_diverged_previous_tag(
     tag_commit = FakeCommit("tagsha", "2.8.9 release", datetime(2026, 6, 3, tzinfo=UTC))
     repo = FakeRepo(
         comparisons={
-            ("2.8.9", "stable"): head_comparison,
+            ("2.8.9", "headsha"): head_comparison,
             ("mbsha", "2.8.9"): base_comparison,
         },
         pulls={
@@ -185,6 +185,6 @@ def test_minor_release_with_diverged_previous_tag(
         tag_commits={"2.8.9": tag_commit},
     )
 
-    prs = generate_notes.get_prs_between_tags(repo, "2.8.9", "stable")
+    prs = generate_notes.get_prs_between_tags(repo, "2.8.9", "headsha")
 
     assert [pr.number for pr in prs] == [100, 120]

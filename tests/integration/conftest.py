@@ -22,7 +22,7 @@ from zeroconf.asyncio import AsyncZeroconf
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
-from tests.common import suppress_auto_loaded_providers
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
 
 NUM_DEMO_PLAYERS = 3
 
@@ -108,6 +108,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     mass_instance.dev_mode = True
 
     with (
+        use_ephemeral_server_ports(),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=_create_mock_zeroconf(),
@@ -128,14 +129,17 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
         # hermetic: no auto-loaded device providers and no host-audio bridging
         suppress_auto_loaded_providers(),
     ):
-        await mass_instance.start()
-        # configure the fake music + player providers
-        await mass_instance.config.save_provider_config("test", {})
-        await mass_instance.config.save_provider_config(
-            "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
-        )
-        await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
         try:
+            await mass_instance.start()
+            # configure the fake music + player providers
+            await mass_instance.config._create_provider_instance("test", {})
+            await mass_instance.config._create_provider_instance(
+                "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
+            )
+            await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
             yield mass_instance
         finally:
+            # also stop after a failed boot, or the half-started server's open database
+            # connections keep their non-daemon threads alive and hang the interpreter
+            # at exit (see the same note in tests/conftest.py)
             await mass_instance.stop()

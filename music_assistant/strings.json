@@ -8,6 +8,14 @@
       "label": "Password",
       "description": "The password to authenticate to the remote server."
     },
+    "email": {
+      "label": "Email",
+      "description": "The email address to authenticate to the remote server."
+    },
+    "max_num_episodes": {
+      "label": "Maximum number of episodes (0 for unlimited)",
+      "description": "Maximum number of episodes to sync per feed. Use 0 for unlimited"
+    },
     "suffix_version": {
       "label": "Suffix version to track names",
       "description": "Whether to add the version as suffix to track names, e.g. 'Amazing Track (Live)'."
@@ -108,7 +116,29 @@
     },
     "icon": {
       "label": "Icon",
-      "description": "Material design icon for this player.\n\nSee https://pictogrammers.com/library/mdi/."
+      "description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons."
+    },
+    "ignore_album_playlists": {
+      "label": "Ignore playlists with album tracks within album folders",
+      "description": "A digital album often comes with a playlist file (.m3u) that contains the tracks of the album. \nAdding all these playlists to the library, is not very practical so it's better to just ignore them.\n\nIf this option is enabled, all playlists will be ignored which are more than 1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u"
+    },
+    "missing_album_artist_action": {
+      "label": "Action when a track is missing the Albumartist ID3 tag",
+      "description": "How to fill in the album artist for tracks with no Albumartist tag. This affects how those albums are grouped in your library.",
+      "options": {
+        "track_artist": "Use Track artist(s)",
+        "various_artists": "Use Various Artists",
+        "folder_name": "Use Folder name (if possible)"
+      },
+      "option_descriptions": {
+        "track_artist": "Use the track's own artist(s). Can split an album across artists when its tracks differ.",
+        "various_artists": "Group everything under a single 'Various Artists' album artist. Keeps the album together; best for compilations.",
+        "folder_name": "Use the containing folder's name, falling back to 'Various Artists' when it can't be determined."
+      }
+    },
+    "propagate_track_genres": {
+      "label": "Propagate track genres to albums and artists",
+      "description": "Derive album and artist genres from their tracks when the album/artist has no genre metadata of its own. Useful when your files only have genres tagged at track level."
     },
     "library_sync_album_tracks": {
       "label": "Import album tracks",
@@ -168,7 +198,7 @@
     },
     "manual_discovery_ip_addresses": {
       "label": "Manual IP addresses for discovery",
-      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network. using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nIn case of special network setups or when you run into issues where one or more players are not discovered, you can manually add the IP addresses of the players here. \n\nNote that this setting is not recommended for normal use and should only be used if you know what you are doing. Also, if players are not on the same subnet asthe Music Assistant server, you may run into issues with streaming. In that case always ensure that the players can reach the server on the network and double check the base URL configuration of the Stream server in the settings."
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network. using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nIn case of special network setups or when you run into issues where one or more players are not discovered, you can manually add the IP addresses of the players here. \n\nNote that this setting is not recommended for normal use and should only be used if you know what you are doing. Also, if players are not on the same subnet as the Music Assistant server, you may run into issues with streaming. In that case always ensure that the players can reach the server on the network and double check the base URL configuration of the Stream server in the settings."
     },
     "max_volume": {
       "label": "Maximum volume",
@@ -195,18 +225,18 @@
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
         "aac": "AAC (lossy)",
-        "wav": "WAV (lossless, uncompressed)"
+        "wav": "WAV (uncompressed PCM)"
       },
       "option_descriptions": {
         "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
         "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
         "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
-        "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
+        "wav": "Uncompressed PCM audio in a WAV container — highest bandwidth. Only needed for players that can't handle FLAC."
       }
     },
-    "output_limiter": {
-      "label": "Enable limiting to prevent clipping",
-      "description": "Activates a limiter that prevents audio distortion by making loud peaks quieter."
+    "prefer_wav_for_live_sources": {
+      "label": "Prefer low-latency WAV for live sources",
+      "description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed PCM audio in a WAV container to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead."
     },
     "play_media_overrides_group": {
       "label": "Play Media overrides active group",
@@ -261,11 +291,11 @@
       }
     },
     "protocol_enable": {
-      "label": "Enable",
+      "label": "Enable this protocol on this player",
       "description": "Enable or disable this output protocol for the player."
     },
     "protocol_enable_via": {
-      "label": "Enable",
+      "label": "Enable this protocol on this player",
       "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
     },
     "pre_announcement_chime_url": {
@@ -319,6 +349,11 @@
       "description": "Select the preferred protocol for audio playback to this device.",
       "options": {
         "auto": "Auto-select"
+      },
+      "disabled_reasons": {
+        "needs_setup": "This output must be set up before it can be used.",
+        "unavailable": "This output is currently not available.",
+        "turned_off": "This output is turned off."
       }
     },
     "bind_port": {
@@ -330,6 +365,8 @@
       "description": "Start the stream server on this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
     },
     "content_type": {
+      "label": "Content type",
+      "description": "The type of content stored in this location",
       "options": {
         "audiobooks": "Audiobooks",
         "music": "Music",
@@ -343,6 +380,25 @@
       },
       "label": "Connected Music Assistant Player"
     },
+    "auth_device": {
+      "label": "Login with device code",
+      "description": "Open a verification URL on any device and enter the short code.",
+      "action_label": "Login with device code"
+    },
+    "auth_qr": {
+      "label": "Login with QR code",
+      "description": "Opens a QR code page — scan it with the Yandex app on your phone.",
+      "action_label": "Login with QR code"
+    },
+    "auth_cookies": {
+      "label": "Login with Cookies",
+      "description": "Authenticate using browser cookies from passport.yandex.ru.",
+      "action_label": "Login with Cookies"
+    },
+    "remember_session": {
+      "label": "Remember session (auto-refresh token)",
+      "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires — toggling this off after logging in immediately drops the stored long-lived tokens."
+    },
     "clear_auth": {
       "label": "Reset authentication",
       "action_label": "Reset authentication",
@@ -351,6 +407,24 @@
     "verify_ssl": {
       "label": "Verify SSL",
       "description": "Whether or not to verify the certificate of SSL/TLS connections."
+    },
+    "child": {
+      "label": "Device to set up",
+      "description": "Choose which connected device to set up."
+    },
+    "ai_engine": {
+      "label": "AI engine",
+      "description": "The AI engine used for this feature."
+    },
+    "ai_engine_unavailable": {
+      "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
+    },
+    "tts_engine": {
+      "label": "Text-to-speech engine",
+      "description": "The text-to-speech engine used for this feature."
+    },
+    "tts_engine_unavailable": {
+      "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     }
   },
   "config_categories": {
@@ -981,8 +1055,34 @@
       "favorite_playlists": {
         "name": "Favorite playlists"
       },
+      "recent_artists": {
+        "name": "Recent artists"
+      },
+      "recent_tracks": {
+        "name": "Recent tracks"
+      },
       "favorite_radio_stations": {
         "name": "Favorite Radio stations"
+      },
+      "forgotten_tracks": {
+        "name": "Forgotten Tracks",
+        "subtitle": "Rediscover tracks you haven't heard in a while"
+      },
+      "forgotten_albums": {
+        "name": "Forgotten Albums",
+        "subtitle": "Rediscover albums you haven't heard in a while"
+      },
+      "forgotten_artists": {
+        "name": "Forgotten Artists",
+        "subtitle": "Rediscover artists you haven't heard in a while"
+      },
+      "most_played_tracks": {
+        "name": "Most Played Tracks",
+        "subtitle": "Your all-time favorites"
+      },
+      "never_played_tracks": {
+        "name": "Never / Rarely Played",
+        "subtitle": "Discover what you haven't explored yet"
       }
     }
   },
@@ -1038,6 +1138,9 @@
     "link_control": {
       "name": "Link control"
     },
+    "network_name": {
+      "name": "Network name"
+    },
     "party_mode": {
       "name": "Party mode"
     },
@@ -1073,6 +1176,7 @@
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
     "media_not_found": "The requested media item could not be found.",
+    "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
@@ -1097,12 +1201,45 @@
     "action_unavailable": "This action is currently unavailable.",
     "authentication_required": "Authentication is required.",
     "authentication_failed": "Authentication failed. The credentials are invalid.",
+    "password_required": "This device requires a password. Run the setup for this player to enter it.",
     "insufficient_permissions": "You do not have permission to perform this action.",
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",
     "rate_limited": "Rate limit reached. Please try again later.",
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
-    "connect_failed": "Failed to connect to {0}."
+    "connect_failed": "Failed to connect to {0}.",
+    "mount_failed": "Unable to connect to the remote location: {0}",
+    "unmount_failed": "The previous connection to the remote location could not be closed: {0}",
+    "user_not_found": "The user {0} could not be found."
+  },
+  "setup_flow": {
+    "select_child": {
+      "title": "Choose a device to set up",
+      "description": "This player wraps multiple devices that still need setup. Pick the one to set up now."
+    },
+    "finish_library_sync": {
+      "description": "Your library is imported in the background and can take a while the first time. It keeps filling up as the import progresses, so it is normal for things to look empty or incomplete at first."
+    }
+  },
+  "page": {
+    "device_code": {
+      "step_copy": "Copy the code",
+      "hint_copy": "Tap the code to copy it",
+      "copied": "Copied ✓",
+      "copy_manual": "Automatic copy failed — select the code and copy it manually",
+      "step_open": "Open the Yandex page and enter the code",
+      "open_button": "Continue to Yandex",
+      "expires_label": "Code expires in",
+      "expired_title": "Code expired",
+      "expired_text": "The code is no longer valid. Return to Music Assistant and start the login again.",
+      "success_title": "Authorization successful",
+      "success_text": "You can close this window.",
+      "failed_title": "Authorization failed",
+      "failed_text": "Please return to Music Assistant and try again.",
+      "denied_text": "The login was denied. Return to Music Assistant and try again.",
+      "ended_title": "Session ended",
+      "ended_text": "This login session is no longer active. You can close this window."
+    }
   }
 }

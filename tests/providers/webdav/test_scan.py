@@ -5,8 +5,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.errors import ProviderUnavailableError
 
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 from music_assistant.providers.webdav.helpers import WebDAVItem
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
 
@@ -30,6 +31,7 @@ async def _run_enumerate(
     *,
     file_checksums: dict[str, str] | None = None,
     cur_filenames: set[str] | None = None,
+    scan_errors: ScanErrors | None = None,
 ) -> None:
     """Drive _enumerate_files_for_sync with empty sync buckets."""
     await provider._enumerate_files_for_sync(
@@ -39,7 +41,7 @@ async def _run_enumerate(
         items_to_process=[],
         unchanged_cue_items=[],
         cue_stems=set(),
-        root_scan_errors=[],
+        scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
     )
 
 
@@ -149,3 +151,21 @@ async def test_enumerate_does_not_loop_on_special_chars(special: str) -> None:
     )
 
     assert cur_filenames == {f"{special}/t.mp3"}
+
+
+async def test_is_reachable_asks_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A WebDAV url cannot be stat'ed, so reachability is a live request to the server."""
+    provider = _make_provider()
+    provider.verify_ssl = True
+    provider.mass = MagicMock()
+
+    test_connection = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.providers.webdav.provider.webdav_test_connection", test_connection
+    )
+    assert await provider._is_reachable() is True
+    test_connection.assert_awaited_once()
+
+    test_connection.side_effect = ProviderUnavailableError("server down")
+    with pytest.raises(ProviderUnavailableError):
+        await provider._is_reachable()

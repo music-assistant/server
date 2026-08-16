@@ -5,6 +5,17 @@ Developer docs
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
+* libchromaprint and PortAudio, also at OS level. Install both if you want to run the `acoustid_lookup` and `local_audio` providers: without libchromaprint AcoustID refuses to load, and without PortAudio local audio loads but finds no output devices. The test suite does not need either: the AcoustID tests drive a fake fingerprinter and the local audio tests that need PortAudio are skipped.
+
+      # macOS
+      brew install chromaprint portaudio
+
+      # Debian/Ubuntu
+      sudo apt-get install libchromaprint1 libportaudio2
+
+    On Apple Silicon, Homebrew installs into `/opt/homebrew`, which is not on the dynamic loader's default search path. `pyacoustid` opens libchromaprint by bare filename, so installing the package is not enough — add this to your shell profile as well:
+
+      export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:/usr/local/lib:/usr/lib"
 
 We recommend developing on a (recent) macOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.

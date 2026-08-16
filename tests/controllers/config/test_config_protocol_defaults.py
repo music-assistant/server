@@ -19,16 +19,16 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_FLOW_MODE_SAMPLE_RATE,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PROTOCOL_KEY_SPLITTER,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
     FLOW_MODE_SAMPLE_RATE_SMART,
 )
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 
 PARENT_ID = "sonos_123"
 CHILD_ID = "dlna_AABBCCDDEEFF"
@@ -105,9 +105,8 @@ async def _setup_parent_with_protocol_child(mass: MusicAssistant) -> _TestPlayer
     # link the DLNA protocol output to the parent so the virtual prefixed entry is emitted
     parent.set_linked_output_protocols(
         [
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id=CHILD_ID,
-                name="DLNA",
                 protocol_domain="dlna",
                 priority=50,
             )
@@ -140,7 +139,7 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
     # set the prefixed value to a non-default, alongside an unrelated parent change
     await mass.config.save_player_config(
         PARENT_ID,
-        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "output_limiter": False},
+        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "tts_pre_announce": False},
     )
     config = await mass.config.get_player_config(PARENT_ID)
     assert config.values[PREFIXED_KEY].value == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
@@ -190,12 +189,12 @@ async def test_full_form_save_does_not_persist_prefixed_copy_on_parent(
 
     await mass.config.save_player_config(
         PARENT_ID,
-        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "output_limiter": False},
+        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "tts_pre_announce": False},
     )
 
     stored = _parent_stored_values(mass)
     # parent-level (non-protocol) change is fine to persist
-    assert stored.get("output_limiter") is False
+    assert stored.get("tts_pre_announce") is False
     # protocol-prefixed entries are virtual mirrors of the child and must never live on the parent
     assert not any(CONF_PROTOCOL_KEY_SPLITTER in key for key in stored)
 
@@ -217,3 +216,38 @@ async def test_injected_protocol_entry_resolves_under_origin_provider(
     proto_entry = next(entry for entry in entries if entry.key == PREFIXED_KEY)
     assert proto_entry.translation_owner == "provider.dlna"
     assert proto_entry.translation_key == CONF_FLOW_MODE_SAMPLE_RATE
+
+
+async def test_player_entries_resolve_under_their_own_provider(mass: MusicAssistant) -> None:
+    """A player's own entries carry its provider's namespace, so its strings.json is consulted."""
+    await _setup_parent_with_protocol_child(mass)
+
+    entries = await mass.config.get_player_config_entries(PARENT_ID)
+    own_entries = [entry for entry in entries if CONF_PROTOCOL_KEY_SPLITTER not in entry.key]
+
+    assert own_entries
+    assert {entry.translation_owner for entry in own_entries} == {"provider.sonos"}
+
+
+async def test_live_source_wav_preference_is_only_exposed_for_http_players(
+    mass: MusicAssistant,
+) -> None:
+    """Only HTTP player protocols expose the live source WAV preference."""
+    await _setup_parent_with_protocol_child(mass)
+    parent_entries = await mass.config.get_player_config_entries(PARENT_ID)
+    dlna_key = f"{CHILD_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_PREFER_WAV_FOR_LIVE_SOURCES}"
+    assert next(entry for entry in parent_entries if entry.key == dlna_key).default_value is False
+
+    sendspin_provider = _TestProvider(mass, "sendspin")
+    mass._providers[sendspin_provider.instance_id] = sendspin_provider  # type: ignore[assignment]
+    mass._provider_manifests[sendspin_provider.domain] = sendspin_provider.manifest
+    sendspin_player = _TestPlayer(
+        sendspin_provider,
+        "sendspin_1",
+        "Sendspin Player",
+        PlayerType.PROTOCOL,
+    )
+
+    entries = await mass.config._get_player_config_entries(sendspin_player)
+
+    assert CONF_PREFER_WAV_FOR_LIVE_SOURCES not in {entry.key for entry in entries}

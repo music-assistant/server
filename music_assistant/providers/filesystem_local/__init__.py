@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import os.path
+import posixpath
 import urllib.parse
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -72,10 +74,11 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers import lyrics
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -86,31 +89,34 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
     CACHE_CATEGORY_FOLDER_IMAGES,
+    CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
+    CONF_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE,
-    CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
-    CONF_ENTRY_PATH,
     CONF_ENTRY_PROPAGATE_GENRES,
     CUE_EXTENSIONS,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
+    PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
     SOUND_EFFECT_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
+    content_type_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -120,16 +126,19 @@ from .cue import (
 )
 from .helpers import (
     FileSystemItem,
+    ScanErrors,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
+    get_folder_signature,
     get_relative_path,
     recursive_iter,
     sorted_scandir,
 )
+from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -142,7 +151,6 @@ isfile = wrap(os.path.isfile)
 ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
-scandir = wrap(os.scandir)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -154,37 +162,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    base_path = cast("str", config.get_value(CONF_PATH))
-    return LocalFileSystemProvider(mass, manifest, config, base_path)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    base_entries = [
-        CONF_ENTRY_PATH,
-        CONF_ENTRY_MISSING_ALBUM_ARTIST,
-        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
-        CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
-        CONF_ENTRY_PROPAGATE_GENRES,
-    ]
-    if instance_id is None or values is None:
-        return (CONF_ENTRY_CONTENT_TYPE, *base_entries)
-    return (CONF_ENTRY_CONTENT_TYPE_READ_ONLY, *base_entries)
+    return LocalFileSystemProvider(mass, manifest, config)
 
 
 class LocalFileSystemProvider(MusicProvider):
@@ -198,23 +176,47 @@ class LocalFileSystemProvider(MusicProvider):
 
     # parallel workers per sync; subclasses lower this for slower transports
     _SYNC_CONCURRENCY: ClassVar[int] = 16
+    _sync_tracks: bool = True
+    _sync_playlists: bool = True
 
     def __init__(
         self,
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
-        base_path: str,
+        base_path: str | None = None,
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.base_path: str = base_path
+        # subclasses (NFS/SMB/...) mount elsewhere and pass their own base_path;
+        # the plain local provider reads its scan directory from the setup data
+        self.base_path: str = (
+            base_path if base_path is not None else cast("str", self.get_setup_value(CONF_PATH))
+        )
         self.write_access: bool = False
         self.sync_running: bool = False
-        self._sync_tracks: bool = True
-        self._sync_playlists: bool = True
-        self.media_content_type = cast("str", config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self._cue = CueSheetHandler(self)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        # content type and path are collected by the setup flow; surface the (immutable)
+        # content type read-only so the sync options' depends_on chains still resolve
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
+        return (
+            content_type_config_entry(content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -260,6 +262,13 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        self._cancel_availability_probe()
+        # a check that already started runs as a task under the same id, and it would
+        # otherwise keep talking to storage this unload is in the middle of tearing down
+        self.mass.cancel_task(self._availability_probe_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -402,6 +411,23 @@ class LocalFileSystemProvider(MusicProvider):
                         name=item.filename,
                     )
                 )
+        if self.media_content_type == "music":
+            track_indexes = [
+                index
+                for index, item in enumerate(items)
+                if isinstance(item, ItemMapping) and item.media_type == MediaType.TRACK
+            ]
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        items[index].item_id, self.instance_id
+                    )
+                    for index in track_indexes
+                )
+            )
+            for index, library_track in zip(track_indexes, library_tracks, strict=True):
+                if library_track:
+                    items[index] = library_track
         return items
 
     async def sync_library(self, media_type: MediaType) -> None:
@@ -459,9 +485,9 @@ class LocalFileSystemProvider(MusicProvider):
         # absolute paths of every CUE sheet in this scan with the ".cue" stripped,
         # used for O(1) companion-CUE lookups per audio file
         cue_stems: set[str] = set()
-        # populated only when the provider root itself is unreadable;
-        # per-subdirectory failures are logged and skipped
-        root_scan_errors: list[OSError] = []
+        # collects the errors raised while walking the tree; any error means the
+        # scan is incomplete, a fatal one means the provider is unreachable
+        scan_errors = ScanErrors()
 
         self.sync_running = True
         try:
@@ -472,8 +498,15 @@ class LocalFileSystemProvider(MusicProvider):
                 items_to_process=items_to_process,
                 unchanged_cue_items=unchanged_cue_items,
                 cue_stems=cue_stems,
-                root_scan_errors=root_scan_errors,
+                scan_errors=scan_errors,
             )
+            if scan_errors.fatal:
+                # the storage is gone, so reading the files collected before it went
+                # away would only add a timeout each
+                self.logger.error("Aborting sync for %s: %s", self.name, scan_errors.fatal)
+                report_current_task_failure("Sync aborted: filesystem unavailable during scan")
+                self._set_available(False)
+                return
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
                 for cue_item in (
@@ -520,7 +553,9 @@ class LocalFileSystemProvider(MusicProvider):
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
-                if await self._process_item_async(item, prev_checksum, cur_filenames, cue_stems):
+                if await self._process_item_async(
+                    item, prev_checksum, cur_filenames, cue_stems, prev_filenames
+                ):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
                 if processed_count % 50 == 0 or processed_count == total_items:
@@ -536,17 +571,6 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
-        # do not run deletions if the root base path could not be scanned
-        if root_scan_errors:
-            self.logger.error(
-                "Aborting sync for %s: %d root scan error(s)",
-                self.name,
-                len(root_scan_errors),
-            )
-            report_current_task_failure("Sync aborted: filesystem unavailable during scan")
-            self._set_available(False)
-            return
-
         # do not run deletions on a clean but empty scan of a previously non-empty library
         # (wrong share mounted, empty backup mount, ...)
         if prev_filenames and not cur_filenames:
@@ -561,9 +585,16 @@ class LocalFileSystemProvider(MusicProvider):
             )
             return
 
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-        await self._process_orphaned_albums_and_artists()
+        # a scan that skipped folders or files is incomplete: what it missed is still
+        # there, so deleting it from the library would throw away valid content
+        if scan_errors.incomplete:
+            summary = scan_errors.describe()
+            self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
+            report_current_task_failure(f"Deletions skipped: {summary}")
+        else:
+            deleted_files = prev_filenames - cur_filenames
+            await self._process_deletions(deleted_files)
+            await self._process_orphaned_albums_and_artists()
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
@@ -816,28 +847,75 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
-        episodes: list[PodcastEpisode] = []
+        folder_items = [item for item in await self._scandir(prov_podcast_id) if not item.is_dir]
+        episode_files = [x for x in folder_items if x.ext in PODCAST_EPISODE_EXTENSIONS]
+        # artwork and metadata.json count towards the signature too, because the parse embeds
+        # them into every episode. Case-insensitive, matching _get_podcast_metadata's exists()
+        signature_files = [
+            x
+            for x in folder_items
+            if x.ext in PODCAST_EPISODE_EXTENSIONS
+            or x.ext in IMAGE_EXTENSIONS
+            or x.filename.lower() == "metadata.json"
+        ]
+        cache_key = f"podcast_episodes.{prov_podcast_id}"
+        cache_checksum = get_folder_signature(signature_files)
+        if (
+            cached_episodes := await self.mass.cache.get(
+                cache_key,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST_EPISODES,
+                checksum=cache_checksum,
+                base_class=PodcastEpisode,
+            )
+        ) is not None:
+            for episode in cached_episodes:
+                yield episode
+            return
 
-        async def _process_podcast_episode(item: FileSystemItem) -> None:
-            tags = await async_parse_tags(item.absolute_path, item.file_size)
+        # these caches have no checksum of their own, so drop them before parsing or the new
+        # entry gets the values the signature just invalidated. Refill once, or every parse
+        # task below misses at the same time and repeats the same scandir and file read
+        for stale_category in (CACHE_CATEGORY_FOLDER_IMAGES, CACHE_CATEGORY_PODCAST_METADATA):
+            await self.mass.cache.delete(
+                prov_podcast_id, category=stale_category, provider=self.instance_id
+            )
+        await self._get_local_images(prov_podcast_id)
+        await self._get_podcast_metadata(prov_podcast_id)
+
+        # collected by index so the listing keeps scandir order, not parse completion order
+        parsed: list[PodcastEpisode | None] = [None] * len(episode_files)
+
+        async def _process_podcast_episode(index: int, item: FileSystemItem) -> None:
             try:
-                episode = await self._parse_podcast_episode(item, tags)
+                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                parsed[index] = await self._parse_podcast_episode(item, tags)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Could not parse uri/file %s to podcast episode: %s",
                     item.relative_path,
                     str(err),
                 )
-            else:
-                episodes.append(episode)
 
-        async with TaskManager(self.mass, 25) as tm:
-            for item in await self._scandir(prov_podcast_id):
-                if "." not in item.relative_path or item.is_dir:
-                    continue
-                if item.ext not in PODCAST_EPISODE_EXTENSIONS:
-                    continue
-                tm.create_task(_process_podcast_episode(item))
+        # reuse the per-sync worker limit: the slowest filesystems to parse are exactly the
+        # ones that lower it
+        async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
+            for index, item in enumerate(episode_files):
+                await tm.create_task_with_limit(_process_podcast_episode(index, item))
+
+        episodes = [episode for episode in parsed if episode is not None]
+        # cache an incomplete listing briefly rather than not at all, so one unreadable file
+        # cannot make every request re-parse the whole folder
+        complete = len(episodes) == len(episode_files)
+        await self.mass.cache.set(
+            key=cache_key,
+            data=[episode.to_dict() for episode in episodes],
+            # a complete listing is invalidated by the folder signature instead
+            expiration=3600 * 24 * 365 if complete else PARTIAL_LISTING_CACHE_EXPIRATION,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_EPISODES,
+            checksum=cache_checksum,
+        )
 
         for episode in episodes:
             yield episode
@@ -937,6 +1015,10 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+        if file_item.is_dir:
+            # handing the path back would have the image layer run an ffmpeg
+            # embedded-artwork extraction on the directory before giving up
+            raise MediaNotFoundError(f"Image path is a directory: {path}")
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:
@@ -1000,15 +1082,15 @@ class LocalFileSystemProvider(MusicProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """
         Walk every supported file under the provider root and populate the sync buckets.
 
         Override in subclasses that cannot use a local ``os.scandir`` walk.
         Implementations must route each discovered file through
-        :meth:`_classify_scan_item` and append to ``root_scan_errors`` only
-        when the provider root itself is unreadable.
+        :meth:`_classify_scan_item`, report every unreadable directory to
+        ``scan_errors`` and stop the walk once it reports ``aborted``.
 
         :param file_checksums: Previously stored checksum per provider item id.
         :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
@@ -1016,7 +1098,7 @@ class LocalFileSystemProvider(MusicProvider):
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
         :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
-        :param root_scan_errors: Receives errors that indicate the root is unreadable.
+        :param scan_errors: Receives the errors raised while walking the tree.
         """
         ignore_album_playlists = self.media_content_type == "music" and bool(
             self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
@@ -1029,7 +1111,7 @@ class LocalFileSystemProvider(MusicProvider):
                     self.base_path,
                     SUPPORTED_EXTENSIONS,
                     self.logger,
-                    scan_errors=root_scan_errors,
+                    scan_errors=scan_errors,
                 ),
                 start=1,
             ):
@@ -1073,6 +1155,11 @@ class LocalFileSystemProvider(MusicProvider):
         :param ignore_album_playlists: When True, skip playlists nested inside
             album directories.
         """
+        # a file this provider never imports gets no mapping, so it would flag as
+        # changed on every sync; it is still on disk, so record it as present
+        if not self._is_imported_file(item):
+            cur_filenames.add(item.relative_path)
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1094,12 +1181,76 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             items_to_process.append((item, prev_checksum))
 
+    def _is_imported_file(self, item: FileSystemItem) -> bool:
+        """Return True when this provider imports the given file into the library."""
+        if self.media_content_type == "music":
+            if item.ext in CUE_EXTENSIONS:
+                return True
+            if item.ext in TRACK_EXTENSIONS:
+                return self._sync_tracks
+            if item.ext in PLAYLIST_EXTENSIONS:
+                return self._sync_playlists
+            return False
+        if self.media_content_type == "audiobooks":
+            return item.ext in AUDIOBOOK_EXTENSIONS
+        if self.media_content_type == "podcasts":
+            return item.ext in PODCAST_EPISODE_EXTENSIONS
+        return False
+
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""
         if self.available == available:
             return
         self.available = available
+        if available:
+            self._cancel_availability_probe()
+        else:
+            self._schedule_availability_probe()
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the storage backing this provider can be read."""
+        return bool(await isdir(self.base_path))
+
+    @property
+    def _availability_probe_id(self) -> str:
+        """Return the timer id of this provider's reachability checks."""
+        return f"filesystem_availability_probe_{self.instance_id}"
+
+    def _schedule_availability_probe(self) -> None:
+        """Arm the next reachability check."""
+        self.mass.call_later(
+            AVAILABILITY_PROBE_INTERVAL,
+            self._probe_availability,
+            task_id=self._availability_probe_id,
+        )
+
+    def _cancel_availability_probe(self) -> None:
+        """Stop checking for the storage coming back."""
+        self.mass.cancel_timer(self._availability_probe_id)
+
+    async def _probe_availability(self) -> None:
+        """Mark the provider available again once its storage can be read."""
+        try:
+            reachable = await self._is_reachable()
+        except MusicAssistantError as err:
+            # storage that is simply still gone, which is what this loop waits for
+            self.logger.debug("%s is still unreachable: %s", self.name, err)
+            reachable = False
+        except Exception:
+            # an unexpected failure must not end the loop, since it is what brings the
+            # provider back, but it is a defect rather than an outage so it is logged loudly
+            self.logger.exception("Reachability check for %s failed", self.name)
+            reachable = False
+        if self.unloading:
+            # the provider was torn down while this check was running; re-arming here
+            # would leave a timer firing against an instance nothing owns anymore
+            return
+        if reachable:
+            self.logger.info("%s is reachable again", self.name)
+            self._set_available(True)
+            return
+        self._schedule_availability_probe()
 
     async def _process_item_async(
         self,
@@ -1107,6 +1258,7 @@ class LocalFileSystemProvider(MusicProvider):
         prev_checksum: str | None,
         cur_filenames: set[str] | None = None,
         cue_stems: set[str] | None = None,
+        prev_filenames: set[str] | None = None,
     ) -> bool:
         """
         Process a single item asynchronously.
@@ -1116,6 +1268,8 @@ class LocalFileSystemProvider(MusicProvider):
         :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
         :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
             used to detect companion-CUE audio files without a filesystem stat.
+        :param prev_filenames: The ids/paths the previous scan found, used to keep the
+            ids of a CUE sheet that fails to parse.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -1194,7 +1348,40 @@ class LocalFileSystemProvider(MusicProvider):
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
+            # the file is still on the storage, so keep it in the scan result:
+            # leaving it out makes the deletion step treat it as removed
+            self._keep_failed_item(item, cur_filenames, prev_filenames)
         return False
+
+    def _keep_failed_item(
+        self,
+        item: FileSystemItem,
+        cur_filenames: set[str] | None,
+        prev_filenames: set[str] | None,
+    ) -> None:
+        """
+        Keep an item that could not be processed in the scan result.
+
+        :param item: The item that failed to process.
+        :param cur_filenames: Receives the ids/paths present in this scan.
+        :param prev_filenames: The ids/paths the previous scan found.
+        """
+        if cur_filenames is None:
+            return
+        cur_filenames.add(item.relative_path)
+        if (
+            item.ext not in CUE_EXTENSIONS
+            or self.media_content_type != "music"
+            or not prev_filenames
+        ):
+            return
+        # a CUE sheet stands in for one id per track it describes and those cannot be
+        # rebuilt without parsing it, so carry over the ids of the previous scan
+        cur_filenames.update(
+            item_id
+            for item_id in prev_filenames
+            if (parsed := parse_cue_track_id(item_id)) and parsed[0] == item.relative_path
+        )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""
@@ -1322,22 +1509,21 @@ class LocalFileSystemProvider(MusicProvider):
         try:
             line = line.replace("file://", "").strip()
             # try to resolve the filename (both normal and url decoded):
-            # - as an absolute path
-            # - relative to the playlist path
-            # - relative to our base path
-            # - relative to the playlist path with a leading slash
+            # - relative to the playlist folder (normpath resolves parent .. references)
+            # - as-is: an absolute path, or relative to our base path
+            # candidates stay relative so subclasses with virtual paths (cloud,
+            # webdav) resolve them too, instead of leaking the server CWD
             for _line in (line, urllib.parse.unquote(line)):
-                for filename in (
-                    # try to resolve the line by resolving it against the (absolute) playlist path
-                    # use the path.resolve step in between to auto-resolve parent item references
-                    (Path(self.get_absolute_path(playlist_path)) / _line).resolve().as_posix(),
-                    # try to resolve the line as a full absolute (or relative to music dir) path
-                    _line,
-                ):
-                    with contextlib.suppress(FileNotFoundError):
-                        file_item = await self.resolve(filename)
+                if playlist_path:
+                    normalized = posixpath.normpath(f"{playlist_path}/{_line}")
+                    with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                        file_item = await self.resolve(normalized)
                         tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
                         return await self._parse_track(file_item, tags)
+                with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                    file_item = await self.resolve(_line)
+                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    return await self._parse_track(file_item, tags)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1457,8 +1643,8 @@ class LocalFileSystemProvider(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             track.metadata.explicit = explicit_tag == "1"
-        if tags.musicbrainz_recordingid:
-            track.mbid = tags.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
+            track.mbid = recording_mbid
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
@@ -1486,6 +1672,8 @@ class LocalFileSystemProvider(MusicProvider):
                     lrc_path,
                     str(err),
                 )
+        elif syn_lyrics := tags.synchronized_lyrics:
+            track.metadata.lrc_lyrics = lyrics.convert_to_lrc_lyrics(syn_lyrics)
 
         return track
 
@@ -1646,7 +1834,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
         )
-        if mbid:
+        if mbid := clean_mbid(mbid, f"tags of artist {name}"):
             artist.mbid = mbid
         if not artist_path or not await self.exists(artist_path):
             return artist
@@ -1663,7 +1851,7 @@ class LocalFileSystemProvider(MusicProvider):
                 artist.name = info.get("title", info.get("name", name))
                 if sort_name := info.get("sortname"):
                     artist.sort_name = sort_name
-                if mbid := info.get("musicbrainzartistid"):
+                if mbid := clean_mbid(info.get("musicbrainzartistid"), nfo_file):
                     artist.mbid = mbid
                 if description := info.get("biography"):
                     artist.metadata.description = description
@@ -1707,7 +1895,7 @@ class LocalFileSystemProvider(MusicProvider):
         elif not tags.chapters:
             # No track tag and no embedded chapters -
             # assume part of a multi-file audiobook, only process the first file alphabetically
-            items = await self._scandir(file_item.parent_path)
+            items = await self._scandir(file_item.relative_parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())
             for item in items:
@@ -1783,13 +1971,13 @@ class LocalFileSystemProvider(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             audio_book.metadata.explicit = explicit_tag == "1"
-        if tags.musicbrainz_recordingid:
-            audio_book.mbid = tags.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
+            audio_book.mbid = recording_mbid
 
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            for _item in await self._scandir(file_item.parent_path):
+            for _item in await self._scandir(file_item.relative_parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1910,9 +2098,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # try to fetch additional Podcast metadata from the folder
         assert isinstance(episode.podcast, Podcast)
-        if images := await self._get_local_images(file_item.parent_path):
+        if images := await self._get_local_images(file_item.relative_parent_path):
             episode.podcast.metadata.images = images
-        if metadata := await self._get_podcast_metadata(file_item.parent_path):
+        if metadata := await self._get_podcast_metadata(file_item.relative_parent_path):
             if title := metadata.get("title"):
                 episode.podcast.name = title
             if sort_name := metadata.get("sorttitle"):
@@ -2129,10 +2317,12 @@ class LocalFileSystemProvider(MusicProvider):
         if track_tags.barcode:
             album.external_ids.add((ExternalID.BARCODE, track_tags.barcode))
 
-        if track_tags.musicbrainz_albumid:
-            album.mbid = track_tags.musicbrainz_albumid
-        if track_tags.musicbrainz_releasegroupid:
-            album.add_external_id(ExternalID.MB_RELEASEGROUP, track_tags.musicbrainz_releasegroupid)
+        if album_mbid := clean_mbid(track_tags.musicbrainz_albumid, track_tags.filename):
+            album.mbid = album_mbid
+        if releasegroup_mbid := clean_mbid(
+            track_tags.musicbrainz_releasegroupid, track_tags.filename
+        ):
+            album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_mbid)
         if track_tags.year:
             album.year = track_tags.year
         album.album_type = track_tags.album_type
@@ -2151,37 +2341,21 @@ class LocalFileSystemProvider(MusicProvider):
                 try:
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
-                    info = info["album"]
-                    album.name = info.get("title", info.get("name", name))
-                    if sort_name := info.get("sortname"):
-                        album.sort_name = sort_name
-                    if releasegroup_id := info.get("musicbrainzreleasegroupid"):
-                        album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
-                    if album_id := info.get("musicbrainzalbumid"):
-                        album.add_external_id(ExternalID.MB_ALBUM, album_id)
-                    if mb_artist_id := info.get("musicbrainzalbumartistid"):
-                        if album.artists and not album.artists[0].mbid:
-                            album.artists[0].mbid = mb_artist_id
-                    if description := info.get("review"):
-                        album.metadata.description = description
-                    if year := info.get("year"):
-                        album.year = int(year)
-                    if genre := info.get("genre"):
-                        album.metadata.genres = set(split_items(genre))
+                    parse_album_nfo(album, info["album"], nfo_file)
                 except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",
                         nfo_file,
                         str(err),
                     )
-            # parse name/version
-            album.name, album.version = parse_title_and_version(album.name)
+
             # find local images
             if images := await self._get_local_images(folder_path, extra_thumb_names=("album",)):
                 if album.metadata.images is None:
                     album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
+
         await self.cache.set(
             key=album_dir,
             data=album.to_dict(),
@@ -2418,7 +2592,7 @@ class LocalFileSystemProvider(MusicProvider):
         chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
         untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
 
-        items = await self._scandir(audiobook_file_item.parent_path)
+        items = await self._scandir(audiobook_file_item.relative_parent_path)
         # Sort by filename for consistent alphabetical ordering
         items.sort(key=lambda x: x.filename.lower())
 
@@ -2536,9 +2710,11 @@ class LocalFileSystemProvider(MusicProvider):
         return data
 
     async def _scandir(self, path: str) -> list[FileSystemItem]:
-        """List directory contents."""
+        """List directory contents in natural sort order."""
+        # raw scandir order depends on the underlying filesystem (e.g. hash order
+        # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)
-        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
+        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True)
 
     async def _read_file(self, path: str) -> bytes:
         """Read file contents. Override for network storage."""

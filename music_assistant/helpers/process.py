@@ -13,8 +13,8 @@ import logging
 import os
 
 # if TYPE_CHECKING:
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from signal import SIGINT
 from types import TracebackType
 from typing import Self
@@ -182,6 +182,33 @@ class AsyncProcess:
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
 
+    @asynccontextmanager
+    async def stdin_quiesced(self, timeout: float = 5.0) -> AsyncIterator[bool]:
+        """
+        Hold stdin quiet for a block, with what was already written seen through to the pipe.
+
+        :meth:`write` only waits while the transport is paused, which it is only
+        above the high-water mark, so it returns with up to that much still queued
+        locally (64 KiB by default). This first sees those bytes through to the
+        kernel pipe -- as far as it can guarantee; whether the process has read
+        them is its own business -- and then keeps the write lock for the body, so
+        no :meth:`write` or :meth:`write_eof` can interleave. For a caller telling
+        the process something about the bytes it has been handed -- out of band,
+        and in a sequence the process must not see a write inside -- that turns
+        "we happen to have stopped writing" into something the block enforces.
+
+        Yields True when stdin was emptied, False when it could not be: the
+        process is then still owed bytes, so a caller whose message depends on it
+        having received everything must give up rather than send it.
+
+        :param timeout: Seconds to wait for the buffer to empty.
+        """
+        if self._close_called or self.proc is None or self.proc.stdin is None:
+            yield True
+            return
+        async with self._stdin_lock:
+            yield await self._drain_stdin_locked(timeout)
+
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
         if self._close_called or self.proc is None:
@@ -279,7 +306,10 @@ class AsyncProcess:
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         elif not self.proc.stdin and self.proc.returncode is None:
-            self.proc.send_signal(SIGINT)
+            # the process may exit between the returncode check and the signal; guard the
+            # race the same way the SIGKILL delivery below does
+            with suppress(ProcessLookupError, OSError):
+                self.proc.send_signal(SIGINT)
 
         # ensure we have no more readers active and stdout is drained
         with suppress(TimeoutError, asyncio.CancelledError):
@@ -413,16 +443,60 @@ class AsyncProcess:
         """Attach a stderr reader task to this process."""
         self._stderr_reader_task = task
 
+    async def _drain_stdin_locked(self, timeout: float) -> bool:
+        """
+        Empty the stdin write buffer, with the write lock already held.
 
-async def check_output(*args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
-    """Run subprocess and return returncode and output."""
+        :param timeout: Seconds to wait for the buffer to empty.
+        :return: True once the buffer is empty, False when the wait timed out.
+        """
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdin is not None  # for type checking
+        transport = self.proc.stdin.transport
+        low, high = transport.get_write_buffer_limits()
+        try:
+            # Pausing the transport at a zero high-water mark is what makes
+            # drain() resolve only once the buffer is completely empty: it
+            # otherwise resolves as soon as the transport is not paused.
+            transport.set_write_buffer_limits(high=0)
+            await asyncio.wait_for(self.proc.stdin.drain(), timeout)
+        except TimeoutError:
+            return False
+        except BrokenPipeError, RuntimeError, ConnectionResetError:
+            # already exited, race condition: nothing is left to arrive
+            return True
+        finally:
+            # Restore what this process was configured with rather than the
+            # asyncio defaults a bare call would reinstate.
+            with suppress(RuntimeError):
+                transport.set_write_buffer_limits(high=high, low=low)
+        return True
+
+
+async def check_output(
+    *args: str, env: dict[str, str] | None = None, timeout: float | None = None
+) -> tuple[int, bytes]:
+    """
+    Run subprocess and return returncode and output.
+
+    :param env: Optional environment overrides for the subprocess.
+    :param timeout: Maximum seconds to wait for the process to exit. On expiry the
+        process is killed and TimeoutError is raised; None (default) waits forever.
+    """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stderr=asyncio.subprocess.STDOUT,
         stdout=asyncio.subprocess.PIPE,
         env=get_subprocess_env(env),
     )
-    stdout, _ = await proc.communicate()
+    try:
+        async with asyncio.timeout(timeout):
+            stdout, _ = await proc.communicate()
+    except TimeoutError:
+        proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.wait()
+        raise
     assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout)
 

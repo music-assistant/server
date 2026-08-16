@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
@@ -22,12 +23,10 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.music.helpers import search_name_match_clause
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_album,
     compare_artists,
     compare_media_item,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -164,7 +163,7 @@ class AlbumsController(MediaControllerBase[Album]):
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
-        if order_by and "artist_name" in order_by:
+        if order_by and "album_artist_name" in order_by:
             # join artist table to allow sorting on artist name
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
@@ -247,7 +246,15 @@ class AlbumsController(MediaControllerBase[Album]):
     async def library_count(
         self, favorite_only: bool = False, album_types: list[AlbumType] | None = None
     ) -> int:
-        """Return the total number of items in the library."""
+        """
+        Return the number of albums in the library.
+
+        Restricted to the providers the current user is allowed to see when that user
+        has a provider filter set.
+
+        :param favorite_only: Only count albums marked as favorite.
+        :param album_types: Only count albums of these types.
+        """
         sql_query = f"SELECT item_id FROM {self.db_table}"
         query_parts: list[str] = []
         query_params: dict[str, Any] = {}
@@ -256,6 +263,10 @@ class AlbumsController(MediaControllerBase[Album]):
         if album_types:
             query_parts.append("albums.album_type IN :album_types")
             query_params["album_types"] = [x.value for x in album_types]
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)
@@ -335,7 +346,12 @@ class AlbumsController(MediaControllerBase[Album]):
                         track.album = album_mapping
             return album_tracks
 
-        db_items = await self.get_library_album_tracks(library_album.item_id)
+        # respect the current user's provider filter (if any) for both the
+        # in-library tracks and the live provider fetches below
+        allowed_providers = self._ensure_provider_filter(None)
+        db_items = await self.get_library_album_tracks(
+            library_album.item_id, provider_filter=allowed_providers
+        )
         result: list[Track] = list(db_items)
         if in_library_only:
             # return in-library items only
@@ -348,12 +364,10 @@ class AlbumsController(MediaControllerBase[Album]):
         unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
         for db_item in db_items:
             unique_ids.update(x.item_id for x in db_item.provider_mappings)
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         for provider_mapping in library_album.provider_mappings:
             if (
-                user_provider_filter
-                and provider_mapping.provider_instance not in user_provider_filter
+                allowed_providers is not None
+                and provider_mapping.provider_instance not in allowed_providers
             ):
                 continue
             provider_tracks = await self._get_provider_album_tracks(
@@ -408,7 +422,9 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        search_query = f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        streaming_search_query = (
+            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        )
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
@@ -416,6 +432,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if not self.mass.music.library_supported(provider, MediaType.ALBUM):
                 continue
+            # TODO: filter by artists in db for non-streaming providers
+            search_query = streaming_search_query if provider.is_streaming_provider else album.name
             result.extend(
                 prov_item
                 for prov_item in await self.search(search_query, provider_id)
@@ -429,13 +447,20 @@ class AlbumsController(MediaControllerBase[Album]):
     async def get_library_album_tracks(
         self,
         item_id: str | int,
+        provider_filter: list[str] | None = None,
     ) -> list[Track]:
-        """Return in-database album tracks for the given database album."""
+        """
+        Return in-database album tracks for the given database album.
+
+        :param item_id: The library item ID of the album.
+        :param provider_filter: Optional provider instance ID(s) to limit the result to.
+        """
         db_id = int(item_id)  # ensure integer
         # pass the album id as preferred album so the track_album subquery in the
         # base query returns this album's disc/track numbers for tracks that
         # appear on multiple albums
         return await self.mass.music.tracks.get_library_items_by_query(
+            provider_filter=provider_filter,
             extra_query_parts=[
                 f"tracks.item_id IN (SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
                 "WHERE album_id = :album_id)"

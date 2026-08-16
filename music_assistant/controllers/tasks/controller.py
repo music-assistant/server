@@ -10,7 +10,7 @@ from contextlib import suppress
 from datetime import datetime
 from functools import partial
 from threading import get_ident
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope, User
@@ -23,6 +23,10 @@ from music_assistant_models.background_task import (
 from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import (
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+    CONF_MAX_CONCURRENT_TASKS,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
@@ -37,6 +41,7 @@ from .constants import (
     DEFAULT_TASK_LOG_LINES,
     MAX_FINISHED_TASK_HISTORY,
     TASK_ACTIVITY_UPDATE_INTERVAL,
+    TASK_CANCEL_TIMEOUT,
     TASK_LIFECYCLE_UPDATE_DEBOUNCE,
     TASK_STATE_CONFIG_KEY,
     TASK_UPDATE_TIMER_ID,
@@ -58,7 +63,10 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        CoreConfig,
+    )
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -85,10 +93,16 @@ class TasksController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Set up the controller."""
         self.config = config
-        self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+        self._max_concurrent_tasks = cast(
+            "int", config.get_value(CONF_MAX_CONCURRENT_TASKS, DEFAULT_MAX_CONCURRENT_TASKS)
+        )
         if self._log_handler is None:
             self._log_handler = TaskLogHandler(self.mass, self._append_task_log)
             logging.getLogger().addHandler(self._log_handler)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 
     async def close(self) -> None:
         """Clean up the controller."""
@@ -390,6 +404,44 @@ class TasksController(CoreController):
         """
         self._unregister_task(task_id, clear_persisted_state)
 
+    async def unregister_scheduled_task_and_wait(
+        self,
+        task_id: str,
+        clear_persisted_state: bool = True,
+        timeout: float = TASK_CANCEL_TIMEOUT,
+    ) -> bool:
+        """
+        Unregister a recurring scheduled task and wait for a running task to unwind.
+
+        Cancellation is only a request: with plain ``unregister_scheduled_task`` the task
+        can still be running (unwinding) when the caller continues. Use this variant from
+        teardown paths that destroy state the task may still be touching, such as unloading
+        a provider.
+
+        Note that a task blocked in a thread (``asyncio.to_thread`` and friends) unwinds
+        immediately while its thread keeps running, so this does not guarantee that all
+        work of the task has stopped.
+
+        :param task_id: The id of the scheduled task to unregister.
+        :param clear_persisted_state: Whether to remove persisted state from config.
+        :param timeout: Maximum number of seconds to wait for the task to unwind.
+        :return: True if no task was left running, False if the wait timed out.
+        """
+        cancelled_task = self._unregister_task(task_id, clear_persisted_state)
+        if cancelled_task is None:
+            return True
+        if cancelled_task is asyncio.current_task():
+            # the task is cancelling itself (e.g. a sync task that triggers a provider
+            # unload); asyncio refuses a task awaiting itself so just let it unwind
+            return True
+        done, _pending = await asyncio.wait({cancelled_task}, timeout=timeout)
+        if not done:
+            self.logger.warning(
+                "Timeout while waiting for task %s to stop after cancellation", task_id
+            )
+            return False
+        return True
+
     def update_task_progress(
         self, task_id: str, progress: int | None, text: str | None = None
     ) -> None:
@@ -473,21 +525,29 @@ class TasksController(CoreController):
                 result.append(managed.task_info)
         return result
 
-    def _unregister_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
-        """Unregister a managed task and cancel any active work."""
+    def _unregister_task(
+        self, task_id: str, clear_persisted_state: bool = True
+    ) -> asyncio.Task[Any] | None:
+        """
+        Unregister a managed task and cancel any active work.
+
+        Returns the cancelled asyncio task if one was still running, so callers can wait
+        for it to unwind. Final bookkeeping for such a task happens in _finalize_task_run.
+        """
         if not (managed := self._tasks.get(task_id)):
-            return
+            return None
         managed.removed = True
         managed.clear_persisted_state_on_remove = clear_persisted_state
         self.mass.cancel_timer(get_task_timer_id(task_id))
         self._remove_from_pending(task_id)
         if managed.current_task and not managed.current_task.done():
             managed.current_task.cancel()
-            return
+            return managed.current_task
         self._tasks.pop(task_id, None)
         if clear_persisted_state:
             self._clear_scheduled_task_state(task_id)
         self._schedule_task_update(force=True)
+        return None
 
     def _get_managed_task(self, task_id: str) -> ManagedTask:
         """Return runtime state for a managed task."""
@@ -643,7 +703,10 @@ class TasksController(CoreController):
             task_info.last_error = None
             now = utcnow()
             self._append_task_lifecycle_log(
-                task_info.id, level=logging.WARNING, message="Task cancelled", created_at=now
+                task_info.id,
+                level=logging.WARNING,
+                message="Task cancelled",
+                created_at=now,
             )
         except Exception as err:
             task_info.status = TaskStatus.FAILED

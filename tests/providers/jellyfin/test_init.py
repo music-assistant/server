@@ -33,13 +33,17 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
         "music_assistant.providers.jellyfin.authenticate_by_name", authenticate_by_name
     ):
         async with wait_for_sync_completion(mass):
-            config = await mass.config.save_provider_config(
+            config = await mass.config._create_provider_instance(
                 "jellyfin",
-                {
-                    "url": "http://localhost",
-                    "username": "username",
-                    "password": "password",
-                },
+                {},
+                # connection details are collected by the setup flow and live in setup_data
+                setup_data=mass.config._encrypt_values(
+                    {
+                        "url": "http://localhost",
+                        "username": "username",
+                        "password": "password",
+                    }
+                ),
             )
             await mass.music.start_sync()
 

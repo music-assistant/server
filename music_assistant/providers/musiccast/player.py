@@ -18,7 +18,7 @@ from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from aiomusiccast.pyamaha import System as MCSystem
 from mashumaro import DataClassDictMixin
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -166,7 +166,6 @@ class MusicCastPlayer(Player):
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.NEXT_PREVIOUS,
@@ -275,20 +274,19 @@ class MusicCastPlayer(Player):
 
         # STATE
 
+        self._attr_elapsed_time = None
         match self.zone_device.state:
             case MusicCastPlayerState.PAUSED:
                 self._attr_playback_state = PlaybackState.PAUSED
             case MusicCastPlayerState.PLAYING:
                 self._attr_playback_state = PlaybackState.PLAYING
+                if self.zone_device.media_position_updated_at is not None:
+                    self._attr_elapsed_time = self.zone_device.media_position
+                    self._attr_elapsed_time_last_updated = (
+                        self.zone_device.media_position_updated_at.timestamp()
+                    )
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 self._attr_playback_state = PlaybackState.IDLE
-        self._attr_elapsed_time = self.zone_device.media_position
-        if self.zone_device.media_position_updated_at is not None:
-            self._attr_elapsed_time_last_updated = (
-                self.zone_device.media_position_updated_at.timestamp()
-            )
-        else:
-            self._attr_elapsed_time_last_updated = None
 
         # UPDATE UPNP HELPER
         now = time.time()
@@ -356,10 +354,14 @@ class MusicCastPlayer(Player):
         # player._current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
+        self._attr_supported_features.add(PlayerFeature.PAUSE)  # we support pause...
         if (
             self.upnp_update_helper.current_uri is not None
             and self.upnp_update_helper.controlled_by_mass
         ):
+            self._attr_supported_features.discard(
+                PlayerFeature.PAUSE
+            )  # ...unless we are controlled by MA
             self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
@@ -716,23 +718,14 @@ class MusicCastPlayer(Player):
                 zone_device_player.update_state()
 
     async def _set_player_available(self) -> None:
-        """Re-enable UDP polling and refresh zone players after recovery."""
+        """Re-enable UDP polling after recovery."""
         assert self.zone_device.zone_name == "main", "Call only from main player!"
         self.logger.debug("Player %s became available again.", self.display_name)
-        await self.physical_device.enable_polling()
-        for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.mass.players.get_player(
-                self._get_player_id_from_zone_device(zone_device)
-            ):
-                assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
-                async with zone_device_player.update_lock:
-                    await zone_device_player.set_dynamic_attributes()
+        if self.physical_device.device.device.transport is None:
+            await self.physical_device.enable_polling()
 
     async def poll(self) -> None:
         """Poll player."""
-        if self.update_lock.locked():
-            # udp updates come in roughly every second when playing, so discard
-            return
         if self.zone_device.zone_name != "main":
             # we only poll main, which polls the whole device
             return
@@ -748,6 +741,14 @@ class MusicCastPlayer(Player):
             if _was_unavailable:
                 await self._set_player_available()
             await self.set_dynamic_attributes()
+            # fetch() above covers every zone; push it to the other zone players too
+            for zone_device in self.zone_device.other_zones:
+                if zone_device_player := self.mass.players.get_player(
+                    self._get_player_id_from_zone_device(zone_device)
+                ):
+                    assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
+                    async with zone_device_player.update_lock:
+                        await zone_device_player.set_dynamic_attributes()
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:
         """Call on UDP updates."""
@@ -989,13 +990,9 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries(action=action, values=values)
+        base_entries = await super().get_config_entries()
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:

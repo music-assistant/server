@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import time
 from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ImageType
+from aiohttp import ClientSession, web
+from aiohttp.client_exceptions import ClientError
+from aiohttp.test_utils import TestServer
+from music_assistant_models.enums import ImageType, ProviderIconVariant
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
@@ -21,11 +26,17 @@ from music_assistant.helpers import images
 from music_assistant.helpers.images import (
     _SOURCE_CACHE_TTL,
     create_thumb_hash,
+    detect_provider_icons,
     get_image_data,
     get_image_thumb,
+    get_image_thumb_path,
     invalidate_cached_image,
+    load_provider_icon,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.player_provider import PlayerProvider
+from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -38,9 +49,11 @@ def _reset_image_caches() -> Iterator[None]:
     """Isolate the module-level image caches between tests."""
     images._thumb_memory_cache.clear()
     images._source_memory_cache.clear()
+    images._failed_sources.clear()
     yield
     images._thumb_memory_cache.clear()
     images._source_memory_cache.clear()
+    images._failed_sources.clear()
 
 
 @pytest.fixture
@@ -90,6 +103,62 @@ async def test_multiple_thumb_sizes_fetch_source_once(
     assert fetch_calls == [("builtin", image_path)]
 
 
+async def test_thumb_path_reuses_existing_cache_file(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated path lookup returns the same existing file without rewriting it."""
+    image_path = _make_png_file(tmp_path)
+    first_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    async def unexpected_write(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("existing thumbnail was rewritten")
+
+    monkeypatch.setattr(images, "_write_thumb_to_disk", unexpected_write)
+    second_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    assert second_path == first_path
+    assert Path(second_path).is_file()
+
+
+async def test_thumb_path_restores_missing_disk_file_from_memory(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A memory hit recreates its missing disk file without regenerating the thumbnail."""
+    image_path = _make_png_file(tmp_path)
+    thumb_data = await get_image_thumb(mass_minimal, image_path, 256, "builtin")
+    thumb_hash = create_thumb_hash("builtin", image_path)
+    cache_filename = images._thumb_cache_filename(thumb_hash, 256, "PNG")
+    cache_path = Path(mass_minimal.cache_path, "thumbnails", cache_filename)
+    cache_path.unlink()
+
+    async def unexpected_generate(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("memory-cached thumbnail was regenerated")
+
+    monkeypatch.setattr(images, "_generate_and_cache_thumb", unexpected_generate)
+    restored_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    assert restored_path == str(cache_path.resolve())
+    assert cache_path.read_bytes() == thumb_data
+
+
+async def test_thumb_path_surfaces_cache_write_error(
+    mass_minimal: MusicAssistant, tmp_path: Path
+) -> None:
+    """A path request raises when the thumbnail cache cannot be persisted."""
+    invalid_cache_path = tmp_path / "not-a-directory"
+    invalid_cache_path.write_text("file")
+    mass_minimal.cache_path = str(invalid_cache_path)
+    image_data = b64encode(_make_png_bytes()).decode()
+
+    with pytest.raises(NotADirectoryError, match="not-a-directory"):
+        await get_image_thumb_path(
+            mass_minimal,
+            f"data:image/png;base64,{image_data}",
+            256,
+            "builtin",
+        )
+
+
 async def test_concurrent_requests_share_one_fetch(
     mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -114,6 +183,72 @@ async def test_concurrent_requests_share_one_fetch(
     results = await asyncio.gather(*tasks)
     assert results == [b"image-bytes"] * 3
     assert calls == ["/some/image.png"]
+
+
+async def test_cancelled_caller_of_a_failing_fetch_logs_no_loop_error(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source fetch failing after a caller gave up is not reported to the loop handler."""
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def failing_fetch(
+        _mass: MusicAssistant, path_or_url: str, _provider: str, _depth: int
+    ) -> tuple[bytes, bool]:
+        calls.append(path_or_url)
+        await release.wait()
+        raise FileNotFoundError(f"Image not found: {path_or_url}")
+
+    monkeypatch.setattr(images, "_fetch_source_image", failing_fetch)
+    with collect_loop_errors() as reported:
+        task_a = asyncio.create_task(get_image_data(mass_minimal, "/some/image.png", "builtin"))
+        task_b = asyncio.create_task(get_image_data(mass_minimal, "/some/image.png", "builtin"))
+        # let both callers await the (same) in-flight fetch, then cancel one
+        await asyncio.sleep(0)
+        task_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task_a
+        # release the fetch only once the cancellation is fully processed, so the
+        # failure reliably lands after the giving-up caller is gone
+        release.set()
+        with pytest.raises(FileNotFoundError):
+            await task_b
+
+    assert calls == ["/some/image.png"]
+    assert reported == []
+
+
+async def test_cancelled_caller_of_a_failing_thumb_logs_no_loop_error(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thumbnail generation failing after its caller gave up is not reported either."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    generation: list[asyncio.Task[Any]] = []
+
+    async def failing_source(_mass: MusicAssistant, path_or_url: str, _provider: str) -> bytes:
+        current = asyncio.current_task()
+        assert current is not None
+        generation.append(current)
+        entered.set()
+        await release.wait()
+        raise FileNotFoundError(f"Image not found: {path_or_url}")
+
+    monkeypatch.setattr(images, "get_image_data", failing_source)
+    with collect_loop_errors() as reported:
+        caller = asyncio.create_task(
+            get_image_thumb(mass_minimal, "/some/image.png", 256, "builtin")
+        )
+        await entered.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        # only fail the generation once the cancellation is fully processed
+        release.set()
+        await asyncio.wait(generation)
+
+    assert isinstance(generation[0].exception(), FileNotFoundError)
+    assert reported == []
 
 
 async def test_data_uri_is_decoded_without_caching(
@@ -150,6 +285,21 @@ async def test_provider_bytes_use_disk_cache_across_restart(
     data = await get_image_data(mass_minimal, "some/prov/path.jpg", "fake--1")
     assert data == b"expensive-image-bytes"
     assert len(fetch_calls) == 1
+
+
+async def test_player_provider_can_resolve_image_bytes(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Player-provider images use the shared image retrieval pipeline."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=b"player-image-bytes")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    data = await get_image_data(mass_minimal, "player/artwork", "player--1")
+
+    assert data == b"player-image-bytes"
+    fake_provider.resolve_image.assert_awaited_once_with("player/artwork")
 
 
 async def test_local_file_read_cached_on_disk(
@@ -201,6 +351,134 @@ async def test_remote_disk_entry_expires_after_ttl(
     os.utime(src_file, (expired, expired))
     await get_image_data(mass_minimal, remote_url, "builtin")
     assert len(fetch_calls) == 2
+
+
+async def test_failing_source_fails_fast_with_single_warning(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A persistently failing source is fetched once, then fails fast without new logs."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    remote_url = "http://sonos.example.com:1400/getaa?u=missing.flac"
+
+    async def failing_remote_fetch(_mass: MusicAssistant, url: str) -> bytes:
+        raise ClientError(f"404, message='Not Found', url='{url}'")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(FileNotFoundError, match="404"):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    # follow-up requests (next metadata push, a thumbnail, a palette) fail
+    # fast without a new origin fetch and without logging again
+    with pytest.raises(FileNotFoundError, match="404"):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    with pytest.raises(FileNotFoundError, match="404"):
+        await get_image_thumb(mass_minimal, remote_url, 256, "builtin")
+
+    assert len(fetch_calls) == 1
+    warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert len(warnings) == 1
+    assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_provider_reported_missing_image_fails_fast_with_single_warning(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A provider reporting a missing image is asked once, then fails fast without new logs."""
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(
+        side_effect=MediaNotFoundError("Image path is a directory: Some Artist")
+    )
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(MediaNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+    # follow-up requests (a thumbnail, a palette) fail fast from the negative cache,
+    # without asking the provider again and without logging again
+    with pytest.raises(FileNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+
+    assert len(fetch_calls) == 1
+    assert fake_provider.resolve_image.await_count == 1
+    warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert len(warnings) == 1
+    assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_failed_source_retried_after_ttl_or_invalidation(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A failed source is retried after the negative-cache TTL or invalidation."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    remote_url = "http://cdn.example.com/broken.jpg"
+    cache_key = create_thumb_hash("builtin", remote_url)
+
+    async def failing_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        raise ClientError("503, message='Service Unavailable'")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    with pytest.raises(FileNotFoundError):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 1
+
+    # once the TTL has passed, the origin is tried again
+    _expires_at, message = images._failed_sources[cache_key]
+    images._failed_sources[cache_key] = (time.monotonic() - 1, message)
+    with pytest.raises(FileNotFoundError):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 2
+
+    # invalidation drops the entry immediately; a recovered origin then serves
+    await invalidate_cached_image(mass_minimal, "builtin", remote_url)
+    assert cache_key not in images._failed_sources
+
+    async def ok_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        return b"remote-image-bytes"
+
+    monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)
+    assert await get_image_data(mass_minimal, remote_url, "builtin") == b"remote-image-bytes"
+    assert len(fetch_calls) == 3
+
+
+async def test_remote_http_404_yields_file_not_found(mass_minimal: MusicAssistant) -> None:
+    """A real HTTP 404 response converts into FileNotFoundError with one origin hit."""
+    hits = 0
+
+    async def handler(_request: web.Request) -> web.Response:
+        nonlocal hits
+        hits += 1
+        return web.Response(status=404)
+
+    app = web.Application()
+    app.router.add_get("/getaa", handler)
+    server = TestServer(app)
+    await server.start_server()
+    session = ClientSession()
+    try:
+        mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+        mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+        mass_minimal._http_session_no_ssl = session
+        url = str(server.make_url("/getaa")) + "?u=track.flac"
+        with pytest.raises(FileNotFoundError, match="404"):
+            await get_image_data(mass_minimal, url, "builtin")
+        # the negative cache prevents a second hit on the origin
+        with pytest.raises(FileNotFoundError, match="404"):
+            await get_image_data(mass_minimal, url, "builtin")
+        assert hits == 1
+    finally:
+        await session.close()
+        await server.close()
 
 
 async def test_own_imageproxy_url_cached_under_resolved_key_only(
@@ -383,3 +661,57 @@ async def test_create_collage_fetches_each_unique_image_once(
     assert collage.startswith(b"\xff\xd8")  # JPEG magic
     # each unique image was fetched exactly once (incl. the one failed attempt)
     assert sorted(path for _prov, path in fetch_calls) == sorted(paths)
+
+
+# Provider icon helpers tests
+async def test_load_provider_icon_svg(tmp_path: Path) -> None:
+    """Test loading an SVG icon file returns minified UTF-8 bytes."""
+    icon = tmp_path / "icon.svg"
+    icon.write_text("<svg>\n  <path/>\n</svg>\n")
+    mime, data = await load_provider_icon(str(icon))
+    assert mime == "image/svg+xml"
+    assert data == b"<svg>  <path/></svg>"
+
+
+async def test_load_provider_icon_png(tmp_path: Path) -> None:
+    """Test loading a PNG icon file returns raw bytes."""
+    icon = tmp_path / "icon.png"
+    raw = b"\x89PNG\r\n\x1a\n\x00\x00"
+    icon.write_bytes(raw)
+    mime, data = await load_provider_icon(str(icon))
+    assert mime == "image/png"
+    assert data == raw
+
+
+async def test_load_provider_icon_bad_ext(tmp_path: Path) -> None:
+    """Test loading an unsupported file format raises ValueError."""
+    icon = tmp_path / "icon.gif"
+    icon.write_bytes(b"gif")
+    with pytest.raises(ValueError, match="Unsupported"):
+        await load_provider_icon(str(icon))
+
+
+async def test_detect_provider_icons_svg_preferred(tmp_path: Path) -> None:
+    """Test that SVG is preferred over PNG when both exist."""
+    # both svg and png present for default -> svg wins
+    (tmp_path / "icon.svg").write_text("<svg/>")
+    (tmp_path / "icon.png").write_bytes(b"PNGDATA")
+    icons = await detect_provider_icons(str(tmp_path))
+    assert icons[ProviderIconVariant.DEFAULT] == ("image/svg+xml", b"<svg/>")
+    assert set(icons) == {ProviderIconVariant.DEFAULT}
+
+
+async def test_detect_provider_icons_png_and_variants(tmp_path: Path) -> None:
+    """Test detecting multiple icon variants."""
+    (tmp_path / "icon.png").write_bytes(b"PNGDATA")
+    (tmp_path / "icon_dark.svg").write_text("<svg/>")
+    (tmp_path / "icon_monochrome.png").write_bytes(b"MONO")
+    icons = await detect_provider_icons(str(tmp_path))
+    assert icons[ProviderIconVariant.DEFAULT] == ("image/png", b"PNGDATA")
+    assert icons[ProviderIconVariant.DARK] == ("image/svg+xml", b"<svg/>")
+    assert icons[ProviderIconVariant.MONOCHROME] == ("image/png", b"MONO")
+
+
+async def test_detect_provider_icons_none(tmp_path: Path) -> None:
+    """Test detecting icons in an empty directory returns empty dict."""
+    assert await detect_provider_icons(str(tmp_path)) == {}
