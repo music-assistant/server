@@ -54,6 +54,7 @@ def test_parse_track_from_card() -> None:
 
 
 def _make_multitrack_chapter_card() -> YotoCard:
+    """Generate a dummy card for testing with multiple tracks."""
     return YotoCard(
         id="Card_ID",
         title="Mock Card",
