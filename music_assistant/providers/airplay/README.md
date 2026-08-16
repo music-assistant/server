@@ -116,21 +116,23 @@ only used for devices that do not support it.
 
 The only user override is the advanced per-player `streaming_mode` selector. It
 pins the protocol/timing lane for a device whose automatic route misbehaves, and
-each option is offered only when the device advertises the capability: the
-AirPlay 2 lanes (PTP timing, NTP timing, compatibility mode) need AirPlay 2
-support, legacy RAOP needs an advertised `_raop` service, and genuine Apple
-receivers get no entry at all (always native AirPlay 2 with PTP). The modes map
+each option is offered only when the device can actually use it: the AirPlay 2
+lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
+and Apple receivers get every lane except NTP timing (they render silence on an
+NTP-timed realtime stream). The modes map
 onto the binary's `--protocol`/`--timing` arguments. Music Assistant writes the
 setting itself in exactly one case: a device that advertises PTP but is measured
 never answering a clock probe (AirPlay 2 video-class TVs) is switched to
 "AirPlay 2 - NTP timing" and playback restarts on it; setting it back to
 Automatic retries PTP.
 
-The selector is deliberately hidden where it would be meaningless: genuine
-Apple devices (HomePod / Apple TV) are always native AirPlay 2 with PTP, and a
-RAOP-only device has no alternative lane — for both, a stray persisted value is
-ignored. AirPlay-2-only devices DO get the entry (the AirPlay 2 lanes, without
-RAOP): they are the class the NTP escape exists for.
+The selector is hidden only for RAOP-only devices (no alternative lane; a
+stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
+every lane except NTP timing — they render silence on an NTP-timed realtime
+stream (hardware-measured) — leaving pinned PTP, the compatibility flow and
+legacy RAOP as escape hatches for networks where the PTP ports are blocked.
+AirPlay-2-only devices get the AirPlay 2 lanes without RAOP: they are the
+class the NTP escape exists for.
 
 ## Discovery and Player Setup
 
