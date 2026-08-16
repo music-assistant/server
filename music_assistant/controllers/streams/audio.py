@@ -128,7 +128,16 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
-from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from music_assistant.helpers.playlists import (
+    HLS_CONTENT_TYPES,
+    PLAYLIST_CONTENT_TYPES,
+    PLAYLIST_READ_TIMEOUT,
+    IsHLSPlaylist,
+    PlaylistItem,
+    parse_m3u,
+    parse_playlist_data,
+    read_playlist_body,
+)
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -693,6 +702,8 @@ class StreamsAudio:
 
         stream_type = StreamType.HTTP
         timeout = ClientTimeout(total=None, connect=10, sock_read=5)
+        playlist_data: bytes | None = None
+        playlist_charset: str | None = None
 
         try:
             async with self._connect_radio_stream(
@@ -702,23 +713,45 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
+                # media types are case insensitive, the comparisons below are all lower case
+                content_type = headers.get("content-type", "").lower()
+                # a server declaring HLS settles it: a media playlist is free to carry none
+                # of the tags the parser recognises an HLS playlist by
+                is_hls = any(hls_type in content_type for hls_type in HLS_CONTENT_TYPES)
+                if not is_hls and (
+                    url.endswith((".m3u", ".m3u8", ".pls"))
+                    or ".m3u?" in url
+                    or ".m3u8?" in url
+                    or ".pls?" in url
+                    or any(
+                        playlist_type in content_type for playlist_type in PLAYLIST_CONTENT_TYPES
+                    )
+                ):
+                    # take the playlist from this very response: a separate request would
+                    # go out with another user agent and stricter TLS than the rest of the
+                    # radio paths, so a host could answer it differently
+                    try:
+                        # the probe has no total timeout, so bound the body on its own:
+                        # a server trickling bytes would otherwise stall resolving for hours
+                        async with asyncio.timeout(PLAYLIST_READ_TIMEOUT):
+                            playlist_data = await read_playlist_body(resp.content)
+                    except aiohttp.ClientError as err:
+                        # the endpoint answered as a playlist, so a truncated body is a bad
+                        # playlist - not a reason to fall back to streaming the URL directly
+                        raise InvalidDataError(f"Error while fetching playlist {url}") from err
+                    playlist_charset = resp.charset
 
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
-            elif headers.get("content-type", "") in ("application/ogg", "audio/ogg"):
+            elif is_hls:
+                stream_type = StreamType.HLS
+            elif content_type in ("application/ogg", "audio/ogg"):
                 # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
                 stream_type = StreamType.IN_BAND
 
-            if (
-                url.endswith((".m3u", ".m3u8", ".pls"))
-                or ".m3u?" in url
-                or ".m3u8?" in url
-                or ".pls?" in url
-                or "audio/x-mpegurl" in headers.get("content-type", "")
-                or "audio/x-scpls" in headers.get("content-type", "")
-            ):
+            if playlist_data is not None:
                 try:
-                    substreams = await fetch_playlist(mass, url)
+                    substreams = await parse_playlist_data(url, playlist_data, playlist_charset)
                     if not any(x for x in substreams if x.length):
                         for line in substreams:
                             if not line.is_url:
