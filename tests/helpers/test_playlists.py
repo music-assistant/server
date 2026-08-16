@@ -1110,8 +1110,7 @@ async def test_fetch_playlist_error_status() -> None:
     """
     An error response is rejected instead of parsed.
 
-    The error page of a station that is down is a body like any other, and every one
-    of its markup lines otherwise becomes a playlist entry pointing at nothing.
+    Without the status check every markup line of the error page becomes an entry.
     """
     error_page = (
         b"<html>\n<head><title>404 Not Found</title></head>\n"
