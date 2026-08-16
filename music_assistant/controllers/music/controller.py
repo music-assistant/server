@@ -712,16 +712,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         query = (
             f"SELECT p.* FROM {DB_TABLE_PLAYLOG} p "
             f"INNER JOIN ("
-            f"  SELECT item_id, provider, media_type, MAX(timestamp) as max_timestamp "
+            f"  SELECT item_id, provider, media_type, MAX(timestamp) as max_timestamp, "
+            f"         MAX(id) as max_id "
             f"  FROM {DB_TABLE_PLAYLOG} "
             f"  WHERE {where_clause} "
-            f"  GROUP BY item_id, provider, media_type "
+            f"  GROUP BY item_id, provider, media_type, timestamp "
             f") latest "
             f"ON p.item_id = latest.item_id "
             f"   AND p.provider = latest.provider "
             f"   AND p.media_type = latest.media_type "
             f"   AND p.timestamp = latest.max_timestamp "
-            f"ORDER BY p.timestamp DESC"
+            f"   AND p.id = latest.max_id "
+            f"ORDER BY p.timestamp DESC, p.id DESC"
         )
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit
@@ -2658,6 +2660,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param entry: The playlog column values to write.
         """
+        # Copy entry to prevent cross-user mutation when iterating over multiple users
+        entry = entry.copy()
         columns = list(entry)
 
         # For completed plays, check if this is truly a new play or just a provider state sync
@@ -2753,7 +2757,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     entry,
                 )
             else:
-                # No existing row, insert new one
+                # No existing row - check if we need to preserve playback_speed from completed play
+                if "playback_speed" not in entry:
+                    prev_rows = await self.database.get_rows_from_query(
+                        f"SELECT playback_speed FROM {DB_TABLE_PLAYLOG} WHERE "
+                        + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                        + " AND playback_speed IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
+                        conflict_params,
+                        limit=0,
+                    )
+                    if prev_rows:
+                        entry["playback_speed"] = prev_rows[0]["playback_speed"]
+
+                # Insert new resume row
+                columns = list(entry)  # Refresh columns list in case playback_speed was added
                 await self.database.execute_write(
                     f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
                     f"VALUES ({', '.join(f':{column}' for column in columns)})",

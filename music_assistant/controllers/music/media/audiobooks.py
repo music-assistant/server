@@ -559,15 +559,20 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             return
 
         for user_id in user_ids:
-            cur_entry = await self.mass.music.database.get_row(
-                DB_TABLE_PLAYLOG,
+            # Get latest playlog entry for comparison
+            latest_rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT fully_played, seconds_played FROM {DB_TABLE_PLAYLOG} "
+                "WHERE media_type = :media_type AND item_id = :item_id AND provider = :provider AND userid = :userid "
+                "ORDER BY timestamp DESC, id DESC LIMIT 1",
                 {
                     "media_type": self.media_type.value,
-                    "item_id": db_id,
+                    "item_id": str(db_id),
                     "provider": "library",
                     "userid": user_id,
                 },
+                limit=0,
             )
+            cur_entry = latest_rows[0] if latest_rows else None
             seconds_played = int((media_item.resume_position_ms or 0) / 1000)
             # abort if nothing changed
             if (
@@ -577,10 +582,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             ):
                 return
 
-            await self.mass.music.database.insert(
-                DB_TABLE_PLAYLOG,
+            # Use _upsert_playlog to handle append-only architecture correctly
+            await self.mass.music._upsert_playlog(
                 {
-                    "item_id": db_id,
+                    "item_id": str(db_id),
                     "provider": "library",
                     "media_type": media_item.media_type.value,
                     "name": media_item.name,
@@ -591,8 +596,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                     "seconds_played": seconds_played,
                     "timestamp": utc_timestamp(),
                     "userid": user_id,
-                },
-                allow_replace=True,
+                }
             )
 
     async def _authors_narrators(self, column: str) -> UniqueList[str]:
