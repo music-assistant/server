@@ -168,7 +168,7 @@ def test_requires_pin_pairing(
         ({b"flags": b"0x4"}, None, False),
         ({b"sf": b"0x80"}, None, True),
         ({b"flags": b"0x90"}, None, True),
-        ({b"flags": b"0x1000"}, None, True),
+        ({b"flags": b"0x1000"}, None, False),
         (None, {b"flags": "0x80"}, True),
         (None, {b"sf": b"0x81"}, True),
         (None, {b"flags": b"0x4"}, False),
@@ -183,7 +183,7 @@ def test_password_required(
     raop_properties: dict[bytes, bytes] | None,
     expected: bool,
 ) -> None:
-    """Test the flags-based password announcements (non-Apple-TV model)."""
+    """Test the flags-based password announcements."""
     if aiplay_properties is not None:
         aiplay_discovery_info = MagicMock()
         aiplay_discovery_info.properties = aiplay_properties
@@ -356,12 +356,24 @@ async def test_streaming_mode_offered_for_non_apple_airplay2(
 
 
 @pytest.mark.asyncio
-async def test_streaming_mode_hidden_for_apple_airplay2() -> None:
-    """Genuine Apple devices are always native AirPlay 2 with PTP: no entry."""
+async def test_streaming_mode_on_apple_offers_no_ntp_lane() -> None:
+    """
+    Apple devices get the entry as an escape hatch, minus the NTP lane.
+
+    An Apple receiver renders silence on an NTP-timed realtime stream
+    (hardware-measured), so that lane is never offered; the compatibility
+    flow and legacy RAOP remain available as the escapes for networks where
+    the PTP ports are blocked, and pinning PTP stays possible as an explicit
+    choice of the normal lane.
+    """
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     entries = await player.get_config_entries()
-    assert all(entry.key != CONF_STREAMING_MODE for entry in entries)
+    entry = next((entry for entry in entries if entry.key == CONF_STREAMING_MODE), None)
+    assert entry is not None
+    values = [option.value for option in entry.options]
+    assert STREAMING_MODE_AP2_NTP not in values
+    assert STREAMING_MODE_RAOP in values
 
 
 @pytest.mark.asyncio
@@ -454,13 +466,21 @@ def test_raop_mode_resolves_to_raop_on_non_apple_airplay2(airplay_player: AirPla
     assert airplay_player.protocol_override == StreamingProtocol.RAOP
 
 
-def test_raop_mode_ignored_on_apple_airplay2() -> None:
-    """A stray persisted RAOP mode is ignored on Apple devices (the lane is never offered)."""
+def test_raop_mode_applies_on_apple_with_raop_service() -> None:
+    """The RAOP escape hatch works on an Apple device that advertises _raop."""
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_RAOP})
-    assert player.protocol == StreamingProtocol.AIRPLAY2
-    assert player.protocol_override is None
+    assert player.protocol == StreamingProtocol.RAOP
+    assert player.protocol_override == StreamingProtocol.RAOP
+
+
+def test_ntp_mode_ignored_on_apple_airplay2() -> None:
+    """A stray persisted NTP mode is ignored on Apple devices (the lane is never offered)."""
+    player = _make_apple_player()
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_AP2_NTP})
+    assert player.streaming_mode == STREAMING_MODE_AUTO
 
 
 @pytest.mark.parametrize(
@@ -1645,24 +1665,35 @@ def test_announced_password_without_one_stored_needs_setup(
     assert airplay_player.setup_reason == "password_required"
 
 
-def test_apple_tv_password_bit_alone_does_not_need_setup(airplay_player: AirPlayPlayer) -> None:
-    """Apple TVs raise the generic password bit at all times; it means nothing there."""
-    # a paired Apple TV without a password set must not be sent back into setup
-    _set_password_discovery(airplay_player, flags="0x4c4", paired=True)
-    airplay_player.device_info.model = "AppleTV14,1"
+def test_apple_tv_without_a_password_does_not_need_setup(airplay_player: AirPlayPlayer) -> None:
+    """An Apple TV that announces no password must not be sent into setup."""
+    # flags as published by tvOS with "Require Password" off
+    _set_password_discovery(airplay_player, flags="0x644", paired=True)
+    airplay_player.device_info.manufacturer = "Apple"
+    airplay_player.device_info.model = "Apple TV 4K Gen2"
 
     assert airplay_player.password_required is False
     assert airplay_player.needs_setup is False
 
 
 def test_apple_tv_with_a_password_set_needs_setup(airplay_player: AirPlayPlayer) -> None:
-    """The tvOS-specific flags bit is the Apple TV's only password announcement."""
-    _set_password_discovery(airplay_player, flags="0x14c4")
-    airplay_player.device_info.model = "AppleTV11,1"
+    """An Apple TV announces its password through the same bit as every other receiver."""
+    # the same device with "Require Password" on: the password bit replaces the pairing bit
+    _set_password_discovery(airplay_player, flags="0x4c4")
+    airplay_player.device_info.manufacturer = "Apple"
+    airplay_player.device_info.model = "Apple TV 4K Gen2"
 
     assert airplay_player.password_required is True
     assert airplay_player.needs_setup is True
     assert airplay_player.setup_reason == "password_required"
+
+
+def test_silent_primary_bit_is_not_a_password_announcement(airplay_player: AirPlayPlayer) -> None:
+    """The SilentPrimary flags bit says nothing about a password and must not force setup."""
+    _set_password_discovery(airplay_player, flags="0x1644", paired=True)
+
+    assert airplay_player.password_required is False
+    assert airplay_player.needs_setup is False
 
 
 @pytest.mark.parametrize(

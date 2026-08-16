@@ -34,7 +34,6 @@ from .constants import (
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
-    ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
@@ -161,19 +160,22 @@ class AirPlayPlayer(Player):
         the device's own advertisements: the AirPlay 2 lanes need AirPlay 2
         capability (PTP timing additionally needs the SupportsPTP bit), and
         legacy RAOP needs an advertised _raop service to fall back to. A
-        RAOP-only device has no alternative lane, and genuine Apple receivers
-        are always native AirPlay 2 with PTP — both get Automatic only, which
-        hides the entry entirely.
+        RAOP-only device has no alternative lane and keeps Automatic only,
+        which hides the entry entirely. Apple receivers get every lane except
+        NTP timing — they render silence on an NTP-timed realtime stream
+        (hardware-measured). Of their lanes, the compatibility flow and
+        legacy RAOP are the escapes for networks where the PTP ports are
+        blocked; pinning PTP is an explicit choice of the normal lane.
         """
         options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
-        if not self._is_airplay2_capable or is_apple_device(
-            self.device_info.manufacturer, self.device_info.model
-        ):
+        if not self._is_airplay2_capable:
             return options
+        apple = is_apple_device(self.device_info.manufacturer, self.device_info.model)
         features = parse_airplay_features(self._advertised_features)
         if (features >> 41) & 1:
             options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
-        options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
+        if not apple:
+            options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
         options.append(
             ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
         )
@@ -244,17 +246,13 @@ class AirPlayPlayer(Player):
     @property
     def password_required(self) -> bool:
         """Return if the device announces that it is password protected."""
-        # Three announcement forms, verified against live devices: receivers
-        # publish the classic pw boolean and/or the password bit in sf/flags,
-        # except Apple TVs - they keep the password bit raised at all times, so
-        # for them only the tvOS-specific flags bit counts. Enforcement can also
-        # exist WITHOUT any announcement (stale TXT after the password was
-        # enabled); that case is caught at connect time via password_invalid.
-        flags = self._get_flags()
-        if flags & ATV_PASSWORD_BIT:
-            return True
-        is_apple_tv = (self.device_info.model or "").startswith("AppleTV")
-        if flags & PASSWORD_BIT and not is_apple_tv:
+        # Two announcement forms, verified against live devices (including Apple
+        # TVs, which raise the password bit only while a password is actually
+        # set): receivers publish the password bit in sf/flags and/or the classic
+        # pw boolean. Enforcement can also exist WITHOUT any announcement (stale
+        # TXT after the password was enabled); that case is caught at connect
+        # time via password_invalid.
+        if self._get_flags() & PASSWORD_BIT:
             return True
         if raop_info := self.raop_discovery_info:
             return (raop_info.decoded_properties.get("pw") or "").lower() == "true"

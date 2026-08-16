@@ -48,6 +48,38 @@ FILE "CDImage.ape" WAVE
 """
 
 
+def _cue_sheet(performer: str, title: str, track: str) -> str:
+    """Build a CUE sheet with the same ASCII-heavy shape as CYRILLIC_CUE."""
+    return (
+        'REM GENRE "Rock"\n'
+        "REM DATE 1998\n"
+        f'PERFORMER "{performer}"\n'
+        f'TITLE "{title}"\n'
+        'FILE "CDImage.ape" WAVE\n'
+        "  TRACK 01 AUDIO\n"
+        f'    TITLE "{track}"\n'
+        "    INDEX 01 00:00:00\n"
+    )
+
+
+# the other codepages rippers wrote; every one of these sits next to a neighbour
+# that decodes the same bytes into plausible but wrong text
+LEGACY_CUES = {
+    "cp1251": CYRILLIC_CUE,
+    "koi8-r": _cue_sheet("Аквариум", "Русский альбом", "Никита Рязанский"),
+    "cp1250": _cue_sheet("Kabát", "Šťastný člověk", "Zůstaň"),
+    "cp1252": _cue_sheet("Björk", "Homogenic", "Jóga"),
+    # the dotless i is what a detector has to get right to tell cp1254 from cp1252
+    "cp1254": _cue_sheet("Barış Manço", "Mağusa'da", "Gülpembe"),  # noqa: RUF001
+    "cp1253": _cue_sheet("Μίκης Θεοδωράκης", "Άξιον Εστί", "Ένα το χελιδόνι"),
+    "cp1255": _cue_sheet("עידן רייכל", "הפרויקט של עידן רייכל", "בואי"),
+    "cp1257": _cue_sheet("Prāta Vētra", "Lupatkājis", "Jūra"),
+    # a multi-byte charset, where a wrong guess costs whole characters rather than
+    # single letters
+    "gbk": _cue_sheet("周杰伦", "叶惠美", "东风破"),
+}
+
+
 class TestDetectCharset:
     """detect_charset names the charset raw text has to be decoded with."""
 
@@ -62,22 +94,47 @@ class TestDetectCharset:
         encoding = await detect_charset(raw)
         assert raw.decode(encoding) == CYRILLIC_CUE
 
-    @pytest.mark.parametrize("charset", ["cp1251", "cp1252"])
+    @pytest.mark.parametrize("charset", list(LEGACY_CUES))
     async def test_legacy_charsets_survive_a_round_trip(self, charset: str) -> None:
         """
         Text in a legacy charset comes back readable instead of as replacement chars.
 
         Mostly-ASCII files such as CUE sheets hold very little non-ASCII text, so the
         charset has to be resolved from a thin sample rather than given up on and
-        decoded as UTF-8 (support #6093).
+        decoded as UTF-8 (support #6093). The round trip is what is asserted, not the
+        charset name, because neighbouring codepages decode these bytes identically.
         """
-        source = CYRILLIC_CUE if charset != "cp1252" else 'TITLE "Müller"\n'
+        source = LEGACY_CUES[charset]
         raw = source.encode(charset)
         assert raw.decode(await detect_charset(raw)) == source
 
     async def test_undetectable_data_uses_the_fallback(self) -> None:
         """Bytes that hold no readable text at all fall back to the given charset."""
-        assert await detect_charset(b"\xff\xfe\x00", fallback="cp1252") == "cp1252"
+        assert await detect_charset(b"\xff\x00\xff", fallback="cp1257") == "cp1257"
+
+    async def test_declared_charset_wins_over_detection(self) -> None:
+        """A charset the source declares itself beats guessing at the bytes."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        assert await detect_charset(raw, preferred="cp1251") == "cp1251"
+
+    async def test_byte_order_mark_beats_the_declared_charset(self) -> None:
+        """A source declaring plain utf-8 must not leave its own BOM in the text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw, preferred="utf-8")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    async def test_unknown_declared_charset_is_ignored(self) -> None:
+        """A charset name Python has no codec for must not reach decode()."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred="utf8mb4")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    @pytest.mark.parametrize("charset", ["base64", "zlib", "rot_13", "idna", "undefined"])
+    async def test_declared_charset_that_cannot_decode_text_is_ignored(self, charset: str) -> None:
+        """A charset name that resolves to a codec but cannot decode text is ignored."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred=charset)
+        assert raw.decode(encoding) == CYRILLIC_CUE
 
 
 class TestGetSourceIpForTarget:

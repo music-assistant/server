@@ -335,10 +335,6 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
 PIN_REQUIRED = 0x8
 PASSWORD_BIT = 0x80
 LEGACY_PAIRING_BIT = 0x200
-# Observed on tvOS when an AirPlay password is set. Apple TVs keep PASSWORD_BIT
-# raised at all times (it marks their onscreen-code capability, not a password),
-# so this is the only flags-based password signal they give.
-ATV_PASSWORD_BIT = 0x1000
 
 # Provider setting: opt-in for the shared PTP daemon's per-packet timing trace
 # (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —

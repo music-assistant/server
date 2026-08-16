@@ -17,18 +17,28 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
 )
 from music_assistant.controllers.player_queues.config import (
+    CATEGORY_CLICK_ACTIONS,
     CATEGORY_DEFAULT_ENQUEUE_OPTION,
     CATEGORY_ITEMS_TO_SELECT,
     core_config_entries,
     queue_config_entries,
 )
 from music_assistant.controllers.player_queues.constants import (
+    CLICK_ACTION_BROWSE,
+    CLICK_ACTION_PLAY,
     CONF_AUTOPLAY_MODE,
+    CONF_DEFAULT_CLICK_ACTION_ALBUM,
+    CONF_DEFAULT_CLICK_ACTION_ARTIST,
+    CONF_DEFAULT_CLICK_ACTION_PLAYLIST,
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+    CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    PLAY_ACTION_PLAY_FROM_HERE,
+    PLAY_ACTION_PLAY_TRACK,
 )
 
 if TYPE_CHECKING:
@@ -57,6 +67,42 @@ def test_core_config_entries_enqueue_defaults() -> None:
     # the enqueue entries now live in their own dedicated categories
     assert by_key[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST].category == CATEGORY_ITEMS_TO_SELECT
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].category == CATEGORY_DEFAULT_ENQUEUE_OPTION
+
+
+def test_core_config_entries_click_actions() -> None:
+    """
+    The click actions clients read: browsing by default, and a track playing on from where it sits.
+
+    This is a cross-client contract rather than something the server itself reads, so the keys,
+    their option values and their defaults are pinned here: a client resolving a value that is no
+    longer offered would silently fall back to its own behaviour.
+    """
+    by_key = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))
+    click_keys = (
+        CONF_DEFAULT_CLICK_ACTION_ARTIST,
+        CONF_DEFAULT_CLICK_ACTION_ALBUM,
+        CONF_DEFAULT_CLICK_ACTION_PLAYLIST,
+    )
+    for key in click_keys:
+        assert by_key[key].default_value == CLICK_ACTION_BROWSE
+        assert {opt.value for opt in by_key[key].options} == {
+            CLICK_ACTION_BROWSE,
+            CLICK_ACTION_PLAY,
+        }
+    for key in (CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK, CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK):
+        assert by_key[key].default_value == PLAY_ACTION_PLAY_FROM_HERE
+        assert {opt.value for opt in by_key[key].options} == {
+            PLAY_ACTION_PLAY_FROM_HERE,
+            PLAY_ACTION_PLAY_TRACK,
+        }
+    for key in (
+        *click_keys,
+        CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+        CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
+    ):
+        assert by_key[key].category == CATEGORY_CLICK_ACTIONS
+        # a hidden entry would never reach the settings UI these are configured from
+        assert by_key[key].hidden is False
 
 
 def test_core_config_entries_global_feature_defaults() -> None:

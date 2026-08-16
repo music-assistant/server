@@ -257,6 +257,8 @@ def mock_mass() -> MagicMock:
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
     mass.get_providers = MagicMock(return_value=[])
+    # awaited by the tests that replay the tasks scheduled during a config wipe
+    mass.webserver.auth.remove_from_user_filters = AsyncMock()
     return mass
 
 

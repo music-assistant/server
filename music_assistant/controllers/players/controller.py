@@ -1671,6 +1671,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 self.mass.config.remove(key)
             if self.get_player(pid) is None:
                 self.mass.player_queues.purge_saved_queue(pid)
+        # a user access filter is an allow-list of player ids, so it must not be left
+        # pointing at a player whose config was just wiped
+        self.mass.create_task(
+            self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
+        )
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
