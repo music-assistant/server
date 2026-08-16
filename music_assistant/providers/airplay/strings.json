@@ -2,7 +2,7 @@
   "config_entries": {
     "streaming_mode": {
       "label": "Streaming mode",
-      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device actually advertises are offered. \nMusic Assistant switches a device to 'AirPlay 2 - NTP timing' by itself when it measures that the device never answers the PTP clock (some AirPlay 2 TVs); set it back to Automatic to try PTP again."
+      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nMusic Assistant switches a device to 'AirPlay 2 - NTP timing' by itself when it measures that the device never answers the PTP clock (some AirPlay 2 TVs); set it back to Automatic to try PTP again."
     },
     "encryption": {
       "label": "Enable encryption",

@@ -356,12 +356,23 @@ async def test_streaming_mode_offered_for_non_apple_airplay2(
 
 
 @pytest.mark.asyncio
-async def test_streaming_mode_hidden_for_apple_airplay2() -> None:
-    """Genuine Apple devices are always native AirPlay 2 with PTP: no entry."""
+async def test_streaming_mode_on_apple_offers_no_ntp_lane() -> None:
+    """
+    Apple devices get the entry as an escape hatch, minus the NTP lane.
+
+    An Apple receiver renders silence on an NTP-timed realtime stream
+    (hardware-measured), so that lane is never offered; pinned PTP, the
+    compatibility flow and legacy RAOP remain available for networks where
+    the PTP ports are blocked.
+    """
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     entries = await player.get_config_entries()
-    assert all(entry.key != CONF_STREAMING_MODE for entry in entries)
+    entry = next((entry for entry in entries if entry.key == CONF_STREAMING_MODE), None)
+    assert entry is not None
+    values = [option.value for option in entry.options]
+    assert STREAMING_MODE_AP2_NTP not in values
+    assert STREAMING_MODE_RAOP in values
 
 
 @pytest.mark.asyncio
@@ -454,13 +465,21 @@ def test_raop_mode_resolves_to_raop_on_non_apple_airplay2(airplay_player: AirPla
     assert airplay_player.protocol_override == StreamingProtocol.RAOP
 
 
-def test_raop_mode_ignored_on_apple_airplay2() -> None:
-    """A stray persisted RAOP mode is ignored on Apple devices (the lane is never offered)."""
+def test_raop_mode_applies_on_apple_with_raop_service() -> None:
+    """The RAOP escape hatch works on an Apple device that advertises _raop."""
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_RAOP})
-    assert player.protocol == StreamingProtocol.AIRPLAY2
-    assert player.protocol_override is None
+    assert player.protocol == StreamingProtocol.RAOP
+    assert player.protocol_override == StreamingProtocol.RAOP
+
+
+def test_ntp_mode_ignored_on_apple_airplay2() -> None:
+    """A stray persisted NTP mode is ignored on Apple devices (the lane is never offered)."""
+    player = _make_apple_player()
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_AP2_NTP})
+    assert player.streaming_mode == STREAMING_MODE_AUTO
 
 
 @pytest.mark.parametrize(

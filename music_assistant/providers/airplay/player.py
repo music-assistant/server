@@ -160,19 +160,22 @@ class AirPlayPlayer(Player):
         the device's own advertisements: the AirPlay 2 lanes need AirPlay 2
         capability (PTP timing additionally needs the SupportsPTP bit), and
         legacy RAOP needs an advertised _raop service to fall back to. A
-        RAOP-only device has no alternative lane, and genuine Apple receivers
-        are always native AirPlay 2 with PTP — both get Automatic only, which
-        hides the entry entirely.
+        RAOP-only device has no alternative lane and keeps Automatic only,
+        which hides the entry entirely. Apple receivers get every lane except
+        NTP timing: they render silence on an NTP-timed realtime stream
+        (hardware-measured), while pinned PTP, the compatibility flow and
+        legacy RAOP are real escape hatches on networks where the PTP ports
+        are blocked.
         """
         options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
-        if not self._is_airplay2_capable or is_apple_device(
-            self.device_info.manufacturer, self.device_info.model
-        ):
+        if not self._is_airplay2_capable:
             return options
+        apple = is_apple_device(self.device_info.manufacturer, self.device_info.model)
         features = parse_airplay_features(self._advertised_features)
         if (features >> 41) & 1:
             options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
-        options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
+        if not apple:
+            options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
         options.append(
             ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
         )
