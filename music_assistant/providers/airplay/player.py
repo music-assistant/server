@@ -459,6 +459,8 @@ class AirPlayPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to player."""
+        if self.stream:
+            self.stream.supersede_recovery()
         # an explicit stop (including power-off routed as stop) is user intent:
         # drop any pending automatic re-join
         self.cancel_group_rejoin()
@@ -481,6 +483,8 @@ class AirPlayPlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY (unpause) command on the player."""
+        if self.stream:
+            self.stream.supersede_recovery()
         session = self.stream.session if self.stream and self.stream.running else None
         if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
@@ -509,6 +513,8 @@ class AirPlayPlayer(Player):
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
+        if self.stream:
+            self.stream.supersede_recovery()
         if self.group_members or self.synced_to:
             # A broadcast pause cannot keep independent member processes
             # sample-aligned on resume. Instead the session is parked: every
@@ -535,6 +541,8 @@ class AirPlayPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        if self.stream:
+            self.stream.supersede_recovery()
         # the player is being (re)purposed on purpose: drop any pending
         # automatic re-join left over from an unexpected stream loss
         self.cancel_group_rejoin()
@@ -606,6 +614,8 @@ class AirPlayPlayer(Player):
         :param announcement: Details of the announcement that needs to be played.
         :param volume_level: Optional volume level for the announcement.
         """
+        if self.stream:
+            self.stream.supersede_recovery()
         # The lock windows live inside the orchestration: the dispatch decision
         # and session mutations hold self._lock like play_media does, while the
         # multi-second clip waits run outside it (see announce.py).
@@ -638,6 +648,8 @@ class AirPlayPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
+        if self.stream:
+            self.stream.supersede_recovery()
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways

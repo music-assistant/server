@@ -266,6 +266,7 @@ class AirPlayStream:
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
         self._native_control_failure_handled: bool = False
+        self._recovery_generation: int = 0
 
     @property
     def running(self) -> bool:
@@ -281,6 +282,10 @@ class AirPlayStream:
     def connected(self) -> bool:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
+
+    def supersede_recovery(self) -> None:
+        """Prevent pending recovery from resuming playback from this stream."""
+        self._recovery_generation += 1
 
     async def connect(
         self,
@@ -1716,14 +1721,18 @@ class AirPlayStream:
             # silent outcome with an unhandled-task error.
             self.player.logger.warning("Restart on NTP timing failed: %s", err)
 
-    async def _restart_playback_in_compatibility_mode(self) -> None:
+    async def _restart_playback_in_compatibility_mode(self, recovery_generation: int) -> None:
         """Restart the active queue after switching to AirPlay compatibility mode."""
         queue = self.mass.player_queues.get_active_queue(self.player.player_id)
         if self.session is not None:
             await self.session.stop()
         else:
             await self.stop(force=True)
-        if queue is None:
+        if (
+            queue is None
+            or recovery_generation != self._recovery_generation
+            or self.player.stream is not self
+        ):
             return
         try:
             await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
@@ -1948,7 +1957,9 @@ class AirPlayStream:
         ):
             # Native groups and Sendspin bridges already recover a dead transport
             # in place. A standalone queue has no owner to restart it.
-            self.mass.create_task(self._restart_playback_in_compatibility_mode())
+            self.mass.create_task(
+                self._restart_playback_in_compatibility_mode(self._recovery_generation)
+            )
 
     def _parse_anchor_corrected(self, line: str) -> None:
         """

@@ -2108,14 +2108,57 @@ async def test_compatibility_restart_resumes_the_active_queue() -> None:
     player.provider.mass.player_queues.get_active_queue.return_value = queue
     player.provider.mass.player_queues.resume = AsyncMock()
     stream = AirPlayStream(player)
+    player.stream = stream
     stream.session = MagicMock(stop=AsyncMock())
 
-    await stream._restart_playback_in_compatibility_mode()
+    await stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
 
     stream.session.stop.assert_awaited_once()
     player.provider.mass.player_queues.resume.assert_awaited_once_with(
         queue.queue_id, fade_in=False
     )
+
+
+@pytest.mark.asyncio
+async def test_compatibility_restart_does_not_override_a_newer_action() -> None:
+    """Compatibility recovery leaves a newer playback action in control."""
+    player = _make_player()
+    queue = MagicMock(queue_id="queue")
+    player.provider.mass.player_queues.get_active_queue.return_value = queue
+    player.provider.mass.player_queues.resume = AsyncMock()
+    stream = AirPlayStream(player)
+    player.stream = stream
+
+    async def stop_session() -> None:
+        stream.supersede_recovery()
+
+    stream.session = MagicMock(stop=AsyncMock(side_effect=stop_session))
+
+    await stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
+
+    stream.session.stop.assert_awaited_once()
+    player.provider.mass.player_queues.resume.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compatibility_restart_does_not_reclaim_a_replaced_stream() -> None:
+    """Compatibility recovery leaves a replacement stream in control."""
+    player = _make_player()
+    queue = MagicMock(queue_id="queue")
+    player.provider.mass.player_queues.get_active_queue.return_value = queue
+    player.provider.mass.player_queues.resume = AsyncMock()
+    stream = AirPlayStream(player)
+    player.stream = stream
+
+    async def stop_session() -> None:
+        player.stream = MagicMock()
+
+    stream.session = MagicMock(stop=AsyncMock(side_effect=stop_session))
+
+    await stream._restart_playback_in_compatibility_mode(stream._recovery_generation)
+
+    stream.session.stop.assert_awaited_once()
+    player.provider.mass.player_queues.resume.assert_not_awaited()
 
 
 @pytest.mark.asyncio
