@@ -102,6 +102,9 @@ LICENSE_TEXT_GRANTS = {
     " applications, and to alter it and redistribute it freely",
 }
 
+# Words that turn the grant written behind them into its opposite
+GRANT_NEGATIONS = ("NO", "NOT", "NEITHER", "NEVER")
+
 # SPDX identifiers accepted in a PEP 639 `license_expression`
 COMPATIBLE_SPDX_LICENSES = {
     "0BSD",
@@ -686,7 +689,14 @@ def _quotes_license_text(license_str: str) -> bool:
     :param license_str: The license string to read.
     """
     words = f" {_license_words(license_str)} "
-    return any(f" {_license_words(grant)} " in words for grant in LICENSE_TEXT_GRANTS)
+    for grant in LICENSE_TEXT_GRANTS:
+        before, found, _ = words.partition(f" {_license_words(grant)} ")
+        # a grant the text denies is not one the license gives
+        preceding = before.rsplit(maxsplit=1)
+        if found and (not preceding or preceding[-1] not in GRANT_NEGATIONS):
+            return True
+
+    return False
 
 
 def _license_words(value: str) -> str:

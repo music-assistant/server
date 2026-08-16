@@ -282,6 +282,12 @@ def test_license_text_is_read_on_its_grant_only() -> None:
             " for non-commercial use.",
             "Unknown/unverified license",
         ),
+        # ...and neither does one that denies it outright
+        (
+            "No permission is hereby granted, free of charge, to any person obtaining a copy of"
+            " this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
         # a copyleft license the text is combined with is not excused by the grant it spells out
         (
             "MIT License AND GPL-3.0-only\n\nPermission is hereby granted, free of charge, to any"
