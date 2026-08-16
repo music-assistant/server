@@ -314,7 +314,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
