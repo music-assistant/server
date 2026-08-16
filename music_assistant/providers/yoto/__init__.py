@@ -39,7 +39,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .setup_flow import CONF_CLIENT_ID, CONF_REFRESH_TOKEN
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -89,10 +89,6 @@ class YotoProvider(MusicProvider):
         if self.client:
             await self.client.close()
         await super().unload(is_removed)
-
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return the config entries for this provider instance."""
-        return ()
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
