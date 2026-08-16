@@ -679,8 +679,9 @@ def _names_license(license_str: str) -> bool:
     names = [
         _license_words(name)
         for name in re.split(r"[,/]|\band\b|\bor\b", license_str, flags=re.IGNORECASE)
+        if name.strip()
     ]
-    return known.issuperset(names)
+    return bool(names) and known.issuperset(names)
 
 
 def _quotes_license_text(license_str: str) -> bool:

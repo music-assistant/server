@@ -189,6 +189,7 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "BSD 3-Clause OR Apache-2.0",
         "MIT/Apache-2.0",
         "MIT License AND Apache Software License",
+        "MIT and/or Apache-2.0",
         # a name holding a separator is still matched whole, before the value is split on one
         "zlib/libpng License",
         "GNU Library or Lesser General Public License (LGPL)",
