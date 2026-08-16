@@ -848,7 +848,7 @@ class TestClassifyScanItemCue:
         provider: LocalFileSystemProvider,
         item: FileSystemItem,
         *,
-        cue_file_checksums: dict[str, str] | None = None,
+        cue_file_checksums: dict[str, set[str]] | None = None,
     ) -> tuple[
         list[tuple[FileSystemItem, str | None]],
         list[FileSystemItem],
@@ -878,7 +878,7 @@ class TestClassifyScanItemCue:
         items, unchanged, cur, stems = self._classify(
             provider,
             cue_item,
-            cue_file_checksums={"album.cue": cue_metadata_checksum("checksum-v1")},
+            cue_file_checksums={"album.cue": {cue_metadata_checksum("checksum-v1")}},
         )
         assert items == []
         assert unchanged == [cue_item]
@@ -892,7 +892,7 @@ class TestClassifyScanItemCue:
         items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
-            cue_file_checksums={"album.cue": cue_metadata_checksum("checksum-v1")},
+            cue_file_checksums={"album.cue": {cue_metadata_checksum("checksum-v1")}},
         )
         assert items == [(cue_item, cue_metadata_checksum("checksum-v1"))]
         assert unchanged == []
@@ -904,9 +904,25 @@ class TestClassifyScanItemCue:
         items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
-            cue_file_checksums={"album.cue": "checksum-v1"},
+            cue_file_checksums={"album.cue": {"checksum-v1"}},
         )
         assert items == [(cue_item, "checksum-v1")]
+        assert unchanged == []
+
+    def test_mixed_checksums_force_metadata_refresh(self) -> None:
+        """A partially refreshed CUE is reprocessed until every track is current."""
+        provider = _make_provider()
+        cue_item = self._cue_item("checksum-v1")
+        previous_checksums = {
+            "checksum-v1",
+            cue_metadata_checksum("checksum-v1"),
+        }
+        items, unchanged, _, _ = self._classify(
+            provider,
+            cue_item,
+            cue_file_checksums={"album.cue": previous_checksums},
+        )
+        assert items == [(cue_item, min(previous_checksums))]
         assert unchanged == []
 
     def test_new_cue_has_no_prior_checksum(self) -> None:
