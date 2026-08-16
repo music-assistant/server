@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from async_upnp_client.exceptions import UpnpError
-from async_upnp_client.profiles.dlna import DmrDevice
+from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.enums import (
     IdentifierType,
     PlaybackState,
@@ -40,6 +40,17 @@ PYWIIM_STATE_TO_MA: dict[str, PlaybackState] = {
     "stop": PlaybackState.IDLE,
     "idle": PlaybackState.IDLE,
     "buffering": PlaybackState.PLAYING,
+}
+
+# The live UPnP transport state distinguishes a stopped device from a paused one, which
+# pywiim cannot: it normalizes stop into pause. So it is preferred whenever available.
+DMR_TRANSPORT_TO_MA: dict[TransportState, PlaybackState] = {
+    TransportState.PLAYING: PlaybackState.PLAYING,
+    TransportState.TRANSITIONING: PlaybackState.PLAYING,
+    TransportState.PAUSED_PLAYBACK: PlaybackState.PAUSED,
+    TransportState.PAUSED_RECORDING: PlaybackState.PAUSED,
+    TransportState.STOPPED: PlaybackState.IDLE,
+    TransportState.NO_MEDIA_PRESENT: PlaybackState.IDLE,
 }
 
 # The canonical pywiim source ids under which MA-initiated URL playback runs:
@@ -89,6 +100,9 @@ class LinkPlayPlayer(Player):
         # successful poll sets it, a failed poll clears it so a stale cached URI is not
         # read as a source takeover.
         self._live_uri_fresh = False
+        # Latches an explicitly commanded local stop: pywiim collapses stop into pause, so
+        # without a live transport state this preserves IDLE until a real state supersedes it.
+        self._local_idle = False
         self._mac_address = mac_address
         self._rebuild_lock = asyncio.Lock()
         # Ownership tracking for the URL MA last asked the device to play.
@@ -261,6 +275,7 @@ class LinkPlayPlayer(Player):
         self._ma_stream_since = time.time()
         self._last_track_uri = stream_url
         self._last_now_playing_sig = None
+        self._local_idle = False
         # play_url is fire-and-forget and does not move pywiim's cached play_state, so
         # publish an optimistic PLAYING and poll fast until the device confirms; without
         # this the queue's short resume wait would race the 30s idle poll interval.
@@ -297,6 +312,7 @@ class LinkPlayPlayer(Player):
         self._last_now_playing_sig = None
         self._ma_source_id = None
         self._release_ma_ownership()
+        self._local_idle = True
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
@@ -406,6 +422,7 @@ class LinkPlayPlayer(Player):
         command; the following polls/events reconcile the real state.
         """
         self._attr_playback_state = playback_state
+        self._local_idle = False
         self._attr_poll_interval = 5
         self.update_state()
 
@@ -521,9 +538,7 @@ class LinkPlayPlayer(Player):
             self.update_state()
             return
 
-        self._attr_playback_state = PYWIIM_STATE_TO_MA.get(
-            self._pywiim.play_state or "", PlaybackState.IDLE
-        )
+        self._attr_playback_state = self._derive_playback_state()
         self._reconcile_ma_ownership()
 
         if self._attr_playback_state == PlaybackState.IDLE:
@@ -583,6 +598,33 @@ class LinkPlayPlayer(Player):
             ]
         )
 
+    def _derive_playback_state(self) -> PlaybackState:
+        """
+        Derive the MA playback state, preferring the live UPnP transport state.
+
+        pywiim normalizes a device's stop into pause, so its play_state cannot tell a
+        stopped device from a paused one. The UPnP transport state keeps that distinction
+        and is used whenever a fresh one is available; otherwise a commanded local stop is
+        honoured until a real state supersedes it.
+        """
+        if (dmr_state := self._dmr_transport_state()) is not None:
+            self._local_idle = False
+            return dmr_state
+        pywiim_state = PYWIIM_STATE_TO_MA.get(self._pywiim.play_state or "", PlaybackState.IDLE)
+        if pywiim_state != PlaybackState.PAUSED:
+            # play/buffering/idle are unambiguous and clear a pending commanded-idle latch.
+            self._local_idle = False
+            return pywiim_state
+        # Only pywiim's ambiguous stop-or-pause remains; honour a commanded local stop.
+        return PlaybackState.IDLE if self._local_idle else PlaybackState.PAUSED
+
+    def _dmr_transport_state(self) -> PlaybackState | None:
+        """Map the live UPnP transport state to MA, when a fresh one is available."""
+        if self._dmr_device is None or not self._live_uri_fresh:
+            return None
+        transport = self._dmr_device.transport_state
+        return DMR_TRANSPORT_TO_MA.get(transport) if transport is not None else None
+
     def _reconcile_ma_ownership(self) -> None:
         """Release the MA-ownership marker once playback is no longer our stream."""
         if self._ma_stream_uri is None:
@@ -631,17 +673,17 @@ class LinkPlayPlayer(Player):
             # cached metadata, so the media play_media published is kept until our stream
             # is provably live (a matching live URI) or the window has elapsed.
             return
-        has_metadata = bool(
-            self._pywiim.media_title or self._pywiim.media_artist or self._pywiim.media_album
-        )
-        if not has_metadata:
-            # Keep the optimistic metadata play_media set until the device reports its own.
+        status = self._pywiim.status_model
+        if status is None or not (status.title or status.artist or status.album):
+            # pywiim.media_title falls back to the stream URL's filename, which is not real
+            # metadata, so MA's authoritative optimistic title/artist/album/artwork is kept
+            # until the device reports genuine now-playing fields.
             return
         self.set_current_media(
             uri=self._ma_stream_uri or "",
-            title=self._pywiim.media_title,
-            artist=self._pywiim.media_artist,
-            album=self._pywiim.media_album,
+            title=status.title,
+            artist=status.artist,
+            album=status.album,
             image_url=self._pywiim.media_image_url,
             duration=self._pywiim.media_duration,
             source_id=self._ma_source_id,

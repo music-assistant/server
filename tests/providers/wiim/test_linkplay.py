@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from async_upnp_client.exceptions import UpnpConnectionError
+from async_upnp_client.profiles.dlna import TransportState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from pywiim import WiiMError, WiiMGroupCompatibilityError
@@ -126,6 +128,8 @@ def mock_pywiim_player() -> MagicMock:
     player.media_album = None
     player.media_image_url = None
     player.media_duration = None
+    # status_model exposes the genuine device-reported fields (no filename fallback).
+    player.status_model = SimpleNamespace(title=None, artist=None, album=None)
     player.client = MagicMock()
     player.client.host = "192.168.1.50"
     player.client.get_slaves_info = AsyncMock(return_value=[])
@@ -185,6 +189,7 @@ class TestStateMapping:
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.volume_level = 0.42
         mock_pywiim_player.media_title = "Song"
+        mock_pywiim_player.status_model = SimpleNamespace(title="Song", artist=None, album=None)
         mock_pywiim_player.media_position = 12
         player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
         player._ma_stream_uri = _MA_STREAM_URI  # active MA stream
@@ -275,6 +280,80 @@ class TestStateMapping:
 
         assert player._attr_volume_level == 30
         assert player._attr_group_members == []
+
+
+class TestPlaybackStateDerivation:
+    """pywiim collapses stop into pause, so the live UPnP transport state is authoritative."""
+
+    def test_dmr_stopped_overrides_pywiim_pause_as_idle(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A raw pywiim pause with a STOPPED transport state must read as IDLE."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        mock_pywiim_player.play_state = "pause"  # pywiim normalized a real stop to pause
+        player._dmr_device = MagicMock(
+            current_track_uri=None, transport_state=TransportState.STOPPED
+        )
+        player._live_uri_fresh = True
+
+        player._push_state()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    def test_dmr_paused_reports_paused(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A PAUSED_PLAYBACK transport state reports PAUSED."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        mock_pywiim_player.play_state = "pause"
+        player._dmr_device = MagicMock(
+            current_track_uri="http://x/y.mp3", transport_state=TransportState.PAUSED_PLAYBACK
+        )
+        player._live_uri_fresh = True
+
+        player._push_state()
+
+        assert player._attr_playback_state == PlaybackState.PAUSED
+
+    def test_missing_dmr_falls_back_to_pywiim_pause(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Without a live transport state, pywiim's pause is honoured as PAUSED."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        mock_pywiim_player.play_state = "pause"
+
+        player._push_state()
+
+        assert player._attr_playback_state == PlaybackState.PAUSED
+
+    def test_commanded_local_idle_preserved_without_dmr(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A commanded local stop stays IDLE against pywiim's pause until a real state supersedes."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        mock_pywiim_player.play_state = "pause"
+        player._local_idle = True  # e.g. set by a preceding stop()
+
+        player._push_state()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    def test_live_playing_state_clears_local_idle_latch(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A real PLAYING transport state clears a stale commanded-idle latch."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        mock_pywiim_player.play_state = "play"
+        player._local_idle = True
+        player._dmr_device = MagicMock(
+            current_track_uri="http://x/y.mp3", transport_state=TransportState.PLAYING
+        )
+        player._live_uri_fresh = True
+
+        player._push_state()
+
+        assert player._attr_playback_state == PlaybackState.PLAYING
+        assert player._local_idle is False
 
 
 class TestSourceTakeover:
@@ -1358,6 +1437,9 @@ class TestNowPlayingIdentity:
 
         mock_pywiim_player.media_title = "Song A"
         mock_pywiim_player.media_album = "Album A"
+        mock_pywiim_player.status_model = SimpleNamespace(
+            title="Song A", artist=None, album="Album A"
+        )
         player._push_state()
         first = player._attr_current_media
         assert first is not None
@@ -1365,6 +1447,7 @@ class TestNowPlayingIdentity:
 
         mock_pywiim_player.media_title = "Song B"
         mock_pywiim_player.media_album = None
+        mock_pywiim_player.status_model = SimpleNamespace(title="Song B", artist=None, album=None)
         player._push_state()
         second = player._attr_current_media
         assert second is not None
@@ -1403,6 +1486,7 @@ class TestMaSourceIdentity:
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.source = "custompushurl"
         mock_pywiim_player.media_title = "Song"
+        mock_pywiim_player.status_model = SimpleNamespace(title="Song", artist=None, album=None)
 
         player._push_state()
 
@@ -1441,8 +1525,40 @@ class TestMaSourceIdentity:
         mock_pywiim_player.play_state = "play"
         mock_pywiim_player.source = "custompushurl"
         mock_pywiim_player.media_title = "Live Song"
+        mock_pywiim_player.status_model = SimpleNamespace(
+            title="Live Song", artist=None, album=None
+        )
 
         player._push_state()
 
         assert player._attr_current_media is not None
         assert player._attr_current_media.title == "Live Song"
+
+    def test_filename_fallback_does_not_overwrite_optimistic_media(
+        self, mock_provider: MagicMock, mock_pywiim_player: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Pywiim's URL-filename fallback title must not replace MA's authoritative media."""
+        player = _make_player(mock_provider, mock_pywiim_player, mock_upnp_device)
+        player._ma_stream_uri = _MA_STREAM_URI
+        player._ma_stream_confirmed = True
+        player.set_current_media(
+            uri=_MA_STREAM_URI or "",
+            title="Real MA Title",
+            artist="Real Artist",
+            album="Real Album",
+            image_url="http://art/real.jpg",
+            clear_all=True,
+        )
+        mock_pywiim_player.play_state = "play"
+        mock_pywiim_player.source = "custompushurl"
+        # the device reports no genuine metadata; pywiim falls back to the stream filename
+        mock_pywiim_player.status_model = SimpleNamespace(title=None, artist=None, album=None)
+        mock_pywiim_player.media_title = "stream.mp3"
+
+        player._push_state()
+
+        assert player._attr_current_media is not None
+        assert player._attr_current_media.title == "Real MA Title"
+        assert player._attr_current_media.artist == "Real Artist"
+        assert player._attr_current_media.album == "Real Album"
+        assert player._attr_current_media.image_url == "http://art/real.jpg"
