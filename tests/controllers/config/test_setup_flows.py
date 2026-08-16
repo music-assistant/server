@@ -1768,8 +1768,6 @@ async def test_tidal_flow_pkce_url_paste(
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.type == FlowStepType.FORM
         assert step.step_id == "user"
-        # the instructions step no longer carries a help_link - the authorize URL is
-        # driven entirely through the external_until redirect below
         assert any(x.key == "auth_instructions" for x in step.entries)
 
         # submitting the (label-only) "user" step triggers the authorize redirect;
@@ -1843,7 +1841,6 @@ async def test_tidal_flow_exchange_error_retries(
         # a failed exchange restarts the whole redirect: back to "user" (with the error)
         assert retry_prompt.type == FlowStepType.FORM
         assert retry_prompt.step_id == "user"
-        # the canonical retry pattern surfaces the error's translation key
         assert retry_prompt.errors == {"base": "login_failed"}
 
         finish_prompt_2 = await flow_mass.config.submit_setup_flow(step.flow_id, {})
