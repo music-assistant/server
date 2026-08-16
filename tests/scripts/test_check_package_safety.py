@@ -156,6 +156,13 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         "ISC License (ISCL)",
         "PSFL",
         "LGPLv2+",
+        # a plain license field can hold an expression too (aiohttp publishes this one)
+        "Apache-2.0 AND MIT",
+        # ...while prose that merely contains the word "and" is still matched on its wording
+        "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a"
+        " copy of this software and associated documentation files, to deal in the Software"
+        " without restriction, including without limitation the rights to use and to permit"
+        " persons to whom the Software is furnished to do so.",
         "The MIT License (MIT)",
         "CC0 1.0 Universal",
         # spelling variants of the same licenses
@@ -203,6 +210,8 @@ def test_compatible_licenses(license_str: str) -> None:
         ("SUBMITTED-1.0", "Unknown/unverified license"),
         ("Mitigation License 1.0", "Unknown/unverified license"),
         ("Internal use only, do not transmit", "Unknown/unverified license"),
+        # a value that joins licenses is read as an expression, whichever field it came from
+        ("MIT AND Proprietary", "Unknown/unverified license"),
         ("Other/Proprietary License", "Unknown/unverified license"),
         # a custom license is never pre-approved, not even when its name reads permissive
         (
