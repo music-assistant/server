@@ -129,6 +129,7 @@ from music_assistant.helpers.ffmpeg import (
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
+    HLS_CONTENT_TYPES,
     PLAYLIST_CONTENT_TYPES,
     IsHLSPlaylist,
     PlaylistItem,
@@ -712,7 +713,10 @@ class StreamsAudio:
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
                 content_type = headers.get("content-type", "")
-                if (
+                # a server declaring HLS settles it: a media playlist is free to carry none
+                # of the tags the parser recognises an HLS playlist by
+                is_hls = any(hls_type in content_type for hls_type in HLS_CONTENT_TYPES)
+                if not is_hls and (
                     url.endswith((".m3u", ".m3u8", ".pls"))
                     or ".m3u?" in url
                     or ".m3u8?" in url
@@ -734,7 +738,9 @@ class StreamsAudio:
 
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
-            elif headers.get("content-type", "") in ("application/ogg", "audio/ogg"):
+            elif is_hls:
+                stream_type = StreamType.HLS
+            elif content_type in ("application/ogg", "audio/ogg"):
                 # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
                 stream_type = StreamType.IN_BAND
 

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 HLS_CONTENT_TYPES = ("application/vnd.apple.mpegurl",)
-PLAYLIST_CONTENT_TYPES = ("audio/x-mpegurl", "audio/x-scpls", *HLS_CONTENT_TYPES)
+PLAYLIST_CONTENT_TYPES = ("audio/x-mpegurl", "audio/x-scpls")
 FIELD_SEPARATOR = "||"
 # playlists are small text files: cap the read so a stream served under a
 # playlist content-type does not pull an endless body into memory

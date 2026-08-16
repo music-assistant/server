@@ -114,6 +114,21 @@ async def test_hls_playlist_resolves_as_hls(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_hls_without_version_tag_still_resolves_as_hls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The HLS content type decides on its own, without a tag to recognise in the body."""
+    audio = _streams_audio()
+    body = b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nsegment0.aac\n"
+    response = _FakeConnCtx({"content-type": "application/vnd.apple.mpegurl"}, body)
+    monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: response)
+
+    result = await audio.resolve_radio_stream("http://radio.example.com/live")
+
+    assert result == ("http://radio.example.com/live", StreamType.HLS)
+
+
+@pytest.mark.asyncio
 async def test_truncated_playlist_is_not_cached_as_a_direct_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
