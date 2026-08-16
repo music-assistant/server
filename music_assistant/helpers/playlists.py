@@ -300,13 +300,9 @@ async def fetch_playlist(
         async with mass.http_session.get(
             encoded_request_url(url), allow_redirects=True, timeout=ClientTimeout(total=5)
         ) as resp:
-            try:
-                raw_data = await resp.content.read(64 * 1024)
-                encoding = await detect_charset(raw_data, preferred=resp.charset)
-                playlist_data = raw_data.decode(encoding, errors="replace")
-            except (ValueError, UnicodeDecodeError) as err:
-                msg = f"Could not decode playlist {url}"
-                raise InvalidDataError(msg) from err
+            raw_data = await resp.content.read(64 * 1024)
+            encoding = await detect_charset(raw_data, preferred=resp.charset)
+            playlist_data = raw_data.decode(encoding, errors="replace")
     except TimeoutError as err:
         msg = f"Timeout while fetching playlist {url}"
         raise InvalidDataError(msg) from err
