@@ -99,6 +99,8 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
@@ -499,33 +501,10 @@ class StreamsAudio:
             # For IN_BAND (OGG/Opus) radio streams, use chained OGG handler.
             # This handles the chained OGG format by stitching logical bitstreams together
             # so FFmpeg sees a single continuous stream. Metadata is extracted in-band.
-            def _on_inband_metadata(metadata: dict[str, str]) -> None:
-                """Handle metadata extracted from the OGG stream."""
-                title = metadata.get("title", "")
-                artist = metadata.get("artist", "")
-                album = metadata.get("album", "")
-                if not artist and " - " in title:
-                    artist, title = title.split(" - ", 1)
-                if title or artist:
-                    if artist and title:
-                        stream_title = f"{artist} - {title}"
-                    elif title:
-                        stream_title = title
-                    else:
-                        stream_title = artist
-                    cleaned_title = clean_stream_title(stream_title)
-                    if cleaned_title and cleaned_title != streamdetails.stream_title:
-                        self.logger.log(VERBOSE_LOG_LEVEL, "In-band metadata: %s", cleaned_title)
-                        streamdetails.stream_title = cleaned_title
-                        self._update_radio_stream_metadata(
-                            streamdetails,
-                            artist=artist or None,
-                            title=title or cleaned_title,
-                            album=album or None,
-                        )
-
             audio_source = get_chained_ogg_stream(
-                mass, streamdetails.path, metadata_callback=_on_inband_metadata
+                mass,
+                streamdetails.path,
+                metadata_callback=partial(self._handle_inband_metadata, streamdetails),
             )
             seek_position = 0  # seeking not possible on radio streams
         elif stream_type == StreamType.HLS:
@@ -2887,6 +2866,65 @@ class StreamsAudio:
             return read_named_pipe(streamdetails.path)
         raise AudioError(f"Unsupported stream_type {streamdetails.stream_type} for AudioSource")
 
+    def _handle_inband_metadata(
+        self, streamdetails: StreamDetails, metadata: dict[str, str]
+    ) -> None:
+        """Handle metadata extracted from a chained Ogg stream."""
+        title = metadata.get("title", "")
+        artist = metadata.get("artist", "")
+        album = metadata.get("album", "")
+        if not artist and " - " in title:
+            artist, title = title.split(" - ", 1)
+        if not (title or artist):
+            return
+
+        stream_title = f"{artist} - {title}" if artist and title else title or artist
+        cleaned_title = clean_stream_title(stream_title)
+        if not cleaned_title:
+            return
+        if self._record_inband_stream_title(streamdetails, cleaned_title):
+            return
+        if cleaned_title != streamdetails.stream_title:
+            self.logger.log(VERBOSE_LOG_LEVEL, "In-band metadata: %s", cleaned_title)
+            streamdetails.stream_title = cleaned_title
+            self._update_radio_stream_metadata(
+                streamdetails,
+                artist=artist or None,
+                title=title or cleaned_title,
+                album=album or None,
+            )
+
+    def _record_inband_stream_title(self, streamdetails: StreamDetails, cleaned_title: str) -> bool:
+        """
+        Record an in-band stream title for provider-owned metadata, if applicable.
+
+        When a provider opts into owning stream_metadata (and stream_title is only
+        a derived view of it), writing either from the stream reader would fight the
+        provider. The cleaned in-band title is recorded on StreamDetails.data instead,
+        as the identity signal for the provider callback.
+
+        :param streamdetails: StreamDetails carrying the stream.
+        :param cleaned_title: Cleaned in-band stream title.
+        :returns: True when recorded (the caller must not write stream metadata);
+            False when no provider callback exists and normal handling applies.
+        """
+        if (
+            streamdetails.stream_metadata_update_callback is None
+            or streamdetails.data is None
+            or not streamdetails.data.get(STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY)
+        ):
+            return False
+        if streamdetails.data.get(STREAMDETAILS_INBAND_TITLE_KEY) != cleaned_title:
+            # occupancy approximates how far this detection leads audible playback
+            buffer = streamdetails.buffer
+            self.logger.debug(
+                "In-band stream title: %s (buffer occupancy: %ss)",
+                cleaned_title,
+                buffer.size_seconds if buffer is not None else "unknown",
+            )
+            streamdetails.data[STREAMDETAILS_INBAND_TITLE_KEY] = cleaned_title
+        return True
+
     def _parse_icy_metadata(self, meta_data: bytes, streamdetails: StreamDetails) -> None:
         """
         Parse ICY metadata and update streamdetails.
@@ -2922,6 +2960,9 @@ class StreamsAudio:
         cleaned_stream_title = clean_stream_title(stream_title)
 
         if not cleaned_stream_title:
+            return
+
+        if self._record_inband_stream_title(streamdetails, cleaned_stream_title):
             return
 
         if cleaned_stream_title == streamdetails.stream_title:

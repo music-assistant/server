@@ -100,3 +100,10 @@ DEFAULT_PORT: Final[int] = 8097
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+
+# StreamDetails.data key providers set to opt into the in-band title handoff.
+STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
+# StreamDetails.data key where the streams controller records the in-band (ICY)
+# stream title after an opted-in provider takes ownership of stream_metadata
+# (StreamDetails.stream_title is a derived view whose setter would overwrite it).
+STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"
