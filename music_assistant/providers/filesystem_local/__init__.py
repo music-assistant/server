@@ -1750,7 +1750,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         return resolved
 
-    def _resolve_directory_by_file(
+    async def _resolve_directory_by_file(
         self, filename: str, track_path: str | None, start_dir: str | None = None
     ) -> str | None:
         """
@@ -1767,29 +1767,153 @@ class LocalFileSystemProvider(MusicProvider):
         :param start_dir: Directory to start the search in. Will be used as start if not None.
         :param track_path: Path of the track. Will be used as start if start_dir is omitted or None.
         """
-        start_search = start_dir if start_dir is not None else track_path
+        start_search = start_dir
+        if start_dir is None and track_path is not None:
+            # no directory passed, use track_path.
+            # track_path contains the filename, remove it.
+            start_search = os.path.dirname(track_path)
 
         if start_search is not None:
-            full_path = self.get_absolute_path(start_search)
-            path_obj = Path(full_path)
-            path_root_obj = Path(self.base_path)
-
-            parent_dir = path_obj.parent
-            matched_dir: Path | None = None
-            for _ in range(3):
-                search = os.path.join(parent_dir, filename)
-                if os.path.exists(search):
-                    matched_dir = parent_dir
+            current_dir = start_search
+            matched_dir: str | None = None
+            for _i in range(10):
+                search = os.path.join(current_dir, filename)
+                if await self.exists(search):
+                    matched_dir = current_dir
                     break
 
-                if parent_dir.samefile(path_root_obj):
+                if current_dir == "":
                     # Reached root dir, stop.
                     break
 
-                parent_dir = parent_dir.parent
+                current_dir = os.path.dirname(current_dir)
 
             if matched_dir:
-                return get_relative_path(self.base_path, matched_dir.as_posix())
+                return get_relative_path(self.base_path, matched_dir)
+
+        return None
+
+    async def _resolve_album_directory_with_nfo(
+        self, track_path: str, track_tags: AudioTags | None = None
+    ) -> str | None:
+        """
+        Resolve the album directory by searching album.nfo.
+
+        Searches for an album.nfo-file in the track-directory and the directories above.
+
+        If an album.nfo is found, its contents are parsed and matched against the musicbrainz-id (if provided) or
+        the album name given in the tags.
+
+        If this check passes, the path of the matched directory will be returned.
+
+        :param track_path: Path of the track file.
+        :param track_tags: Extracted Tags from the file.
+        """
+        if track_tags is not None:
+            path = await self._resolve_directory_by_file(
+                filename="album.nfo", track_path=track_path
+            )
+            if path is not None:
+                filename = os.path.join(path, "album.nfo")
+                if await self.exists(filename):
+                    try:
+                        data = (await self._read_file(filename)).decode("utf-8")
+                        content = await asyncio.to_thread(xmltodict.parse, data)
+                        nfo_album = content.get("album")
+
+                        nfo_mb_album_id = clean_mbid(
+                            nfo_album.get("musicbrainzalbumid"), "album.nfo"
+                        )
+                        nfo_mb_releasegroup_id = clean_mbid(
+                            nfo_album.get("musicbrainzreleasegroupid"), "album.nfo"
+                        )
+                        nfo_album_name = nfo_album.get("title")
+
+                        track_mb_album_id = clean_mbid(track_tags.get("musicbrainzalbumid", None))
+                        track_mb_releasegroup_id = clean_mbid(
+                            track_tags.get("musicbrainzreleasegroupid", None)
+                        )
+                        track_album_name = track_tags.get("album", None)
+
+                        if track_mb_album_id is not None and track_mb_album_id == nfo_mb_album_id:
+                            self.logger.debug(
+                                "resolved album dir with album.nfo: matched musicbrainz-album-id"
+                            )
+                            return path
+
+                        if (
+                            track_mb_releasegroup_id is not None
+                            and track_mb_releasegroup_id == nfo_mb_releasegroup_id
+                        ):
+                            self.logger.debug(
+                                "resolved album dir with album.nfo: matched musicbrainz-release-group-id"
+                            )
+                            return path
+
+                        if track_album_name is not None and track_album_name == nfo_album_name:
+                            self.logger.debug(
+                                "resolved album dir with album.nfo: matched album name"
+                            )
+                            return path
+
+                        self.logger.debug('Found "%s", but nothing matched. Ignoring file.')
+
+                    except (ExpatError, KeyError) as err:
+                        self.logger.warning(
+                            "Failed to parse album NFO file %s: %s", filename, str(err)
+                        )
+
+        return None
+
+    async def _resolve_artist_directory_with_nfo(
+        self, track_path: str, mbid: str | None = None, artist_name: str | None = None
+    ) -> str | None:
+        """
+        Resolve the artist directory by searching artist.nfo.
+
+        Searches for an artist.nfo-file in the track-directory and the directories above.
+
+        If an artist.nfo is found, its contents are parsed and matched against the musicbrainz-id (if provided) or
+        the artist name given in the tags.
+
+        If this check passes, the path of the matched directory will be returned.
+
+        :param track_path: Path of the track file.
+        :param mbid: musicbrainz artist id from tags, if known.
+        :param artist_name: artist name from tags, if known.
+        """
+        path = await self._resolve_directory_by_file(filename="artist.nfo", track_path=track_path)
+        if path is not None:
+            filename = os.path.join(path, "artist.nfo")
+            if await self.exists(filename):
+                try:
+                    data = (await self._read_file(filename)).decode("utf-8")
+                    content = await asyncio.to_thread(xmltodict.parse, data)
+                    nfo_artist = content.get("artist")
+
+                    nfo_mb_artist_id = clean_mbid(
+                        nfo_artist.get("musicBrainzArtistID"), "artist.nfo"
+                    )
+                    nfo_artist_name = nfo_artist.get("name")
+
+                    if mbid is not None and mbid == nfo_mb_artist_id:
+                        self.logger.debug(
+                            "resolved artist dir with artist.nfo: matched musicbrainz-artist-id"
+                        )
+                        return path
+
+                    if artist_name is not None and artist_name == nfo_artist_name:
+                        self.logger.debug(
+                            "resolved artist dir with artist.nfo: matched artist name"
+                        )
+                        return path
+
+                    self.logger.debug('Found "%s", but nothing matched. Ignoring file.')
+
+                except (ExpatError, KeyError) as err:
+                    self.logger.warning(
+                        "Failed to parse artist NFO file %s: %s", filename, str(err)
+                    )
 
         return None
 
@@ -1851,10 +1975,10 @@ class LocalFileSystemProvider(MusicProvider):
                     if artist_path:
                         break
 
-        if artist_path is None:
+        if artist_path is None and track_path is not None:
             # if we haven't found the path yet, try to find it by searching artist.nfo.
-            artist_path = self._resolve_directory_by_file(
-                filename="artist.nfo", start_dir=album_dir, track_path=track_path
+            artist_path = await self._resolve_artist_directory_with_nfo(
+                track_path=track_path, mbid=mbid, artist_name=name
             )
 
         # prefer (short lived) cache for a bit more speed
@@ -2277,7 +2401,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         if album_dir is None:
             # if we haven't found the path yet, try to find it by searching album.nfo.
-            album_dir = self._resolve_directory_by_file(filename="album.nfo", track_path=track_path)
+            album_dir = await self._resolve_album_directory_with_nfo(
+                track_path=track_path, track_tags=track_tags
+            )
 
         if album_dir and (
             cache := await self.cache.get(
