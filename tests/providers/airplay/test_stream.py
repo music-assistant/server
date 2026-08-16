@@ -2046,6 +2046,7 @@ def test_unrelated_cli_error_does_not_switch_to_compatibility() -> None:
 def test_native_control_failure_restarts_a_standalone_session() -> None:
     """A standalone queue is restarted because no group recovery owns its transport."""
     player = _make_player()
+    player.state.playback_state = PlaybackState.PLAYING
     player.provider.mass.create_task.side_effect = lambda awaitable: awaitable.close()
     stream = AirPlayStream(player)
     stream.session = MagicMock(sync_clients=[player])
@@ -2053,6 +2054,21 @@ def test_native_control_failure_restarts_a_standalone_session() -> None:
     stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     player.provider.mass.create_task.assert_called_once()
+
+
+def test_native_control_failure_does_not_resume_paused_playback() -> None:
+    """A paused queue keeps waiting for the user even after its mode changes."""
+    player = _make_player()
+    player.state.playback_state = PlaybackState.PAUSED
+    stream = AirPlayStream(player)
+    stream.session = MagicMock(sync_clients=[player])
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+    )
+    player.provider.mass.create_task.assert_not_called()
 
 
 @pytest.mark.parametrize(

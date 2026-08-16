@@ -1944,6 +1944,7 @@ class AirPlayStream:
             and len(session.sync_clients) == 1
             and not self.player.synced_to
             and not self.player.group_members
+            and self.player.state.playback_state == PlaybackState.PLAYING
         ):
             # Native groups and Sendspin bridges already recover a dead transport
             # in place. A standalone queue has no owner to restart it.
