@@ -213,6 +213,8 @@ def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -
         " for any purpose with or without fee is hereby granted.",
         "Redistribution and use in source and binary forms, with or without modification, are"
         " permitted provided that the following conditions are met.",
+        'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this'
+        " file except in compliance with the License.",
     ],
 )
 def test_compatible_licenses(license_str: str) -> None:
@@ -287,10 +289,22 @@ def test_license_text_is_read_on_its_grant_only() -> None:
             " for non-commercial use.",
             "Unknown/unverified license",
         ),
-        # ...and neither does one that denies it outright
+        # ...and neither does one that denies it outright, however the denial is worded
         (
             "No permission is hereby granted, free of charge, to any person obtaining a copy of"
             " this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
+        (
+            "No additional permission is hereby granted, free of charge, to any person obtaining"
+            " a copy of this software and associated documentation files.",
+            "Unknown/unverified license",
+        ),
+        # a grant is quoted to its last word, so a text trailing off into another license is not
+        # taken for the one it started as
+        (
+            'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this'
+            " file except in compliance with the Proprietary License",
             "Unknown/unverified license",
         ),
         # a copyleft license the text is combined with is not excused by the grant it spells out

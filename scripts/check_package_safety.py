@@ -102,8 +102,10 @@ LICENSE_TEXT_GRANTS = {
     " applications, and to alter it and redistribute it freely",
 }
 
-# Words that turn the grant written behind them into its opposite
+# Words that turn the grant written behind them into its opposite, and how many words ahead of
+# the grant they are looked for
 GRANT_NEGATIONS = ("NO", "NOT", "NEITHER", "NEVER")
+GRANT_NEGATION_REACH = 3
 
 # SPDX identifiers accepted in a PEP 639 `license_expression`
 COMPATIBLE_SPDX_LICENSES = {
@@ -669,15 +671,15 @@ def _names_license(license_str: str) -> bool:
 
     :param license_str: The license string to read, e.g. "MIT License".
     """
-    known = {_license_words(name) for name in COMPATIBLE_LICENSE_NAMES}
-    if _license_words(license_str) in known:
+    known = {_license_name_words(name) for name in COMPATIBLE_LICENSE_NAMES}
+    if _license_name_words(license_str) in known:
         return True
 
     # a value naming several licenses, whether it combines them or offers a choice, is accepted
     # only when every one of them is. The whole value is matched first, so that a name holding a
     # separator is not taken apart into pieces that name nothing
     names = [
-        _license_words(name)
+        _license_name_words(name)
         for name in re.split(r"[,/]|\band\b|\bor\b", license_str, flags=re.IGNORECASE)
         if name.strip()
     ]
@@ -694,11 +696,26 @@ def _quotes_license_text(license_str: str) -> bool:
     for grant in LICENSE_TEXT_GRANTS:
         before, found, _ = words.partition(f" {_license_words(grant)} ")
         # a grant the text denies is not one the license gives
-        preceding = before.rsplit(maxsplit=1)
-        if found and (not preceding or preceding[-1] not in GRANT_NEGATIONS):
+        preceding = before.rsplit(maxsplit=GRANT_NEGATION_REACH)[-GRANT_NEGATION_REACH:]
+        if found and not any(word in GRANT_NEGATIONS for word in preceding):
             return True
 
     return False
+
+
+def _license_name_words(name: str) -> str:
+    """
+    Return the words of a license name as one key, so spellings of it compare equal.
+
+    :param name: The license name to normalise, e.g. "MPL 2.0".
+    """
+    # a leading "The" and a trailing "License" are noise the same name is written with and without
+    words = _license_words(name).split()
+    if words[:1] == ["THE"]:
+        del words[0]
+    if words[-1:] == ["LICENSE"]:
+        del words[-1]
+    return " ".join(words)
 
 
 def _license_words(value: str) -> str:
@@ -707,16 +724,10 @@ def _license_words(value: str) -> str:
 
     :param value: The license string to normalise.
     """
-    # separators are spelled inconsistently ("MPL 2.0" for "MPL-2.0"), "licence" and "license"
-    # are the same word, and both a leading "The" and a trailing "License" are noise the same
-    # name is written with and without. Words in any script count, so that a term we cannot read
-    # keeps the value from matching a name rather than dropping out of it
-    words = re.findall(r"[^\W_]+", value.upper().replace("LICENCE", "LICENSE"))
-    if words[:1] == ["THE"]:
-        del words[0]
-    if words[-1:] == ["LICENSE"]:
-        del words[-1]
-    return " ".join(words)
+    # separators are spelled inconsistently ("MPL 2.0" for "MPL-2.0") and "licence" and "license"
+    # are the same word. Words in any script count, so that a term we cannot read keeps the value
+    # from matching a name rather than dropping out of it
+    return " ".join(re.findall(r"[^\W_]+", value.upper().replace("LICENCE", "LICENSE")))
 
 
 def _is_spdx_operator(token: str) -> bool:
