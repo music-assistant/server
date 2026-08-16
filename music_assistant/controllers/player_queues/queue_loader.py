@@ -719,7 +719,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # keeps the items preceding a start_item (chosen track pinned first) instead of dropping
         # them. When the option still has to be derived, this runs as soon as it is known.
         if option is not None:
-            self._apply_shuffle_intent(queue_id, option, shuffle)
+            await self._apply_shuffle_intent(queue_id, option, shuffle)
 
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
@@ -787,7 +787,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     option = QueueOption(config_value)
                     if option == QueueOption.REPLACE:
                         self._clear(queue_id, skip_stop=True)
-                    self._apply_shuffle_intent(queue_id, option, shuffle)
+                    await self._apply_shuffle_intent(queue_id, option, shuffle)
 
                 # collect media_items to play
                 if is_dynamic_source(media_item):

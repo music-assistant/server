@@ -496,10 +496,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_by: Optional sort key to order tracks before applying start_item.
         :param start_from_beginning: Start a podcast episode at position 0, ignoring any
             saved resume position. The stored progress itself is left untouched.
-        :param shuffle: Play the media shuffled (or explicitly in order). Only applies when the
-            queue is replaced, and never to a dynamic source (an always-on smart mix). Omit to let
-            the queue decide: it keeps shuffle when the user just switched it on, and plays the
-            media in order otherwise.
+        :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
+            options that start playing right away (play/replace), and never to a dynamic source
+            (an always-on smart mix). Omit to let the queue decide: it keeps shuffle when the user
+            just switched it on, and plays the media in order otherwise.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
@@ -1823,7 +1823,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         self.signal_update(queue_id)
 
-    def _apply_shuffle_intent(
+    async def _apply_shuffle_intent(
         self, queue_id: str, option: QueueOption, shuffle: bool | None
     ) -> None:
         """
@@ -1833,18 +1833,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param option: The enqueue option this command resolved to.
         :param shuffle: Explicit shuffle request from the caller; None to derive it.
         """
+        if option not in (QueueOption.PLAY, QueueOption.REPLACE):
+            # only the options that start playing the media right away are a new listening
+            # session; staging items for later leaves the queue's shuffle state alone
+            return
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        # Only an enqueue that discards the existing items starts a new listening session. That is
-        # a replace, and any option other than add onto a queue that already played to its end -
-        # which `_enqueue_with_option` wipes for the same reason. The options that keep (part of)
-        # the queue keep its shuffle state too: their items are already in shuffled order, which
-        # switching shuffle off here would leave contradicting the queue's own flag.
-        starts_new_session = option == QueueOption.REPLACE or (
-            queue.ended and option != QueueOption.ADD
-        )
-        if not starts_new_session:
-            return
         if shuffle is None:
             # Without an explicit request, shuffle only carries over when the user asked for it
             # moments ago: starting an album is otherwise expected to play it in track order,
@@ -1853,8 +1847,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_data.shuffle_set_at is not None
                 and (time.monotonic() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
             )
+        # a dynamic queue is an always-on smart mix that locks the toggle, so leave it be
+        if queue.shuffle_enabled != shuffle and not queue.is_dynamic:
+            # routed through set_shuffle so switching shuffle off also restores the order of the
+            # items that stay in the queue: a play keeps them, and a tail left in shuffled order
+            # behind a queue that now reads unshuffled would contradict its own flag
+            await self.set_shuffle(queue_id, shuffle)
+        # the intent belongs to this play command alone, whether or not it changed anything
         queue_data.shuffle_set_at = None
-        if queue.shuffle_enabled == shuffle:
-            return
-        queue.shuffle_enabled = shuffle
-        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
