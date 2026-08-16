@@ -3,7 +3,7 @@
   "domain": "yoto",
   "name": "Yoto",
   "stage": "beta",
-  "description": "Yoto Music Provider for Music Assistant.",
+  "description": "Stream music, audiobooks, or podcasts, purchased from the Yoto store or uploaded with the Make-Your-Own feature.",
   "codeowners": [
     "@pantsman0"
   ],
