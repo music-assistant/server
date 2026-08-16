@@ -1134,8 +1134,10 @@ class AirPlayProvider(PlayerProvider):
                         player.name,
                     )
                 else:
-                    player.stream.prevent_playback = True
-                    if player.stream.session:
+                    active_stream = player.stream
+                    active_stream.prevent_playback = True
+                    active_stream.supersede_recovery()
+                    if active_stream.session:
                         self.logger.debug(
                             "Prevent playback command detected for player %s",
                             player.name,
@@ -1145,7 +1147,7 @@ class AirPlayProvider(PlayerProvider):
                                 self.mass.players.cmd_ungroup(parent_player.player_id)
                             )
                         else:
-                            self.mass.create_task(player.stream.stop())
+                            self.mass.create_task(active_stream.stop())
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 # use a debounced reset to avoid race conditions where a quick
