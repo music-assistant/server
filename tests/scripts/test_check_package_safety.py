@@ -88,7 +88,42 @@ def pypi_info(**overrides: Any) -> dict[str, Any]:
 )
 def test_get_package_license(info: dict[str, Any], expected: str) -> None:
     """Test the license is resolved from any of the fields PyPI exposes it in."""
-    assert get_package_license(info) == expected
+    assert get_package_license(info)[0] == expected
+
+
+@pytest.mark.parametrize(
+    ("info", "expected"),
+    [
+        (pypi_info(license_expression="0BSD"), True),
+        (pypi_info(license="0BSD"), False),
+        (pypi_info(classifiers=["License :: OSI Approved :: MIT License"]), False),
+        (pypi_info(), False),
+    ],
+)
+def test_get_package_license_reports_spdx(info: dict[str, Any], expected: bool) -> None:
+    """Test only a PEP 639 expression is reported as one."""
+    assert get_package_license(info)[1] is expected
+
+
+@pytest.mark.parametrize(
+    ("license_str", "expected"),
+    [
+        # an expression is validated by PyPI, so what the evaluator rejects is simply not allowed,
+        # rather than wording we failed to read
+        ("MIT AND Frobnicate-1.0", False),
+        # a malformed expression names nothing we can check, so it is not compatible either
+        ("MIT OR AND", False),
+        ("MIT OR (Apache-2.0", False),
+        ("BSD-3-Clause-No-Nuclear-License-2014", False),
+        ("LicenseRef-Proprietary", False),
+        ("0BSD", True),
+        ("MIT OR Apache-2.0", True),
+        ("Apache-2.0 WITH LLVM-exception", True),
+    ],
+)
+def test_spdx_expressions_are_not_guessed_at(license_str: str, expected: bool) -> None:
+    """Test an SPDX expression is judged on its identifiers only."""
+    assert check_license_compatibility(license_str, True)[0] is expected
 
 
 @pytest.mark.parametrize(
@@ -138,6 +173,7 @@ def test_compatible_licenses(license_str: str) -> None:
         # expression around it parses
         ("MIT AND GPL-3.0-only", "Incompatible copyleft license (MIT AND GPL-3.0-only)"),
         ("(GPL-3.0-only AND MIT", "Incompatible copyleft license"),
+        ("MIT OR (GPL-3.0-only", "Incompatible copyleft license"),
         ("LicenseRef-MIT Custom", "Unknown/unverified license"),
         # only understood in part is not understood: "Zlib" alone would be compatible
         ("Zlib plus custom terms", "Unknown/unverified license"),

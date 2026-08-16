@@ -121,19 +121,21 @@ def check_typosquatting(package_name: str) -> str | None:
     return None
 
 
-def get_package_license(info: dict[str, Any]) -> str:
+def get_package_license(info: dict[str, Any]) -> tuple[str, bool]:
     """
     Resolve the license of a package from its PyPI metadata.
+
+    Returns the license and whether it is a PEP 639 SPDX expression.
 
     :param info: The `info` section of the PyPI JSON response.
     """
     # packages that adopted PEP 639 declare an SPDX expression, which is more precise than the
     # free-form field and the classifiers, and is usually the only license metadata they carry
     if license_expression := (info.get("license_expression") or "").strip():
-        return license_expression
+        return license_expression, True
 
     if license_str := (info.get("license") or "").strip():
-        return license_str
+        return license_str, False
 
     license_classifiers = []
     for classifier in info.get("classifiers") or []:
@@ -149,16 +151,19 @@ def get_package_license(info: dict[str, Any]) -> str:
         return next(
             (name for name in license_classifiers if not check_license_compatibility(name)[0]),
             license_classifiers[0],
-        )
+        ), False
 
-    return "Unknown"
+    return "Unknown", False
 
 
-def check_license_compatibility(license_str: str) -> tuple[bool, str]:
+def check_license_compatibility(
+    license_str: str, spdx_expression: bool = False
+) -> tuple[bool, str]:
     """
     Check if license is compatible with the project.
 
     :param license_str: The license string from PyPI.
+    :param spdx_expression: Whether the string is a PEP 639 SPDX expression.
     """
     if not license_str or license_str == "Unknown":
         return False, "No license information"
@@ -173,10 +178,12 @@ def check_license_compatibility(license_str: str) -> tuple[bool, str]:
         problem in license_upper for problem in PROBLEMATIC_LICENSES
     )
 
-    # fall back to plain substring matching for the strings the evaluator did not understand, but
-    # never when a copyleft or a PEP 639 custom license is named, as a permissive name in the
-    # string could be hiding it
-    if spdx_compatible is None and not copyleft and "LICENSEREF" not in license_upper:
+    # an SPDX expression is a validated, machine-readable field: whatever the evaluator did not
+    # accept in one names a license that is not on the allow list, so guessing from the wording
+    # would only weaken the check. For free-form fields the wording is all we have, but a name we
+    # do recognise there must not end up approving a copyleft or custom license next to it
+    guessable = not spdx_expression and not copyleft and "LICENSEREF" not in license_upper
+    if spdx_compatible is None and guessable:
         # ignore punctuation so spelling variants such as "MPL 2.0" match "MPL-2.0"
         squashed = re.sub(r"[^A-Z0-9]", "", license_upper)
         for compatible in COMPATIBLE_LICENSES:
@@ -275,8 +282,10 @@ def check_package(package_name: str) -> dict[str, Any]:
 
     # Run automated security checks
     typosquat_check = check_typosquatting(package_name)
-    package_license = get_package_license(info)
-    license_compatible, license_status = check_license_compatibility(package_license)
+    package_license, spdx_expression = get_package_license(info)
+    license_compatible, license_status = check_license_compatibility(
+        package_license, spdx_expression
+    )
 
     checks = {
         "name": package_name,
@@ -477,12 +486,16 @@ def main() -> int:
     return 0
 
 
+class _SpdxSyntaxError(Exception):
+    """Raised when a string does not follow the SPDX expression grammar."""
+
+
 def _evaluate_spdx_expression(license_str: str) -> bool | None:
     """
     Check an SPDX license expression (PEP 639) against the allow list.
 
-    Returns None when the string is not an SPDX expression or holds an identifier that is
-    neither known-compatible nor known-problematic.
+    Returns None when the string is not a well-formed expression, or when it names a license
+    that is neither known-compatible nor known-problematic.
 
     :param license_str: The license string to evaluate, e.g. "MIT OR Apache-2.0".
     """
@@ -493,9 +506,14 @@ def _evaluate_spdx_expression(license_str: str) -> bool | None:
     # into it, and refuse outright as the fallback would match on a name nested inside
     if _max_group_depth(tokens) > MAX_SPDX_NESTING:
         return False
-    result = _evaluate_spdx_tokens(tokens)
-    # anything left over means we did not understand the string as a whole
-    return None if tokens else result
+    try:
+        result = _evaluate_spdx_tokens(tokens)
+        if tokens:
+            # anything left over means we did not understand the string as a whole
+            raise _SpdxSyntaxError
+    except _SpdxSyntaxError:
+        return None
+    return result
 
 
 def _evaluate_spdx_tokens(tokens: list[str]) -> bool | None:
@@ -542,14 +560,14 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
 
     :param tokens: The remaining tokens of the expression.
     """
-    if not tokens:
-        return None
+    if not tokens or tokens[0] == ")" or tokens[0].upper() in ("AND", "OR", "WITH"):
+        raise _SpdxSyntaxError
 
     if tokens[0] == "(":
         tokens.pop(0)
         result = _evaluate_spdx_tokens(tokens)
         if not tokens or tokens.pop(0) != ")":
-            return None
+            raise _SpdxSyntaxError
         return result
 
     identifier = tokens.pop(0).rstrip("+").upper()
@@ -557,7 +575,7 @@ def _evaluate_spdx_operand(tokens: list[str]) -> bool | None:
     if tokens and tokens[0].upper() == "WITH":
         tokens.pop(0)
         if not tokens:
-            return None
+            raise _SpdxSyntaxError
         tokens.pop(0)
 
     if identifier in COMPATIBLE_SPDX_LICENSES:
