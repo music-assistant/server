@@ -331,6 +331,8 @@ class TestMixedGroupReadOnly:
             provider=mock_provider, player_id=leader_player_id, device=mock_wiim_device
         )
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        # the shared mixed-group predicate scans registered provider players
+        mock_provider.players = [player]
         return player
 
     def test_generic_member_makes_group_mixed_and_read_only(
@@ -381,14 +383,31 @@ class TestMixedGroupReadOnly:
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
         """A direct set_members on a mixed group is rejected, not partially applied."""
+        player = self._leader_with_member(
+            mock_provider, mock_wiim_device, "uuid:test-linkplay-001", BACKEND_GENERIC
+        )
+        player._update_ma_state_from_sdk_cache()  # populates a mixed group
+        with pytest.raises(UnsupportedFeaturedException):
+            await player.set_members(player_ids_to_add=["wiim_uuid:other"])
+
+    def test_official_follower_of_generic_leader_is_mixed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """An official device a generic leader lists as a follower is read-only too."""
         player = WiimPlayer(
             provider=mock_provider,
             player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
             device=mock_wiim_device,
         )
-        player._in_mixed_group = True
-        with pytest.raises(UnsupportedFeaturedException):
-            await player.set_members(player_ids_to_add=["wiim_uuid:other"])
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._attr_group_members = []  # a follower manages nothing itself
+        generic_leader = MagicMock(
+            player_id="wiim_uuid:generic-leader", linkplay_backend=BACKEND_GENERIC
+        )
+        generic_leader._attr_group_members = [generic_leader.player_id, player.player_id]
+        mock_provider.players = [player, generic_leader]
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert player.can_group_with == set()
 
 
 class TestSourceList:

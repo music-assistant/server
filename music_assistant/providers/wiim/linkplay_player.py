@@ -15,12 +15,12 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo
-from pywiim import WiiMClient, WiiMError, WiiMGroupCompatibilityError
+from pywiim import WiiMClient, WiiMError
 
 from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 
 from .constants import BACKEND_GENERIC, PLAYER_ID_PREFIX
-from .helpers import linkplay_slave_uuid_to_udn
+from .helpers import is_in_mixed_group, linkplay_group_compatible, linkplay_slave_uuid_to_udn
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice
@@ -64,10 +64,6 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # base derives from linked protocols): it gates the native grouping capability.
         # Set before super().__init__ because the base reads supported_features during init.
         self._linkplay_available = False
-        # Whether this device is currently part of an externally-created MIXED group (a
-        # group that also contains an official WiiM member). Such groups are read-only until
-        # cross-backend grouping is supported, so grouping is withdrawn while it holds.
-        self._in_mixed_group = False
         super().__init__(provider, player_id)
         # Low-level LinkPlay HTTP client over MA's shared aiohttp session. Its close()
         # would close that shared session, so it is never closed here.
@@ -130,7 +126,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     @property
     def can_group_with(self) -> set[str]:
-        """Return the ids of the reachable generic LinkPlay peers this player can group with."""
+        """Return the ids of the reachable, compatible generic LinkPlay peers to group with."""
         if not self._linkplay_available or self._in_mixed_group:
             return set()
         return {
@@ -140,6 +136,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             and player is not self
             and player._linkplay_available
             and not player._in_mixed_group
+            and linkplay_group_compatible(self._cached_device_info, player._cached_device_info)
         }
 
     # --- Player commands ---
@@ -159,6 +156,13 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         try:
             for member_id in player_ids_to_add or []:
                 member = self._require_linkplay_member(member_id)
+                if not linkplay_group_compatible(
+                    self._cached_device_info, member._cached_device_info
+                ):
+                    raise UnsupportedFeaturedException(
+                        f"Cannot group {member_id} with {self.name}: "
+                        "incompatible LinkPlay multiroom generation"
+                    )
                 await member._client.join_slave(
                     self._client.host, master_device_info=self._cached_device_info
                 )
@@ -167,10 +171,6 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                 member = self._require_linkplay_member(member_id)
                 await member._client.leave_group()
                 await self._verify_group_change(member, member_id, expect_slave=False)
-        except WiiMGroupCompatibilityError as err:
-            raise PlayerCommandFailed(
-                f"Cannot group {self.name}: incompatible devices ({err})"
-            ) from err
         except WiiMError as err:
             raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
         finally:
@@ -233,7 +233,6 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                     self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
                 self._linkplay_available = False
                 self._attr_group_members = []
-                self._in_mixed_group = False
                 self.update_state()
                 return
             self._linkplay_available = True
@@ -252,20 +251,16 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # real group. It returns the slaves only for a master; a follower/solo returns none.
         slaves = await self._client.get_slaves_info()
         members = [self.player_id]
-        mixed = False
         for slave in slaves:
             resolved = self._resolve_member_player_id(slave.get("uuid"))
-            if not resolved or resolved in members:
-                continue
-            members.append(resolved)
-            # A resolved member whose backend is not the generic LinkPlay shell (i.e. an
-            # official WiiM member) makes this an externally-created mixed group, which is
-            # read-only until cross-backend grouping is supported.
-            member = self.mass.players.get_player(resolved)
-            if getattr(member, "linkplay_backend", None) != BACKEND_GENERIC:
-                mixed = True
-        self._in_mixed_group = mixed
+            if resolved and resolved not in members:
+                members.append(resolved)
         self._attr_group_members = members if len(members) > 1 else []
+
+    @property
+    def _in_mixed_group(self) -> bool:
+        """Whether this device is in an externally-created mixed (cross-backend) group."""
+        return is_in_mixed_group(self)
 
     def _require_linkplay_member(self, player_id: str) -> LinkPlayPlayer:
         """

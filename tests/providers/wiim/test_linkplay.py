@@ -9,13 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
-from pywiim import WiiMError, WiiMGroupCompatibilityError
+from pywiim import WiiMError
 
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
 from music_assistant.providers.wiim.helpers import (
     is_official_manufacturer,
+    linkplay_group_compatible,
     linkplay_slave_uuid_to_player_id,
     linkplay_slave_uuid_to_udn,
 )
@@ -150,6 +151,10 @@ def _make_shell(
         mac_address="AA:BB:CC:DD:EE:FF",
     )
     player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+    # a modern, router-based device so compatibility checks pass by default
+    player._cached_device_info = SimpleNamespace(
+        wmrm_version="4.2", needs_wifi_direct_multiroom=False
+    )
     return player
 
 
@@ -333,19 +338,22 @@ class TestGrouping:
         with pytest.raises(PlayerCommandFailed):
             await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
 
-    async def test_incompatible_group_raises(
+    async def test_incompatible_generation_rejected(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """An incompatible same-backend group fails rather than silently succeeding."""
+        """A peer on an incompatible/legacy multiroom generation is rejected before joining."""
         leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
         leader._linkplay_available = True
-        member_client = MagicMock(
-            join_slave=AsyncMock(side_effect=WiiMGroupCompatibilityError("2.0", "4.2"))
-        )
+        member_client = MagicMock(join_slave=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        # a legacy Wi-Fi-Direct / older-generation device that we do not group
+        member._cached_device_info = SimpleNamespace(
+            wmrm_version="2.0", needs_wifi_direct_multiroom=True
+        )
         mock_provider.mass.players.get_player.return_value = member
-        with pytest.raises(PlayerCommandFailed):
+        with pytest.raises(UnsupportedFeaturedException):
             await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
+        member_client.join_slave.assert_not_awaited()
 
     async def test_unverified_join_raises(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -489,6 +497,63 @@ class TestMixedGroupReadOnly:
         await leader._update_group_members()
         with pytest.raises(PlayerCommandFailed):
             await leader.set_members(player_ids_to_add=[EDIFIER_PLAYER_ID])
+
+    def test_generic_follower_of_official_leader_is_mixed(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A generic device an official leader lists as a follower is read-only too."""
+        follower = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        follower._linkplay_available = True
+        follower._attr_group_members = []  # a follower manages nothing itself
+        # an official leader (other backend) currently lists this generic device
+        official_leader = MagicMock(
+            player_id="wiim_uuid:official-leader", linkplay_backend="official"
+        )
+        official_leader._attr_group_members = [official_leader.player_id, EDIFIER_PLAYER_ID]
+        mock_provider.players = [follower, official_leader]
+        assert PlayerFeature.SET_MEMBERS not in follower.supported_features
+        assert follower.can_group_with == set()
+
+
+class TestGroupCompatibility:
+    """Only compatible, modern router-based generic LinkPlay devices may be grouped."""
+
+    def test_same_major_generation_compatible(self) -> None:
+        """4.2 and 4.3 (same WMRM major, router-based) can be grouped."""
+        first = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
+        second = SimpleNamespace(wmrm_version="4.3", needs_wifi_direct_multiroom=False)
+        assert linkplay_group_compatible(first, second) is True
+
+    def test_wifi_direct_rejected(self) -> None:
+        """A legacy Wi-Fi-Direct device is never grouped."""
+        first = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
+        second = SimpleNamespace(wmrm_version="2.0", needs_wifi_direct_multiroom=True)
+        assert linkplay_group_compatible(first, second) is False
+
+    def test_different_major_generation_rejected(self) -> None:
+        """Different WMRM major generations are not grouped."""
+        first = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
+        second = SimpleNamespace(wmrm_version="3.0", needs_wifi_direct_multiroom=False)
+        assert linkplay_group_compatible(first, second) is False
+
+    def test_unknown_device_info_rejected(self) -> None:
+        """An unknown (missing) device info is treated as incompatible."""
+        known = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
+        assert linkplay_group_compatible(None, known) is False
+
+    async def test_can_group_with_excludes_incompatible_peer(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A reachable but legacy/incompatible peer is not offered as a grouping target."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
+        peer._linkplay_available = True
+        peer._cached_device_info = SimpleNamespace(
+            wmrm_version="2.0", needs_wifi_direct_multiroom=True
+        )
+        mock_provider.players = [player, peer]
+        assert player.can_group_with == set()
 
 
 class TestRefreshResilience:

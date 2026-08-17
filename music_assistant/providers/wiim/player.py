@@ -21,7 +21,6 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
-    BACKEND_GENERIC,
     BACKEND_OFFICIAL,
     INPUT_MODE_SOURCES,
     PASSIVE_SOURCES,
@@ -32,6 +31,7 @@ from .constants import (
     SOURCE_SPOTIFY,
     SOURCE_UNKNOWN,
 )
+from .helpers import is_in_mixed_group
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
@@ -64,10 +64,6 @@ class WiimPlayer(Player):
         mac_address: str | None = None,
     ) -> None:
         """Initialize the Player."""
-        # Whether this device is in an externally-created MIXED group (one that also holds
-        # a generic LinkPlay member). Set before super().__init__ because the base reads
-        # supported_features during init. Such groups are read-only until layer 2.
-        self._in_mixed_group = False
         super().__init__(provider, player_id)
 
         self._attr_name = device.name
@@ -576,7 +572,7 @@ class WiimPlayer(Player):
         self._update_ma_state_from_sdk_cache()
 
     def _update_group_state(self, member_udns: tuple[str, ...]) -> None:
-        """Map the SDK's group snapshot to managed members and detect a mixed group."""
+        """Map the SDK's group snapshot to the managed group members."""
         managed_member_ids = [
             f"{PLAYER_ID_PREFIX}{member_udn}"
             for member_udn in member_udns
@@ -586,13 +582,11 @@ class WiimPlayer(Player):
         self._attr_group_members = (
             [self.player_id, *managed_member_ids] if managed_member_ids else []
         )
-        # A managed member on the generic LinkPlay backend makes this a read-only mixed
-        # group; withdraw grouping while it holds and restore it once same-backend again.
-        self._in_mixed_group = any(
-            getattr(self.mass.players.get_player(member_id), "linkplay_backend", None)
-            == BACKEND_GENERIC
-            for member_id in managed_member_ids
-        )
+
+    @property
+    def _in_mixed_group(self) -> bool:
+        """Whether this device is in an externally-created mixed (cross-backend) group."""
+        return is_in_mixed_group(self)
 
     def _resolve_wiim_member(self, player_id: str) -> WiimPlayer | None:
         """
