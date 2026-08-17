@@ -39,7 +39,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Radio 1",
         stream_url="http://icecast.vrtcdn.be/radio1-high.mp3",
         aac_url="http://icecast.vrtcdn.be/radio1.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/radio1.png",
+        logo_url="https://images.vrt.be/orig/2025/06/19/2a99563b-7503-4906-81fb-aa6bc91bfa08.png",
         tagline="Altijd Benieuwd",
     ),
     VrtStation(
@@ -103,7 +103,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Radio Bene",
         stream_url="http://icecast.vrtcdn.be/radiobene-high.mp3",
         aac_url="http://icecast.vrtcdn.be/radiobene.aac",
-        logo_url="https://images.vrt.be/orig/2025/06/19/618178fe-dd3b-4a59-b06c-4383a1684b34.svg",
+        logo_url="https://images.vrt.be/orig/2025/06/19/d7fc517e-2fc8-4467-b1d0-90a32b1c7334.png",
         tagline=None,
     ),
     VrtStation(
@@ -111,7 +111,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Klara",
         stream_url="http://icecast.vrtcdn.be/klara-high.mp3",
         aac_url="http://icecast.vrtcdn.be/klara.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/klara.png",
+        logo_url="https://images.vrt.be/orig/2025/06/19/1434fa63-eb65-4f65-b465-26919982d6fc.png",
         tagline="Blijf verwonderd",
     ),
     VrtStation(
@@ -119,7 +119,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Klara Continuo",
         stream_url="http://icecast.vrtcdn.be/klaracontinuo-high.mp3",
         aac_url="http://icecast.vrtcdn.be/klaracontinuo.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/klaracontinuo.png",
+        logo_url="https://images.vrt.be/orig/2025/01/14/7be19ff7-11e4-4f37-95f3-fc7eec0b2e90.png",
         tagline="Non-stop klassieke muziek",
     ),
     VrtStation(
@@ -127,7 +127,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Studio Brussel",
         stream_url="http://icecast.vrtcdn.be/stubru-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/stubru.png",
+        logo_url="https://images.vrt.be/orig/2023/12/08/a6d153f0-95cb-11ee-b483-02b7b76bf47f.png",
         tagline="Life is Music",
     ),
     VrtStation(
@@ -135,15 +135,15 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru De Tijdloze",
         stream_url="http://icecast.vrtcdn.be/stubru_tijdloze-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_tijdloze.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/detijdloze.png",
+        logo_url="https://images.vrt.be/orig/2025/06/19/a8150bd0-4af0-4c4f-bdaf-193f579adba6.png",
         tagline="Altijd en overal de beste Tijdloze muziek",
     ),
     VrtStation(
         id="stubru-bruut",
-        name="StuBru Bruut",
+        name="StuBru Zware Gitaren",
         stream_url="http://icecast.vrtcdn.be/stubru_bruut-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_bruut.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/bruut.png",
+        logo_url="https://images.vrt.be/orig/2023/11/09/832ffc6f-7ee3-11ee-91d7-02b7b76bf47f.png",
         tagline="Alleen maar stevige gitaren",
     ),
     VrtStation(
@@ -151,7 +151,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru De Jaren Nul",
         stream_url="http://icecast.vrtcdn.be/stubru_dejarennul-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_dejarennul.aac",
-        logo_url="https://images.vrt.be/orig/2024/03/26/162a26c5-eb56-11ee-8fc9-02b7b76bf47f.jpg",
+        logo_url="https://images.vrt.be/orig/2024/02/01/83631b8f-c0e8-11ee-b483-02b7b76bf47f.png",
         tagline=None,
     ),
     VrtStation(
@@ -159,7 +159,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru Vuurland",
         stream_url="http://icecast.vrtcdn.be/stubru_tgs-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_tgs.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/vuurland.png",
+        logo_url="https://images.vrt.be/orig/2023/11/02/3b4f9c73-797d-11ee-91d7-02b7b76bf47f.png",
         tagline=None,
     ),
     VrtStation(
@@ -167,7 +167,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru UNTZ",
         stream_url="http://icecast.vrtcdn.be/stubru_untz-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_untz.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/untz.png",
+        logo_url="https://images.vrt.be/orig/2023/11/02/d1a04b27-797d-11ee-91d7-02b7b76bf47f.png",
         tagline="The party never stops",
     ),
     VrtStation(
@@ -175,7 +175,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="MNM",
         stream_url="http://icecast.vrtcdn.be/mnm-high.mp3",
         aac_url="http://icecast.vrtcdn.be/mnm.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/mnm.png",
+        logo_url="https://images.vrt.be/orig/2025/06/19/f0be1c65-3f98-43d1-b962-ded0f3bca602.png",
         tagline="Music and More",
     ),
     VrtStation(
@@ -183,7 +183,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="MNM Hits",
         stream_url="http://icecast.vrtcdn.be/mnm_hits-high.mp3",
         aac_url="http://icecast.vrtcdn.be/mnm_hits.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/mnmhits.png",
+        logo_url="https://images.vrt.be/orig/2024/08/30/7026d62c-1e03-4906-9895-fb030fd52e3a.png",
         tagline="Music and More - The Hits",
     ),
     VrtStation(
@@ -191,7 +191,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Ketnet Hits",
         stream_url="http://icecast.vrtcdn.be/ketnetradio-high.mp3",
         aac_url="http://icecast.vrtcdn.be/ketnetradio.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/ketnethits.png",
+        logo_url="https://images.vrt.be/orig/2024/10/09/8002f6df-dce0-4c05-9dad-ce9d7081832a.png",
         tagline="De hipste hits op een rijtje",
     ),
     VrtStation(
