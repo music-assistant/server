@@ -104,12 +104,12 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     async def setup(self) -> None:
         """Handle logic when the player is set up in the Player controller."""
-        # The discovery probe already fetched and validated the device info and primed it
-        # on this shell, so only re-read reachability when it did not. The coordinator then
-        # does an initial live topology read; the regular poll refreshes both from here on.
+        # The discovery probe already fetched and validated the device info and primed it on
+        # this shell, so only re-read reachability when it did not. The provider reads the
+        # live topology right after registration (a read taken here would be discarded, as
+        # setup runs before the player is registered); the regular poll refreshes both.
         if self._cached_device_info is None:
             await self._refresh_reachability()
-        await self._native_groups.refresh_leader(self, force=True)
 
     async def poll(self) -> None:
         """Poll the device for reachability and push its native group topology."""

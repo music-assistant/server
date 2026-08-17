@@ -551,6 +551,9 @@ class TestProviderRouting:
         # setup must not repeat it, and the shell is registered already reachable.
         mock_client.get_device_info_model.assert_awaited_once()
         assert registered[0]._linkplay_available is True
+        # the live topology is read only after the player is registered (a read taken during
+        # setup, before registration, would be discarded by the coordinator).
+        mock_provider.native_groups.refresh_leader.assert_awaited_with(registered[0], force=True)
 
     async def test_unreachable_device_not_registered(
         self, mock_provider: MagicMock, mock_upnp_device: MagicMock

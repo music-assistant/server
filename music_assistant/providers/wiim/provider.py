@@ -150,8 +150,11 @@ class WiimProvider(PlayerProvider):
             )
             await player.setup()
             await self.mass.players.register_or_update(player)
-            # a newly registered leader may already list this device, and this device may
-            # lead others: reconcile so discovery-order misses on either side self-heal.
+            # read the live topology now the player is registered (setup runs before
+            # registration, so the coordinator would discard a read taken there), then
+            # reconcile so any leader that already lists this device, or that it leads,
+            # self-heals regardless of discovery order.
+            await self.native_groups.refresh_leader(player, force=True)
             self.native_groups.schedule_reconcile()
             self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, player_id)
         except Exception:
@@ -191,8 +194,11 @@ class WiimProvider(PlayerProvider):
         )
         await player.setup()
         await self.mass.players.register_or_update(player)
-        # a newly registered leader may already list this device, and this device may lead
-        # others: reconcile so discovery-order misses on either side self-heal.
+        # read the live topology now the player is registered (setup runs before
+        # registration, so the coordinator would discard a read taken there), then
+        # reconcile so any leader that already lists this device, or that it leads,
+        # self-heals regardless of discovery order.
+        await self.native_groups.refresh_leader(player, force=True)
         self.native_groups.schedule_reconcile()
         self.logger.info("LinkPlay player registered: %s (%s)", player.name, player_id)
 

@@ -111,6 +111,8 @@ def _make_player(
     player.make_command_client = MagicMock(return_value=command_client)
     player.store_command_capabilities = MagicMock()
     player.on_native_group_update = MagicMock()
+    # a modern, router-based generation so two generic peers are offerable to each other
+    player.cached_device_info = MagicMock(needs_wifi_direct_multiroom=False, wmrm_version="4.2")
     return player
 
 
@@ -1434,3 +1436,35 @@ class TestBatchValidation:
         coordinator.set_self_role(FOLLOWER_ID, False)
         await coordinator.reconcile()
         assert coordinator.is_unknown_leader_follower(FOLLOWER_ID) is False
+
+    async def test_unreachable_generic_removal_aborts_batch(self) -> None:
+        """An unreachable generic follower fails a removal batch before any detach runs."""
+        slaves = [FOLLOWER_HTTP_UUID, SECOND_HTTP_UUID]
+        good_client = _member_client()
+        good_client.leave_group = AsyncMock()
+        leader = _make_player(LEADER_ID, BACKEND_GENERIC, command_client=_leader_client(slaves))
+        good = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=good_client)
+        bad = _make_player(SECOND_ID, BACKEND_GENERIC, available=False)  # unreachable
+        coordinator, _ = _make_coordinator(leader, good, bad)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, None, [FOLLOWER_ID, SECOND_ID])
+        good_client.leave_group.assert_not_called()
+
+    def test_incompatible_generic_peer_not_offered(self) -> None:
+        """A legacy/incompatible generic peer is not offered as a grouping candidate."""
+        me = _make_player(LEADER_ID, BACKEND_GENERIC)
+        peer = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
+        # the peer is a legacy Wi-Fi Direct device, so the pair is guaranteed to fail
+        peer.cached_device_info = MagicMock(needs_wifi_direct_multiroom=True, wmrm_version="4.2")
+        coordinator, _ = _make_coordinator(me, peer)
+
+        assert coordinator.can_group_with(me) == set()
+
+    def test_compatible_generic_peer_is_offered(self) -> None:
+        """A modern, matching-generation generic peer is offered as a candidate."""
+        me = _make_player(LEADER_ID, BACKEND_GENERIC)
+        peer = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
+        coordinator, _ = _make_coordinator(me, peer)
+
+        assert coordinator.can_group_with(me) == {FOLLOWER_ID}

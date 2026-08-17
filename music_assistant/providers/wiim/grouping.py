@@ -118,8 +118,12 @@ class NativeGroupCoordinator:
         Return every reachable peer of either backend this player may group with.
 
         Core applies the final grouping filter and auto-ungroups a known follower before
-        regrouping it, so only a follower of a leader MA has NOT discovered is excluded
-        here (it cannot be cleanly moved); every other reachable peer is a candidate.
+        regrouping it. A follower of a leader MA has NOT discovered is excluded (it cannot
+        be cleanly moved), and two generic devices are only paired when they share a known,
+        matching router-based multiroom generation, so the UI never offers a generic pair
+        that the command path would then reject. Cross-backend generation cannot be known
+        without a device read, so those pairs stay candidates and fail closed at command
+        time if incompatible.
 
         :param player: The player requesting its grouping candidates.
         """
@@ -133,6 +137,7 @@ class NativeGroupCoordinator:
             if peer.native_available
             and peer.player_id != player.player_id
             and not self._is_unknown_leader_follower(peer.player_id)
+            and self._offerable_pair(player, peer)
         }
 
     # --- Topology feeders ---
@@ -275,6 +280,14 @@ class NativeGroupCoordinator:
             affected: dict[str, NativePlayer] = {leader.player_id: leader}
             for member in (*add_members, *remove_members):
                 affected[member.player_id] = member
+                # joining a member dissolves any group it currently leads, so its followers
+                # are mutated too and must be locked against a concurrent address rebuild.
+                for follower_id in self.members_of(member.player_id):
+                    if follower_id == member.player_id:
+                        continue
+                    follower = self._mass.players.get_player(follower_id)
+                    if getattr(follower, "linkplay_backend", None) in _NATIVE_BACKENDS:
+                        affected[follower_id] = cast("NativePlayer", follower)
             async with AsyncExitStack() as stack:
                 for player_id in sorted(affected):
                     if (lock := self._rebuild_lock_for(affected[player_id])) is not None:
@@ -293,12 +306,14 @@ class NativeGroupCoordinator:
         try:
             # full validation before any hardware mutation, so an unknown, unreachable or
             # generation-incompatible target fails the whole request before any speaker has
-            # joined or left, rather than leaving a partially formed group behind.
+            # joined or left, rather than leaving a partially mutated group behind.
             self._guard_regroupable(leader)
             join_plan: dict[str, tuple[DeviceInfo | None, DeviceInfo | None] | None] = {}
             for member in add_members:
                 self._guard_regroupable(member)
                 join_plan[member.player_id] = await self._prevalidate_join(leader, member)
+            for member in remove_members:
+                self._prevalidate_leave(leader, member)
             for member in add_members:
                 await self._join(leader, member, join_plan[member.player_id])
             for member in remove_members:
@@ -355,6 +370,25 @@ class NativeGroupCoordinator:
             )
         return leader_info, member_info
 
+    def _prevalidate_leave(self, leader: NativePlayer, member: NativePlayer) -> None:
+        """
+        Validate a removal before any mutation, so a bad target fails the whole batch.
+
+        A same-backend generic follower leaves over its own client, so an unreachable one
+        cannot be detached and must fail up front rather than half-way through the batch.
+        Cross-backend and official removals go through the always-reachable leader (SDK
+        ungroup or leader-side kick), so the follower's own reachability is not required.
+
+        :param leader: The leader the member would leave.
+        :param member: The member that would leave the leader.
+        """
+        if (
+            leader.linkplay_backend == BACKEND_GENERIC
+            and member.linkplay_backend == BACKEND_GENERIC
+            and not member.native_available
+        ):
+            raise PlayerCommandFailed(f"{member.player_id} is not reachable to leave its group")
+
     def _native_players(self) -> list[NativePlayer]:
         """Return this provider's players that belong to either native backend."""
         return [
@@ -369,6 +403,24 @@ class NativeGroupCoordinator:
             self.role_of(player_id) == NativeGroupRole.FOLLOWER
             and self.leader_of(player_id) is None
         )
+
+    def _offerable_pair(self, player: NativePlayer, peer: NativePlayer) -> bool:
+        """
+        Return whether two players may be offered as a grouping pair in the UI.
+
+        Two generic devices are only offered when their cached generations are both known,
+        router-based and matching; any pair involving an official device is offered and
+        validated at command time, where the live device generation is read.
+
+        :param player: The player requesting candidates.
+        :param peer: The candidate peer being considered.
+        """
+        if player.linkplay_backend == BACKEND_GENERIC and peer.linkplay_backend == BACKEND_GENERIC:
+            return linkplay_group_compatible(
+                getattr(player, "cached_device_info", None),
+                getattr(peer, "cached_device_info", None),
+            )
+        return True
 
     def _rebuild(self) -> None:
         """Recompute roles and membership, then push state to every changed player."""
