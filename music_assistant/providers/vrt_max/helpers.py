@@ -103,7 +103,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="Radio Bene",
         stream_url="http://icecast.vrtcdn.be/radiobene-high.mp3",
         aac_url="http://icecast.vrtcdn.be/radiobene.aac",
-        logo_url=None,
+        logo_url="https://images.vrt.be/orig/2025/06/19/618178fe-dd3b-4a59-b06c-4383a1684b34.svg",
         tagline=None,
     ),
     VrtStation(
@@ -151,7 +151,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru De Jaren Nul",
         stream_url="http://icecast.vrtcdn.be/stubru_dejarennul-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_dejarennul.aac",
-        logo_url=None,
+        logo_url="https://images.vrt.be/orig/2024/03/26/162a26c5-eb56-11ee-8fc9-02b7b76bf47f.jpg",
         tagline=None,
     ),
     VrtStation(
@@ -159,7 +159,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru Vuurland",
         stream_url="http://icecast.vrtcdn.be/stubru_tgs-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_tgs.aac",
-        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/vuurland.png",
+        logo_url="https://images.vrt.be/orig/2024/03/26/1610f974-eb56-11ee-8fc9-02b7b76bf47f.jpg",
         tagline=None,
     ),
     VrtStation(
