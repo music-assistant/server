@@ -23,6 +23,10 @@ DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
 # Seconds to wait for a Cast receiver to acknowledge an app launch.
 APP_LAUNCH_TIMEOUT = 30.0
 
+# Seconds the receiver app is kept running after playback stopped, so a
+# follow-up command can reuse the Cast session instead of starting a new one.
+APP_QUIT_DELAY = 10.0
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 

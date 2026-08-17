@@ -14,7 +14,13 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerState
+from music_assistant_models.enums import (
+    IdentifierType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerState,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
@@ -32,7 +38,7 @@ from .constants import (
     COMMAND_POLL_DELAY,
     DURATION_SECONDS,
     LINEIN_SOURCE_IDS,
-    LINEIN_SOURCES,
+    LINEIN_SOURCE_MAPPING,
     NEVER_TIME,
     PLAYER_FEATURES,
     PLAYER_SOURCE_MAP,
@@ -41,7 +47,6 @@ from .constants import (
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
     SOURCE_LINEIN,
-    SOURCE_MAPPING,
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
@@ -71,14 +76,23 @@ class SonosPlayer(Player):
         self,
         provider: SonosPlayerProvider,
         soco: SoCo,
+        fixed_volume: bool,
     ) -> None:
-        """Initialize SonosPlayer instance."""
+        """
+        Initialize SonosPlayer instance.
+
+        :param fixed_volume: Whether the speaker is set to fixed volume output.
+        """
         super().__init__(provider, soco.uid)
         self.soco = soco
         self.household_id: str = soco.household_id
 
         # Set player attributes
         self._attr_supported_features = set(PLAYER_FEATURES)
+        # a speaker playing out at a fixed level (a Connect or Port wired into an amplifier)
+        # rejects volume commands, so it is left without volume and mute control at all
+        if not fixed_volume:
+            self._attr_supported_features |= {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
         # S1 hardware is fixed to 16-bit at 44.1/48 kHz
         self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         self._attr_name = soco.player_name
@@ -792,12 +806,18 @@ class SonosPlayer(Player):
         except SonosUpdateError as err:
             self.logger.warning("Fetching track info failed: %s", err)
             return
-        if not track_info["uri"]:
-            return
         uri = track_info["uri"]
+        if not uri:
+            # no current track means nothing is loaded, so no source is active either.
+            # Stopping a line-in source empties the transport, so this is a normal path.
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+            self._attr_active_source = None
+            self._attr_current_media = None
+            return
 
         audio_source = self.soco.music_source_from_uri(uri)
-        if (source_id := SOURCE_MAPPING.get(audio_source)) and audio_source in LINEIN_SOURCES:
+        if source_id := LINEIN_SOURCE_MAPPING.get(audio_source):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self._attr_active_source = source_id

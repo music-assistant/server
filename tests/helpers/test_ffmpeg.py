@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
@@ -23,6 +24,7 @@ from music_assistant.helpers.ffmpeg import (
     _get_overlay_volume_filter,
     get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
+    get_ffmpeg_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
@@ -523,6 +525,87 @@ async def _silence(seconds: int) -> AsyncGenerator[bytes]:
 
 async def _collect_chunks(stream: AsyncGenerator[bytes]) -> list[bytes]:
     return [chunk async for chunk in stream]
+
+
+@pytest.mark.parametrize("source_error", [RuntimeError("source failed"), BrokenPipeError()])
+async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception) -> None:
+    """An input generator failure is surfaced after FFmpeg emits its buffered output."""
+
+    async def failing_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise source_error
+
+    with pytest.raises(AudioError, match="Error while feeding audio to FFmpeg") as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=failing_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value.__cause__ is source_error
+
+
+async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
+    """A cancelled input generator ends the FFmpeg stream without an error."""
+
+    async def cancelled_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise asyncio.CancelledError
+
+    chunks = await _collect_chunks(
+        get_ffmpeg_stream(
+            audio_input=cancelled_input(),
+            input_format=AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            ),
+            output_format=_PCM_FORMAT,
+        )
+    )
+
+    assert b"".join(chunks) == b"\x00" * _BYTES_PER_SECOND
+
+
+async def test_ffmpeg_stream_ignores_early_stdin_close() -> None:
+    """FFmpeg ending its input early does not report a source failure."""
+    chunks = await _collect_chunks(
+        get_ffmpeg_stream(
+            audio_input=_silence(30),
+            input_format=_PCM_FORMAT,
+            output_format=_PCM_FORMAT,
+            extra_input_args=["-t", "0.1"],
+        )
+    )
+
+    assert chunks
+
+
+async def test_overlay_stream_surfaces_stdin_feeder_error(overlay_file: Path) -> None:
+    """A failure in the main input is surfaced after the mixed output is emitted."""
+
+    async def failing_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise RuntimeError("source failed")
+
+    with pytest.raises(AudioError, match="Error while feeding audio to FFmpeg") as err:
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=failing_input(),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+
+    assert isinstance(err.value.__cause__, RuntimeError)
 
 
 def _samples(pcm: bytes, channel: int | None = None) -> Sequence[int]:

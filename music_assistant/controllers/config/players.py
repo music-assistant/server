@@ -582,14 +582,16 @@ class PlayerConfigMixin:
             # Player.__init__ where the type can still be a transient class default.
             # Genuine type changes are persisted by update_state after registration.
             return
-        # config does not yet exist, create a default one
+        # config does not yet exist, create a default one.
+        # the name is stored as the default name only: a stored (custom) name means
+        # the user renamed the player and must keep shadowing the default name.
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
             values={},
             provider=provider,
             player_id=player_id,
             enabled=enabled,
-            name=name,
+            name=None,
             default_name=name,
             player_type=player_type,
         )

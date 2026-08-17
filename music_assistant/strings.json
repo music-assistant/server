@@ -438,6 +438,7 @@
     "playback": "Queue Playback",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
+    "click_actions": "Click actions",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "smart_shuffle": "Smart shuffle",

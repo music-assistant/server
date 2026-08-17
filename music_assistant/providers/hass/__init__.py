@@ -825,7 +825,7 @@ class HomeAssistantProvider(PluginProvider):
             if not hass_state:
                 control.volume_muted = False
             elif entity_platform == "media_player":
-                control.volume_muted = hass_state["attributes"].get("volume_muted")
+                control.volume_muted = bool(hass_state["attributes"].get("is_volume_muted"))
             else:
                 control.volume_muted = hass_state["state"] not in OFF_STATES
             control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
@@ -915,7 +915,7 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and "volume_level" in attributes:
                 player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
             if player_control.supports_mute and "is_volume_muted" in attributes:
-                player_control.volume_muted = attributes.get("is_volume_muted")
+                player_control.volume_muted = bool(attributes.get("is_volume_muted"))
         self.mass.players.update_player_control(entity_id)
 
     async def _fetch_states(self, entity_ids: list[str]) -> list[State]:

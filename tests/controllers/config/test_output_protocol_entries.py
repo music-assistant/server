@@ -22,6 +22,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_KEY_SPLITTER,
 )
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import LinkedOutputProtocol
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueOption
@@ -119,13 +120,14 @@ async def _control_only_player_entries(
     :param parent_entries: the config entries the control-only player itself reports.
     :param protocol_entries: the config entries its linked protocol player reports.
     """
-    protocols = [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)]
     player = MagicMock()
     player.player_id = _PARENT_ID
     player.needs_setup = False
     # no native protocol: this player only controls, playback goes through the linked protocol
-    player.output_protocols = protocols
-    player.linked_output_protocols = protocols
+    player.output_protocols = [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)]
+    player.linked_output_protocols = [
+        LinkedOutputProtocol(output_protocol_id=_DLNA_ID, protocol_domain="dlna", priority=50)
+    ]
     protocol_player = _make_protocol_player(available=True, needs_setup=False)
     protocol_player.player_id = _DLNA_ID
     protocol_player.translation_owner = "dlna"

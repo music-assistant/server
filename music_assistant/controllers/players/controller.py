@@ -76,6 +76,7 @@ from music_assistant.constants import (
     ATTR_PREVIOUS_VOLUME,
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
+    ATTR_VOLUME_TARGET,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_AUTO_PLAY,
     CONF_CACHED_ARP_MAC,
@@ -142,6 +143,11 @@ POSITION_ANCHOR_KEYS = frozenset(
         "current_media.elapsed_time_last_updated",
     }
 )
+
+# How long the volume level of the last command outranks the level the player reports.
+# Long enough to cover a burst of volume nudges on a player that only reports its volume
+# back some time later, short enough for a change made on the device itself to win again.
+VOLUME_TARGET_EXPIRY = 2.0
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
@@ -800,7 +806,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
+    @handle_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send VOLUME_SET command to given player.
@@ -808,12 +814,17 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
         """
-        await self._handle_cmd_volume_set(player_id, volume_level)
-        # individual child volume change invalidates any cached group volume snapshot
+        volume_level = max(0, min(100, volume_level))
+        # record the level and invalidate the group volume state up front, before waiting
+        # for the volume lock: a command that is still queued would otherwise undo what a
+        # command issued after it already recorded.
         # skip for group players since _handle_cmd_volume_set redirects those to
         # set_group_volume which creates/uses the snapshot itself
         if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
+            self._record_volume_target(player, volume_level)
             self._invalidate_group_volume_snapshot(player_id)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
+            await self._handle_cmd_volume_set(player_id, volume_level, record_target=False)
 
     @api_command("players/cmd/volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -828,7 +839,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         if player.type == PlayerType.GROUP:
             await self.cmd_group_volume_up(player_id)
             return
-        current_volume = player.state.volume_level or 0
+        current_volume = self._volume_nudge_base(player) or 0
         new_volume = min(100, current_volume + self._get_volume_step(current_volume))
         await self.cmd_volume_set(player_id, new_volume)
 
@@ -845,7 +856,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         if player.type == PlayerType.GROUP:
             await self.cmd_group_volume_down(player_id)
             return
-        current_volume = player.state.volume_level or 0
+        current_volume = self._volume_nudge_base(player) or 0
         new_volume = max(0, current_volume - self._get_volume_step(current_volume))
         await self.cmd_volume_set(player_id, new_volume)
 
@@ -866,16 +877,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.state.type == PlayerType.GROUP or player.state.group_members:
-            # dedicated group player or sync leader
-            await self.set_group_volume(player, volume_level)
+        group_player = self._resolve_group_volume_player(player)
+        if group_player is None:
+            # treat as normal player volume change
+            await self.cmd_volume_set(player_id, volume_level)
             return
-        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
-            # redirect to sync leader
-            await self.set_group_volume(sync_leader, volume_level)
-            return
-        # treat as normal player volume change
-        await self.cmd_volume_set(player_id, volume_level)
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            await self.set_group_volume(group_player, volume_level)
 
     @api_command("players/cmd/group_volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -885,13 +893,17 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         - player_id: player_id of the player to handle the command.
         """
-        group_player_state = self.get_player_state(player_id, True)
-        assert group_player_state
-        cur_volume = group_player_state.group_volume
-        if cur_volume is None:
-            return
-        new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
-        await self.cmd_group_volume(player_id, new_volume)
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checker
+        # step from the volume of the group as a whole, which is not the volume of the
+        # addressed player when the command is addressed to one of its synced members
+        group_player = self._resolve_group_volume_player(player) or player
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            cur_volume = self._group_volume_nudge_base(group_player)
+            if cur_volume is None:
+                return
+            new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
+            await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_down", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -901,13 +913,15 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         - player_id: player_id of the player to handle the command.
         """
-        group_player_state = self.get_player_state(player_id, True)
-        assert group_player_state
-        cur_volume = group_player_state.group_volume
-        if cur_volume is None:
-            return
-        new_volume = max(0, cur_volume - self._get_volume_step(cur_volume))
-        await self.cmd_group_volume(player_id, new_volume)
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checker
+        group_player = self._resolve_group_volume_player(player) or player
+        async with self.get_player_lock(group_player.player_id, PlayerLockPurpose.GROUP_VOLUME):
+            cur_volume = self._group_volume_nudge_base(group_player)
+            if cur_volume is None:
+                return
+            new_volume = max(0, cur_volume - self._get_volume_step(cur_volume))
+            await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_mute", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -1657,6 +1671,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 self.mass.config.remove(key)
             if self.get_player(pid) is None:
                 self.mass.player_queues.purge_saved_queue(pid)
+        # a user access filter is an allow-list of player ids, so it must not be left
+        # pointing at a player whose config was just wiped
+        self.mass.create_task(
+            self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
+        )
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
@@ -1792,7 +1811,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
-            self._enforce_volume_limits(player)
+            corrected = self._enforce_volume_limits(player)
+            # a level set on the device itself makes the reference a group volume change
+            # interpolates from obsolete. a member on its way to a level we did send
+            # reports levels too, and a group only ever reports what its members are at,
+            # so neither of those counts. a correction always is the device's own doing:
+            # the levels we command never fall outside the configured range
+            if player.state.type != PlayerType.GROUP and (
+                corrected or self._unexpired_volume_target(player) is None
+            ):
+                self._invalidate_group_volume_snapshot(player_id)
         # dispatch to internal state update subscribers (with changed_values)
         self._dispatch_state_update_subscribers(player, changed_values)
 
@@ -1954,10 +1982,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # scaling down: each child interpolates from its snapshot value toward 0.
         # this ensures the relative balance is preserved and all children converge
         # to 0 and 100 at the extremes. the snapshot is invalidated when a child's
-        # individual volume changes or group membership changes.
+        # individual volume or the group membership changes, and rebuilt when the
+        # children it holds are no longer the ones being adjusted.
+        # the levels a nudge steps from are the ones the members were last commanded, so
+        # the snapshot has to read the same source, or a change a member has not confirmed
+        # yet puts the reference above the level being set and turns a step up into one down
         snapshot: dict[str, int] | None = group_player.extra_data.get(ATTR_GROUP_VOLUME_SNAPSHOT)
-        if snapshot is None or not all(c.player_id in snapshot for c in children):
-            snapshot = {c.player_id: c.state.volume_level or 0 for c in children}
+        if snapshot is None or snapshot.keys() != {c.player_id for c in children}:
+            snapshot = {c.player_id: self._volume_nudge_base(c) or 0 for c in children}
             group_player.extra_data[ATTR_GROUP_VOLUME_SNAPSHOT] = snapshot
 
         base_group = max(snapshot.values())
@@ -1979,7 +2011,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 progress = volume_level / base_group
                 new_child_volume = round(child_base * progress)
             new_child_volume = max(0, min(100, new_child_volume))
-            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
+            coros.append(self._set_member_volume(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
         # notify active AudioSource once at the group level to prevent
@@ -2186,7 +2218,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # if the PlayerQueue was playing, restart playback
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             requires_restart = any(
-                v for v in config.values.values() if v.key in changed_keys and v.requires_reload
+                v.requires_reload
+                for v in config.values.values()
+                if f"values/{v.key}" in changed_keys
             )
             if requires_restart:
                 # always stop first to ensure the player uses the new config
@@ -2506,21 +2540,27 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         )
         return min_volume, max_volume
 
-    def _enforce_volume_limits(self, player: Player) -> None:
-        """Clamp device volume to min/max range when changed externally."""
+    def _enforce_volume_limits(self, player: Player) -> bool:
+        """
+        Clamp device volume to min/max range when changed externally.
+
+        :param player: The player to check the volume of.
+        :return: True if the volume was outside the configured range and got corrected.
+        """
         player_id = player.player_id
         min_volume, max_volume = self._get_volume_limits(player_id)
         if min_volume == 0 and max_volume == 100:
-            return
+            return False
         # state.volume_level is the resolved logical volume, available for all
         # volume control types; a device volume outside the configured range
         # surfaces here as a value outside 0-100 (scaling does not clamp)
         logical_volume = player.state.volume_level
         if logical_volume is None or 0 <= logical_volume <= 100:
-            return
+            return False
         clamped = max(0, min(100, logical_volume))
         # correct via the regular volume-set path so scaling and redirection apply
         self.mass.create_task(self._handle_cmd_volume_set(player_id, clamped))
+        return True
 
     def _forward_state_update(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -2571,6 +2611,50 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         if player.state.synced_to and (leader := self.get_player(player.state.synced_to)):
             leader.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+
+    def _record_volume_target(self, player: Player, volume_level: int) -> None:
+        """Remember the volume level just commanded, as the base for the next nudge."""
+        if self._stays_silent_on_volume_change(player):
+            volume_level = 0
+        player.extra_data[ATTR_VOLUME_TARGET] = (volume_level, time.monotonic())
+
+    def _volume_nudge_base(self, player: Player) -> int | None:
+        """Return the volume level a volume nudge for the given player steps from."""
+        target = self._unexpired_volume_target(player)
+        if target is not None:
+            return target
+        return player.state.volume_level
+
+    def _group_volume_nudge_base(self, group_player: Player) -> int | None:
+        """Return the volume level a group volume nudge for the given group steps from."""
+        if not group_player.state.group_members:
+            # an ungrouped player is stepped through its own volume, so it is that
+            # volume the command lands on and that a following nudge steps from
+            return self._volume_nudge_base(group_player)
+        # mirrors Player.group_volume, but steps from the level last commanded to each
+        # member instead of the level it reports, so the group is not held back by a
+        # member that has not confirmed the previous nudge yet
+        base: int | None = None
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, exclude_self=group_player.type != PlayerType.PLAYER
+        ):
+            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            if (child_volume := self._volume_nudge_base(child_player)) is None:
+                continue
+            if base is None or child_volume > base:
+                base = child_volume
+        return base
+
+    def _unexpired_volume_target(self, player: Player) -> int | None:
+        """Return the volume level last commanded, or None once it is too old to trust."""
+        if (target := player.extra_data.get(ATTR_VOLUME_TARGET)) is None:
+            return None
+        volume_level, issued_at = target
+        if time.monotonic() - issued_at < VOLUME_TARGET_EXPIRY:
+            return cast("int", volume_level)
+        del player.extra_data[ATTR_VOLUME_TARGET]
+        return None
 
     def _dispatch_state_update_subscribers(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -3541,7 +3625,45 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         ):
             await self.mass.player_queues.resume(player_id)
 
-    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+    def _resolve_group_volume_player(self, player: Player) -> Player | None:
+        """
+        Return the player whose group a group volume command applies to.
+
+        Returns None if the given player is not grouped at all. Commands addressed to a
+        synced member and to its sync leader resolve to the same player, so they read
+        and guard one and the same group.
+
+        :param player: The player the command was addressed to.
+        """
+        # the group volume lock this resolves to may not share the VOLUME purpose:
+        # set_group_volume sets the volume of the members concurrently and a sync leader
+        # is a member of its own group, so a group command would wait on its own lock.
+        if player.state.type == PlayerType.GROUP or player.state.group_members:
+            # dedicated group player or sync leader
+            return player
+        if player.state.synced_to:
+            # a synced player follows its sync leader
+            return self.get_player(player.state.synced_to)
+        return None
+
+    async def _set_member_volume(self, player_id: str, volume_level: int) -> None:
+        """
+        Set the volume of a single member as part of a group volume change.
+
+        :param player_id: player_id of the member to handle the command.
+        :param volume_level: logical volume level (0..100) to set on the member.
+        """
+        # record before waiting for the lock, for the same reason as cmd_volume_set
+        if member := self.get_player(player_id):
+            self._record_volume_target(member, volume_level)
+        # take the volume lock of the member itself, so a group volume change and an
+        # individual volume command for that member can not overtake one another
+        async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
+            await self._handle_cmd_volume_set(player_id, volume_level, record_target=False)
+
+    async def _handle_cmd_volume_set(
+        self, player_id: str, volume_level: int, *, record_target: bool = True
+    ) -> None:
         """
         Handle Player volume set command.
 
@@ -3549,6 +3671,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         :param player_id: player_id of the player to handle the command.
         :param volume_level: logical volume level (0..100) to set on the player.
+        :param record_target: Set to False when the caller already recorded the level as
+            the base for the next volume nudge, before it waited for the volume lock.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
@@ -3561,35 +3685,21 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             await self.cmd_group_volume(player_id, volume_level)
             return
 
-        # Check if player has mute lock (set when individually muted in a group)
-        # If locked, don't auto-unmute when volume changes
-        has_mute_lock = self._has_active_mute_lock(player)
-        if (
-            not has_mute_lock
-            # the live value is what cmd_volume_mute checks, so a control change that
-            # has not reached the player state yet may not send us into a failing unmute
-            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
-            and player.state.volume_muted
-        ):
-            # if player is muted and not locked, we unmute it first
-            # skip this for fake mute since it uses volume to simulate mute
-            self.logger.debug(
-                "Unmuting player %s before setting volume",
-                player.state.name,
-            )
-            await self.cmd_volume_mute(player_id, False)
-
-        if (
-            has_mute_lock
-            and player.mute_control == PLAYER_CONTROL_FAKE
-            and player.extra_data.get(ATTR_FAKE_MUTE)
-        ):
+        # A muted player stays muted: only an explicit unmute lifts it, and the level
+        # set here is the one it plays at once that happens. Fake mute is the exception,
+        # because it is simulated with the volume itself.
+        if self._stays_silent_on_volume_change(player):
             # a locked player stays silent, the volume it holds is the one
             # that gets restored once it is unmuted again
             volume_level = 0
+            # the lock may have been earned after the caller recorded the level it asked
+            # for, which is then not the level this player ends up at
+            record_target = True
         else:
-            # always reset fake mute when controlling volume
             player.extra_data.pop(ATTR_FAKE_MUTE, None)
+
+        if record_target:
+            self._record_volume_target(player, volume_level)
 
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)
@@ -3635,15 +3745,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             await player_control.volume_set(device_volume)
             return
         if protocol_player := self.get_player(player.state.volume_control):
-            # redirect to protocol player volume control.
-            # forward the already-scaled device volume so the min/max limits configured
-            # on this (user-facing) player are honored; the protocol player has no
-            # limits of its own, so its scaling is an identity pass-through.
+            # forward the already-scaled device volume: the limits configured on this
+            # (user-facing) player are the only ones that apply to the command
             self.logger.debug(
                 "Redirecting volume command to protocol player %s",
                 protocol_player.provider.manifest.name,
             )
-            await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
+            await protocol_player.volume_set(device_volume)
             return
 
     @staticmethod
@@ -3669,6 +3777,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         if player.protocol_parent_id and (parent := self.get_player(player.protocol_parent_id)):
             return bool(parent.extra_data.get(ATTR_MUTE_LOCK)) and self._is_in_group(parent.state)
         return False
+
+    def _stays_silent_on_volume_change(self, player: Player) -> bool:
+        """Check if a volume command for the given player lands at 0 to keep it silent."""
+        return (
+            self._has_active_mute_lock(player)
+            and player.mute_control == PLAYER_CONTROL_FAKE
+            and bool(player.extra_data.get(ATTR_FAKE_MUTE))
+        )
 
     async def _mute_group_members(self, group_player: Player, muted: bool) -> None:
         """
@@ -3787,14 +3903,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             and (protocol_player := self.get_player(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
-            output_protocol = next(
-                (
-                    p
-                    for p in player.linked_output_protocols
-                    if p.output_protocol_id == player.active_output_protocol
-                ),
-                None,
-            )
+            output_protocol = player.get_linked_protocol(player.active_output_protocol)
             if output_protocol is not None:
                 target_player = protocol_player
         if target_player is None:

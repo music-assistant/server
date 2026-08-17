@@ -16,6 +16,7 @@ from music_assistant.providers.airplay import announce
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
     AIRPLAY_ANNOUNCE_DUCK_DB,
+    AIRPLAY_ANNOUNCE_DUCK_TAIL_S,
     AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS,
     AIRPLAY_PCM_FORMAT,
 )
@@ -34,10 +35,10 @@ def _zero_restore_pad() -> Iterator[None]:
     """
     Zero the audible-end pad for every test.
 
-    The live path holds its return (and the volume restore) until the clip's
-    audible end plus this pad; the streams below ack a long-past instant, so
-    only the pad would otherwise add real wall-clock time to every test. The
-    audible-end test overrides it with its own value.
+    Both paths hold the volume restore until the clip's audible end plus this
+    pad - the live path holds its return with it too; the streams below ack a
+    long-past instant, so only the pad would otherwise add real wall-clock time
+    to every test. The tests that assert on that timing override it themselves.
     """
     with patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 0):
         yield
@@ -50,7 +51,8 @@ def _make_render(duration: float = 1.5) -> MagicMock:
     render.wait_finished = AsyncMock(return_value=duration)
 
     async def get_stream(_output_format: Any) -> AsyncGenerator[bytes]:
-        yield b"\x00" * 64
+        # non-silent, so a clip is distinguishable from the silence around it
+        yield b"\xff" * 64
 
     render.get_stream = get_stream
     return render
@@ -331,14 +333,22 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     announcement = _make_announcement()
     render = _make_render(duration=0.01)
     player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    events: list[tuple[str, float]] = []
 
     with (
         patch.object(announce, "AirPlayStreamSession") as session_cls,
-        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.0),
+        patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 100),
+        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.4),
     ):
+        started = time.monotonic()
+        player.volume_set = AsyncMock(
+            side_effect=lambda level: events.append((f"volume={level}", time.monotonic() - started))
+        )
         session = session_cls.return_value
         session.start = AsyncMock()
-        session.stop = AsyncMock()
+        session.stop = AsyncMock(
+            side_effect=lambda: events.append(("stop", time.monotonic() - started))
+        )
         session.start_time = 0.0
         await announce.play_announcement(player, announcement, 60)
 
@@ -350,11 +360,85 @@ async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
     )
     session.start.assert_awaited_once()
     session.stop.assert_awaited_once()
-    # announcement volume before the session, previous level restored after
-    assert [call.args for call in player.volume_set.await_args_list] == [(60,), (25,)]
+    # An AirPlay volume only reaches the receiver over a running stream, so the
+    # restore has to land on the clip's audible end (+ the 0.1s pad), well
+    # inside the 0.4s drain the session is stopped after.
+    assert [name for name, _ in events] == ["volume=60", "volume=25", "stop"]
+    _, restored_at = events[1]
+    _, stopped_at = events[2]
+    assert 0.1 <= restored_at < 0.3
+    assert stopped_at >= 0.4
     # the player ends idle without still showing media (like player.stop())
     assert player._attr_current_media is None
     player.update_state.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_session_path_restores_the_volume_when_the_clip_is_cut_short() -> None:
+    """An announcement cancelled mid-clip hands the speaker back its own volume."""
+    player = _make_player("solo")
+    player.playback_state = PlaybackState.IDLE
+    player.volume_level = 25
+    player._get_sync_clients = MagicMock(return_value=[player])
+    player._get_session_pcm_format = AsyncMock(return_value=AIRPLAY_PCM_FORMAT)
+    render = _make_render(duration=30)
+    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    events: list[str] = []
+    player.volume_set = AsyncMock(side_effect=lambda level: events.append(f"volume={level}"))
+
+    with patch.object(announce, "AirPlayStreamSession") as session_cls:
+        started = asyncio.Event()
+        session = session_cls.return_value
+        session.start = AsyncMock(side_effect=lambda _source: started.set())
+        session.stop = AsyncMock(side_effect=lambda: events.append("stop"))
+        session.start_time = 0.0
+        announcing = asyncio.create_task(
+            announce.play_announcement(player, _make_announcement(), 60)
+        )
+        # the session is up; the cancel lands in the clip wait that follows
+        await started.wait()
+        announcing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await announcing
+
+    # the session is still up here, so the restore reaches the receiver
+    assert events == ["volume=60", "volume=25", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_session_path_serves_the_clip_with_its_silence_tail() -> None:
+    """The dedicated session keeps feeding past the clip, so the volume restore lands in time."""
+    player = _make_player("solo")
+    player.playback_state = PlaybackState.IDLE
+    player._get_sync_clients = MagicMock(return_value=[player])
+    player._get_session_pcm_format = AsyncMock(return_value=HIRES_PCM_FORMAT)
+    render = _make_render(duration=0.01)
+    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    served = bytearray()
+
+    with (
+        patch.object(announce, "AirPlayStreamSession") as session_cls,
+        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.0),
+    ):
+
+        async def start(source: AsyncGenerator[bytes]) -> None:
+            async for chunk in source:
+                served.extend(chunk)
+
+        session = session_cls.return_value
+        session.start = AsyncMock(side_effect=start)
+        session.stop = AsyncMock()
+        session.start_time = 0.0
+        await announce.play_announcement(player, _make_announcement(), None)
+
+    # the tail is sized on the content type: this format carries 24 bit over an
+    # s32le wire, so a bit_depth-derived size would come out a quarter short
+    tail_bytes = (
+        int(HIRES_PCM_FORMAT.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
+        * 4
+        * HIRES_PCM_FORMAT.channels
+    )
+    assert served == b"\xff" * 64 + bytes(tail_bytes)
 
 
 @pytest.mark.asyncio

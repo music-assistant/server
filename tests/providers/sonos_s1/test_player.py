@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
+from soco.core import SoCo
 from soco.exceptions import SoCoException
 
 from music_assistant.mass import MusicAssistant
@@ -20,6 +21,7 @@ from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import (
     AVAILABILITY_TIMEOUT,
     POLL_INTERVAL,
+    SOURCE_LINEIN,
     SUBSCRIPTION_SERVICES,
     TRANSITION_POLL_INTERVAL,
 )
@@ -49,7 +51,7 @@ def sonos_player() -> SonosPlayer:
     """Create a SonosPlayer with a mocked soco device and provider."""
     provider = MagicMock()
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value=STREAM_URL)
-    return SonosPlayer(provider=provider, soco=_make_soco())
+    return SonosPlayer(provider=provider, soco=_make_soco(), fixed_volume=False)
 
 
 @pytest.fixture
@@ -75,7 +77,7 @@ def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
     provider = MagicMock()
     provider.mass = mass
     provider.topology_condition = asyncio.Condition()
-    return SonosPlayer(provider=provider, soco=_make_soco(uid, name))
+    return SonosPlayer(provider=provider, soco=_make_soco(uid, name), fixed_volume=False)
 
 
 def _poll_id(player: SonosPlayer) -> str:
@@ -121,6 +123,24 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert call_args.args[0] == STREAM_URL
     assert STREAM_URL in call_args.kwargs["meta"]
     assert "library://track/123" not in call_args.kwargs["meta"]
+
+
+def test_pause_is_advertised_as_a_supported_feature(sonos_player: SonosPlayer) -> None:
+    """Without the feature the player controller converts every pause into a stop."""
+    assert PlayerFeature.PAUSE in sonos_player.supported_features
+
+
+def test_volume_is_advertised_for_a_regular_speaker(sonos_player: SonosPlayer) -> None:
+    """A speaker with its own amplifier is driven over its native volume control."""
+    assert PlayerFeature.VOLUME_SET in sonos_player.supported_features
+    assert PlayerFeature.VOLUME_MUTE in sonos_player.supported_features
+
+
+def test_volume_is_not_advertised_for_a_fixed_volume_speaker() -> None:
+    """A speaker with fixed line-out rejects volume commands, so it must not offer them."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=True)
+    assert PlayerFeature.VOLUME_SET not in player.supported_features
+    assert PlayerFeature.VOLUME_MUTE not in player.supported_features
 
 
 class _RecordingSoco:
@@ -173,6 +193,12 @@ def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
     sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
 
 
+def _set_track_info(sonos_player: SonosPlayer, uri: str, position: str = "") -> None:
+    """Make the mocked speaker report the given track uri, classified as SoCo would."""
+    sonos_player.soco.get_current_track_info.return_value = {"uri": uri, "position": position}
+    sonos_player.soco.music_source_from_uri = SoCo.music_source_from_uri
+
+
 def test_transitional_state_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
     """A transitional transport state keeps the last known state and is watched closely."""
     sonos_player._attr_playback_state = PlaybackState.IDLE
@@ -206,6 +232,50 @@ def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer
     sonos_player._handle_avtransport_event(event)
 
     assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
+
+
+def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> None:
+    """A speaker playing line-in reports it as its source and offers it in the source list."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source == SOURCE_LINEIN
+    assert [source.id for source in sonos_player._attr_source_list] == [SOURCE_LINEIN]
+
+
+def test_source_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """Stopping line-in empties the transport, which must not leave the source behind."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source is None
+
+
+def test_media_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """A stopped speaker must not keep reporting the track it was playing."""
+    _set_track_info(sonos_player, "http://192.168.1.2:8097/track.flac", position="0:00:42")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_current_media is None
+    assert sonos_player._attr_elapsed_time is None
+    assert sonos_player._attr_elapsed_time_last_updated is None
+
+
+def test_spotify_connect_is_not_reported_as_a_source(sonos_player: SonosPlayer) -> None:
+    """Line-in and TV are the only sources this provider reports."""
+    _set_track_info(sonos_player, "x-sonos-vli:RINCON_000E58AAAAAA01400:2,spotify:abc")
+
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source is None
+    assert sonos_player._attr_source_list == []
 
 
 async def test_repeated_commands_collapse_to_one_pending_poll(
@@ -650,7 +720,7 @@ async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPla
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
     """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
     provider = MagicMock()
-    player = SonosPlayer(provider=provider, soco=_make_soco())
+    player = SonosPlayer(provider=provider, soco=_make_soco(), fixed_volume=False)
     subscription = MagicMock()
     subscription.unsubscribe = AsyncMock(side_effect=partial(asyncio.sleep, 5))
     player._subscriptions = [subscription]
@@ -677,7 +747,7 @@ async def _subscribe_with_failing_speaker(player: SonosPlayer) -> None:
 
 async def test_failed_subscribe_marks_the_speaker_offline() -> None:
     """A failed subscription must take the speaker offline and release the lock."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
 
     await _subscribe_with_failing_speaker(player)
 
@@ -687,7 +757,7 @@ async def test_failed_subscribe_marks_the_speaker_offline() -> None:
 
 async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
     """A speaker that failed to subscribe must still be able to subscribe later."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
     await _subscribe_with_failing_speaker(player)
 
     with patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target:
@@ -699,7 +769,7 @@ async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
 
 async def test_speaker_taken_offline_mid_subscribe_keeps_no_subscriptions() -> None:
     """A speaker that goes offline while subscribing must not keep the subscriptions it created."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
     subscribing = asyncio.Event()
     speaker_responds = asyncio.Event()
 
@@ -730,7 +800,7 @@ async def test_speaker_taken_offline_mid_subscribe_keeps_no_subscriptions() -> N
 
 async def test_speaker_going_offline_is_not_resubscribed_halfway() -> None:
     """No new subscriptions may be created while a speaker is still going offline."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
     unsubscribing = asyncio.Event()
     speaker_responds = asyncio.Event()
 
