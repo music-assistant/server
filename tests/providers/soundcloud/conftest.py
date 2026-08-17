@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -22,4 +22,15 @@ def provider() -> SoundcloudMusicProvider:
     config.get_value.side_effect = lambda key, default=None: {
         "log_level": "GLOBAL",
     }.get(key, default)
-    return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    prov = SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    # stand in for the api client that handle_async_init would otherwise create
+    prov._soundcloud = AsyncMock()
+    prov._soundcloud.client_id = "test-client-id"
+    prov._soundcloud.headers = {"Authorization": "OAuth test-token"}
+    prov._soundcloud.get_user_details.return_value = {
+        "id": 1,
+        "username": "Some Artist",
+        "permalink": "some-artist",
+    }
+    prov._user_id = "1"
+    return prov

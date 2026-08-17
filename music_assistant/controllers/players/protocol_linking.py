@@ -1769,7 +1769,8 @@ class ProtocolLinkingMixin:
         1. Output protocol that is currently grouped/synced with other players.
         2. User's preferred output protocol (from player settings).
         3. Native playback (if player supports PLAY_MEDIA).
-        4. Best available protocol by priority.
+        4. The player's declared default output protocol domain, if available.
+        5. Best available protocol by priority.
 
         Returns tuple of (target_player, output_protocol).
         output_protocol is None when using native playback.
@@ -1795,9 +1796,10 @@ class ProtocolLinkingMixin:
                     return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
 
         # 2. Check for user's preferred output protocol.
-        # The value is only stored while it differs from the entry's default, which is computed
-        # per player: "native" when a native output is available, otherwise "auto". Both of those
-        # are handled identically by the steps below, so an absent value can safely fall through.
+        # The value is only stored while it differs from the entry's default: "native" when a
+        # native output is available, otherwise "auto". A player without a native output (e.g. a
+        # LinkPlay shell) therefore has no stored preference by default and gets its default
+        # output domain applied in step 4.
         preferred = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
@@ -1833,7 +1835,27 @@ class ProtocolLinkingMixin:
             )
             return player, None
 
-        # 4. Fall back to best protocol by priority
+        # 4. Use the player's preferred default protocol domain, if it declares one and a
+        # matching linked protocol is available (e.g. a LinkPlay shell prefers DLNA). This
+        # never influences grouping; it only steers the default output for playback. "Auto"
+        # is the entry default here, so it consistently resolves to this domain default.
+        if default_domain := player.default_output_protocol_domain:
+            for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
+                if linked.protocol_domain != default_domain:
+                    continue
+                if (protocol_player := self.get_player(linked.output_protocol_id)) and (
+                    protocol_player.available_for_playback
+                ):
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: %s (default domain %s)",
+                        player.state.name,
+                        protocol_player.state.name,
+                        default_domain,
+                    )
+                    return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
+
+        # 5. Fall back to best protocol by priority
         for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if protocol_player := self.get_player(linked.output_protocol_id):
                 if protocol_player.available_for_playback:
@@ -2085,7 +2107,7 @@ class ProtocolLinkingMixin:
         if not parent_supports_native:
             return False
         return (
-            child_player.provider.instance_id == parent_player.provider.instance_id
+            parent_player.is_native_group_compatible(child_player)
             or child_player.player_id in parent_player._attr_can_group_with
             or child_player.provider.instance_id in parent_player._attr_can_group_with
         )
@@ -2451,6 +2473,21 @@ class ProtocolLinkingMixin:
             parent_supports_native_grouping,
             native_members,
         ):
+            return parent_protocol_player, parent_protocol_domain
+
+        # Priority 0.5: a player that runs its own multiroom (e.g. a LinkPlay control shell)
+        # keeps grouping on its native path rather than routing it through a linked protocol
+        # that is merely its preferred playback output. Native compatibility still decides
+        # whether this is possible, so an incompatible/cross-backend pair falls through.
+        if child_player.prefer_native_grouping and self._can_use_native_grouping(
+            child_player, parent_player, parent_supports_native_grouping
+        ):
+            native_members.append(child_player.player_id)
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Using native grouping (preferred) for %s",
+                child_player.state.name,
+            )
             return parent_protocol_player, parent_protocol_domain
 
         # Priority 1: the child's preferred output protocol

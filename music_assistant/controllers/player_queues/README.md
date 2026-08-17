@@ -292,9 +292,9 @@ mechanism) that configure default enqueue behaviour, in three groups:
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
   prefer library, all tracks).
-- **Click actions** — what a client does when a media item is clicked (*browse* or *play*, for
-  artist/album/playlist) and what the play button on a track row inside an album or playlist starts
-  (*play from here* or *play track*).
+- **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
+  clicked (*browse* or *play*), and what the play button on a track row inside an album
+  or playlist starts (*play from here* or *play track*).
 
 The first two groups are read back at enqueue time to decide how a given media item is turned into
 queue items. The click actions are **not read by the server at all**: they live here so every client

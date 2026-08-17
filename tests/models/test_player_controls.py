@@ -244,8 +244,34 @@ class TestVolumeControlExplicitConfig:
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
         )
-        player = _create_player(mock_mass)
+        # NATIVE control requires the player to actually advertise VOLUME_SET —
+        # otherwise the getter drops the stale value and falls back to auto-select.
+        player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
         assert player.volume_control == PLAYER_CONTROL_NATIVE
+
+    def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
+        """Stale NATIVE config falls back to NONE when the player no longer advertises VOLUME_SET."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        player = _create_player(mock_mass)
+        assert player.volume_control == PLAYER_CONTROL_NONE
+        # the resolved control is what the final feature set is derived from, so the state has
+        # to be recalculated to prove the invalid control does not put VOLUME_SET back
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert PlayerFeature.VOLUME_SET not in player.state.supported_features
+
+    def test_explicit_native_degrades_to_protocol_player(self, mock_mass: MagicMock) -> None:
+        """Stale NATIVE config degrades to a protocol player that can drive the volume."""
+        protocol = _create_protocol_player(mock_mass, "proto_vol", {PlayerFeature.VOLUME_SET})
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        mock_mass.players.get_player = MagicMock(return_value=protocol)
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_vol")])
+        assert player.volume_control == "proto_vol"
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Volume control returns none even with native support."""
@@ -298,8 +324,34 @@ class TestMuteControlExplicitConfig:
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
         )
-        player = _create_player(mock_mass)
+        # NATIVE control requires the player to actually advertise VOLUME_MUTE —
+        # otherwise the getter drops the stale value and falls back to auto-select.
+        player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
         assert player.mute_control == PLAYER_CONTROL_NATIVE
+
+    def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
+        """Stale NATIVE config falls back to NONE when the player no longer advertises the feature."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        player = _create_player(mock_mass)
+        assert player.mute_control == PLAYER_CONTROL_NONE
+        # the resolved control is what the final feature set is derived from, so the state has
+        # to be recalculated to prove the invalid control does not put VOLUME_MUTE back
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert PlayerFeature.VOLUME_MUTE not in player.state.supported_features
+
+    def test_explicit_native_degrades_to_protocol_player(self, mock_mass: MagicMock) -> None:
+        """Stale NATIVE config degrades to a protocol player that can drive the mute."""
+        protocol = _create_protocol_player(mock_mass, "proto_mute", {PlayerFeature.VOLUME_MUTE})
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        mock_mass.players.get_player = MagicMock(return_value=protocol)
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_mute")])
+        assert player.mute_control == "proto_mute"
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Mute control returns none when explicitly configured."""
@@ -708,6 +760,34 @@ class TestControlForOutput:
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
         _link_protocols(player, [_make_protocol_link("proto_a")])
         assert player.volume_control_for_output("proto_a") == PLAYER_CONTROL_NATIVE
+
+    def test_stale_native_degrades_to_named_output(self, mock_mass: MagicMock) -> None:
+        """A stored NATIVE the player can no longer back hands the output to its own protocol."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.volume_control_for_output("proto_a") == "proto_a"
+        # the device-wide resolver must agree, otherwise the two disagree on the same config
+        assert player.volume_control == "proto_a"
+
+    def test_stale_native_mute_degrades_to_named_output(self, mock_mass: MagicMock) -> None:
+        """The mute resolver applies the same stale-NATIVE rule as the volume one."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_MUTE})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(player, [_make_protocol_link("proto_a")])
+        assert player.mute_control_for_output("proto_a") == "proto_a"
 
     def test_explicit_config_wins(self, mock_mass: MagicMock) -> None:
         """An explicitly configured control is a device-wide statement, so it still wins."""
