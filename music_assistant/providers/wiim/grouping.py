@@ -330,6 +330,13 @@ class NativeGroupCoordinator:
                 )
             for member in remove_members:
                 self._prevalidate_leave(leader, member)
+            # a removal reads the leader's live slave list; confirm it is readable now, before
+            # any join mutates the group, so a combined batch cannot join earlier members and
+            # only then discover the leader is unreadable and leave the group half-applied.
+            if remove_members and not await self.refresh_leader(leader, force=True):
+                raise PlayerCommandFailed(
+                    f"Cannot read the group state of leader {leader.player_id}"
+                )
             for member in add_members:
                 await self._join(leader, member, join_plan[member.player_id])
             for member in remove_members:

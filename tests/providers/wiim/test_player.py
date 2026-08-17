@@ -380,6 +380,8 @@ class TestGroupMembers:
 
         assert player.active_output_protocol is None
 
+
+class TestSourceList:
     """Test dynamic source list construction."""
 
     @pytest.mark.asyncio

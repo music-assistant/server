@@ -1578,3 +1578,25 @@ class TestBatchValidation:
         with pytest.raises(PlayerCommandFailed):
             await coordinator.set_members(leader, [FOLLOWER_ID], None)
         member_client.join_slave.assert_not_called()
+
+    async def test_combined_batch_aborts_before_join_when_leader_unreadable(self) -> None:
+        """A combined add/remove batch does not join anything if the leader's list is unreadable."""
+        leader_client = MagicMock()
+        leader_client.capabilities = {}
+        leader_client.get_device_group_info = AsyncMock(return_value=MagicMock(role="solo"))
+        leader_client.get_slaves_info = AsyncMock(side_effect=WiiMError("offline"))
+        leader_client.get_device_info_model = AsyncMock(
+            return_value=MagicMock(needs_wifi_direct_multiroom=False, wmrm_version="4.2")
+        )
+        leader = _make_player(
+            LEADER_ID, BACKEND_GENERIC, ip="192.168.1.30", command_client=leader_client
+        )
+        add_client = _member_client()
+        add_client.join_slave = AsyncMock()
+        add_member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=add_client)
+        remove_member = _make_player(SECOND_ID, BACKEND_GENERIC)
+        coordinator, _ = _make_coordinator(leader, add_member, remove_member)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID], [SECOND_ID])
+        add_client.join_slave.assert_not_called()
