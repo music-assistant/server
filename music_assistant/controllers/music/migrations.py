@@ -1002,6 +1002,50 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 58:
+        # Remove UNIQUE constraint from playlog table to allow multiple plays of same item
+        # Recreate table without the constraint, preserving all existing data
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}_new(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [name] TEXT NOT NULL,
+                [image] json,
+                [artists] json,
+                [timestamp] INTEGER DEFAULT 0,
+                [fully_played] BOOLEAN,
+                [seconds_played] INTEGER,
+                [userid] TEXT NOT NULL,
+                [queue_id] TEXT,
+                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                [playback_speed] REAL NOT NULL DEFAULT 1.0
+            );"""
+        )
+        # Copy data with explicit column list to handle tables missing newer columns
+        # Use COALESCE to provide defaults for columns that might not exist yet
+        await database.execute(
+            f"""INSERT INTO {DB_TABLE_PLAYLOG}_new
+                (id, item_id, provider, media_type, name, image, artists, timestamp,
+                 fully_played, seconds_played, userid, queue_id, user_initiated, playback_speed)
+                SELECT
+                    id, item_id, provider, media_type, name,
+                    COALESCE(image, NULL),
+                    COALESCE(artists, NULL),
+                    COALESCE(timestamp, 0),
+                    fully_played,
+                    seconds_played,
+                    userid,
+                    COALESCE(queue_id, NULL),
+                    COALESCE(user_initiated, 1),
+                    COALESCE(playback_speed, 1.0)
+                FROM {DB_TABLE_PLAYLOG}
+                WHERE userid IS NOT NULL"""
+        )
+        await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+        await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG}_new RENAME TO {DB_TABLE_PLAYLOG}")
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:

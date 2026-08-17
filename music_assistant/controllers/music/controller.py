@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
@@ -682,27 +683,48 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if always_include_media_types:
             always_str = "(" + ",".join(f'"{x}"' for x in always_include_media_types) + ")"
             media_type_clause = f"({media_type_clause} OR media_type in {always_str})"
-        query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE {media_type_clause} "
-            f"AND provider in {available_providers_str} "
-        )
+
+        # Build WHERE clause for subquery that finds latest play of each item
+        where_parts = [
+            media_type_clause,
+            f"provider in {available_providers_str}",
+        ]
         params: dict[str, Any] = {}
         if fully_played_only:
-            query += "AND fully_played = 1 "
+            where_parts.append("fully_played = 1")
         if userid:
-            query += "AND userid = :userid "
+            where_parts.append("userid = :userid")
             params["userid"] = userid
         elif user := get_current_user():
-            query += "AND userid = :userid "
+            where_parts.append("userid = :userid")
             params["userid"] = user.user_id
         if queue_id:
-            query += "AND queue_id = :queue_id "
+            where_parts.append("queue_id = :queue_id")
             params["queue_id"] = queue_id
         if played_after_timestamp is not None:
-            query += "AND timestamp >= :played_after_timestamp "
+            where_parts.append("timestamp >= :played_after_timestamp")
             params["played_after_timestamp"] = played_after_timestamp
-        query += "ORDER BY timestamp DESC"
+
+        where_clause = " AND ".join(where_parts)
+
+        # Deduplicate by (item_id, provider, media_type), selecting only the latest play of each item
+        # This prevents repeated plays from occupying all result slots
+        query = (
+            f"SELECT p.* FROM {DB_TABLE_PLAYLOG} p "
+            f"INNER JOIN ("
+            f"  SELECT item_id, provider, media_type, MAX(timestamp) as max_timestamp, "
+            f"         MAX(id) as max_id "
+            f"  FROM {DB_TABLE_PLAYLOG} "
+            f"  WHERE {where_clause} "
+            f"  GROUP BY item_id, provider, media_type, timestamp "
+            f") latest "
+            f"ON p.item_id = latest.item_id "
+            f"   AND p.provider = latest.provider "
+            f"   AND p.media_type = latest.media_type "
+            f"   AND p.timestamp = latest.max_timestamp "
+            f"   AND p.id = latest.max_id "
+            f"ORDER BY p.timestamp DESC, p.id DESC"
+        )
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit
         )
@@ -1700,7 +1722,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params["userid"] = userid
         elif user:
             params["userid"] = user.user_id
-        if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
+        # Get the most recent playlog entry for this item/user
+        db_rows = await self.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE "
+            + " AND ".join(f"{key} = :{key}" for key in params)
+            + " ORDER BY timestamp DESC LIMIT 1",
+            params,
+            limit=0,
+        )
+        if db_rows:
+            db_entry = db_rows[0]
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             # fully_played is a nullable column; treat an unknown (NULL) value as not played
             ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
@@ -1733,15 +1764,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else:
                 # the speed is stored per user; without one we can't scope the lookup
                 return 1.0
-        db_entry = await self.database.get_row(
-            DB_TABLE_PLAYLOG,
+        # Get the most recent playlog entry for this item/user
+        db_rows = await self.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE "
+            "item_id = :item_id AND provider = :provider AND media_type = :media_type AND userid = :userid "
+            "ORDER BY timestamp DESC LIMIT 1",
             {
                 "item_id": media_item.item_id,
                 "provider": media_item.provider,
                 "media_type": media_item.media_type.value,
                 "userid": userid,
             },
+            limit=0,
         )
+        db_entry = db_rows[0] if db_rows else None
         if db_entry and (stored_speed := db_entry["playback_speed"]) is not None:
             return float(stored_speed)
         return 1.0
@@ -2611,35 +2647,135 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
-        Write a playlog row, updating the existing row for the item/user if there is one.
+        Write a playlog entry.
 
-        Columns left out of the entry keep whatever the existing row holds, and
+        For completed plays (fully_played=True), inserts a new row to preserve play history.
+        For resume-state updates (fully_played=False), updates the latest existing row for
+        the item/user to maintain current playback position.
+
         `user_initiated` is sticky: once a play was explicitly user-initiated it stays that
-        way for the lifetime of the row, so a later side-effect credit (an autoplay replay,
-        or a track crediting its album/artist) can never demote it and drop the item out of
-        the "recently played" recommendations.
+        way, so a later side-effect credit (an autoplay replay, or a track crediting its
+        album/artist) can never demote it and drop the item out of the "recently played"
+        recommendations.
 
-        The generic `database.upsert()` cannot express either half of that: the sticky OR is
-        playlog-specific, and it needs an explicit conflict target because the playlog carries
-        more than one unique constraint.
-
-        :param entry: The playlog column values to write, including all of
-            `PLAYLOG_CONFLICT_KEYS`.
+        :param entry: The playlog column values to write.
         """
+        # Copy entry to prevent cross-user mutation when iterating over multiple users
+        entry = entry.copy()
         columns = list(entry)
-        updates = [
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
-            if column == "user_initiated"
-            else f"{column} = excluded.{column}"
-            for column in columns
-            if column not in PLAYLOG_CONFLICT_KEYS
-        ]
-        await self.database.execute_write(
-            f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
-            f"VALUES ({', '.join(f':{column}' for column in columns)}) "
-            f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
-            entry,
-        )
+
+        # For completed plays, check if this is truly a new play or just a provider state sync
+        if entry.get("fully_played"):
+            conflict_params = {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
+
+            # Retire any outstanding incomplete rows for this item/user
+            await self.database.execute_write(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET fully_played = 1 "
+                f"WHERE fully_played = 0 "
+                f"AND {' AND '.join(f'{key} = :{key}' for key in PLAYLOG_CONFLICT_KEYS)}",
+                conflict_params,
+            )
+
+            # Check for recent completed play (within 5 minutes) to avoid duplicates from provider syncs
+            recent_threshold = int(time.time()) - 300
+            recent_completed = await self.database.get_rows_from_query(
+                f"SELECT id, user_initiated, timestamp FROM {DB_TABLE_PLAYLOG} WHERE "
+                + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                + f" AND fully_played = 1 AND timestamp >= {recent_threshold} "
+                + "ORDER BY timestamp DESC LIMIT 1",
+                conflict_params,
+                limit=0,
+            )
+
+            if recent_completed:
+                # Update the recent completed play instead of inserting a duplicate
+                latest_row = recent_completed[0]
+                # Preserve user_initiated=1 if ever set (sticky logic)
+                if latest_row["user_initiated"] == 1:
+                    entry["user_initiated"] = 1
+
+                set_clauses = []
+                for column in columns:
+                    if column == "id":
+                        continue
+                    if column == "user_initiated" and latest_row["user_initiated"] == 1:
+                        # Don't downgrade user_initiated from 1 to 0
+                        continue
+                    set_clauses.append(f"{column} = :{column}")
+
+                if set_clauses:
+                    await self.database.execute_write(
+                        f"UPDATE {DB_TABLE_PLAYLOG} SET {', '.join(set_clauses)} "
+                        f"WHERE id = {latest_row['id']}",
+                        entry,
+                    )
+            else:
+                # No recent completed play found - check if any previous row had user_initiated=1
+                existing_rows = await self.database.get_rows_from_query(
+                    f"SELECT user_initiated FROM {DB_TABLE_PLAYLOG} WHERE "
+                    + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                    + " AND user_initiated = 1 LIMIT 1",
+                    conflict_params,
+                    limit=0,
+                )
+                if existing_rows:
+                    entry["user_initiated"] = 1
+
+                # Insert new completed play
+                await self.database.execute_write(
+                    f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+                    f"VALUES ({', '.join(f':{column}' for column in columns)})",
+                    entry,
+                )
+        else:
+            # For resume-state updates, update the most recent row for this item/user
+            # First, get the id of the latest row
+            conflict_params = {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
+            latest_rows = await self.database.get_rows_from_query(
+                f"SELECT id, fully_played FROM {DB_TABLE_PLAYLOG} WHERE "
+                + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                + " ORDER BY timestamp DESC, id DESC LIMIT 1",
+                conflict_params,
+                limit=0,
+            )
+
+            if latest_rows and not latest_rows[0]["fully_played"]:
+                latest_row = latest_rows[0]
+                # Update existing row with sticky user_initiated logic
+                set_clauses = []
+                for column in columns:
+                    if column == "id":
+                        continue
+                    if column == "user_initiated":
+                        set_clauses.append(f"{column} = {DB_TABLE_PLAYLOG}.{column} OR :{column}")
+                    else:
+                        set_clauses.append(f"{column} = :{column}")
+
+                await self.database.execute_write(
+                    f"UPDATE {DB_TABLE_PLAYLOG} SET {', '.join(set_clauses)} "
+                    f"WHERE id = {latest_row['id']}",
+                    entry,
+                )
+            else:
+                # No existing row - check if we need to preserve playback_speed from completed play
+                if "playback_speed" not in entry:
+                    prev_rows = await self.database.get_rows_from_query(
+                        f"SELECT playback_speed FROM {DB_TABLE_PLAYLOG} WHERE "
+                        + " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+                        + " AND playback_speed IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
+                        conflict_params,
+                        limit=0,
+                    )
+                    if prev_rows:
+                        entry["playback_speed"] = prev_rows[0]["playback_speed"]
+
+                # Insert new resume row
+                columns = list(entry)  # Refresh columns list in case playback_speed was added
+                await self.database.execute_write(
+                    f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+                    f"VALUES ({', '.join(f':{column}' for column in columns)})",
+                    entry,
+                )
 
     async def _credit_artist_plays(
         self,

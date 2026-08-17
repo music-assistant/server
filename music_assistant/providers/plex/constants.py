@@ -37,8 +37,8 @@ COLLECTION_ID_PREFIX = "collection:"
 MIX_ITEM_PREFIX = "mix:"
 
 # Mix title/artwork are cached so replay from recently-played survives Plex
-# rotating the mix out of its hub. 90 days is chosen to outlive MA's
-# playlog retention (see controllers/music.py: _cleanup_database).
+# rotating the mix out of its hub. 90 days is chosen as a reasonable cache window
+# (playlog retention is 365 days, see controllers/music/database.py: _cleanup_database).
 MIX_CACHE_EXPIRATION = 86400 * 90
 
 # Query parameters passed to /hubs/sections when loading recommendations.

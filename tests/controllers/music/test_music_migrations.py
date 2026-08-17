@@ -65,9 +65,22 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     )
     # tests that exercise a specific playlog layout replace this stand-in
     await db.execute(
-        f"CREATE TABLE {DB_TABLE_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
-        "[playback_speed] REAL NOT NULL DEFAULT 1.0, "
-        "UNIQUE(userid))"
+        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [item_id] TEXT NOT NULL DEFAULT '',
+            [provider] TEXT NOT NULL DEFAULT '',
+            [media_type] TEXT NOT NULL DEFAULT '',
+            [name] TEXT NOT NULL DEFAULT '',
+            [image] json,
+            [artists] json,
+            [timestamp] INTEGER DEFAULT 0,
+            [fully_played] BOOLEAN,
+            [seconds_played] INTEGER,
+            [userid] TEXT NOT NULL,
+            [queue_id] TEXT,
+            [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+            [playback_speed] REAL NOT NULL DEFAULT 1.0
+        )"""
     )
     await db.commit()
     yield db
@@ -146,13 +159,18 @@ async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:
     }
 
 
-async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
+async def test_migration_removes_playlog_unique_constraint(
     database: DatabaseConnection,
 ) -> None:
-    """The legacy 3-column UNIQUE constraint on playlog is dropped by a table rebuild."""
+    """The UNIQUE constraint is removed from playlog to allow tracking multiple plays."""
     await _create_legacy_playlog_table(database)
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
-    # a legacy row from before the userid column existed
+    # Insert a completed play
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name, userid, "
+        "timestamp, fully_played, seconds_played, queue_id, user_initiated) "
+        "VALUES ('1', 'library', 'track', 'Test Track', 'user1', 100, 1, 195, 'queue1', 1)"
+    )
+    # A legacy row from before the userid column existed
     await database.execute(
         f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name) "
         "VALUES ('2', 'library', 'track', 'Legacy Track')"
@@ -169,24 +187,33 @@ async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
         create_tables=AsyncMock(),
     )
 
-    # replaying the same item for the same user updates the existing row in place
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1", timestamp=200))
-    # another user playing the same item gets their own row
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user2"))
+    # After migration, multiple plays of the same item by the same user create separate rows
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name, userid, "
+        "timestamp, fully_played, seconds_played, queue_id, user_initiated) "
+        "VALUES ('1', 'library', 'track', 'Test Track', 'user1', 200, 1, 195, 'queue2', 1)"
+    )
+    # Another user playing the same item gets their own row
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name, userid, "
+        "timestamp, fully_played, seconds_played, queue_id, user_initiated) "
+        "VALUES ('1', 'library', 'track', 'Test Track', 'user2', 150, 1, 195, 'queue3', 1)"
+    )
     rows = await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "1"})
-    assert len(rows) == 2
-    user1_row = next(row for row in rows if row["userid"] == "user1")
-    assert user1_row["timestamp"] == 200
-    assert user1_row["name"] == "Test Track"
-    # legacy rows without a userid cannot be kept under the NOT NULL schema
+    assert len(rows) == 3  # Three separate play events for the same item
+    user1_rows = [row for row in rows if row["userid"] == "user1"]
+    assert len(user1_rows) == 2  # user1 played the same item twice
+    assert {row["timestamp"] for row in user1_rows} == {100, 200}
+    # Legacy rows without a userid cannot be kept under the NOT NULL schema
     assert not await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "2"})
 
 
-async def test_migration_leaves_correct_playlog_untouched(
+async def test_migration_removes_constraint_from_all_tables(
     database: DatabaseConnection,
 ) -> None:
-    """A playlog table that already has the 4-column constraint is not rebuilt."""
+    """All playlog tables get the constraint removed, regardless of starting schema."""
     await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    # Create table with the inline UNIQUE constraint that v58 shipped with
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,12 +232,11 @@ async def test_migration_leaves_correct_playlog_untouched(
             [playback_speed] REAL NOT NULL DEFAULT 1.0,
             UNIQUE(item_id, provider, media_type, userid));"""
     )
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
-    await database.commit()
-    table_sql_query = (
-        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_PLAYLOG}'"
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name, userid, "
+        "timestamp, fully_played) VALUES ('1', 'library', 'track', 'Test Track', 'user1', 100, 1)"
     )
-    table_sql_before = (await database.get_rows_from_query(table_sql_query))[0]["sql"]
+    await database.commit()
 
     mass = MagicMock()
     mass.cache.clear = AsyncMock()
@@ -218,13 +244,17 @@ async def test_migration_leaves_correct_playlog_untouched(
         mass,
         database,
         MagicMock(),
-        prev_version=48,
+        prev_version=58,
         create_tables=AsyncMock(),
     )
 
-    assert (await database.get_rows_from_query(table_sql_query))[0]["sql"] == table_sql_before
-    rows = await database.get_rows(DB_TABLE_PLAYLOG)
-    assert len(rows) == 1
+    # After migration, can insert duplicate item/provider/media_type/userid combinations
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name, userid, "
+        "timestamp, fully_played) VALUES ('1', 'library', 'track', 'Test Track', 'user1', 200, 1)"
+    )
+    rows = await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "1"})
+    assert len(rows) == 2
 
 
 async def test_migrate_database_rejects_too_old_schema() -> None:
