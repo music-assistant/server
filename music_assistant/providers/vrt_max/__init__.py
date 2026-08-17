@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
+    MediaItemChapter,
     MediaItemImage,
     MediaItemType,
     Podcast,
@@ -233,7 +234,23 @@ class VrtMaxProvider(MusicProvider):
             provider=self.instance_id,
             name=episode.title,
         )
-        return self._episode_item(episode, podcast_mapping, 0)
+        item = self._episode_item(episode, podcast_mapping, 0)
+        # Attach the played-songs tracklist as chapters (available anonymously).
+        try:
+            chapters = await self._client.get_episode_chapters(prov_episode_id)
+            if chapters:
+                item.metadata.chapters = [
+                    MediaItemChapter(
+                        position=chapter.position,
+                        name=chapter.name,
+                        start=chapter.start,
+                        end=chapter.end,
+                    )
+                    for chapter in chapters
+                ]
+        except VrtApiError as err:
+            self.logger.debug("Could not fetch chapters for %s: %s", prov_episode_id, err)
+        return item
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Sync the user's 'Mijn lijst' favourites (podcasts + radio archives) to the library."""

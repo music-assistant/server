@@ -9,6 +9,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -229,6 +230,7 @@ _TILE_FIELDS = """
       }
       ... on RadioEpisodeTile { formattedDuration }
       ... on PodcastEpisodeTile { formattedDuration }
+      ... on SongTile { startDate }
 """
 
 _QUERY_SEARCH = """
@@ -511,12 +513,63 @@ RESUME_PLAYER_FIELDS
 """.replace("RESUME_PLAYER_FIELDS", _RESUME_PLAYER_FIELDS)
 
 
+_EPISODE_MENU_FIELDS = """
+      player {
+        modes {
+          __typename
+          ... on AudioPlayerMode { broadcastStartDate }
+        }
+      }
+      menu { items { title componentId } }
+"""
+
+_QUERY_EPISODE_MENU = """
+query EpisodeMenu($pageId: ID!) {
+  page(id: $pageId) {
+    __typename
+    ... on RadioEpisodePage {
+EPISODE_MENU_FIELDS
+    }
+    ... on PodcastEpisodePage {
+EPISODE_MENU_FIELDS
+    }
+  }
+}
+""".replace("EPISODE_MENU_FIELDS", _EPISODE_MENU_FIELDS)
+
+# The playlist menu id resolves to a ContainerNavigationItem wrapping the actual
+# song PaginatedTileList; this query digs out that inner list's componentId.
+_QUERY_PLAYLIST_TAB = """
+query PlaylistTab($componentId: ID!) {
+  component(id: $componentId) {
+    __typename
+    ... on ContainerNavigationItem {
+      components {
+        __typename
+        ... on PaginatedTileList { componentId tileContentType }
+      }
+    }
+  }
+}
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class VrtStreamInfo:
     """The playable stream reference for an on-demand episode."""
 
     stream_id: str
     duration: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class VrtChapter:
+    """A tracklist entry (played song) mapped to an episode chapter."""
+
+    position: int
+    name: str
+    start: float  # seconds from the episode start
+    end: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -813,6 +866,51 @@ class VrtMaxClient:
         if hls_urls:
             return hls_urls[0]
         raise VrtApiError("No HLS stream in aggregator response")
+
+    async def get_episode_chapters(self, page_id: str) -> list[VrtChapter]:
+        """
+        Return the episode's tracklist (played songs) as chapters.
+
+        The playlist is discovered from the episode page's `menu` (a
+        ContainerNavigationItem wrapping the song list); offsets are computed
+        from the broadcast start time.
+
+        :param page_id: The episode page path.
+        """
+        data = await self._graphql(_QUERY_EPISODE_MENU, {"pageId": page_id})
+        page = data.get("page")
+        if not isinstance(page, dict):
+            return []
+        broadcast_start = _first_broadcast_start(page.get("player"))
+        tab_id = _playlist_component_id(page.get("menu"))
+        if not tab_id or broadcast_start is None:
+            return []
+
+        tab = await self._graphql(_QUERY_PLAYLIST_TAB, {"componentId": tab_id})
+        song_list_id = _song_list_component_id(tab.get("component"))
+        if not song_list_id:
+            return []
+
+        songs: list[tuple[str, str | None, float]] = []
+        async for node in self._iter_component_nodes(song_list_id):
+            if node.get("__typename") != "SongTile":
+                continue
+            start = _parse_iso(node.get("startDate"))
+            title = node.get("title")
+            if start is None or not isinstance(title, str) or not title:
+                continue
+            offset = (start - broadcast_start).total_seconds()
+            artist = node.get("description")
+            songs.append((title, artist if isinstance(artist, str) and artist else None, offset))
+
+        songs.sort(key=lambda s: s[2])
+        chapters: list[VrtChapter] = []
+        for index, (title, artist, offset) in enumerate(songs):
+            start_seconds = max(0.0, offset)
+            end = max(0.0, songs[index + 1][2]) if index + 1 < len(songs) else None
+            name = f"{title} - {artist}" if artist else title
+            chapters.append(VrtChapter(position=index + 1, name=name, start=start_seconds, end=end))
+        return chapters
 
     async def get_progress(self, page_id: str, access_token: str) -> VrtProgress:
         """
@@ -1296,6 +1394,54 @@ def _collect_seasons(components: Any, seasons: list[VrtSeason]) -> None:
             cid = comp.get("componentId")
             if isinstance(cid, str):
                 seasons.append(VrtSeason(title=comp.get("title"), component_id=cid))
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """Parse a VRT ISO-8601 timestamp (e.g. '2026-08-09T10:00:00.000Z')."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _first_broadcast_start(player: Any) -> datetime | None:
+    """Return the AudioPlayerMode broadcastStartDate from a player payload."""
+    if not isinstance(player, dict):
+        return None
+    for mode in player.get("modes") or []:
+        if isinstance(mode, dict) and mode.get("__typename") == "AudioPlayerMode":
+            return _parse_iso(mode.get("broadcastStartDate"))
+    return None
+
+
+def _playlist_component_id(menu: Any) -> str | None:
+    """Return the 'Playlist' tab componentId from an episode page menu."""
+    if not isinstance(menu, dict):
+        return None
+    for item in menu.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if (item.get("title") or "").lower() == "playlist":
+            component_id = item.get("componentId")
+            if isinstance(component_id, str) and component_id:
+                return component_id
+    return None
+
+
+def _song_list_component_id(component: Any) -> str | None:
+    """Return the inner song PaginatedTileList componentId from a playlist tab."""
+    if not isinstance(component, dict):
+        return None
+    for sub in component.get("components") or []:
+        if not isinstance(sub, dict) or sub.get("__typename") != "PaginatedTileList":
+            continue
+        if sub.get("tileContentType") == "song":
+            component_id = sub.get("componentId")
+            if isinstance(component_id, str) and component_id:
+                return component_id
+    return None
 
 
 def _search_list_id(entity_type: str, result_type: str, query: str) -> str:
