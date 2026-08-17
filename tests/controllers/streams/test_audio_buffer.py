@@ -581,8 +581,9 @@ async def test_seekable_buffer_backpressure() -> None:
     # use fill() so there's an active producer task (eviction only happens
     # when the producer is running and needs space)
     buf.fill(_make_source(max_size + 5), source_name="test")
-    async with buf._data_available:
-        await buf._data_available.wait_for(lambda: buf.size_seconds == max_size)
+    async with asyncio.timeout(5):
+        async with buf._data_available:
+            await buf._data_available.wait_for(lambda: buf.size_seconds == max_size)
 
     assert buf.size_seconds == max_size
 
