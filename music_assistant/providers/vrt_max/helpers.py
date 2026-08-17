@@ -159,7 +159,7 @@ STATIONS: tuple[VrtStation, ...] = (
         name="StuBru Vuurland",
         stream_url="http://icecast.vrtcdn.be/stubru_tgs-high.mp3",
         aac_url="http://icecast.vrtcdn.be/stubru_tgs.aac",
-        logo_url="https://images.vrt.be/orig/2024/03/26/1610f974-eb56-11ee-8fc9-02b7b76bf47f.jpg",
+        logo_url="https://radioplayer.vrt.be/iframe/img/channelLogos/vuurland.png",
         tagline=None,
     ),
     VrtStation(
