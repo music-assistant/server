@@ -594,16 +594,6 @@ class WiimPlayer(Player):
             self._attr_elapsed_time_last_updated = time.time()
         self._update_ma_state_from_sdk_cache()
 
-    async def _refresh_multiroom(self) -> None:
-        """Refresh multiroom status from devices, then update all WiiM players."""
-        try:
-            await self._wiim_controller.async_update_all_multiroom_status()
-        except WiimException as err:
-            self.logger.debug("Failed to refresh multiroom status: %s", err)
-        for player in self.provider.players:
-            if isinstance(player, WiimPlayer):
-                player._update_ma_state_from_sdk_cache()
-
     def _handle_command_error(self, action: str, err: WiimException) -> None:
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
