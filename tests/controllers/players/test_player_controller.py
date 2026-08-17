@@ -3047,6 +3047,7 @@ class TestMuteControlGuard:
         mute_control: str,
         volume_control: str,
         controls: dict[str, PlayerControl] | None = None,
+        features: set[PlayerFeature] | None = None,
     ) -> tuple[PlayerController, MockPlayer]:
         """Build a controller with a single player using the given control config."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
@@ -3057,6 +3058,8 @@ class TestMuteControlGuard:
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
+        if features is not None:
+            player._attr_supported_features = features
         controller._players = {"player_1": player}
         controller._controls = controls or {}
         mock_mass.players = controller
@@ -3092,6 +3095,8 @@ class TestMuteControlGuard:
             mock_mass,
             mute_control=PLAYER_CONTROL_NATIVE,
             volume_control=PLAYER_CONTROL_NONE,
+            # native mute is only honored while the player advertises the feature
+            features={PlayerFeature.VOLUME_MUTE},
         )
         volume_mute = AsyncMock()
         player.volume_mute = volume_mute  # type: ignore[method-assign]
