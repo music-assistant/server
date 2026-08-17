@@ -85,17 +85,9 @@ class TestManufacturerClassification:
         assert is_official_manufacturer(manufacturer) is False
 
 
-def _group_info(role: str = "solo", slave_uuids: list[str] | None = None) -> SimpleNamespace:
-    """Build a pywiim DeviceGroupInfo-like object."""
-    slaves = slave_uuids or []
-    return SimpleNamespace(
-        role=role,
-        master_host=None,
-        master_uuid=None,
-        slave_hosts=[],
-        slave_uuids=slaves,
-        slave_count=len(slaves),
-    )
+def _slaves(uuids: list[str]) -> list[dict[str, str]]:
+    """Build a pywiim get_slaves_info()-style slave list."""
+    return [{"uuid": uuid, "ip": f"10.0.0.{index + 2}"} for index, uuid in enumerate(uuids)]
 
 
 @pytest.fixture
@@ -126,7 +118,7 @@ def mock_client() -> MagicMock:
             uuid=EDIFIER_HTTP_UUID, wmrm_version="4.2", firmware="Linkplay.4.6.430230"
         )
     )
-    client.get_device_group_info = AsyncMock(return_value=_group_info())
+    client.get_slaves_info = AsyncMock(return_value=_slaves([]))
     client.join_slave = AsyncMock()
     client.leave_group = AsyncMock()
     return client
@@ -288,9 +280,7 @@ class TestGrouping:
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
         mock_provider.mass.players.get_player.return_value = member
         # after joining, the leader lists the member as a slave
-        mock_client.get_device_group_info = AsyncMock(
-            return_value=_group_info("master", [PEER_HTTP_UUID])
-        )
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
         mock_provider.players = [leader, member]
         await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
         member_client.join_slave.assert_awaited_once()
@@ -307,7 +297,7 @@ class TestGrouping:
         member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
         mock_provider.mass.players.get_player.return_value = member
-        mock_client.get_device_group_info = AsyncMock(return_value=_group_info("master", []))
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
         mock_provider.players = [leader, member]
         await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
         member_client.leave_group.assert_awaited_once()
@@ -367,7 +357,7 @@ class TestGrouping:
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
         mock_provider.mass.players.get_player.return_value = member
         # leader keeps reporting no slaves -> join not verified
-        mock_client.get_device_group_info = AsyncMock(return_value=_group_info("master", []))
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
         mock_provider.players = [leader, member]
         with (
             patch("music_assistant.providers.wiim.linkplay_player.asyncio.sleep", AsyncMock()),
@@ -385,13 +375,13 @@ class TestGrouping:
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
         mock_provider.mass.players.get_player.return_value = member
         # first read still shows no slaves (group forming), second read shows the member
-        mock_client.get_device_group_info = AsyncMock(
-            side_effect=[_group_info("master", []), _group_info("master", [PEER_HTTP_UUID])]
+        mock_client.get_slaves_info = AsyncMock(
+            side_effect=[_slaves([]), _slaves([PEER_HTTP_UUID])]
         )
         mock_provider.players = [leader, member]
         with patch("music_assistant.providers.wiim.linkplay_player.asyncio.sleep", AsyncMock()):
             await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-        assert mock_client.get_device_group_info.await_count == 2
+        assert mock_client.get_slaves_info.await_count == 2
 
     async def test_grouping_available_during_external_source(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -421,9 +411,7 @@ class TestTopology:
         """A master with a known slave reports [leader, follower]."""
         leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
         peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        mock_client.get_device_group_info = AsyncMock(
-            return_value=_group_info("master", [PEER_HTTP_UUID])
-        )
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
         mock_provider.players = [leader, peer]
         await leader._update_group_members()
         assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
@@ -433,7 +421,7 @@ class TestTopology:
     ) -> None:
         """A solo device manages no members."""
         leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_client.get_device_group_info = AsyncMock(return_value=_group_info("solo", []))
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
         await leader._update_group_members()
         assert leader._attr_group_members == []
 
@@ -442,7 +430,7 @@ class TestTopology:
     ) -> None:
         """A follower derives its relationship from the leader, managing no members itself."""
         follower = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_client.get_device_group_info = AsyncMock(return_value=_group_info("slave", []))
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
         await follower._update_group_members()
         assert follower._attr_group_members == []
 
@@ -451,11 +439,41 @@ class TestTopology:
     ) -> None:
         """A master whose only slave is not a registered player reports no members."""
         leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_client.get_device_group_info = AsyncMock(
-            return_value=_group_info("master", ["001122334455667788990011"])
-        )
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves(["001122334455667788990011"]))
         mock_provider.players = [leader]
         await leader._update_group_members()
+        assert leader._attr_group_members == []
+
+
+class TestRefreshResilience:
+    """A poll must survive a transient topology blip and detect an unreachable API."""
+
+    async def test_transient_topology_read_keeps_last_members(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A failed slave-list read must not clear a real group; last members are kept."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
+        mock_provider.players = [leader, peer]
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
+        await leader._refresh_linkplay()
+        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        # a topology read blip must not drop the group, and the device stays available
+        mock_client.get_slaves_info = AsyncMock(side_effect=WiiMError("blip"))
+        await leader._refresh_linkplay()
+        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        assert leader._linkplay_available is True
+
+    async def test_unreachable_api_marks_unhealthy(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """When the LinkPlay API is unreachable the shell goes unhealthy and drops members."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        leader._attr_group_members = [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
+        await leader._refresh_linkplay()
+        assert leader._linkplay_available is False
         assert leader._attr_group_members == []
 
 
@@ -469,7 +487,7 @@ class TestAddressChange:
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
         new_client = MagicMock(host="192.168.1.99")
         new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
-        new_client.get_device_group_info = AsyncMock(return_value=_group_info())
+        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
         mock_provider.players = [player]
         with patch(
             "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client

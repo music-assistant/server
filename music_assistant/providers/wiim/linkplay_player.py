@@ -199,7 +199,11 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             self._upnp_device = upnp_device
             self._linkplay_available = True
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_ip)
-            await self._update_group_members()
+            try:
+                await self._update_group_members()
+            except WiiMError as err:
+                # The rebuild succeeded; a stale topology read must not undo it.
+                self.logger.debug("Failed to read group topology for %s: %s", self.name, err)
             self.update_state()
 
     # --- Internals ---
@@ -210,30 +214,39 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     async def _refresh_linkplay(self) -> None:
         """Refresh reachability, cached device info and native group topology."""
-        try:
-            self._cached_device_info = await self._client.get_device_info_model()
-            await self._update_group_members()
-        except WiiMError as err:
-            if self._linkplay_available:
-                self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
-            self._linkplay_available = False
-            self._attr_group_members = []
+        # Serialize with async_handle_address_change so an in-flight poll against the old
+        # client cannot land after a validated client swap and overwrite it with stale state.
+        async with self._rebuild_lock:
+            try:
+                self._cached_device_info = await self._client.get_device_info_model()
+            except WiiMError as err:
+                if self._linkplay_available:
+                    self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
+                self._linkplay_available = False
+                self._attr_group_members = []
+                self.update_state()
+                return
+            self._linkplay_available = True
+            try:
+                await self._update_group_members()
+            except WiiMError as err:
+                # A transient topology read must not drop a real hardware group; the last
+                # known members are kept until a successful read replaces them.
+                self.logger.debug("Failed to read group topology for %s: %s", self.name, err)
             self.update_state()
-            return
-        self._linkplay_available = True
-        self.update_state()
 
     async def _update_group_members(self) -> None:
-        """Map this device's native group topology onto MA group member ids."""
-        info = await self._client.get_device_group_info()
-        if info.role != "master" or not info.slave_uuids:
-            # Followers and solo devices manage no members; MA derives a follower's
-            # relationship from the leader that lists it.
-            self._attr_group_members = []
-            return
+        """Map this device's native slave list onto MA group member ids (leader first)."""
+        # get_slaves_info() raises on a failed request (unlike get_device_group_info, which
+        # masks a failed slave read as "solo"), so a transient blip cannot silently clear a
+        # real group. It returns the slaves only for a master; a follower/solo returns none.
+        slaves = await self._client.get_slaves_info()
         members = [self.player_id]
-        for slave_uuid in info.slave_uuids:
-            if (resolved := self._resolve_member_player_id(slave_uuid)) and resolved not in members:
+        for slave in slaves:
+            if not isinstance(slave, dict):
+                continue
+            resolved = self._resolve_member_player_id(slave.get("uuid"))
+            if resolved and resolved not in members:
                 members.append(resolved)
         self._attr_group_members = members if len(members) > 1 else []
 
@@ -257,15 +270,16 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """Confirm a grouping operation actually took effect on THIS leader's group."""
         for attempt in range(GROUP_VERIFY_ATTEMPTS):
             try:
-                info = await self._client.get_device_group_info()
+                slaves = await self._client.get_slaves_info()
             except WiiMError as err:
                 raise PlayerCommandFailed(
                     f"Could not verify grouping of {member_id} on {self.name}: {err}"
                 ) from err
             current_members = {
                 resolved
-                for slave_uuid in (info.slave_uuids or [])
-                if (resolved := self._resolve_member_player_id(slave_uuid)) is not None
+                for slave in slaves
+                if isinstance(slave, dict)
+                and (resolved := self._resolve_member_player_id(slave.get("uuid"))) is not None
             }
             if (member.player_id in current_members) == expect_slave:
                 return
