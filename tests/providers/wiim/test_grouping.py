@@ -1418,6 +1418,10 @@ class TestBatchValidation:
     async def test_leader_following_unknown_group_cannot_lead(self) -> None:
         """A leader that itself follows an undiscovered group is refused before any mutation."""
         leader_client = _leader_client([])
+        # the leader's own live read reports it is a slave of a leader MA cannot see
+        leader_client.get_device_group_info = AsyncMock(
+            return_value=MagicMock(role="slave", master_uuid=OTHER_MASTER_UUID)
+        )
         leader = _make_player(
             LEADER_ID, BACKEND_GENERIC, ip="192.168.1.20", command_client=leader_client
         )
@@ -1425,8 +1429,6 @@ class TestBatchValidation:
         member_client.join_slave = AsyncMock()
         member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=member_client)
         coordinator, _ = _make_coordinator(leader, member)
-        coordinator.set_self_role(LEADER_ID, True)  # the leader follows an undiscovered group
-        await coordinator.reconcile()
 
         with pytest.raises(PlayerCommandFailed):
             await coordinator.set_members(leader, [FOLLOWER_ID], None)
@@ -1600,3 +1602,34 @@ class TestBatchValidation:
         with pytest.raises(PlayerCommandFailed):
             await coordinator.set_members(leader, [FOLLOWER_ID], [SECOND_ID])
         add_client.join_slave.assert_not_called()
+
+    async def test_addition_with_unreadable_group_aborts_batch(self) -> None:
+        """A batch fails before any join if an addition's live group cannot be read."""
+        member_client = _member_client()
+        member_client.join_slave = AsyncMock()
+        member_client.get_device_group_info = AsyncMock(side_effect=WiiMError("offline"))
+        leader = _make_player(
+            LEADER_ID, BACKEND_GENERIC, ip="192.168.1.20", command_client=_leader_client([])
+        )
+        member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=member_client)
+        coordinator, _ = _make_coordinator(leader, member)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID], None)
+        member_client.join_slave.assert_not_called()
+
+    async def test_join_surfaces_device_info_failure(self) -> None:
+        """A device-info read error surfaces as a chained failure, not a false incompatibility."""
+        member_client = _member_client()
+        member_client.join_slave = AsyncMock()
+        member_client.get_device_info_model = AsyncMock(side_effect=WiiMError("boom"))
+        leader = _make_player(
+            LEADER_ID, BACKEND_OFFICIAL, ip="192.168.1.20", command_client=_leader_client([])
+        )
+        member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=member_client)
+        coordinator, _ = _make_coordinator(leader, member)
+
+        with pytest.raises(PlayerCommandFailed) as exc_info:
+            await coordinator.set_members(leader, [FOLLOWER_ID], None)
+        assert isinstance(exc_info.value.__cause__, WiiMError)
+        member_client.join_slave.assert_not_called()

@@ -274,13 +274,14 @@ class NativeGroupCoordinator:
         async with self._command_lock:
             add_members = [self._require_member(mid) for mid in player_ids_to_add or []]
             remove_members = [self._require_member(mid) for mid in player_ids_to_remove or []]
-            # read each low-level addition's live group up front: joining it dissolves the
-            # group it currently leads, and a stale cache could miss a follower it gained
-            # since its last refresh, so the lock set and validation below must see the
-            # current followers, not a stale snapshot.
-            for member in add_members:
-                if not self._is_official_pair(leader, member):
-                    await self.refresh_leader(member, force=True)
+            # authoritative preflight: read the leader's and every addition's live group
+            # before deriving any lock or plan, and fail the whole batch if a device's fresh
+            # state cannot be obtained. This ensures a device that externally became a
+            # follower (or gained followers) since its last poll is validated on live state,
+            # never repurposed from a stale cache.
+            for player in (leader, *add_members):
+                if not await self.refresh_leader(player, force=True):
+                    raise PlayerCommandFailed(f"Cannot read the group state of {player.player_id}")
             # a concurrent address rebuild on any involved generic device must not swap its
             # client or move its address mid-command; hold each device's rebuild lock for the
             # whole check/mutate/verify sequence. Acquiring in sorted player-id order gives a
@@ -330,13 +331,6 @@ class NativeGroupCoordinator:
                 )
             for member in remove_members:
                 self._prevalidate_leave(leader, member)
-            # a removal reads the leader's live slave list; confirm it is readable now, before
-            # any join mutates the group, so a combined batch cannot join earlier members and
-            # only then discover the leader is unreadable and leave the group half-applied.
-            if remove_members and not await self.refresh_leader(leader, force=True):
-                raise PlayerCommandFailed(
-                    f"Cannot read the group state of leader {leader.player_id}"
-                )
             for member in add_members:
                 await self._join(leader, member, join_plan[member.player_id])
             for member in remove_members:
@@ -709,12 +703,18 @@ class NativeGroupCoordinator:
             raise PlayerCommandFailed(f"Failed to ungroup {member.player_id}: {err}") from err
 
     async def _leader_slave_ip(self, client: WiiMClient, member: NativePlayer) -> str | None:
-        """Resolve a follower's address from the leader's own slave list."""
+        """
+        Resolve a follower's address from the leader's own slave list.
+
+        Returns ``None`` only when the list is read but does not (yet) contain the member;
+        a failed read raises a chained typed error rather than masquerading as "no address".
+        """
         try:
             slaves = await client.get_slaves_info()
         except WiiMError as err:
-            self._provider.logger.debug("Failed to read leader slave list: %s", err)
-            return None
+            raise PlayerCommandFailed(
+                f"Failed to read the slave list of leader {member.player_id}'s group: {err}"
+            ) from err
         for slave in slaves:
             if (
                 isinstance(slave, dict)
@@ -767,16 +767,19 @@ class NativeGroupCoordinator:
             f"{member.player_id} did not {verb} the group led by {leader.player_id}"
         )
 
-    async def _device_info(self, player: NativePlayer) -> DeviceInfo | None:
+    async def _device_info(self, player: NativePlayer) -> DeviceInfo:
         """
-        Read a player's device info for the compatibility gate, best-effort.
+        Read a player's device info for the compatibility gate.
+
+        A failed read raises a chained typed error rather than being collapsed into a
+        "None" that the compatibility gate would then misreport as an incompatible or
+        legacy device, hiding the real API failure from the caller.
 
         :param player: The player whose device info to read.
         """
         try:
             return await player.make_command_client().get_device_info_model()
         except WiiMError as err:
-            self._provider.logger.debug(
-                "Could not read device info for %s: %s", player.player_id, err
-            )
-            return None
+            raise PlayerCommandFailed(
+                f"Could not read device info for {player.player_id}: {err}"
+            ) from err
