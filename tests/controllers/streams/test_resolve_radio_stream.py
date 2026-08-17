@@ -121,18 +121,27 @@ async def test_hls_playlist_resolves_as_hls(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "content_type"),
+    [
+        ("http://radio.example.com/live", "audio/x-mpegurl"),
+        ("http://radio.example.com/live.m3u8", "application/octet-stream"),
+    ],
+)
 async def test_hls_without_version_tag_still_resolves_as_hls(
     monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    content_type: str,
 ) -> None:
-    """The HLS content type decides on its own, without a tag to recognise in the body."""
+    """A version-less HLS media playlist is recognised by its required tag."""
     audio = _streams_audio()
     body = b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nsegment0.aac\n"
-    response = _FakeConnCtx({"content-type": "application/vnd.apple.mpegurl"}, body)
+    response = _FakeConnCtx({"content-type": content_type}, body)
     monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: response)
 
-    result = await audio.resolve_radio_stream("http://radio.example.com/live")
+    result = await audio.resolve_radio_stream(url)
 
-    assert result == ("http://radio.example.com/live", StreamType.HLS)
+    assert result == (url, StreamType.HLS)
 
 
 @pytest.mark.asyncio

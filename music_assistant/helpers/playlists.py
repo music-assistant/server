@@ -331,7 +331,8 @@ async def parse_playlist_data(
     playlist_data = raw_data.decode(encoding, errors="replace")
 
     if (
-        raise_on_hls and "#EXT-X-VERSION:" in playlist_data
+        raise_on_hls
+        and ("#EXT-X-VERSION:" in playlist_data or "#EXT-X-TARGETDURATION:" in playlist_data)
     ) or "#EXT-X-STREAM-INF:" in playlist_data:
         raise IsHLSPlaylist
 

@@ -1000,6 +1000,13 @@ HLS_MEDIA_PLAYLIST = (
     "#EXTINF:10.0,\n"
     "http://stream.example.com/segment1.aac\n"
 )
+VERSIONLESS_HLS_MEDIA_PLAYLIST = (
+    "#EXTM3U\n"
+    "#EXT-X-TARGETDURATION:10\n"
+    '#EXT-X-KEY:METHOD=AES-128,URI="skd://test-key"\n'
+    "#EXTINF:10,\n"
+    "segment1.aac\n"
+)
 HLS_MASTER_PLAYLIST = (
     "#EXTM3U\n"
     '#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"\n'
@@ -1154,6 +1161,15 @@ async def test_fetch_playlist_hls_media_playlist() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_playlist_versionless_hls_media_playlist() -> None:
+    """A version-less HLS media playlist is recognised by its required tag."""
+    mass = _mass_serving(VERSIONLESS_HLS_MEDIA_PLAYLIST.encode())
+
+    with pytest.raises(IsHLSPlaylist):
+        await fetch_playlist(mass, "http://example.com/station.m3u8")
+
+
+@pytest.mark.asyncio
 async def test_fetch_playlist_hls_media_playlist_allowed() -> None:
     """With raise_on_hls disabled an HLS media playlist parses like any other M3U."""
     mass = _mass_serving(HLS_MEDIA_PLAYLIST.encode())
@@ -1162,6 +1178,18 @@ async def test_fetch_playlist_hls_media_playlist_allowed() -> None:
 
     assert len(result) == 1
     assert result[0].path == "http://stream.example.com/segment1.aac"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_versionless_hls_media_playlist_allowed() -> None:
+    """Disabling HLS detection still exposes a version-less playlist's segment and key."""
+    mass = _mass_serving(VERSIONLESS_HLS_MEDIA_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u8", raise_on_hls=False)
+
+    assert len(result) == 1
+    assert result[0].path == "segment1.aac"
+    assert result[0].key == "skd://test-key"
 
 
 @pytest.mark.asyncio
