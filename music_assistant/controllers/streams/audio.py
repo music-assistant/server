@@ -1658,10 +1658,6 @@ class StreamsAudio:
                     self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-            # The FFmpeg stdin feeder swallows producer errors; re-raise even after
-            # partial audio so a failed source is not mistaken for a completed stream.
-            if audio_buffer.has_error:
-                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
