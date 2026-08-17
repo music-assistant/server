@@ -255,6 +255,21 @@ class TestHealthGating:
         mock_provider.players = [player, peer]
         assert player.can_group_with == set()
 
+    def test_native_group_compat_only_generic_peers(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """The native-compat seam only accepts reachable generic peers, never other backends."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
+        peer._linkplay_available = True
+        mock_provider.players = [player, peer]
+        assert player.is_native_group_compatible(peer) is True
+        # a same-instance player of another backend (e.g. official WiiM) is not native-compatible,
+        # so the grouping layer never routes such a pair onto a native group.
+        official = MagicMock(player_id="wiim_official")
+        assert player.is_native_group_compatible(official) is False
+
 
 class TestPlaybackAvailability:
     """Playback availability derives from linked protocols, not the LinkPlay API (B2)."""
@@ -834,6 +849,21 @@ class TestDefaultProtocolSelection:
             "ap_x": MagicMock(available_for_playback=True),
         }
         controller = self._controller(players, preferred="ap_x")
+        player = self._shell_player(links)
+        target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
+        assert target is players["ap_x"]
+
+    def test_explicit_auto_falls_back_to_priority(self) -> None:
+        """An explicit "auto" preference skips the default domain and uses plain priority."""
+        links = [
+            LinkedOutputProtocol("dlna_x", "dlna", priority=50),
+            LinkedOutputProtocol("ap_x", "airplay", priority=10),
+        ]
+        players = {
+            "dlna_x": MagicMock(available_for_playback=True),
+            "ap_x": MagicMock(available_for_playback=True),
+        }
+        controller = self._controller(players, preferred="auto")
         player = self._shell_player(links)
         target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
         assert target is players["ap_x"]

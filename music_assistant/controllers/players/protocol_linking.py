@@ -1797,8 +1797,9 @@ class ProtocolLinkingMixin:
 
         # 2. Check for user's preferred output protocol.
         # The value is only stored while it differs from the entry's default, which is computed
-        # per player: "native" when a native output is available, otherwise "auto". Both of those
-        # are handled identically by the steps below, so an absent value can safely fall through.
+        # per player: "native" when a native output is available, otherwise the player's default
+        # output domain (e.g. a LinkPlay shell defaults to DLNA) or "auto". An explicit "auto"
+        # means the user opted into plain priority-based selection and skips the default-domain step.
         preferred = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
@@ -1837,7 +1838,9 @@ class ProtocolLinkingMixin:
         # 4. Use the player's preferred default protocol domain, if it declares one and a
         # matching linked protocol is available (e.g. a LinkPlay shell prefers DLNA). This
         # never influences grouping; it only steers the default output for playback.
-        if default_domain := player.default_output_protocol_domain:
+        # An explicit "auto" preference intentionally skips this step to restore plain
+        # priority-based selection below.
+        if preferred != "auto" and (default_domain := player.default_output_protocol_domain):
             for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
                 if linked.protocol_domain != default_domain:
                     continue
@@ -2105,7 +2108,7 @@ class ProtocolLinkingMixin:
         if not parent_supports_native:
             return False
         return (
-            child_player.provider.instance_id == parent_player.provider.instance_id
+            parent_player.is_native_group_compatible(child_player)
             or child_player.player_id in parent_player._attr_can_group_with
             or child_player.provider.instance_id in parent_player._attr_can_group_with
         )
@@ -2475,8 +2478,8 @@ class ProtocolLinkingMixin:
 
         # Priority 0.5: a player that runs its own multiroom (e.g. a LinkPlay control shell)
         # keeps grouping on its native path rather than routing it through a linked protocol
-        # that is merely its preferred playback output. Compatibility still decides whether
-        # native grouping is possible, so an incompatible/cross-backend pair falls through.
+        # that is merely its preferred playback output. Native compatibility still decides
+        # whether this is possible, so an incompatible/cross-backend pair falls through.
         if child_player.prefer_native_grouping and self._can_use_native_grouping(
             child_player, parent_player, parent_supports_native_grouping
         ):

@@ -1796,6 +1796,19 @@ class Player(ABC):
         """
         return False
 
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """
+        Return whether this player can natively group with the given player.
+
+        Native grouping normally works between any two players of the same provider
+        instance. A provider that hosts several incompatible device backends behind a
+        single instance can narrow this so the grouping layer never routes a cross-backend
+        pair onto a native group it cannot form.
+
+        :param other: The player considered for a native group with this one.
+        """
+        return self.provider.instance_id == other.provider.instance_id
+
     @property
     @final
     def underlying_player_id(self) -> str | None:

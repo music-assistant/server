@@ -127,6 +127,10 @@ class WiimPlayer(Player):
             and player.player_id != self.player_id
         }
 
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """Only other official WiiM players group natively (never a generic LinkPlay shell)."""
+        return other.player_id in self.can_group_with
+
     # --- Lifecycle ---
 
     async def setup(self) -> None:

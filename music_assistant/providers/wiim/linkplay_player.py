@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice
     from pywiim.models import DeviceInfo as PywiimDeviceInfo
 
+    from music_assistant.models.player import Player
+
     from .provider import WiimProvider
 
 # The device is polled for reachability and native group topology only; playback state
@@ -148,6 +150,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             and not player._in_mixed_group
             and linkplay_group_compatible(self._cached_device_info, player._cached_device_info)
         }
+
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """Only reachable, compatible generic LinkPlay peers group natively."""
+        return other.player_id in self.can_group_with
 
     # --- Player commands ---
 
