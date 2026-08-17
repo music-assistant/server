@@ -34,6 +34,7 @@ from music_assistant_models.media_items import (
     PodcastEpisode,
     ProviderMapping,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
@@ -139,6 +141,39 @@ class VrtMaxProvider(MusicProvider):
             return await self._browse_programs(_decode(encoded))
 
         return self._browse_root()
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
+    ) -> SearchResults:
+        """Search live radio stations, podcasts and radio programme archives."""
+        results = SearchResults()
+        query = search_query.strip()
+        if not query:
+            return results
+
+        if MediaType.RADIO in media_types:
+            needle = query.lower()
+            results.radio = [
+                self._radio_item(station) for station in STATIONS if needle in station.name.lower()
+            ][:limit]
+
+        if MediaType.PODCAST in media_types:
+            podcasts: list[Podcast] = []
+            seen: set[str] = set()
+            for tile in await self._client.search_podcast_programs(query, limit):
+                if tile.page_id not in seen:
+                    seen.add(tile.page_id)
+                    podcasts.append(self._podcast_from_tile(tile))
+            # Radio archives are only searchable as episodes; fold them up to their
+            # parent programme so search returns the show, not individual broadcasts.
+            for episode in await self._client.search_radio_episodes(query, limit):
+                program_id = _program_id_from_episode(episode.page_id)
+                if program_id not in seen:
+                    seen.add(program_id)
+                    podcasts.append(self._podcast_base(program_id, episode.title))
+            results.podcasts = podcasts[:limit]
+
+        return results
 
     @use_cache(3600 * 24)
     async def get_radio(self, prov_radio_id: str) -> Radio:

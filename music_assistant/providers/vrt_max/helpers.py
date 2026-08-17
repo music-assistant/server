@@ -231,6 +231,23 @@ _TILE_FIELDS = """
       ... on PodcastEpisodeTile { formattedDuration }
 """
 
+_QUERY_SEARCH = """
+query SearchTileList($listId: ID!, $first: Int!) {
+  list(listId: $listId) {
+    __typename
+    ... on PaginatedTileList {
+      paginatedItems(first: $first) {
+        edges {
+          node {
+TILE_FIELDS
+          }
+        }
+      }
+    }
+  }
+}
+""".replace("TILE_FIELDS", _TILE_FIELDS)
+
 _QUERY_LANDING = """
 query ThemePage($pageId: ID!) {
   page(id: $pageId) {
@@ -625,6 +642,26 @@ class VrtMaxClient:
             )
         return rows
 
+    async def search_podcast_programs(self, query: str, limit: int) -> list[VrtProgramTile]:
+        """Search podcasts by keyword, returning program tiles."""
+        tiles: list[VrtProgramTile] = []
+        for node in await self._search_nodes("podcast-program", "listen", query, limit):
+            if node.get("__typename") == "PodcastProgramTile":
+                tile = _parse_program_tile(node)
+                if tile:
+                    tiles.append(tile)
+        return tiles
+
+    async def search_radio_episodes(self, query: str, limit: int) -> list[VrtEpisode]:
+        """Search radio archives by keyword, returning matching episodes."""
+        episodes: list[VrtEpisode] = []
+        for node in await self._search_nodes("radio-episode", "radio-episode", query, limit):
+            if node.get("__typename") == "RadioEpisodeTile":
+                episode = _parse_episode_tile(node)
+                if episode:
+                    episodes.append(episode)
+        return episodes
+
     async def iter_programs(self, component_id: str) -> AsyncGenerator[VrtProgramTile]:
         """
         Yield all program/podcast tiles of a component, following pagination.
@@ -952,6 +989,21 @@ class VrtMaxClient:
             access_token,
         )
 
+    async def _search_nodes(
+        self, entity_type: str, result_type: str, query: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """Run a faceted search and return the raw tile nodes."""
+        list_id = _search_list_id(entity_type, result_type, query)
+        data = await self._graphql(_QUERY_SEARCH, {"listId": list_id, "first": limit})
+        result = data.get("list")
+        items = result.get("paginatedItems") if isinstance(result, dict) else None
+        nodes: list[dict[str, Any]] = []
+        for edge in (items or {}).get("edges") or []:
+            node = edge.get("node") if isinstance(edge, dict) else None
+            if isinstance(node, dict):
+                nodes.append(node)
+        return nodes
+
     async def _iter_component_nodes(
         self, component_id: str, after: str | None = None, bearer: str | None = None
     ) -> AsyncGenerator[dict[str, Any]]:
@@ -1244,6 +1296,17 @@ def _collect_seasons(components: Any, seasons: list[VrtSeason]) -> None:
             cid = comp.get("componentId")
             if isinstance(cid, str):
                 seasons.append(VrtSeason(title=comp.get("title"), component_id=cid))
+
+
+def _search_list_id(entity_type: str, result_type: str, query: str) -> str:
+    """Build the base64 `listId` for a faceted keyword search."""
+    search = {
+        "facets": [{"name": "entitytype", "values": [entity_type]}],
+        "resultType": result_type,
+        "q": query,
+    }
+    raw = f"o%14|{json.dumps(search)}|{result_type}%"
+    return "$" + base64.b64encode(raw.encode()).decode()
 
 
 def _favourite_id(node: Any) -> str | None:
