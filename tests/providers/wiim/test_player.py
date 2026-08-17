@@ -799,3 +799,24 @@ class TestAvailabilityRepublish:
         player._update_ma_state_from_sdk_cache()
 
         mock_provider.native_groups.schedule_republish.assert_called()
+
+
+class TestTopologyRefreshDebounce:
+    """A RenderingControl Slave event burst is coalesced into one forced topology refresh."""
+
+    def test_schedule_topology_refresh_debounces_via_call_later(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The refresh is scheduled with a shared task_id so a burst reschedules one read."""
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+
+        player._schedule_topology_refresh()
+
+        mock_provider.mass.call_later.assert_called_once()
+        kwargs = mock_provider.mass.call_later.call_args.kwargs
+        assert kwargs["task_id"] == f"wiim_topology_{player.player_id}"
+        assert kwargs["force"] is True

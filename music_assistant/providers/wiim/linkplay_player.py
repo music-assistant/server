@@ -152,16 +152,22 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     @property
     def grouping_locked(self) -> bool:
-        """Withdraw ALL grouping only while following a group MA has not discovered."""
+        """Withdraw ALL grouping only when this device cannot be safely regrouped."""
         # grouping_locked is the broad, final lock: it suppresses native AND linked-protocol
-        # grouping. It must therefore be reserved for a genuinely read-only topology, not for
-        # native capability being unavailable. An unknown-leader follower belongs to an
-        # external group whose leader MA cannot see, so it can be neither detached nor
-        # regrouped, and without this lock core would re-offer it as a grouping target through
-        # its linked DLNA/AirPlay protocols. LinkPlay API health only gates NATIVE grouping,
-        # which is handled by supported_features and the coordinator's can_group_with, so a
-        # reachable linked protocol can still form a group while the LinkPlay API is down.
-        return self._native_groups.is_unknown_leader_follower(self.player_id)
+        # grouping, so it is reserved for a device that genuinely cannot be regrouped, not
+        # for native capability merely being unavailable. Two cases qualify:
+        #  - an unknown-leader follower belongs to an external group whose leader MA cannot
+        #    see, so it can be neither detached nor regrouped; and
+        #  - a device already in a native hardware group (leader or follower) whose LinkPlay
+        #    API has dropped: adding it to a linked-protocol group would first need a native
+        #    auto-ungroup that cannot run, and core would proceed anyway, leaving it in both
+        #    groups. A standalone shell has nothing to leave, so it may still group via a
+        #    linked protocol while the API is down (native grouping stays gated separately by
+        #    supported_features and the coordinator's can_group_with).
+        if self._native_groups.is_unknown_leader_follower(self.player_id):
+            return True
+        role = self._native_groups.role_of(self.player_id)
+        return not self._linkplay_available and role is not NativeGroupRole.STANDALONE
 
     @property
     def playback_state(self) -> PlaybackState:

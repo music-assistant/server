@@ -774,7 +774,7 @@ class NativeGroupCoordinator:
             slaves = await client.get_slaves_info()
         except WiiMError as err:
             raise PlayerCommandFailed(
-                f"Failed to read the slave list of leader {member.player_id}'s group: {err}"
+                f"Failed to read the leader's slave list while resolving {member.player_id}: {err}"
             ) from err
         for slave in slaves:
             if (

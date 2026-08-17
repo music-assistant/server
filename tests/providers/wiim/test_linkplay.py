@@ -366,6 +366,25 @@ class TestGrouping:
         # the broad lock holds, so even a linked-protocol group is withdrawn in the final state
         assert player.grouping_locked is True
 
+    def test_api_outage_locks_a_native_group_member(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A device already in a native group whose API drops is broadly locked (can't leave it)."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.LEADER
+        # a protocol regroup would leave it in both groups, since the native ungroup can't run
+        assert player.grouping_locked is True
+
+    def test_healthy_native_group_member_not_broadly_locked(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A reachable native group member can still be regrouped (core natively ungroups first)."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        assert player.grouping_locked is False
+
     def test_grouping_rebuild_lock_serializes_with_address_change(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
