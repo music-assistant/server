@@ -10579,6 +10579,64 @@ class TestGroupingLockedPolicy:
         assert PlayerFeature.SET_MEMBERS in player.state.supported_features
         assert "peer_2" in player.state.can_group_with
 
+    def test_locked_peer_excluded_from_group_targets(self, mock_mass: MagicMock) -> None:
+        """An unlocked leader drops a locked peer but keeps an unlocked one as a target."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        leader = MockPlayer(provider, "shell_1", "Shell")
+        leader._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        leader._attr_can_group_with = {"locked_peer", "open_peer"}
+        locked_peer = _LockedMockPlayer(provider, "locked_peer", "Locked Peer")
+        open_peer = MockPlayer(provider, "open_peer", "Open Peer")
+        mock_mass.players = controller
+        controller._players = {
+            "shell_1": leader,
+            "locked_peer": locked_peer,
+            "open_peer": open_peer,
+        }
+        leader._cache.clear()
+        for player in (locked_peer, open_peer, leader):
+            player.refresh_state(signal_event=False)
+        # the locked peer keeps its own group read-only, so it is not offered as a target,
+        # while the ordinary peer still is
+        assert "locked_peer" not in leader.state.can_group_with
+        assert "open_peer" in leader.state.can_group_with
+
+    def test_linked_protocol_cannot_reintroduce_locked_member(self, mock_mass: MagicMock) -> None:
+        """A locked member offered by a linked protocol is still kept out of the targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        leader = MockPlayer(provider, "shell_1", "Shell")
+        leader._attr_supported_features = set()  # no native grouping of its own
+        protocol = MockPlayer(provider, "airplay_p", "P (AirPlay)", player_type=PlayerType.PROTOCOL)
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol._attr_can_group_with = {"locked_peer", "open_peer"}
+        protocol._cache.clear()
+        protocol.set_protocol_parent_id("shell_1")
+        leader.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_p", protocol_domain="airplay", priority=10
+                )
+            ]
+        )
+        locked_peer = _LockedMockPlayer(provider, "locked_peer", "Locked Peer")
+        open_peer = MockPlayer(provider, "open_peer", "Open Peer")
+        mock_mass.players = controller
+        controller._players = {
+            "shell_1": leader,
+            "airplay_p": protocol,
+            "locked_peer": locked_peer,
+            "open_peer": open_peer,
+        }
+        for player in (locked_peer, open_peer, protocol):
+            player.refresh_state(signal_event=False)
+        leader._cache.clear()
+        leader.refresh_state(signal_event=False)
+        # the linked protocol lists the locked peer, but the final filter still excludes it
+        assert "locked_peer" not in leader.state.can_group_with
+        assert "open_peer" in leader.state.can_group_with
+
 
 class _NativeGroupingMockPlayer(MockPlayer):
     """A player that runs its own multiroom and prefers native grouping."""

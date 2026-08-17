@@ -3081,6 +3081,11 @@ class Player(ABC):
                 return False
             if player.player_id == self.player_id:
                 return False  # Don't include self
+            if player.grouping_locked:
+                # The candidate keeps its own group read-only (e.g. an externally-created
+                # mixed group); never offer it as a target, including via a linked protocol
+                # that would otherwise reintroduce it.
+                return False
             # Don't include (playing) players that have group members (they are group leaders)
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
