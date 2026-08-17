@@ -271,39 +271,57 @@ class NativeGroupCoordinator:
         # core only locks the command's own leader, so serialize here: a concurrent move of
         # the same member under a different leader must not interleave with this command's
         # live check, mutation and verification.
-        async with self._command_lock:
+        async with self._command_lock, AsyncExitStack() as stack:
             add_members = [self._require_member(mid) for mid in player_ids_to_add or []]
             remove_members = [self._require_member(mid) for mid in player_ids_to_remove or []]
-            # authoritative preflight: read the leader's and every addition's live group
-            # before deriving any lock or plan, and fail the whole batch if a device's fresh
-            # state cannot be obtained. This ensures a device that externally became a
-            # follower (or gained followers) since its last poll is validated on live state,
-            # never repurposed from a stale cache.
+            held: set[str] = set()
+            # Phase 1: lock the leader and the explicit targets before reading their live
+            # state, so a concurrent address rebuild cannot swap a generic client mid-read
+            # and have the command act on a stale-address topology.
+            await self._acquire_rebuild_locks(stack, [leader, *add_members, *remove_members], held)
+            # authoritative preflight, now under lock: read the leader's and every addition's
+            # live group and fail the whole batch if a fresh read cannot be obtained, so a
+            # device that externally became a follower (or gained followers) since its last
+            # poll is validated on live state, never repurposed from a stale cache.
             for player in (leader, *add_members):
                 if not await self.refresh_leader(player, force=True):
                     raise PlayerCommandFailed(f"Cannot read the group state of {player.player_id}")
-            # a concurrent address rebuild on any involved generic device must not swap its
-            # client or move its address mid-command; hold each device's rebuild lock for the
-            # whole check/mutate/verify sequence. Acquiring in sorted player-id order gives a
-            # deadlock-free order, and the recursive dissolve below never re-takes them.
-            affected: dict[str, NativePlayer] = {leader.player_id: leader}
+            # Phase 2: joining a member dissolves the followers that read just revealed, so
+            # lock them too before any mutation. The recursive dissolve never re-takes locks.
+            followers: list[NativePlayer] = []
             for member in (*add_members, *remove_members):
-                affected[member.player_id] = member
-                # joining a member dissolves any group it currently leads, so its followers
-                # are mutated too and must be locked against a concurrent address rebuild.
                 for follower_id in self.members_of(member.player_id):
                     if follower_id == member.player_id:
                         continue
                     follower = self._mass.players.get_player(follower_id)
                     if getattr(follower, "linkplay_backend", None) in _NATIVE_BACKENDS:
-                        affected[follower_id] = cast("NativePlayer", follower)
-            async with AsyncExitStack() as stack:
-                for player_id in sorted(affected):
-                    if (lock := self._rebuild_lock_for(affected[player_id])) is not None:
-                        await stack.enter_async_context(lock)
-                await self._apply_members(leader, add_members, remove_members)
+                        followers.append(cast("NativePlayer", follower))
+            await self._acquire_rebuild_locks(stack, followers, held)
+            await self._apply_members(leader, add_members, remove_members)
 
     # --- Private helpers ---
+
+    async def _acquire_rebuild_locks(
+        self, stack: AsyncExitStack, players: list[NativePlayer], held: set[str]
+    ) -> None:
+        """
+        Acquire the not-yet-held rebuild locks of the given players in a deterministic order.
+
+        Acquiring in sorted player-id order and skipping already-held devices keeps the
+        overall order stable across the command's two locking phases; the command lock
+        serializes whole commands, so this can never deadlock against another command, and
+        an address rebuild only ever holds a single device's lock.
+
+        :param stack: The exit stack that releases every acquired lock when the command ends.
+        :param players: The players whose rebuild locks to acquire.
+        :param held: The set of player ids whose locks are already held, updated in place.
+        """
+        for player in sorted(players, key=lambda candidate: candidate.player_id):
+            if player.player_id in held:
+                continue
+            held.add(player.player_id)
+            if (lock := self._rebuild_lock_for(player)) is not None:
+                await stack.enter_async_context(lock)
 
     async def _apply_members(
         self,
