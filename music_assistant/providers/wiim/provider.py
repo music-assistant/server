@@ -9,23 +9,20 @@ from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.exceptions import UpnpError
 from music_assistant_models.enums import IdentifierType
-from pywiim import Player as PywiimPlayer
 from pywiim import WiiMClient, WiiMError
-from pywiim.upnp.client import UpnpClient
 from wiim import WiimController
 from wiim.discovery import async_create_wiim_device
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.upnp import MassUpnpNotifyServer
 from music_assistant.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
 )
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import LINKPLAY_NOTIFY_ROUTE, PLAYER_ID_PREFIX
+from .constants import PLAYER_ID_PREFIX
 from .helpers import is_official_manufacturer
 from .linkplay_player import LinkPlayPlayer
 from .player import WiimPlayer
@@ -64,18 +61,11 @@ class WiimProvider(PlayerProvider):
             logging.getLogger("wiim").setLevel(max(self.logger.level + 10, logging.WARNING))
 
         self.wiim_controller = WiimController(self.mass.http_session_no_ssl)
-        # Shared UPnP plumbing for the generic LinkPlay backend: the description.xml
-        # is served over plain HTTP, and UPnP events use a dedicated NOTIFY route.
+        # UPnP identity probe used to classify a discovered device (official WiiM/Audio Pro
+        # vs a generic LinkPlay device such as Edifier). The description.xml is served over
+        # plain HTTP; no UPnP eventing is used by the generic backend.
         requester = AiohttpSessionRequester(self.mass.http_session_no_ssl, with_sleep=True)
         self.upnp_factory = UpnpFactory(requester, non_strict=True)
-        self.notify_server = MassUpnpNotifyServer(requester, self.mass, LINKPLAY_NOTIFY_ROUTE)
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        # notify_server may be unset if handle_async_init failed partway; guard so
-        # teardown never masks the original setup error with an AttributeError.
-        if notify_server := getattr(self, "notify_server", None):
-            notify_server.unregister()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -171,79 +161,29 @@ class WiimProvider(PlayerProvider):
         description_url: str,
         mac_address: str | None = None,
     ) -> None:
-        """Add a generic LinkPlay device via the public pywiim API."""
+        """Add a generic LinkPlay device as a grouping/identity shell."""
         client = WiiMClient(ip_address, session=self.mass.http_session)
-        # Inject an explicit UPnP client so pywiim never spawns an untracked one in
-        # the background; MA owns eventing separately, so its notify server is unused.
         try:
-            pywiim_upnp = await UpnpClient.create(
-                ip_address, description_url, session=self.mass.http_session
-            )
-        except UpnpError as err:
-            self.logger.warning(
-                "Failed to init UPnP for LinkPlay device at %s: %s", ip_address, err
-            )
-            return
-        pywiim_player = PywiimPlayer(
-            client,
-            upnp_client=pywiim_upnp,
-            player_finder=self.pywiim_player_finder,
-            all_players_finder=self.pywiim_all_players_finder,
-        )
-        try:
-            # A successful refresh confirms the device speaks the LinkPlay API and
-            # primes its cached device info and capabilities.
-            await pywiim_player.refresh(full=True)
+            # A successful call confirms the device speaks the LinkPlay API and primes
+            # the shell's cached device info used for native group join-mode selection.
+            await client.get_device_info_model()
         except WiiMError as err:
             self.logger.warning(
                 "Device at %s is not a controllable LinkPlay device: %s", ip_address, err
             )
-            await pywiim_upnp.close()
             return
 
         player = LinkPlayPlayer(
             provider=self,
             player_id=player_id,
-            pywiim_player=pywiim_player,
+            client=client,
             upnp_device=upnp_device,
-            pywiim_upnp=pywiim_upnp,
             description_url=description_url,
             mac_address=mac_address,
         )
-        registered = False
-        try:
-            await player.setup()
-            await self.mass.players.register_or_update(player)
-            # register_or_update can return without registering (disabled player or
-            # provider teardown); only claim success when this instance is live.
-            registered = self.mass.players.get_player(player_id) is player
-        finally:
-            # An unexpected setup/registration failure propagates, but only after the
-            # eventing subscriptions and UPnP client this player owns are released.
-            if not registered:
-                await player.cleanup_resources()
-        if registered:
-            self.logger.info("LinkPlay player registered: %s (%s)", player.name, player_id)
-
-    def pywiim_player_finder(self, host: str) -> PywiimPlayer | None:
-        """
-        Return the pywiim Player for a given device host, if one is registered.
-
-        Injected into every pywiim Player so it can relink group topology (e.g. after
-        a provider reload) without owning any player registry itself.
-
-        :param host: The device host/IP pywiim is looking for.
-        """
-        for player in self.players:
-            if isinstance(player, LinkPlayPlayer) and player.pywiim_player.host == host:
-                return player.pywiim_player
-        return None
-
-    def pywiim_all_players_finder(self) -> list[PywiimPlayer]:
-        """Return the pywiim Players of every registered generic LinkPlay player."""
-        return [
-            player.pywiim_player for player in self.players if isinstance(player, LinkPlayPlayer)
-        ]
+        await player.setup()
+        await self.mass.players.register_or_update(player)
+        self.logger.info("LinkPlay player registered: %s (%s)", player.name, player_id)
 
     def _candidate_locations(
         self, ip_address: str, advertised_port: int | None = None

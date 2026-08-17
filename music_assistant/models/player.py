@@ -1758,6 +1758,18 @@ class Player(ABC):
         return self.__attr_protocol_parent_id
 
     @property
+    def default_output_protocol_domain(self) -> str | None:
+        """
+        Return the protocol domain this player prefers as its default output, if any.
+
+        A player that has no native audio path of its own (e.g. a control/grouping shell
+        for a device whose playback runs over a linked protocol) can point the automatic
+        output selection at a specific protocol domain (such as ``dlna``). The base player
+        has no preference; an explicit user selection always overrides this default.
+        """
+        return None
+
+    @property
     @final
     def underlying_player_id(self) -> str | None:
         """

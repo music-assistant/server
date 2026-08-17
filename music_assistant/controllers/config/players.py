@@ -940,8 +940,21 @@ class PlayerConfigMixin:
         if has_native:
             default_value = "native"
         else:
-            default_value = "auto"
             options.append(ConfigValueOption("auto"))
+            default_value = "auto"
+            # If the player declares a default output-protocol domain, use its matching
+            # available linked protocol as the entry default so the UI mirrors the runtime
+            # selection. This is only the entry default; an explicit user choice still wins
+            # and nothing is persisted here.
+            if default_domain := player.default_output_protocol_domain:
+                for protocol in sorted(output_protocols, key=lambda p: p.priority):
+                    if (
+                        not protocol.is_native
+                        and protocol.available
+                        and protocol.protocol_domain == default_domain
+                    ):
+                        default_value = protocol.output_protocol_id
+                        break
 
         all_entries.append(
             ConfigEntry(

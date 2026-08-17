@@ -1769,7 +1769,8 @@ class ProtocolLinkingMixin:
         1. Output protocol that is currently grouped/synced with other players.
         2. User's preferred output protocol (from player settings).
         3. Native playback (if player supports PLAY_MEDIA).
-        4. Best available protocol by priority.
+        4. The player's declared default output protocol domain, if available.
+        5. Best available protocol by priority.
 
         Returns tuple of (target_player, output_protocol).
         output_protocol is None when using native playback.
@@ -1833,7 +1834,26 @@ class ProtocolLinkingMixin:
             )
             return player, None
 
-        # 4. Fall back to best protocol by priority
+        # 4. Use the player's preferred default protocol domain, if it declares one and a
+        # matching linked protocol is available (e.g. a LinkPlay shell prefers DLNA). This
+        # never influences grouping; it only steers the default output for playback.
+        if default_domain := player.default_output_protocol_domain:
+            for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
+                if linked.protocol_domain != default_domain:
+                    continue
+                if (protocol_player := self.get_player(linked.output_protocol_id)) and (
+                    protocol_player.available_for_playback
+                ):
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: %s (default domain %s)",
+                        player.state.name,
+                        protocol_player.state.name,
+                        default_domain,
+                    )
+                    return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
+
+        # 5. Fall back to best protocol by priority
         for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if protocol_player := self.get_player(linked.output_protocol_id):
                 if protocol_player.available_for_playback:
