@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import time
 import typing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo
+from pywiim import WiiMClient
 from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimException
-from wiim.models import WiimGroupRole
 
 from music_assistant.constants import (
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
@@ -24,19 +24,19 @@ from .constants import (
     BACKEND_OFFICIAL,
     INPUT_MODE_SOURCES,
     PASSIVE_SOURCES,
-    PLAYER_ID_PREFIX,
     SOURCE_AIRPLAY,
     SOURCE_ID_TO_INPUT_MODE,
     SOURCE_NETWORK,
     SOURCE_SPOTIFY,
     SOURCE_UNKNOWN,
 )
-from .helpers import is_in_mixed_group
+from .grouping import NativeGroupRole
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
     from music_assistant_models.config_entries import ConfigEntry
 
+    from .grouping import NativeGroupCoordinator
     from .provider import WiimProvider
 
 SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
@@ -101,36 +101,79 @@ class WiimPlayer(Player):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+        self._native_groups: NativeGroupCoordinator = provider.native_groups
+        # a copy of the low-level client's detected capabilities, reused to pre-seed each
+        # fresh command client so topology reads do not re-probe the device
+        self._command_capabilities: dict[str, Any] | None = None
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
-        """Return supported features; grouping is withdrawn in a read-only mixed group."""
-        if self._in_mixed_group:
-            return self._attr_supported_features - {PlayerFeature.SET_MEMBERS}
+        """Return the supported features of the player."""
         return self._attr_supported_features
 
     @property
-    def grouping_locked(self) -> bool:
-        """Suppress grouping while in a read-only externally-created mixed group."""
-        return self._in_mixed_group
+    def native_available(self) -> bool:
+        """Return whether the device is currently reachable for grouping commands."""
+        return self.device.available
+
+    @property
+    def native_ip(self) -> str | None:
+        """Return the device's current IP address, if known."""
+        return self.device.ip_address
+
+    @property
+    def native_device_udn(self) -> str:
+        """Return the device UDN used for official SDK grouping commands."""
+        return self.device.udn
 
     @property
     def can_group_with(self) -> set[str]:
-        """Return the ids of the other official WiiM players this player can group with."""
-        if self._in_mixed_group:
-            return set()
-        return {
-            player.player_id
-            for player in self.provider.players
-            if isinstance(player, WiimPlayer)
-            and player.available
-            and player.player_id != self.player_id
-            and not player._in_mixed_group
-        }
+        """Return the ids of the peers of either backend this player can group with."""
+        return self._native_groups.can_group_with(self)
+
+    @property
+    def grouping_locked(self) -> bool:
+        """Withdraw grouping while following a group MA has not discovered."""
+        # An unknown-leader follower belongs to an external group MA cannot see the leader
+        # of; locking here keeps core from offering it as a grouping target for a regroup
+        # the coordinator would then have to refuse.
+        return self._native_groups.is_unknown_leader_follower(self.player_id)
 
     def is_native_group_compatible(self, other: Player) -> bool:
-        """Only other official WiiM players group natively (never a generic LinkPlay shell)."""
+        """Only reachable coordinator-approved peers of either backend group natively."""
         return other.player_id in self.can_group_with
+
+    def make_command_client(self) -> WiiMClient:
+        """
+        Return a command-only LinkPlay client bound to this device's current address.
+
+        The official backend owns playback and eventing through the WiiM SDK; this
+        low-level client is used only for native topology reads and cross-backend grouping
+        commands, borrows the shared session and is never closed. Any capabilities detected
+        by an earlier client are passed on so a fresh client does not re-probe the device.
+        """
+        if not (ip := self.device.ip_address):
+            raise PlayerCommandFailed(f"Cannot command {self.player_id}: device address unknown")
+        capabilities = dict(self._command_capabilities) if self._command_capabilities else None
+        return WiiMClient(ip, session=self.mass.http_session, capabilities=capabilities)
+
+    def store_command_capabilities(self, capabilities: dict[str, Any]) -> None:
+        """
+        Cache a copy of a command client's detected capabilities for later reuse.
+
+        :param capabilities: The capabilities a command client detected for this device.
+        """
+        # an empty dict means detection has not produced anything to reuse; caching it would
+        # wrongly mark future clients as already-detected and skip real probing
+        if capabilities:
+            self._command_capabilities = dict(capabilities)
+
+    def on_native_group_update(self) -> None:
+        """Re-publish state after the topology coordinator changed this player's role."""
+        # role/membership are derived by the coordinator, not from this player's own
+        # attributes, so force a recalculation (e.g. synced_to) even when idle.
+        self.mark_state_dirty()
+        self._update_ma_state_from_sdk_cache()
 
     # --- Lifecycle ---
 
@@ -149,11 +192,15 @@ class WiimPlayer(Player):
         """Poll player for transport state and position updates."""
         await self._sync_position()
         await self._refresh_device_status()
+        # slow, TTL-gated re-read of the native slave list (no busy polling loop)
+        await self._native_groups.refresh_leader(self)
         self._attr_poll_interval = 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        self._native_groups.unregister(self.player_id)
+        self._native_groups.schedule_reconcile()
         self.device.general_event_callback = None
         self.device.av_transport_event_callback = None
         self.device.rendering_control_event_callback = None
@@ -302,34 +349,6 @@ class WiimPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        if self._in_mixed_group:
-            raise UnsupportedFeaturedException(
-                f"{self._attr_name} is in an externally-created mixed group and cannot be regrouped"
-            )
-        add_ids = player_ids_to_add or []
-        remove_ids = player_ids_to_remove or []
-        if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
-            raise PlayerCommandFailed(f"Duplicate member id in grouping request on {self.name}")
-        if conflicting := set(add_ids) & set(remove_ids):
-            raise PlayerCommandFailed(
-                f"Cannot add and remove the same member on {self.name}: {conflicting}"
-            )
-        # Resolve and validate the whole batch before any hardware call, so a stale, moved,
-        # mixed or cross-backend target can never leave the group partially mutated.
-        to_add = [self._require_wiim_member(mid) for mid in add_ids]
-        to_remove = [self._require_wiim_member(mid) for mid in remove_ids]
-        if to_remove:
-            # Only ungroup members this leader still owns per the freshest SDK snapshot: a
-            # target that has since moved to another (possibly read-only mixed) group must
-            # not be torn out of it.
-            current_member_udns = set(
-                self._wiim_controller.get_group_snapshot(self.device.udn).member_udns
-            )
-            for member in to_remove:
-                if member.device.udn not in current_member_udns:
-                    raise PlayerCommandFailed(
-                        f"{member.player_id} is no longer a member of {self.name}"
-                    )
         queue = self.mass.player_queues.get(self.player_id)
         pq_data = self.mass.player_queues.queue_data_or_none(self.player_id) if queue else None
         entry_sdk_uri = self.device.current_media.uri if self.device.current_media else None
@@ -348,17 +367,7 @@ class WiimPlayer(Player):
             self.device.playing_status,
         )
         try:
-            if to_add:
-                await self._wiim_controller.async_join_group(
-                    self.device.udn, [member.device.udn for member in to_add]
-                )
-            for member in to_remove:
-                await self._wiim_controller.async_ungroup_device(member.device.udn)
-        except WiimException as err:
-            # Log and refresh state as for any command, but surface grouping failures to the
-            # caller: a swallowed error would report a join/leave as succeeded.
-            self._handle_command_error("set_members", err)
-            raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
+            await self._native_groups.set_members(self, player_ids_to_add, player_ids_to_remove)
         finally:
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
             self.logger.debug(
@@ -410,7 +419,9 @@ class WiimPlayer(Player):
         self._update_ma_state_from_sdk_cache()
         for sv in state_variables:
             if sv.name == "LastChange" and sv.value and "Slave" in str(sv.value):
-                self.mass.create_task(self._refresh_multiroom())
+                # a slave was added/removed: force a live topology + self-role re-read,
+                # deduplicated so a burst of events coalesces into one refresh.
+                self._schedule_topology_refresh()
                 break
 
     def _handle_sdk_play_queue_event(
@@ -423,7 +434,9 @@ class WiimPlayer(Player):
 
     def _update_ma_state_from_sdk_cache(self) -> None:
         """Update MA state from SDK's cache/HTTP poll attributes."""
+        was_available = self._attr_available
         self._attr_available = self.device.available
+        self._republish_peers_if_availability_changed(was_available)
         if self.device.name != self._attr_name:
             self._attr_name = self.device.name
 
@@ -436,10 +449,11 @@ class WiimPlayer(Player):
         self._attr_volume_level = self.device.volume
         self._attr_volume_muted = self.device.is_muted
 
-        # Followers have their state derived by MA from the leader.
-        snapshot = self._wiim_controller.get_group_snapshot(self.device.udn)
-        if snapshot.role == WiimGroupRole.FOLLOWER:
-            self.update_state()
+        # The coordinator is the single native topology authority across both backends; this
+        # mapper only reads the role, never writes it. The self-follower signal is fed from a
+        # live group read on the poll/event refresh path.
+        if self._native_groups.role_of(self.player_id) == NativeGroupRole.FOLLOWER:
+            self._publish_follower_state()
             return
 
         media = self.device.current_media
@@ -451,7 +465,7 @@ class WiimPlayer(Player):
             self._attr_playback_state = new_state
 
         # Group members
-        self._update_group_state(snapshot.member_udns)
+        self._attr_group_members = self._native_groups.members_of(self.player_id)
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
@@ -586,61 +600,44 @@ class WiimPlayer(Player):
             self._attr_elapsed_time_last_updated = time.time()
         self._update_ma_state_from_sdk_cache()
 
-    async def _refresh_multiroom(self) -> None:
-        """Refresh multiroom status from devices, then update all WiiM players."""
-        try:
-            await self._wiim_controller.async_update_all_multiroom_status()
-        except WiimException as err:
-            self.logger.debug("Failed to refresh multiroom status: %s", err)
-        for player in self.provider.players:
-            if isinstance(player, WiimPlayer):
-                player._update_ma_state_from_sdk_cache()
-
     def _handle_command_error(self, action: str, err: WiimException) -> None:
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
 
-    def _update_group_state(self, member_udns: tuple[str, ...]) -> None:
-        """Map the SDK's group snapshot to the managed group members."""
-        managed_member_ids = [
-            f"{PLAYER_ID_PREFIX}{member_udn}"
-            for member_udn in member_udns
-            if member_udn != self.device.udn
-            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
-        ]
-        self._attr_group_members = (
-            [self.player_id, *managed_member_ids] if managed_member_ids else []
+    def _republish_peers_if_availability_changed(self, was_available: bool) -> None:
+        """Re-publish every native peer when this device's availability just flipped."""
+        # availability changes whether every peer can offer this device as a native grouping
+        # candidate, which no topology reconcile would otherwise pick up.
+        if was_available != self._attr_available:
+            self._native_groups.schedule_republish()
+
+    def _publish_follower_state(self) -> None:
+        """Publish the volume-only state of a native follower and clear its playback."""
+        # MA derives a follower's playback from the leader, so this player publishes only its
+        # own volume/mute and manages no members. Clear the follower-owned state first so the
+        # active-output clear below (which publishes immediately) never emits the stale
+        # pre-group playback, then drop any active output so the final state mirrors the
+        # leader (synced_to) or falls back to idle instead of a stale linked protocol; it is
+        # left cleared on leaving, where normal playback reselects an output.
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
+        self._attr_group_members = []
+        if self.active_output_protocol is not None:
+            self.set_active_output_protocol(None)
+        self.update_state()
+
+    def _schedule_topology_refresh(self) -> None:
+        """Force one live topology + self-role re-read, deduplicated over Slave-event bursts."""
+        # abort_existing=False deduplicates on the shared task_id: while a forced read is in
+        # flight, further events neither start a second read (leading-edge throttle) nor
+        # cancel the running one, so a burst neither hammers the device nor starves
+        # reconciliation. Passing the coroutine function lets the runtime drop a deduplicated
+        # call cleanly.
+        self.mass.create_task(
+            self._native_groups.refresh_leader,
+            self,
+            task_id=f"wiim_topology_{self.player_id}",
+            force=True,
         )
-
-    @property
-    def _in_mixed_group(self) -> bool:
-        """Whether this device is in an externally-created mixed (cross-backend) group."""
-        return is_in_mixed_group(self)
-
-    def _require_wiim_member(self, player_id: str) -> WiimPlayer:
-        """
-        Return a same-backend, groupable member for a grouping command.
-
-        A request targeting this player itself, an unknown player, another backend
-        (e.g. a generic LinkPlay shell) or a device locked in an externally-created
-        mixed group is rejected with a typed error rather than applied.
-
-        :param player_id: The id of the member to resolve and validate.
-        """
-        if player_id == self.player_id:
-            raise UnsupportedFeaturedException(f"Cannot group {self.name} with itself")
-        member = self.mass.players.get_player(player_id)
-        if member is None:
-            raise PlayerCommandFailed(
-                f"{player_id} is not a known player for grouping on {self.name}"
-            )
-        if not isinstance(member, WiimPlayer):
-            raise UnsupportedFeaturedException(
-                f"Cannot group {player_id} with {self.name}: cross-backend grouping is unsupported"
-            )
-        if member._in_mixed_group:
-            raise PlayerCommandFailed(
-                f"{player_id} is in an externally-created mixed group and cannot be regrouped"
-            )
-        return member

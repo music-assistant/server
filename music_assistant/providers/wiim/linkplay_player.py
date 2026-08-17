@@ -10,35 +10,35 @@ adds device identity and native LinkPlay multiroom grouping/topology on top.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.player import DeviceInfo
 from pywiim import WiiMClient, WiiMError
 
 from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 
 from .constants import BACKEND_GENERIC, PLAYER_ID_PREFIX
-from .helpers import is_in_mixed_group, linkplay_group_compatible, linkplay_slave_uuid_to_udn
+from .grouping import NativeGroupRole
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice
+    from music_assistant_models.player import PlayerMedia
     from pywiim.models import DeviceInfo as PywiimDeviceInfo
 
     from music_assistant.models.player import Player
 
+    from .grouping import NativeGroupCoordinator
     from .provider import WiimProvider
 
 # The device is polled for reachability and native group topology only; playback state
 # comes from the linked protocol players, so a slow interval is plenty.
 POLL_INTERVAL = 30
-
-# A native multiroom join/leave is fire-and-forget and the group takes a few seconds to
-# settle, so the leader's topology is re-read a few times before a change is rejected.
-GROUP_VERIFY_ATTEMPTS = 5
-GROUP_VERIFY_INTERVAL = 1.5
 
 
 class LinkPlayPlayer(ProtocolBackedPlayer):
@@ -46,8 +46,9 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
     Generic LinkPlay player shell in Music Assistant.
 
     Playback/state/volume are delegated to the linked DLNA/AirPlay protocol players via
-    the protocol-linking system; this player natively owns only device identity and
-    same-backend LinkPlay multiroom grouping, driven by the low-level public WiiMClient.
+    the protocol-linking system; this player natively owns only device identity and native
+    LinkPlay multiroom grouping, driven by the low-level public WiiMClient. Topology is
+    resolved by the provider's shared coordinator across both WiiM backends.
     """
 
     _attr_type = PlayerType.PLAYER
@@ -67,8 +68,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # Health of the LinkPlay HTTP API, separate from playback availability (which the
         # base derives from linked protocols): it gates the native grouping capability.
         # A device info primed from the discovery probe means the API is reachable.
-        # Set before super().__init__ because the base reads supported_features during init.
+        # Set before super().__init__ because the base reads supported_features and the
+        # follower-suppressed playback state (via the coordinator) during init.
         self._linkplay_available = device_info is not None
+        self._native_groups: NativeGroupCoordinator = provider.native_groups
         super().__init__(provider, player_id)
         # Low-level LinkPlay HTTP client over MA's shared aiohttp session. Its close()
         # would close that shared session, so it is never closed here.
@@ -101,22 +104,23 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     async def setup(self) -> None:
         """Handle logic when the player is set up in the Player controller."""
-        # The discovery probe already fetched and validated the device info and primed it
-        # on this shell, so setup only needs an initial native-group topology read; the
-        # regular poll refreshes reachability and device info from here on.
+        # The discovery probe already fetched and validated the device info and primed it on
+        # this shell, so only re-read reachability when it did not. The provider reads the
+        # live topology right after registration (a read taken here would be discarded, as
+        # setup runs before the player is registered); the regular poll refreshes both.
         if self._cached_device_info is None:
-            await self._refresh_linkplay()
-            return
-        async with self._rebuild_lock:
-            try:
-                await self._update_group_members()
-            except WiiMError as err:
-                self.logger.debug("Failed to read group topology for %s: %s", self.name, err)
-        self.update_state()
+            await self._refresh_reachability()
 
     async def poll(self) -> None:
-        """Poll the device for reachability and native group topology."""
-        await self._refresh_linkplay()
+        """Poll the device for reachability and push its native group topology."""
+        await self._refresh_reachability()
+        await self._native_groups.refresh_leader(self, force=True)
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        self._native_groups.unregister(self.player_id)
+        self._native_groups.schedule_reconcile()
 
     # --- Properties ---
 
@@ -131,43 +135,117 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         return self._cached_device_info
 
     @property
+    def native_available(self) -> bool:
+        """Return whether the native LinkPlay grouping API is currently reachable."""
+        return self._linkplay_available
+
+    @property
+    def native_ip(self) -> str | None:
+        """Return the device's current IP address, if known."""
+        host: str | None = self._client.host
+        return host
+
+    @property
+    def grouping_rebuild_lock(self) -> asyncio.Lock:
+        """Return the lock the coordinator holds so grouping and address rebuilds serialize."""
+        return self._rebuild_lock
+
+    @property
     def grouping_locked(self) -> bool:
-        """Suppress grouping while the LinkPlay API is unreachable or the group is mixed."""
-        return not self._linkplay_available or self._in_mixed_group
+        """Withdraw ALL grouping only when this device cannot be safely regrouped."""
+        # grouping_locked is the broad, final lock: it suppresses native AND linked-protocol
+        # grouping, so it is reserved for a device that genuinely cannot be regrouped, not
+        # for native capability merely being unavailable. Two cases qualify:
+        #  - an unknown-leader follower belongs to an external group whose leader MA cannot
+        #    see, so it can be neither detached nor regrouped; and
+        #  - a device already in a native hardware group (leader or follower) whose LinkPlay
+        #    API has dropped: adding it to a linked-protocol group would first need a native
+        #    auto-ungroup that cannot run, and core would proceed anyway, leaving it in both
+        #    groups. A standalone shell has nothing to leave, so it may still group via a
+        #    linked protocol while the API is down (native grouping stays gated separately by
+        #    supported_features and the coordinator's can_group_with).
+        if self._native_groups.is_unknown_leader_follower(self.player_id):
+            return True
+        role = self._native_groups.role_of(self.player_id)
+        return not self._linkplay_available and role is not NativeGroupRole.STANDALONE
+
+    @property
+    def playback_state(self) -> PlaybackState:
+        """Suppress delegated playback while natively grouped as a follower."""
+        if self._is_native_follower:
+            # a native follower plays its leader's stream at the hardware level; a known
+            # leader's state is mirrored by core through synced_to, an undiscovered one
+            # reports idle rather than the shell's stale linked-protocol playback.
+            return PlaybackState.IDLE
+        return super().playback_state
+
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Suppress delegated media while natively grouped as a follower."""
+        if self._is_native_follower:
+            return None
+        return super().current_media
+
+    @property
+    def active_source(self) -> str | None:
+        """Suppress the delegated active source while natively grouped as a follower."""
+        if self._is_native_follower:
+            return None
+        return super().active_source
 
     @property
     def prefer_native_grouping(self) -> bool:
-        """Group compatible generic LinkPlay speakers natively, not via a linked protocol."""
+        """Group compatible LinkPlay speakers natively, not via a linked protocol."""
         return self._linkplay_available
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
-        """Return the supported features; native grouping needs a reachable, non-mixed group."""
+        """Return the supported features; native grouping needs a reachable grouping API."""
         features = super().supported_features
-        # Native multiroom grouping needs the LinkPlay HTTP API to be reachable and the
-        # device to not be in an externally-created mixed group (read-only until layer 2).
-        if self._linkplay_available and not self._in_mixed_group:
+        if self._linkplay_available:
             return features
         return features - {PlayerFeature.SET_MEMBERS}
 
     @property
     def can_group_with(self) -> set[str]:
-        """Return the ids of the reachable, compatible generic LinkPlay peers to group with."""
-        if not self._linkplay_available or self._in_mixed_group:
-            return set()
-        return {
-            player.player_id
-            for player in self.provider.players
-            if isinstance(player, LinkPlayPlayer)
-            and player is not self
-            and player._linkplay_available
-            and not player._in_mixed_group
-            and linkplay_group_compatible(self._cached_device_info, player._cached_device_info)
-        }
+        """Return the ids of the reachable peers of either backend this player can group with."""
+        return self._native_groups.can_group_with(self)
 
     def is_native_group_compatible(self, other: Player) -> bool:
-        """Only reachable, compatible generic LinkPlay peers group natively."""
+        """Only reachable coordinator-approved peers of either backend group natively."""
         return other.player_id in self.can_group_with
+
+    def make_command_client(self) -> WiiMClient:
+        """
+        Return this player's low-level LinkPlay command client.
+
+        The generic backend already owns a client bound to the shared session for the
+        device's current address; it is reused for topology reads and grouping commands
+        and must never be closed.
+        """
+        return self._client
+
+    def store_command_capabilities(self, capabilities: dict[str, Any]) -> None:
+        """
+        Ignore detected capabilities; the generic backend reuses one persistent client.
+
+        :param capabilities: The capabilities a command client detected for this device.
+        """
+
+    def on_native_group_update(self) -> None:
+        """Re-publish state after the topology coordinator changed this player's role."""
+        # role/membership are derived by the coordinator, not from this player's own
+        # attributes, so force a recalculation (e.g. synced_to) even when idle.
+        self._attr_group_members = self._native_groups.members_of(self.player_id)
+        if self._is_native_follower and self.active_output_protocol is not None:
+            # a native follower gets audio from its leader at the hardware level, not from a
+            # linked protocol. Clear any active output so the final state mirrors the leader
+            # (synced_to) or falls back to idle instead of a stale DLNA/AirPlay player, which
+            # the base otherwise prioritizes over synced_to. It is left cleared on leaving:
+            # normal playback reselects an output DLNA-first / by user preference.
+            self.set_active_output_protocol(None)
+        self.mark_state_dirty()
+        self.update_state()
 
     # --- Player commands ---
 
@@ -177,70 +255,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        add_ids = player_ids_to_add or []
-        remove_ids = player_ids_to_remove or []
-        # Prevalidate the whole batch before taking any locks, so an obviously bad request
-        # fails fast without contending for a device that a rebuild may be using.
-        self._validate_leader_state()
-        if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
-            raise PlayerCommandFailed(f"Duplicate member id in grouping request on {self.name}")
-        if conflicting := set(add_ids) & set(remove_ids):
-            raise PlayerCommandFailed(
-                f"Cannot add and remove the same member on {self.name}: {conflicting}"
-            )
-        # Resolve every target to a same-backend member (rejects unknown/cross-backend/self).
-        to_add = [(mid, self._require_linkplay_member(mid)) for mid in add_ids]
-        to_remove = [(mid, self._require_linkplay_member(mid)) for mid in remove_ids]
-        self._validate_additions(to_add)
-        # Lock this leader and every affected member for the entire mutation + verification.
-        # Acquiring in sorted player_id order gives every caller the same lock ordering, so
-        # concurrent grouping requests that share a device serialize instead of deadlocking,
-        # a concurrent address rebuild on any involved device waits its turn, and unrelated
-        # players keep their locks free.
-        affected: dict[str, LinkPlayPlayer] = {self.player_id: self}
-        for _, member in (*to_add, *to_remove):
-            affected[member.player_id] = member
-        async with AsyncExitStack() as stack:
-            for player_id in sorted(affected):
-                await stack.enter_async_context(affected[player_id]._rebuild_lock)
-            # Revalidate now the locks are held: a rebuild or poll may have changed a
-            # device's reachability, swapped its client or moved its IP since prevalidation.
-            self._validate_leader_state()
-            self._validate_additions(to_add)
-            try:
-                # Identify which removals we still own from the leader's live topology and
-                # prevalidate their health before any hardware change, so a batch containing
-                # an unreachable current member fails whole rather than half-applied. Targets
-                # already absent (e.g. moved to another group) stay idempotent skips.
-                current_slaves = await self._current_slave_ids() if to_remove else set()
-                for member_id, member in to_remove:
-                    if member.player_id in current_slaves and (
-                        not member._linkplay_available or member._cached_device_info is None
-                    ):
-                        raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
-                for member_id, member in to_add:
-                    await member._client.join_slave(
-                        self._client.host, master_device_info=self._cached_device_info
-                    )
-                    await self._verify_group_change(member, member_id, expect_slave=True)
-                for member_id, member in to_remove:
-                    if member.player_id not in current_slaves:
-                        # a removal target that has since moved to another (possibly read-only
-                        # mixed) group is left alone instead of being torn out of it
-                        self.logger.debug(
-                            "%s is no longer a member of %s; skipping leave",
-                            member_id,
-                            self.name,
-                        )
-                        continue
-                    await member._client.leave_group()
-                    await self._verify_group_change(member, member_id, expect_slave=False)
-            except WiiMError as err:
-                raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
-            finally:
-                self.mass.create_task(
-                    self._refresh_linkplay(), task_id=f"linkplay_refresh_{self.player_id}"
-                )
+        await self._native_groups.set_members(self, player_ids_to_add, player_ids_to_remove)
 
     async def async_handle_address_change(
         self, new_ip: str, upnp_device: UpnpDevice, description_url: str
@@ -248,8 +263,8 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """
         Rebuild the low-level client against a new device address.
 
-        The replacement is validated before the old client is dropped, so a failed
-        rebuild leaves the existing client intact for a later retry.
+        The replacement is validated before the old client is dropped, so a failed rebuild
+        leaves the existing client intact for a later retry.
 
         :param new_ip: The device's new IP address.
         :param upnp_device: The UPnP device freshly probed at the new location.
@@ -266,18 +281,20 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                     "Failed to reach LinkPlay device %s at %s: %s", self.name, new_ip, err
                 )
                 return
+            was_available = self._linkplay_available
             self._client = new_client
             self._cached_device_info = device_info
             self._description_url = description_url
             self._upnp_device = upnp_device
             self._linkplay_available = True
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_ip)
-            try:
-                await self._update_group_members()
-            except WiiMError as err:
-                # The rebuild succeeded; a stale topology read must not undo it.
-                self.logger.debug("Failed to read group topology for %s: %s", self.name, err)
-            self.update_state()
+        # Re-read the topology from the new address so a stale entry never survives a move.
+        await self._native_groups.refresh_leader(self, force=True)
+        if not was_available:
+            # recovering from an outage flips native availability, so peers must re-publish
+            # to stop excluding this device from their grouping candidates.
+            self._native_groups.schedule_republish()
+        self.update_state()
 
     # --- Internals ---
 
@@ -285,144 +302,31 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """Return the ids of the linked protocol players backing this shell's playback."""
         return [linked.output_protocol_id for linked in self.linked_output_protocols]
 
-    async def _refresh_linkplay(self) -> None:
-        """Refresh reachability, cached device info and native group topology."""
-        # Serialize with async_handle_address_change so an in-flight poll against the old
+    @property
+    def _is_native_follower(self) -> bool:
+        """Whether the coordinator currently resolves this shell as a native follower."""
+        return self._native_groups.role_of(self.player_id) == NativeGroupRole.FOLLOWER
+
+    async def _refresh_reachability(self) -> None:
+        """Refresh the LinkPlay grouping API reachability and cached device info."""
+        # Serialize with async_handle_address_change so an in-flight read against the old
         # client cannot land after a validated client swap and overwrite it with stale state.
+        health_changed = False
         async with self._rebuild_lock:
+            was_available = self._linkplay_available
             try:
                 self._cached_device_info = await self._client.get_device_info_model()
             except WiiMError as err:
                 if self._linkplay_available:
                     self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
                 self._linkplay_available = False
-                # Keep the last known group members: an unreachable device may still be in a
-                # (possibly mixed) hardware group, and dropping the topology here would let the
-                # still-reachable side re-expose SET_MEMBERS. grouping_locked already blocks
-                # this shell's own commands while unreachable.
+                health_changed = was_available
                 self.update_state()
-                return
-            self._linkplay_available = True
-            try:
-                await self._update_group_members()
-            except WiiMError as err:
-                # A transient topology read must not drop a real hardware group; the last
-                # known members are kept until a successful read replaces them.
-                self.logger.debug("Failed to read group topology for %s: %s", self.name, err)
-            self.update_state()
-
-    async def _update_group_members(self) -> None:
-        """Map this device's native slave list onto MA group member ids (leader first)."""
-        # get_slaves_info() raises on a failed request (unlike get_device_group_info, which
-        # masks a failed slave read as "solo"), so a transient blip cannot silently clear a
-        # real group. It returns the slaves only for a master; a follower/solo returns none.
-        slaves = await self._client.get_slaves_info()
-        members = [self.player_id]
-        for slave in slaves:
-            resolved = self._resolve_member_player_id(slave.get("uuid"))
-            if resolved and resolved not in members:
-                members.append(resolved)
-        self._attr_group_members = members if len(members) > 1 else []
-
-    async def _current_slave_ids(self) -> set[str]:
-        """Return the player ids this leader currently reports as its native group slaves."""
-        slaves = await self._client.get_slaves_info()
-        return {
-            resolved
-            for slave in slaves
-            if (resolved := self._resolve_member_player_id(slave.get("uuid"))) is not None
-        }
-
-    @property
-    def _in_mixed_group(self) -> bool:
-        """Whether this device is in an externally-created mixed (cross-backend) group."""
-        return is_in_mixed_group(self)
-
-    def _require_linkplay_member(self, player_id: str) -> LinkPlayPlayer:
-        """
-        Return a same-backend member for a grouping command.
-
-        MA-created grouping stays within the generic LinkPlay backend; a request that
-        targets this player itself or any other backend is rejected rather than cast.
-        """
-        if player_id == self.player_id:
-            raise UnsupportedFeaturedException(f"Cannot group {self.name} with itself")
-        member = self.mass.players.get_player(player_id)
-        if not isinstance(member, LinkPlayPlayer):
-            raise UnsupportedFeaturedException(
-                f"Cannot group {player_id} with {self.name}: cross-backend grouping is unsupported"
-            )
-        return member
-
-    def _validate_leader_state(self) -> None:
-        """Assert this leader's LinkPlay API is reachable and it owns a regroupable group."""
-        if not self._linkplay_available or self._cached_device_info is None:
-            raise PlayerCommandFailed(f"{self.name} is not reachable for grouping")
-        if self._in_mixed_group:
-            raise PlayerCommandFailed(
-                f"{self.name} is in an externally-created mixed group and cannot be regrouped"
-            )
-
-    def _validate_additions(self, to_add: list[tuple[str, LinkPlayPlayer]]) -> None:
-        """
-        Assert every addition is reachable and of a compatible multiroom generation.
-
-        :param to_add: The resolved (id, member) pairs that would join this leader.
-        """
-        for member_id, member in to_add:
-            if not member._linkplay_available or member._cached_device_info is None:
-                raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
-            if member._in_mixed_group:
-                raise PlayerCommandFailed(
-                    f"{member_id} is in an externally-created mixed group and cannot be regrouped"
-                )
-            if not linkplay_group_compatible(self._cached_device_info, member._cached_device_info):
-                raise UnsupportedFeaturedException(
-                    f"Cannot group {member_id} with {self.name}: "
-                    "incompatible LinkPlay multiroom generation"
-                )
-
-    async def _verify_group_change(
-        self, member: LinkPlayPlayer, member_id: str, expect_slave: bool
-    ) -> None:
-        """Confirm a grouping operation actually took effect on THIS leader's group."""
-        for attempt in range(GROUP_VERIFY_ATTEMPTS):
-            try:
-                slaves = await self._client.get_slaves_info()
-            except WiiMError as err:
-                raise PlayerCommandFailed(
-                    f"Could not verify grouping of {member_id} on {self.name}: {err}"
-                ) from err
-            current_members = {
-                resolved
-                for slave in slaves
-                if (resolved := self._resolve_member_player_id(slave.get("uuid"))) is not None
-            }
-            if (member.player_id in current_members) == expect_slave:
-                return
-            # The group is still settling; wait briefly and re-read before giving up.
-            if attempt + 1 < GROUP_VERIFY_ATTEMPTS:
-                await asyncio.sleep(GROUP_VERIFY_INTERVAL)
-        verb = "join" if expect_slave else "leave"
-        raise PlayerCommandFailed(f"{member_id} did not {verb} the group led by {self.name}")
-
-    def _resolve_member_player_id(self, slave_uuid: str | None) -> str | None:
-        """
-        Resolve a slave's UUID (24-char HTTP or full UDN form) to a registered player id.
-
-        Matches against players already registered by this provider (in either backend)
-        and ignores members that do not resolve to a known player.
-
-        :param slave_uuid: The slave's UUID from the native group topology.
-        """
-        if not slave_uuid or (udn := linkplay_slave_uuid_to_udn(slave_uuid)) is None:
-            return None
-        target_hex = udn.removeprefix("uuid:").replace("-", "").upper()
-        for player in self.provider.players:
-            player_id = player.player_id
-            if not player_id.startswith(PLAYER_ID_PREFIX):
-                continue
-            udn_hex = player_id[len(PLAYER_ID_PREFIX) :].removeprefix("uuid:").replace("-", "")
-            if udn_hex.upper() == target_hex:
-                return player_id
-        return None
+            else:
+                self._linkplay_available = True
+                health_changed = not was_available
+                self.update_state()
+        if health_changed:
+            # this shell's native availability just flipped, which changes whether every peer
+            # can offer it as a native grouping candidate; make them re-publish.
+            self._native_groups.schedule_republish()

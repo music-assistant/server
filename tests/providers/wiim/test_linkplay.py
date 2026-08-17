@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from pywiim import WiiMError
 
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
+from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.helpers import (
     is_official_manufacturer,
     linkplay_group_compatible,
@@ -109,6 +113,8 @@ def mock_provider() -> MagicMock:
     provider = MagicMock()
     provider.instance_id = "wiim_test"
     provider.domain = "wiim"
+    provider.players = []
+    provider.native_groups = _mock_native_groups()
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
     config = MagicMock()
@@ -118,7 +124,28 @@ def mock_provider() -> MagicMock:
     config.player_type = None
     config.get_value = MagicMock(return_value=None)
     provider.mass.config.get_base_player_config.return_value = config
+    # used by the core final-state calculation to resolve power/volume controls
+    provider.mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
     return provider
+
+
+def _mock_native_groups() -> MagicMock:
+    """Create a coordinator mock that reports a standalone topology by default."""
+    groups = MagicMock()
+    groups.role_of.return_value = NativeGroupRole.STANDALONE
+    groups.members_of.return_value = []
+    groups.can_group_with.return_value = set()
+    groups.refresh_leader = AsyncMock()
+    groups.reconcile = AsyncMock()
+    groups.set_members = AsyncMock()
+    groups.schedule_reconcile = MagicMock()
+    groups.schedule_republish = MagicMock()
+    groups.unregister = MagicMock()
+    groups.is_unknown_leader_follower = MagicMock(return_value=False)
+    groups.set_self_role = MagicMock(return_value=False)
+    return groups
 
 
 @pytest.fixture
@@ -132,6 +159,8 @@ def mock_client() -> MagicMock:
         )
     )
     client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+    client.get_device_group_info = AsyncMock(return_value=SimpleNamespace(role="solo"))
+    client.capabilities = {}
     client.join_slave = AsyncMock()
     client.leave_group = AsyncMock()
     return client
@@ -232,44 +261,36 @@ class TestHealthGating:
         player._linkplay_available = False
         assert player.prefer_native_grouping is False
 
-    def test_can_group_with_requires_health(
+    def test_can_group_with_delegates_to_coordinator(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A shell with an unreachable API advertises no grouping peers."""
+        """can_group_with returns exactly the coordinator's candidate set for this player."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        peer._linkplay_available = True
-        mock_provider.players = [player, peer]
-        player._linkplay_available = False
-        assert player.can_group_with == set()
-        player._linkplay_available = True
+        mock_provider.native_groups.can_group_with.return_value = {PEER_PLAYER_ID}
         assert player.can_group_with == {PEER_PLAYER_ID}
+        mock_provider.native_groups.can_group_with.assert_called_once_with(player)
 
-    def test_can_group_with_skips_unhealthy_peer(
+    def test_native_available_reflects_health(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """An unreachable peer is not offered as a grouping target."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player._linkplay_available = True
-        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        peer._linkplay_available = False
-        mock_provider.players = [player, peer]
-        assert player.can_group_with == set()
+        """native_available (used by the coordinator) tracks the LinkPlay API reachability."""
+        healthy = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        healthy._linkplay_available = True
+        assert healthy.native_available is True
+        unhealthy = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        unhealthy._linkplay_available = False
+        assert unhealthy.native_available is False
 
-    def test_native_group_compat_only_generic_peers(
+    def test_native_group_compat_follows_can_group_with(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """The native-compat seam only accepts reachable generic peers, never other backends."""
+        """A peer is native-compatible exactly when the coordinator offers it as a candidate."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player._linkplay_available = True
-        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        peer._linkplay_available = True
-        mock_provider.players = [player, peer]
+        peer = MagicMock(player_id=PEER_PLAYER_ID)
+        mock_provider.native_groups.can_group_with.return_value = {PEER_PLAYER_ID}
         assert player.is_native_group_compatible(peer) is True
-        # a same-instance player of another backend (e.g. official WiiM) is not native-compatible,
-        # so the grouping layer never routes such a pair onto a native group.
-        official = MagicMock(player_id="wiim_official")
-        assert player.is_native_group_compatible(official) is False
+        other = MagicMock(player_id="wiim_uuid:not-a-candidate")
+        assert player.is_native_group_compatible(other) is False
 
 
 class TestPlaybackAvailability:
@@ -308,434 +329,149 @@ class TestPlaybackAvailability:
 
 
 class TestGrouping:
-    """Same-backend grouping uses the low-level WiiMClient GroupAPI only."""
+    """Grouping is delegated to the shared native coordinator across both backends."""
 
-    async def test_join_uses_low_level_client(
+    async def test_set_members_delegates_to_coordinator(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """Adding a member joins it to this leader via join_slave with the leader device info."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = member
-        # after joining, the leader lists the member as a slave
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
-        mock_provider.players = [leader, member]
-        await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-        member_client.join_slave.assert_awaited_once()
-        args, kwargs = member_client.join_slave.call_args
-        assert args[0] == "192.168.1.50"  # leader ip
-        assert kwargs["master_device_info"] is leader.cached_device_info
-
-    async def test_leave_uses_low_level_client(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Removing a current member calls leave_group and verifies it left the leader's group."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = member
-        # the leader currently owns the member, then reports it gone after the leave
-        mock_client.get_slaves_info = AsyncMock(
-            side_effect=[_slaves([PEER_HTTP_UUID]), _slaves([])]
+        """set_members forwards the add/remove batch to the coordinator unchanged."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        await player.set_members(
+            player_ids_to_add=[PEER_PLAYER_ID], player_ids_to_remove=["wiim_uuid:gone"]
         )
-        mock_provider.players = [leader, member]
-        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
-        member_client.leave_group.assert_awaited_once()
-
-    async def test_remove_member_not_in_group_skips_leave(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Removing a member the leader no longer owns issues no leave_group."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = member
-        mock_provider.players = [leader, member]
-        # the leader's live topology no longer lists the member (it moved to another group)
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
-        member_client.leave_group.assert_not_awaited()
-
-    async def test_unhealthy_current_removal_aborts_batch(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """An unreachable current removal target fails the batch before any leave."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        healthy_client = MagicMock(leave_group=AsyncMock())
-        healthy = _make_shell(mock_provider, healthy_client, mock_upnp_device, PEER_PLAYER_ID)
-        healthy._linkplay_available = True
-        unhealthy_client = MagicMock(leave_group=AsyncMock())
-        unhealthy = _make_shell(
-            mock_provider, unhealthy_client, mock_upnp_device, "wiim_uuid:third"
+        mock_provider.native_groups.set_members.assert_awaited_once_with(
+            player, [PEER_PLAYER_ID], ["wiim_uuid:gone"]
         )
-        unhealthy._linkplay_available = False  # a current member that is unreachable
-        players = {PEER_PLAYER_ID: healthy, "wiim_uuid:third": unhealthy}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        # both are current members of the leader
-        leader._current_slave_ids = AsyncMock(  # type: ignore[method-assign]
-            return_value={PEER_PLAYER_ID, "wiim_uuid:third"}
-        )
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID, "wiim_uuid:third"])
-        healthy_client.leave_group.assert_not_awaited()
-        unhealthy_client.leave_group.assert_not_awaited()
 
-    async def test_absent_unhealthy_removal_skipped_healthy_left(
+    def test_api_unreachable_gates_only_native_grouping(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """An absent unreachable target is skipped while a healthy current member is left."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        healthy_client = MagicMock(leave_group=AsyncMock())
-        healthy = _make_shell(mock_provider, healthy_client, mock_upnp_device, PEER_PLAYER_ID)
-        healthy._linkplay_available = True
-        absent_client = MagicMock(leave_group=AsyncMock())
-        absent = _make_shell(mock_provider, absent_client, mock_upnp_device, "wiim_uuid:third")
-        absent._linkplay_available = False  # unreachable, but no longer a member
-        players = {PEER_PLAYER_ID: healthy, "wiim_uuid:third": absent}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        # only the healthy member is still owned; the unreachable one has moved away
-        leader._current_slave_ids = AsyncMock(return_value={PEER_PLAYER_ID})  # type: ignore[method-assign]
-        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID, "wiim_uuid:third"])
-        healthy_client.leave_group.assert_awaited_once()
-        absent_client.leave_group.assert_not_awaited()
+        """An unreachable LinkPlay API withdraws only native grouping, not the broad lock."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        # the broad lock stays off, so core may still group this device via a linked protocol
+        assert player.grouping_locked is False
+        # but native grouping is gated: the raw SET_MEMBERS is withdrawn ...
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        # ... and the coordinator offers no native peers for an unreachable device
+        assert player.can_group_with == set()
 
-    async def test_valid_removal_batch_leaves_all(
+    def test_unknown_leader_follower_locks_grouping(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A fully valid multi-member removal leaves every current member."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        first_client = MagicMock(leave_group=AsyncMock())
-        first = _make_shell(mock_provider, first_client, mock_upnp_device, PEER_PLAYER_ID)
-        first._linkplay_available = True
-        second_client = MagicMock(leave_group=AsyncMock())
-        second = _make_shell(mock_provider, second_client, mock_upnp_device, "wiim_uuid:third")
-        second._linkplay_available = True
-        players = {PEER_PLAYER_ID: first, "wiim_uuid:third": second}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        leader._current_slave_ids = AsyncMock(  # type: ignore[method-assign]
-            return_value={PEER_PLAYER_ID, "wiim_uuid:third"}
-        )
-        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID, "wiim_uuid:third"])
-        first_client.leave_group.assert_awaited_once()
-        second_client.leave_group.assert_awaited_once()
-
-    async def test_cross_backend_member_rejected(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A non-generic member raises a typed unsupported error (B1)."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = MagicMock()  # not a LinkPlayPlayer
-        with pytest.raises(UnsupportedFeaturedException):
-            await leader.set_members(player_ids_to_add=["airplay_other"])
-
-    async def test_unreachable_leader_fails(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Grouping fails cleanly when the leader's LinkPlay API is unreachable."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = False
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-
-    async def test_group_error_becomes_command_failed(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A WiiMError from the device is surfaced as PlayerCommandFailed."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(side_effect=WiiMError("boom")))
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = member
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-
-    async def test_incompatible_generation_rejected(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A peer on an incompatible/legacy multiroom generation is rejected before joining."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        # a legacy Wi-Fi-Direct / older-generation device that we do not group
-        member._cached_device_info = _device_info("2.0", legacy=True)
-        mock_provider.mass.players.get_player.return_value = member
-        with pytest.raises(UnsupportedFeaturedException):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-        member_client.join_slave.assert_not_awaited()
-
-    async def test_unverified_join_raises(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """If the member never appears in the leader's slave list, the command fails."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = member
-        # leader keeps reporting no slaves -> join not verified
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-        mock_provider.players = [leader, member]
-        with (
-            patch("music_assistant.providers.wiim.linkplay_player.asyncio.sleep", AsyncMock()),
-            pytest.raises(PlayerCommandFailed),
-        ):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-
-    async def test_join_verification_retries_until_settled(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A join that the device reports only after settling still succeeds."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        mock_provider.mass.players.get_player.return_value = member
-        # first read still shows no slaves (group forming), second read shows the member
-        mock_client.get_slaves_info = AsyncMock(
-            side_effect=[_slaves([]), _slaves([PEER_HTTP_UUID])]
-        )
-        mock_provider.players = [leader, member]
-        with patch("music_assistant.providers.wiim.linkplay_player.asyncio.sleep", AsyncMock()):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-        assert mock_client.get_slaves_info.await_count == 2
-
-    async def test_grouping_available_during_external_source(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Native grouping stays available while a linked protocol plays an external source."""
+        """A reachable shell that follows an undiscovered group withdraws ALL grouping."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
         player._linkplay_available = True
-        # a linked DLNA protocol player is casting an external source
-        player.set_linked_output_protocols([LinkedOutputProtocol("dlna_x", "dlna", priority=50)])
-        ext_player = MagicMock(
-            available=True,
-            active_source="spotify",
-            playback_state=PlaybackState.PLAYING,
-            supported_features={PlayerFeature.PAUSE, PlayerFeature.SEEK},
-        )
-        ext_player.provider.domain = "dlna"
-        mock_provider.mass.players.get_player.return_value = ext_player
-        assert PlayerFeature.SET_MEMBERS in player.supported_features
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        # the broad lock holds, so even a linked-protocol group is withdrawn in the final state
+        assert player.grouping_locked is True
 
-    async def test_invalid_target_aborts_before_any_join(
+    def test_api_outage_locks_a_native_group_member(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A batch containing a cross-backend target performs no join at all (transactional)."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        valid_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        valid = _make_shell(mock_provider, valid_client, mock_upnp_device, PEER_PLAYER_ID)
-        valid._linkplay_available = True
-        players = {PEER_PLAYER_ID: valid, "official_x": MagicMock()}  # official = not a shell
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        with pytest.raises(UnsupportedFeaturedException):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, "official_x"])
-        valid_client.join_slave.assert_not_awaited()
+        """A device already in a native group whose API drops is broadly locked (can't leave it)."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.LEADER
+        # a protocol regroup would leave it in both groups, since the native ungroup can't run
+        assert player.grouping_locked is True
 
-    async def test_incompatible_target_aborts_before_any_join(
+    def test_healthy_native_group_member_not_broadly_locked(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A later incompatible target aborts the batch before the earlier valid join runs."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        good_client = MagicMock(join_slave=AsyncMock())
-        good = _make_shell(mock_provider, good_client, mock_upnp_device, PEER_PLAYER_ID)
-        good._linkplay_available = True
-        bad_client = MagicMock(join_slave=AsyncMock())
-        bad = _make_shell(mock_provider, bad_client, mock_upnp_device, "wiim_uuid:third")
-        bad._linkplay_available = True
-        bad._cached_device_info = _device_info("2.0", legacy=True)  # incompatible
-        players = {PEER_PLAYER_ID: good, "wiim_uuid:third": bad}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        with pytest.raises(UnsupportedFeaturedException):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, "wiim_uuid:third"])
-        good_client.join_slave.assert_not_awaited()
+        """A reachable native group member can still be regrouped (core natively ungroups first)."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        assert player.grouping_locked is False
 
-    async def test_duplicate_ids_rejected(
+    def test_grouping_rebuild_lock_serializes_with_address_change(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A duplicate member id in the request is rejected up front."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, PEER_PLAYER_ID])
+        """The lock the coordinator holds during a command is the shell's address-rebuild lock."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        assert player.grouping_rebuild_lock is player._rebuild_lock
 
-    async def test_conflicting_add_and_remove_rejected(
+    def test_native_follower_suppresses_playback(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """Adding and removing the same member in one request is rejected up front."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(
-                player_ids_to_add=[PEER_PLAYER_ID], player_ids_to_remove=[PEER_PLAYER_ID]
-            )
-
-    async def test_valid_batch_applies_all_members(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A fully valid multi-member batch joins every member."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        first_client = MagicMock(join_slave=AsyncMock())
-        first = _make_shell(mock_provider, first_client, mock_upnp_device, PEER_PLAYER_ID)
-        first._linkplay_available = True
-        second_client = MagicMock(join_slave=AsyncMock())
-        second = _make_shell(mock_provider, second_client, mock_upnp_device, "wiim_uuid:third")
-        second._linkplay_available = True
-        players = {PEER_PLAYER_ID: first, "wiim_uuid:third": second}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, "wiim_uuid:third"])
-        first_client.join_slave.assert_awaited_once()
-        second_client.join_slave.assert_awaited_once()
+        """A native follower reports idle and no media instead of its delegated state."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        assert player.playback_state == PlaybackState.IDLE
+        assert player.current_media is None
+        assert player.active_source is None
 
 
 class TestTopology:
-    """Native group topology is mapped to MA group members, leader first."""
+    """The coordinator publishes resolved membership onto the shell."""
 
-    async def test_master_lists_leader_first(
+    def test_on_native_group_update_publishes_leader_members(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A master with a known slave reports [leader, follower]."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
-        mock_provider.players = [leader, peer]
-        await leader._update_group_members()
-        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        """A leader publishes exactly the members the coordinator resolved for it."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        mock_provider.native_groups.members_of.return_value = [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        player.on_native_group_update()
+        assert player._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
 
-    async def test_solo_has_no_members(
+    def test_on_native_group_update_clears_members_for_follower(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A solo device manages no members."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-        await leader._update_group_members()
-        assert leader._attr_group_members == []
+        """A standalone/follower shell publishes no members of its own."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._attr_group_members = ["stale"]
+        mock_provider.native_groups.members_of.return_value = []
+        player.on_native_group_update()
+        assert player._attr_group_members == []
 
-    async def test_follower_has_no_members(
+    async def test_poll_pushes_topology_to_coordinator(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A follower derives its relationship from the leader, managing no members itself."""
-        follower = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-        await follower._update_group_members()
-        assert follower._attr_group_members == []
+        """A poll refreshes reachability and forces a coordinator topology read."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        await player.poll()
+        mock_client.get_device_info_model.assert_awaited()
+        mock_provider.native_groups.refresh_leader.assert_awaited_with(player, force=True)
 
-    async def test_unknown_slave_ignored(
+    def test_becoming_follower_clears_active_output_protocol(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A master whose only slave is not a registered player reports no members."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves(["001122334455667788990011"]))
-        mock_provider.players = [leader]
-        await leader._update_group_members()
-        assert leader._attr_group_members == []
+        """A shell that was playing through DLNA drops that output when it becomes a follower."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player.set_active_output_protocol("dlna_x")
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
 
+        player.on_native_group_update()
 
-class TestMixedGroupReadOnly:
-    """An externally-created mixed group is read-only from the generic side (until layer 2)."""
+        assert player.active_output_protocol is None
+        assert player.playback_state == PlaybackState.IDLE
+        assert player.current_media is None
 
-    def _mixed_leader(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> LinkPlayPlayer:
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        # an official WiiM member (not a LinkPlayPlayer) shares the hardware group
-        official = MagicMock()
-        official.player_id = PEER_PLAYER_ID
-        mock_provider.players = [leader, official]
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: (
-            official if pid == PEER_PLAYER_ID else None
-        )
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
-        return leader
-
-    async def test_mixed_group_detected_and_represented(
+    def test_leaving_follower_does_not_resurrect_protocol(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A group containing an official member is flagged mixed but still shown read-only."""
-        leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
-        await leader._update_group_members()
-        assert leader._in_mixed_group is True
-        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        """The dropped output stays cleared after leaving; normal playback reselects it."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player.set_active_output_protocol("dlna_x")
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player.on_native_group_update()
 
-    async def test_mixed_group_withdraws_grouping(
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.STANDALONE
+        player.on_native_group_update()
+
+        assert player.active_output_protocol is None
+
+    def test_standalone_update_keeps_active_output_protocol(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """Grouping feature and targets are withdrawn while in a mixed group."""
-        leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
-        await leader._update_group_members()
-        assert leader.grouping_locked is True
-        assert PlayerFeature.SET_MEMBERS not in leader.supported_features
-        assert leader.can_group_with == set()
+        """A non-follower topology update never touches the active output (no churn)."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player.set_active_output_protocol("dlna_x")
 
-    async def test_mixed_group_rejects_set_members(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Mutating a mixed group is rejected rather than partially applied."""
-        leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
-        await leader._update_group_members()
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_add=[EDIFIER_PLAYER_ID])
+        player.on_native_group_update()  # role stays standalone
 
-    async def test_mixed_group_member_rejected(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A member that is itself in a mixed group is rejected before any join."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        # the member leads an externally-created mixed group with an official (other-backend) device
-        official = MagicMock(player_id="wiim_uuid:official", linkplay_backend="official")
-        official._attr_group_members = []
-        member._attr_group_members = [PEER_PLAYER_ID, "wiim_uuid:official"]
-        mock_provider.players = [leader, member, official]
-        registered = {PEER_PLAYER_ID: member, "wiim_uuid:official": official}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: registered.get(
-            pid
-        )
-        assert member._in_mixed_group is True
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
-        member_client.join_slave.assert_not_awaited()
-
-    def test_generic_follower_of_official_leader_is_mixed(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A generic device an official leader lists as a follower is read-only too."""
-        follower = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        follower._linkplay_available = True
-        follower._attr_group_members = []  # a follower manages nothing itself
-        # an official leader (other backend) currently lists this generic device
-        official_leader = MagicMock(
-            player_id="wiim_uuid:official-leader", linkplay_backend="official"
-        )
-        official_leader._attr_group_members = [official_leader.player_id, EDIFIER_PLAYER_ID]
-        mock_provider.players = [follower, official_leader]
-        assert PlayerFeature.SET_MEMBERS not in follower.supported_features
-        assert follower.can_group_with == set()
+        assert player.active_output_protocol == "dlna_x"
 
 
 class TestGroupCompatibility:
@@ -773,50 +509,32 @@ class TestGroupCompatibility:
         )
         assert linkplay_group_compatible(known, unknown) is False
 
-    async def test_can_group_with_excludes_incompatible_peer(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A reachable but legacy/incompatible peer is not offered as a grouping target."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player._linkplay_available = True
-        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        peer._linkplay_available = True
-        peer._cached_device_info = _device_info("2.0", legacy=True)
-        mock_provider.players = [player, peer]
-        assert player.can_group_with == set()
-
 
 class TestRefreshResilience:
-    """A poll must survive a transient topology blip and detect an unreachable API."""
+    """A poll refreshes reachability and pushes topology without blocking on a blip."""
 
-    async def test_transient_topology_read_keeps_last_members(
+    async def test_reachable_refresh_marks_healthy(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A failed slave-list read must not clear a real group; last members are kept."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
-        mock_provider.players = [leader, peer]
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
-        await leader._refresh_linkplay()
-        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
-        # a topology read blip must not drop the group, and the device stays available
-        mock_client.get_slaves_info = AsyncMock(side_effect=WiiMError("blip"))
-        await leader._refresh_linkplay()
-        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
-        assert leader._linkplay_available is True
+        """A successful device-info read keeps the shell reachable and caches the info."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        await player.poll()
+        assert player._linkplay_available is True
+        assert player._cached_device_info is not None
 
-    async def test_unreachable_api_marks_unhealthy_but_keeps_topology(
+    async def test_unreachable_api_marks_unhealthy(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """When unreachable the shell goes unhealthy but keeps its last known group."""
-        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        leader._linkplay_available = True
-        leader._attr_group_members = [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        """A failed device-info read marks the shell unhealthy, withdrawing NATIVE grouping."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
         mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
-        await leader._refresh_linkplay()
-        assert leader._linkplay_available is False
-        # last known topology is kept so the reachable side stays locked read-only
-        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+        await player.poll()
+        assert player._linkplay_available is False
+        # only native grouping is gated; the broad lock stays off so a linked protocol can group
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert player.grouping_locked is False
 
     async def test_setup_without_primed_info_does_full_refresh(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -874,172 +592,6 @@ class TestAddressChange:
         assert player._client is mock_client
 
 
-class TestGroupingConcurrency:
-    """Grouping and address rebuilds serialize per device via a deterministic lock order."""
-
-    async def test_concurrent_grouping_sharing_device_serializes(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Two leaders adding the same member never touch that member's hardware at once."""
-        overlap = {"current": 0, "max": 0}
-
-        async def _join(*_args: Any, **_kwargs: Any) -> None:
-            overlap["current"] += 1
-            overlap["max"] = max(overlap["max"], overlap["current"])
-            await asyncio.sleep(0)  # yield so a second, unserialized join could overlap
-            overlap["current"] -= 1
-
-        member_client = MagicMock(join_slave=AsyncMock(side_effect=_join), leave_group=AsyncMock())
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        leader_one = _make_shell(
-            mock_provider, MagicMock(host="192.168.1.51"), mock_upnp_device, "wiim_uuid:leader-1"
-        )
-        leader_two = _make_shell(
-            mock_provider, MagicMock(host="192.168.1.52"), mock_upnp_device, "wiim_uuid:leader-2"
-        )
-        for leader in (leader_one, leader_two):
-            leader._linkplay_available = True
-            leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        players = {
-            PEER_PLAYER_ID: member,
-            "wiim_uuid:leader-1": leader_one,
-            "wiim_uuid:leader-2": leader_two,
-        }
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        await asyncio.wait_for(
-            asyncio.gather(
-                leader_one.set_members(player_ids_to_add=[PEER_PLAYER_ID]),
-                leader_two.set_members(player_ids_to_add=[PEER_PLAYER_ID]),
-            ),
-            timeout=5,
-        )
-        # the shared member lock forced the two joins to run one after the other
-        assert overlap["max"] == 1
-        assert member_client.join_slave.await_count == 2
-
-    async def test_cross_grouping_does_not_deadlock(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """Two leaders adding each other complete because every caller locks in the same order."""
-        x_client = MagicMock(host="192.168.1.60", join_slave=AsyncMock(), leave_group=AsyncMock())
-        y_client = MagicMock(host="192.168.1.61", join_slave=AsyncMock(), leave_group=AsyncMock())
-        shell_x = _make_shell(mock_provider, x_client, mock_upnp_device, "wiim_uuid:x")
-        shell_y = _make_shell(mock_provider, y_client, mock_upnp_device, "wiim_uuid:y")
-        for shell in (shell_x, shell_y):
-            shell._linkplay_available = True
-            shell._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        players = {"wiim_uuid:x": shell_x, "wiim_uuid:y": shell_y}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        # Pre-hold the lowest-ordered lock so both requests are queued and contending before
-        # either runs; a non-deterministic per-caller order would deadlock this arrangement.
-        await shell_x._rebuild_lock.acquire()
-        task_x = asyncio.create_task(shell_x.set_members(player_ids_to_add=["wiim_uuid:y"]))
-        task_y = asyncio.create_task(shell_y.set_members(player_ids_to_add=["wiim_uuid:x"]))
-        await asyncio.sleep(0)  # let both tasks reach their first lock acquisition
-        shell_x._rebuild_lock.release()
-        await asyncio.wait_for(asyncio.gather(task_x, task_y), timeout=5)
-        # each leader joined the other exactly once, with no deadlock
-        y_client.join_slave.assert_awaited_once()
-        x_client.join_slave.assert_awaited_once()
-
-    async def test_address_change_waits_for_in_flight_grouping(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A member's address rebuild blocks until the grouping holding its lock finishes."""
-        join_started = asyncio.Event()
-        release_join = asyncio.Event()
-
-        async def _join(*_args: Any, **_kwargs: Any) -> None:
-            join_started.set()
-            await release_join.wait()
-
-        member_client = MagicMock(
-            host="192.168.1.50", join_slave=AsyncMock(side_effect=_join), leave_group=AsyncMock()
-        )
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        leader = _make_shell(
-            mock_provider, MagicMock(host="192.168.1.51"), mock_upnp_device, "wiim_uuid:leader-1"
-        )
-        leader._linkplay_available = True
-        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        players = {PEER_PLAYER_ID: member, "wiim_uuid:leader-1": leader}
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        new_client = MagicMock(host="192.168.1.99")
-        new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
-        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-
-        group_task = asyncio.create_task(leader.set_members(player_ids_to_add=[PEER_PLAYER_ID]))
-        await asyncio.wait_for(join_started.wait(), timeout=5)  # grouping now holds member's lock
-        with patch(
-            "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
-        ):
-            addr_task = asyncio.create_task(
-                member.async_handle_address_change(
-                    "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
-                )
-            )
-            await asyncio.sleep(0)
-            # the rebuild cannot proceed while grouping holds the member lock
-            assert not addr_task.done()
-            assert member._client is member_client
-            release_join.set()
-            await asyncio.wait_for(asyncio.gather(group_task, addr_task), timeout=5)
-        assert member._client is new_client
-
-    async def test_unrelated_player_not_locked_during_grouping(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A device outside the group request can rebuild its address while grouping runs."""
-        join_started = asyncio.Event()
-        release_join = asyncio.Event()
-
-        async def _join(*_args: Any, **_kwargs: Any) -> None:
-            join_started.set()
-            await release_join.wait()
-
-        member_client = MagicMock(
-            host="192.168.1.50", join_slave=AsyncMock(side_effect=_join), leave_group=AsyncMock()
-        )
-        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
-        member._linkplay_available = True
-        leader = _make_shell(
-            mock_provider, MagicMock(host="192.168.1.51"), mock_upnp_device, "wiim_uuid:leader-1"
-        )
-        leader._linkplay_available = True
-        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
-        other = _make_shell(
-            mock_provider, MagicMock(host="192.168.1.70"), mock_upnp_device, "wiim_uuid:other"
-        )
-        other._linkplay_available = True
-        players = {
-            PEER_PLAYER_ID: member,
-            "wiim_uuid:leader-1": leader,
-            "wiim_uuid:other": other,
-        }
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
-        new_client = MagicMock(host="192.168.1.99")
-        new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
-        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-
-        group_task = asyncio.create_task(leader.set_members(player_ids_to_add=[PEER_PLAYER_ID]))
-        await asyncio.wait_for(join_started.wait(), timeout=5)  # grouping holds leader + member
-        with patch(
-            "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
-        ):
-            # the unrelated device is not part of the request, so its rebuild is not blocked
-            await asyncio.wait_for(
-                other.async_handle_address_change(
-                    "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
-                ),
-                timeout=5,
-            )
-        assert other._client is new_client
-        release_join.set()
-        await asyncio.wait_for(group_task, timeout=5)
-
-
 class TestProviderRouting:
     """Discovery classifies a device and routes it to the correct backend."""
 
@@ -1067,6 +619,9 @@ class TestProviderRouting:
         # setup must not repeat it, and the shell is registered already reachable.
         mock_client.get_device_info_model.assert_awaited_once()
         assert registered[0]._linkplay_available is True
+        # the live topology is read only after the player is registered (a read taken during
+        # setup, before registration, would be discarded by the coordinator).
+        mock_provider.native_groups.refresh_leader.assert_awaited_with(registered[0], force=True)
 
     async def test_unreachable_device_not_registered(
         self, mock_provider: MagicMock, mock_upnp_device: MagicMock
@@ -1166,3 +721,102 @@ class TestDefaultProtocolSelection:
         player = self._shell_player(links)
         target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
         assert target is players["dlna_x"]
+
+
+class TestFinalGroupingState:
+    """The FINAL state gates native grouping by API health but keeps linked-protocol grouping."""
+
+    @staticmethod
+    def _final_supported_features(player: LinkPlayPlayer) -> set[PlayerFeature]:
+        return cast(
+            "set[PlayerFeature]",
+            player._Player__final_supported_features,  # type: ignore[attr-defined]
+        )
+
+    def _link_grouping_protocol(self, player: LinkPlayPlayer, mock_provider: MagicMock) -> None:
+        """Link a DLNA protocol player that itself supports SET_MEMBERS."""
+        player.set_linked_output_protocols([LinkedOutputProtocol("dlna_x", "dlna", priority=50)])
+        protocol_player = MagicMock()
+        protocol_player.available = True
+        protocol_player.available_for_playback = True
+        protocol_player.supported_features = {PlayerFeature.SET_MEMBERS, PlayerFeature.PAUSE}
+        mock_provider.mass.players.get_player.return_value = protocol_player
+
+    def test_protocol_grouping_survives_api_outage(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """With the LinkPlay API down, a linked protocol still supplies SET_MEMBERS to the final state."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        self._link_grouping_protocol(player, mock_provider)
+
+        # native raw is gated, but the broad lock is off, so the linked protocol re-adds it
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert player.grouping_locked is False
+        assert PlayerFeature.SET_MEMBERS in self._final_supported_features(player)
+
+    def test_unknown_leader_follower_withdraws_even_protocol_grouping(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """The broad lock withdraws grouping in the final state even a linked protocol would add."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        self._link_grouping_protocol(player, mock_provider)
+
+        assert player.grouping_locked is True
+        assert PlayerFeature.SET_MEMBERS not in self._final_supported_features(player)
+
+    def test_healthy_native_keeps_set_members(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A reachable, standalone shell keeps native SET_MEMBERS and no broad lock."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        assert PlayerFeature.SET_MEMBERS in player.supported_features
+        assert player.grouping_locked is False
+
+
+class TestAvailabilityRepublish:
+    """A native-availability flip re-publishes peers so their candidate sets don't go stale."""
+
+    async def test_health_flip_republishes_peers(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Losing the LinkPlay API re-publishes every native peer."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
+
+        await player._refresh_reachability()
+
+        mock_provider.native_groups.schedule_republish.assert_called()
+
+    async def test_no_republish_when_health_unchanged(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A refresh that does not change availability does not churn peers."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+
+        await player._refresh_reachability()  # stays reachable
+
+        mock_provider.native_groups.schedule_republish.assert_not_called()
+
+    async def test_address_change_recovery_republishes_peers(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Recovering an unavailable shell via an address change re-publishes its peers."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        new_client = MagicMock(host="192.168.1.99")
+        new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
+        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+        with patch(
+            "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
+        ):
+            await player.async_handle_address_change(
+                "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
+            )
+
+        mock_provider.native_groups.schedule_republish.assert_called()

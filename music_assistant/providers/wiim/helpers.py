@@ -10,47 +10,15 @@ from wiim.consts import MANUFACTURER_AUDIO_PRO, MANUFACTURER_WIIM
 from .constants import PLAYER_ID_PREFIX
 
 if TYPE_CHECKING:
-    from pywiim.models import DeviceInfo as PywiimDeviceInfo
+    from collections.abc import Iterable
 
-    from music_assistant.models.player import Player
+    from pywiim.models import DeviceInfo as PywiimDeviceInfo
 
 # Manufacturers handled by the official WiiM/Linkplay SDK. Everything else that
 # still speaks the LinkPlay API (e.g. Edifier) is driven by the generic backend.
 OFFICIAL_MANUFACTURERS = (MANUFACTURER_WIIM, MANUFACTURER_AUDIO_PRO)
 
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
-
-
-def is_in_mixed_group(player: Player) -> bool:
-    """
-    Return whether a player is in an externally-created cross-backend (mixed) group.
-
-    A group is mixed when this player leads a group that includes a member on another
-    backend, or another registered player on a different backend currently lists this
-    player as a member. Such groups are read-only until cross-backend grouping is
-    supported, so grouping is withdrawn while it holds. The check reads only the players
-    already registered by the provider, so it needs no extra device requests.
-
-    :param player: The player to check, expected to carry a ``linkplay_backend`` marker.
-    """
-    own_backend = getattr(player, "linkplay_backend", None)
-    own_members = player._attr_group_members
-    if own_members and own_members[0] == player.player_id:
-        for member_id in own_members[1:]:
-            member = player.mass.players.get_player(member_id)
-            if member is not None and getattr(member, "linkplay_backend", None) != own_backend:
-                return True
-    for other in player.provider.players:
-        if other is player or getattr(other, "linkplay_backend", None) == own_backend:
-            continue
-        other_members = other._attr_group_members
-        if (
-            other_members
-            and other_members[0] == other.player_id
-            and player.player_id in other_members[1:]
-        ):
-            return True
-    return False
 
 
 def linkplay_group_compatible(
@@ -126,6 +94,33 @@ def linkplay_slave_uuid_to_player_id(slave_uuid: str) -> str | None:
     if (udn := linkplay_slave_uuid_to_udn(slave_uuid)) is None:
         return None
     return f"{PLAYER_ID_PREFIX}{udn}"
+
+
+def match_slave_uuid_to_player_id(
+    slave_uuid: str | None, candidate_player_ids: Iterable[str]
+) -> str | None:
+    """
+    Resolve a slave-list UUID to one of the given registered player ids.
+
+    Both backends key their players on the UPnP UDN, so a slave reported in either the
+    24-char HTTP or full 32-hex form is matched against the candidate ids by their
+    normalized hex, spanning the official and generic backends.
+
+    :param slave_uuid: The UUID of a slave device as reported in the slave list.
+    :param candidate_player_ids: The player ids to match the slave against.
+    """
+    if not slave_uuid or (udn := linkplay_slave_uuid_to_udn(slave_uuid)) is None:
+        return None
+    target_hex = udn.removeprefix("uuid:").replace("-", "").upper()
+    for player_id in candidate_player_ids:
+        if not player_id.startswith(PLAYER_ID_PREFIX):
+            continue
+        candidate_hex = (
+            player_id[len(PLAYER_ID_PREFIX) :].removeprefix("uuid:").replace("-", "").upper()
+        )
+        if candidate_hex == target_hex:
+            return player_id
+    return None
 
 
 def _wmrm_major(device_info: PywiimDeviceInfo) -> int | None:

@@ -23,6 +23,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import PLAYER_ID_PREFIX
+from .grouping import NativeGroupCoordinator
 from .helpers import is_official_manufacturer
 from .linkplay_player import LinkPlayPlayer
 from .player import WiimPlayer
@@ -61,6 +62,8 @@ class WiimProvider(PlayerProvider):
             logging.getLogger("wiim").setLevel(max(self.logger.level + 10, logging.WARNING))
 
         self.wiim_controller = WiimController(self.mass.http_session_no_ssl)
+        # The single native multiroom topology authority shared by both backends.
+        self.native_groups = NativeGroupCoordinator(self)
         # UPnP identity probe used to classify a discovered device (official WiiM/Audio Pro
         # vs a generic LinkPlay device such as Edifier). The description.xml is served over
         # plain HTTP; no UPnP eventing is used by the generic backend.
@@ -147,6 +150,12 @@ class WiimProvider(PlayerProvider):
             )
             await player.setup()
             await self.mass.players.register_or_update(player)
+            # read the live topology now the player is registered (setup runs before
+            # registration, so the coordinator would discard a read taken there), then
+            # reconcile so any leader that already lists this device, or that it leads,
+            # self-heals regardless of discovery order.
+            await self.native_groups.refresh_leader(player, force=True)
+            self.native_groups.schedule_reconcile()
             self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, player_id)
         except Exception:
             self.logger.exception("Failed to register WiiM player %s", wiim_dev.name)
@@ -185,6 +194,12 @@ class WiimProvider(PlayerProvider):
         )
         await player.setup()
         await self.mass.players.register_or_update(player)
+        # read the live topology now the player is registered (setup runs before
+        # registration, so the coordinator would discard a read taken there), then
+        # reconcile so any leader that already lists this device, or that it leads,
+        # self-heals regardless of discovery order.
+        await self.native_groups.refresh_leader(player, force=True)
+        self.native_groups.schedule_reconcile()
         self.logger.info("LinkPlay player registered: %s (%s)", player.name, player_id)
 
     def _candidate_locations(
