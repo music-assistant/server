@@ -191,8 +191,9 @@ class NativeGroupCoordinator:
         :param force: Read now even if the slow TTL has not elapsed.
         :return: Whether a fresh group state was actually read and applied.
         """
-        if not player.native_ip:
-            # no address to command yet (never seen or currently unavailable)
+        if not player.native_ip or not player.native_available:
+            # no reachable address to command yet (never seen or currently unavailable);
+            # keep the cached topology instead of doing a request that will only time out.
             return False
         lock = self._refresh_locks.setdefault(player.player_id, asyncio.Lock())
         async with lock:
@@ -273,6 +274,13 @@ class NativeGroupCoordinator:
         async with self._command_lock:
             add_members = [self._require_member(mid) for mid in player_ids_to_add or []]
             remove_members = [self._require_member(mid) for mid in player_ids_to_remove or []]
+            # read each low-level addition's live group up front: joining it dissolves the
+            # group it currently leads, and a stale cache could miss a follower it gained
+            # since its last refresh, so the lock set and validation below must see the
+            # current followers, not a stale snapshot.
+            for member in add_members:
+                if not self._is_official_pair(leader, member):
+                    await self.refresh_leader(member, force=True)
             # a concurrent address rebuild on any involved generic device must not swap its
             # client or move its address mid-command; hold each device's rebuild lock for the
             # whole check/mutate/verify sequence. Acquiring in sorted player-id order gives a
@@ -314,7 +322,7 @@ class NativeGroupCoordinator:
             leader_info: DeviceInfo | None = None
             if any(not self._is_official_pair(leader, member) for member in add_members):
                 leader_info = await self._device_info(leader)
-            join_plan: dict[str, tuple[DeviceInfo | None, DeviceInfo | None] | None] = {}
+            join_plan: dict[str, tuple[DeviceInfo | None, tuple[NativePlayer, ...]] | None] = {}
             for member in add_members:
                 self._guard_regroupable(member)
                 join_plan[member.player_id] = await self._prevalidate_join(
@@ -362,13 +370,16 @@ class NativeGroupCoordinator:
         leader: NativePlayer,
         member: NativePlayer,
         leader_info: DeviceInfo | None,
-    ) -> tuple[DeviceInfo | None, DeviceInfo | None] | None:
+    ) -> tuple[DeviceInfo | None, tuple[NativePlayer, ...]] | None:
         """
-        Validate an addition before any mutation and return the device info the join needs.
+        Validate an addition before any mutation and return the plan the join needs.
 
         Same-backend official joins are validated by the SDK itself (returns ``None``);
         every other combination must reach both devices and share a known, matching
-        router-based multiroom generation, failing closed on an unreadable or legacy device.
+        router-based multiroom generation. The member's own live group was read before the
+        locks were taken, so it is validated here too: it must not still lead any slave MA
+        cannot dissolve (it would be orphaned once the member becomes a follower). The
+        managed followers to dissolve are captured so execution needs no further read.
 
         :param leader: The leader the member would join.
         :param member: The member that would join the leader.
@@ -384,7 +395,24 @@ class NativeGroupCoordinator:
                 f"Cannot group {member.player_id} with {leader.player_id}: incompatible or "
                 "legacy Wi-Fi Direct LinkPlay multiroom"
             )
-        return leader_info, member_info
+        if self._leads_unmanaged_slave(member):
+            raise PlayerCommandFailed(
+                f"Cannot group {member.player_id}: it still leads slaves MA cannot dissolve"
+            )
+        followers = tuple(
+            self._require_member(follower_id)
+            for follower_id in self.members_of(member.player_id)
+            if follower_id != member.player_id
+        )
+        return leader_info, followers
+
+    def _leads_unmanaged_slave(self, member: NativePlayer) -> bool:
+        """Return whether the member's live slave list holds a slave MA cannot resolve."""
+        registered = {player.player_id for player in self._native_players()}
+        return any(
+            match_slave_uuid_to_player_id(uuid, registered) is None
+            for uuid in self._raw_slaves.get(member.player_id, ())
+        )
 
     def _prevalidate_leave(self, leader: NativePlayer, member: NativePlayer) -> None:
         """
@@ -554,13 +582,10 @@ class NativeGroupCoordinator:
         self,
         leader: NativePlayer,
         member: NativePlayer,
-        join_info: tuple[DeviceInfo | None, DeviceInfo | None] | None,
+        plan: tuple[DeviceInfo | None, tuple[NativePlayer, ...]] | None,
     ) -> None:
         """Join a member to a leader over the correct backend path and verify it."""
-        if (
-            leader.linkplay_backend == BACKEND_OFFICIAL
-            and member.linkplay_backend == BACKEND_OFFICIAL
-        ):
+        if self._is_official_pair(leader, member):
             leader_udn = cast("WiimPlayer", leader).native_device_udn
             member_udn = cast("WiimPlayer", member).native_device_udn
             try:
@@ -568,8 +593,8 @@ class NativeGroupCoordinator:
             except WiimException as err:
                 raise PlayerCommandFailed(f"Failed to group {member.player_id}: {err}") from err
         else:
-            assert join_info is not None  # a low-level join is always prevalidated
-            await self._low_level_join(leader, member, join_info[0])
+            assert plan is not None  # a low-level join is always prevalidated
+            await self._low_level_join(leader, member, plan[0], plan[1])
         await self._verify_membership(leader, member, joined=True)
         # the member is now a follower and manages no members of its own; drop any slave
         # list it cached while it was a leader so a later leave cannot resurrect a ghost
@@ -579,32 +604,20 @@ class NativeGroupCoordinator:
         self.set_self_role(member.player_id, True)
 
     async def _low_level_join(
-        self, leader: NativePlayer, member: NativePlayer, leader_info: DeviceInfo | None
+        self,
+        leader: NativePlayer,
+        member: NativePlayer,
+        leader_info: DeviceInfo | None,
+        followers: tuple[NativePlayer, ...],
     ) -> None:
         """Join a member to a leader over the low-level LinkPlay client (generic or mixed)."""
         if not (leader_ip := leader.native_ip):
             raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
         # the low-level join_slave (unlike the official SDK) does not disband a member that
-        # leads its own group, so dissolve that group first: otherwise its followers are
-        # orphaned once the member becomes this leader's follower. Read the member's live
-        # group here rather than trusting the cache, which could miss a follower it gained
-        # since its last refresh.
-        if not await self.refresh_leader(member, force=True):
-            raise PlayerCommandFailed(
-                f"Cannot group {member.player_id}: its own group state is unreadable"
-            )
-        if followers := [
-            self._require_member(m)
-            for m in self.members_of(member.player_id)
-            if m != member.player_id
-        ]:
-            await self._apply_members(member, [], followers)
-        # every managed follower is now detached; a remaining live slave is unmanaged and
-        # would be orphaned by the join, so fail closed rather than strand it.
-        if self._raw_slaves.get(member.player_id):
-            raise PlayerCommandFailed(
-                f"Cannot group {member.player_id}: it still leads slaves MA cannot dissolve"
-            )
+        # leads its own group, so dissolve the followers prevalidation captured from its live
+        # group first: otherwise they are orphaned once the member becomes a follower itself.
+        if followers:
+            await self._apply_members(member, [], list(followers))
         try:
             await member.make_command_client().join_slave(leader_ip, master_device_info=leader_info)
         except WiiMError as err:

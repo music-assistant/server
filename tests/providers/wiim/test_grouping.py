@@ -823,6 +823,10 @@ class TestMixedGrouping:
         """Joining a member that follows an undiscovered group fails typed at command time."""
         member_client = _member_client()
         member_client.join_slave = AsyncMock()
+        # the member's own live read reports it is a slave of a leader MA cannot see
+        member_client.get_device_group_info = AsyncMock(
+            return_value=MagicMock(role="slave", master_uuid=OTHER_MASTER_UUID)
+        )
         leader = _make_player(
             LEADER_ID, BACKEND_OFFICIAL, ip="192.168.1.20", command_client=_leader_client([])
         )
@@ -1547,3 +1551,30 @@ class TestBatchValidation:
         await coordinator.set_members(leader, [FOLLOWER_ID, SECOND_ID], None)
 
         assert leader_client.get_device_info_model.await_count == 1
+
+    async def test_refresh_skips_unavailable_device(self) -> None:
+        """A device that is unavailable is not polled again; its cached topology is kept."""
+        client = MagicMock()
+        client.get_device_group_info = AsyncMock()
+        player = _make_player(LEADER_ID, BACKEND_GENERIC, available=False, command_client=client)
+        coordinator, _ = _make_coordinator(player)
+
+        assert await coordinator.refresh_leader(player, force=True) is False
+        client.get_device_group_info.assert_not_called()
+
+    async def test_live_read_reveals_unknown_leader_follower_and_aborts(self) -> None:
+        """A member whose cache said standalone but now reads as a slave of an unknown leader fails."""
+        member_client = _member_client()
+        member_client.join_slave = AsyncMock()
+        member_client.get_device_group_info = AsyncMock(
+            return_value=MagicMock(role="slave", master_uuid=OTHER_MASTER_UUID)
+        )
+        leader = _make_player(
+            LEADER_ID, BACKEND_OFFICIAL, ip="192.168.1.20", command_client=_leader_client([])
+        )
+        member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=member_client)
+        coordinator, _ = _make_coordinator(leader, member)  # cache starts empty (standalone)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID], None)
+        member_client.join_slave.assert_not_called()
