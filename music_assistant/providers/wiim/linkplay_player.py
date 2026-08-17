@@ -157,28 +157,42 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        if not self._linkplay_available:
+        add_ids = player_ids_to_add or []
+        remove_ids = player_ids_to_remove or []
+        # Validate the whole request before touching any hardware, so a bad target never
+        # leaves a partially applied group.
+        if not self._linkplay_available or self._cached_device_info is None:
             raise PlayerCommandFailed(f"{self.name} is not reachable for grouping")
         if self._in_mixed_group:
             raise PlayerCommandFailed(
                 f"{self.name} is in an externally-created mixed group and cannot be regrouped"
             )
+        if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
+            raise PlayerCommandFailed(f"Duplicate member id in grouping request on {self.name}")
+        if conflicting := set(add_ids) & set(remove_ids):
+            raise PlayerCommandFailed(
+                f"Cannot add and remove the same member on {self.name}: {conflicting}"
+            )
+        # Resolve every target to a same-backend member (rejects unknown/cross-backend/self).
+        to_add = [(mid, self._require_linkplay_member(mid)) for mid in add_ids]
+        to_remove = [(mid, self._require_linkplay_member(mid)) for mid in remove_ids]
+        # Every addition must be reachable and of a compatible multiroom generation.
+        for member_id, member in to_add:
+            if not member._linkplay_available or member._cached_device_info is None:
+                raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
+            if not linkplay_group_compatible(self._cached_device_info, member._cached_device_info):
+                raise UnsupportedFeaturedException(
+                    f"Cannot group {member_id} with {self.name}: "
+                    "incompatible LinkPlay multiroom generation"
+                )
+        # The request is proven valid; apply it sequentially.
         try:
-            for member_id in player_ids_to_add or []:
-                member = self._require_linkplay_member(member_id)
-                if not linkplay_group_compatible(
-                    self._cached_device_info, member._cached_device_info
-                ):
-                    raise UnsupportedFeaturedException(
-                        f"Cannot group {member_id} with {self.name}: "
-                        "incompatible LinkPlay multiroom generation"
-                    )
+            for member_id, member in to_add:
                 await member._client.join_slave(
                     self._client.host, master_device_info=self._cached_device_info
                 )
                 await self._verify_group_change(member, member_id, expect_slave=True)
-            for member_id in player_ids_to_remove or []:
-                member = self._require_linkplay_member(member_id)
+            for member_id, member in to_remove:
                 await member._client.leave_group()
                 await self._verify_group_change(member, member_id, expect_slave=False)
         except WiiMError as err:
@@ -280,8 +294,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         Return a same-backend member for a grouping command.
 
         MA-created grouping stays within the generic LinkPlay backend; a request that
-        targets any other player is rejected as unsupported rather than cast.
+        targets this player itself or any other backend is rejected rather than cast.
         """
+        if player_id == self.player_id:
+            raise UnsupportedFeaturedException(f"Cannot group {self.name} with itself")
         member = self.mass.players.get_player(player_id)
         if not isinstance(member, LinkPlayPlayer):
             raise UnsupportedFeaturedException(

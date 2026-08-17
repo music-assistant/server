@@ -302,6 +302,7 @@ class TestGrouping:
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
         mock_provider.mass.players.get_player.return_value = member
         # after joining, the leader lists the member as a slave
         mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
@@ -320,6 +321,7 @@ class TestGrouping:
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
         mock_provider.mass.players.get_player.return_value = member
         mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
         mock_provider.players = [leader, member]
@@ -353,6 +355,7 @@ class TestGrouping:
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock(side_effect=WiiMError("boom")))
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
         mock_provider.mass.players.get_player.return_value = member
         with pytest.raises(PlayerCommandFailed):
             await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
@@ -365,6 +368,7 @@ class TestGrouping:
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
         # a legacy Wi-Fi-Direct / older-generation device that we do not group
         member._cached_device_info = _device_info("2.0", legacy=True)
         mock_provider.mass.players.get_player.return_value = member
@@ -380,6 +384,7 @@ class TestGrouping:
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
         mock_provider.mass.players.get_player.return_value = member
         # leader keeps reporting no slaves -> join not verified
         mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
@@ -398,6 +403,7 @@ class TestGrouping:
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
         mock_provider.mass.players.get_player.return_value = member
         # first read still shows no slaves (group forming), second read shows the member
         mock_client.get_slaves_info = AsyncMock(
@@ -425,6 +431,79 @@ class TestGrouping:
         ext_player.provider.domain = "dlna"
         mock_provider.mass.players.get_player.return_value = ext_player
         assert PlayerFeature.SET_MEMBERS in player.supported_features
+
+    async def test_invalid_target_aborts_before_any_join(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A batch containing a cross-backend target performs no join at all (transactional)."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        valid_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
+        valid = _make_shell(mock_provider, valid_client, mock_upnp_device, PEER_PLAYER_ID)
+        valid._linkplay_available = True
+        players = {PEER_PLAYER_ID: valid, "official_x": MagicMock()}  # official = not a shell
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        with pytest.raises(UnsupportedFeaturedException):
+            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, "official_x"])
+        valid_client.join_slave.assert_not_awaited()
+
+    async def test_incompatible_target_aborts_before_any_join(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A later incompatible target aborts the batch before the earlier valid join runs."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        good_client = MagicMock(join_slave=AsyncMock())
+        good = _make_shell(mock_provider, good_client, mock_upnp_device, PEER_PLAYER_ID)
+        good._linkplay_available = True
+        bad_client = MagicMock(join_slave=AsyncMock())
+        bad = _make_shell(mock_provider, bad_client, mock_upnp_device, "wiim_uuid:third")
+        bad._linkplay_available = True
+        bad._cached_device_info = _device_info("2.0", legacy=True)  # incompatible
+        players = {PEER_PLAYER_ID: good, "wiim_uuid:third": bad}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        with pytest.raises(UnsupportedFeaturedException):
+            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, "wiim_uuid:third"])
+        good_client.join_slave.assert_not_awaited()
+
+    async def test_duplicate_ids_rejected(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A duplicate member id in the request is rejected up front."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        with pytest.raises(PlayerCommandFailed):
+            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, PEER_PLAYER_ID])
+
+    async def test_conflicting_add_and_remove_rejected(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Adding and removing the same member in one request is rejected up front."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        with pytest.raises(PlayerCommandFailed):
+            await leader.set_members(
+                player_ids_to_add=[PEER_PLAYER_ID], player_ids_to_remove=[PEER_PLAYER_ID]
+            )
+
+    async def test_valid_batch_applies_all_members(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A fully valid multi-member batch joins every member."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        first_client = MagicMock(join_slave=AsyncMock())
+        first = _make_shell(mock_provider, first_client, mock_upnp_device, PEER_PLAYER_ID)
+        first._linkplay_available = True
+        second_client = MagicMock(join_slave=AsyncMock())
+        second = _make_shell(mock_provider, second_client, mock_upnp_device, "wiim_uuid:third")
+        second._linkplay_available = True
+        players = {PEER_PLAYER_ID: first, "wiim_uuid:third": second}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID, "wiim_uuid:third"])
+        first_client.join_slave.assert_awaited_once()
+        second_client.join_slave.assert_awaited_once()
 
 
 class TestTopology:
