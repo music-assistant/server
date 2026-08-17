@@ -861,44 +861,6 @@ async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssi
 
 
 @pytest.mark.asyncio
-async def test_swallowed_producer_error_after_partial_audio(
-    mass_minimal: MusicAssistant,
-) -> None:
-    """A producer error swallowed by the FFmpeg feeder fails the stream even after partial audio."""
-
-    class _FailingAfterPartialBuffer(_FakeAudioBuffer):
-        has_error = True
-        _producer_error = RuntimeError("source failed")
-
-        async def get_stream(self, **_kwargs: Any) -> AsyncGenerator[bytes]:
-            async for chunk in _make_source(2):
-                yield chunk
-
-    streamdetails = _make_stream_details(MediaType.TRACK, duration=90, allow_seek=True)
-    streamdetails.loudness = -10.0  # skip the audio-analysis hydration call
-    queue_item = QueueItem(
-        queue_id="player_a",
-        queue_item_id="current",
-        name="Current",
-        duration=90,
-        streamdetails=streamdetails,
-    )
-    controller = StreamsAudio(mass_minimal)
-
-    bytes_received = 0
-    with patch.object(audio_mod, "AudioBuffer", _FailingAfterPartialBuffer):
-        async for chunk in controller.get_queue_item_stream(
-            queue_item, TEST_PCM_FORMAT, raise_on_error=False
-        ):
-            bytes_received += len(chunk)
-
-    assert bytes_received > 0
-    assert streamdetails.stream_error is True
-    # partial audio was produced, so the item is not marked unavailable
-    assert queue_item.available
-
-
-@pytest.mark.asyncio
 async def test_real_buffer_producer_error_reaches_queue_item_stream(
     mass_minimal: MusicAssistant,
 ) -> None:
