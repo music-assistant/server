@@ -1,4 +1,4 @@
-"""Tests for the license checks of the package safety script."""
+"""Tests for the package safety script."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from scripts import check_package_safety
 from scripts.check_package_safety import (
     check_license_compatibility,
     check_package,
+    check_typosquatting,
     get_package_license,
 )
 
@@ -21,6 +22,35 @@ def pypi_info(**overrides: Any) -> dict[str, Any]:
     :param overrides: Fields to set on top of the (empty) license metadata.
     """
     return {"license": None, "license_expression": None, "classifiers": [], **overrides}
+
+
+def test_typosquatting_allows_exact_popular_package() -> None:
+    """Test an exact popular package name is not reported as typosquatting."""
+    assert check_typosquatting("requests") is None
+
+
+def test_typosquatting_detects_single_character_change() -> None:
+    """Test an equal-length package name with one changed character is reported."""
+    assert (
+        check_typosquatting("requestz") == "Suspicious: Very similar to popular package 'requests'"
+    )
+
+
+@pytest.mark.parametrize(
+    ("package_name", "popular_package"),
+    [
+        ("b0t0c0re", "botocore"),
+        ("sq1a1chemy", "sqlalchemy"),
+        ("cert1f1", "certifi"),
+    ],
+)
+def test_typosquatting_detects_character_substitution(
+    package_name: str, popular_package: str
+) -> None:
+    """Test common character substitutions in popular package names are reported."""
+    assert check_typosquatting(package_name) == (
+        f"Suspicious: Character substitution of popular package '{popular_package}'"
+    )
 
 
 @pytest.mark.parametrize(
