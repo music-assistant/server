@@ -3,6 +3,7 @@
 import errno
 import logging
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
 from unittest.mock import patch
@@ -351,10 +352,27 @@ class _BrokenEntry:
         raise self._err
 
 
+class _NamedEntry:
+    """Directory entry carrying only a name, for names a filesystem may refuse to create."""
+
+    def __init__(self, parent: str, name: str) -> None:
+        self.name = name
+        self.path = os.path.join(parent, name)
+
+    # no is_dir/is_file on purpose: the name guard has to skip this entry before anything
+    # reads its type, so a call site that lost the guard fails loudly here instead of
+    # quietly dropping the entry and leaving the test green
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"'{self.name}' must be skipped on its name, before .{name}")
+
+
+_ScanEntry = _BrokenEntry | _NamedEntry | os.DirEntry[str]
+
+
 class _FakeScanDir:
     """Stand-in for the os.scandir iterator, which is also a context manager."""
 
-    def __init__(self, entries: list[_BrokenEntry]) -> None:
+    def __init__(self, entries: Sequence[_ScanEntry]) -> None:
         self._entries = iter(entries)
 
     def __enter__(self) -> Self:
@@ -366,7 +384,7 @@ class _FakeScanDir:
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> _BrokenEntry:
+    def __next__(self) -> _ScanEntry:
         return next(self._entries)
 
 
@@ -472,6 +490,85 @@ def test_scan_errors_describe_names_examples() -> None:
     assert "Artist1/Album1" in summary
     # only the first few paths are named, the counts carry the rest
     assert len(errors.failed_paths) == helpers.MAX_REPORTED_FAILED_PATHS
+
+
+# 0xDF is "ß" in Latin-1 and not valid UTF-8. os.fsdecode is what os.scandir uses to build
+# DirEntry.name, so this is exactly what a real scan hands the guard for such a file, while
+# needing no file on disk - filesystems that enforce UTF-8 names refuse to create one.
+UNDECODABLE_NAME = os.fsdecode(b"Stra\xdfe.mp3")
+
+
+def test_recursive_iter_skips_names_that_are_not_valid_utf8(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Test that a filename which is not valid UTF-8 is skipped, naming it escaped.
+
+    Its path can be neither stored nor serialized, so letting it through only fails
+    deeper down, taking the events to the clients and the settings file with it
+    (#6042). Emoji are valid UTF-8 and must keep scanning.
+    """
+    (tmp_path / "track 🎧.mp3").write_bytes(b"x")
+    errors = helpers.ScanErrors()
+    real_scandir = os.scandir
+
+    def fake_scandir(path: str | os.PathLike[str]) -> _FakeScanDir:
+        with real_scandir(path) as entries:
+            return _FakeScanDir([*entries, _NamedEntry(str(path), UNDECODABLE_NAME)])
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("os.scandir", side_effect=fake_scandir),
+    ):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path), str(tmp_path), SUPPORTED, logging.getLogger("test"), errors
+            )
+        )
+
+    assert [item.relative_path for item in items] == ["track 🎧.mp3"]
+    assert "Stra\\xdfe.mp3" in caplog.text
+    # such a file can never have been indexed, so skipping it must not block deletions
+    assert not errors.incomplete
+
+
+def test_sorted_scandir_skips_names_that_are_not_valid_utf8(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Test that the directory listing skips a filename which is not valid UTF-8.
+
+    This listing feeds browse, podcast episodes, playlist and folder images, audiobooks
+    and chapters, so an item that can not be serialized would fail whichever of those
+    asked for it (#6042).
+    """
+    (tmp_path / "track 🎧.mp3").write_bytes(b"x")
+    real_scandir = os.scandir
+
+    def fake_scandir(path: str | os.PathLike[str]) -> _FakeScanDir:
+        with real_scandir(path) as entries:
+            return _FakeScanDir([*entries, _NamedEntry(str(path), UNDECODABLE_NAME)])
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("os.scandir", side_effect=fake_scandir),
+    ):
+        items = helpers.sorted_scandir(str(tmp_path), str(tmp_path))
+
+    assert [item.relative_path for item in items] == ["track 🎧.mp3"]
+    assert "Stra\\xdfe.mp3" in caplog.text
+
+
+def test_skip_undecodable_name_passes_valid_names(caplog: pytest.LogCaptureFixture) -> None:
+    """Test that the guard passes valid names without warning, whatever their encoding."""
+    log = logging.getLogger("test")
+    with caplog.at_level(logging.WARNING):
+        assert not helpers._skip_undecodable_name("track.mp3", log)
+        assert not helpers._skip_undecodable_name("Straße.mp3", log)
+        # 4-byte UTF-8 takes the same path as the 2-byte name above
+        assert not helpers._skip_undecodable_name("track 🎧.mp3", log)
+
+    assert not caplog.records
 
 
 def test_scan_errors_reset_on_successful_read() -> None:

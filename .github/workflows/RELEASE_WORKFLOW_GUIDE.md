@@ -51,8 +51,9 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    - Nightly: `nightly`
    Each alias's current amd64 and arm64 image labels are checked independently. An alias
    that already points to a newer release is never moved backward.
-10. Deterministically update the matching Home Assistant add-on and dispatch the
-    frontend version from `source_sha` to `app.music-assistant.io`.
+10. Deterministically update the matching Home Assistant add-on, and on nightly the
+    `music_assistant_dev` add-on as well, then dispatch the frontend version from
+    `source_sha` to `app.music-assistant.io`.
 
 The exact image tag is already the full version (`X.Y.Z`, `X.Y.ZbN`, `X.Y.ZrcN`, or
 `X.Y.Z.devN`). Rolling aliases are never pushed before the immutable release verifies.
@@ -137,6 +138,13 @@ The add-on changelog update removes duplicate entries for the same version, prep
 canonical entry using the GitHub publication date, and retains three distinct releases.
 The add-on repository's default branch is resolved through GitHub, and non-fast-forward
 updates retry a bounded pull/rebase/push sequence.
+
+A nightly release also sets the `music_assistant_dev` add-on to the same version, in the
+same commit. That add-on has no prebuilt image: the Supervisor builds it locally from
+`ghcr.io/music-assistant/server:nightly`, so moving its version is what offers installed
+add-ons the rebuild that picks up the new base image and the current wrapper files. It
+gets no changelog entry, because it runs whichever source branch the user configured
+rather than the published release.
 
 Frontend recovery reads the target repository's `channels.json` first. Equal or newer
 frontend state suppresses the dispatch; an older state receives a payload containing a

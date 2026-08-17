@@ -156,6 +156,8 @@ async def test_unload_provider_unregisters_hidden_players(
     mass_minimal.players = PlayerController(mass_minimal)
     mass_minimal.music = MagicMock(unschedule_provider_sync=AsyncMock())
     mass_minimal.player_queues = MagicMock()
+    # wiping a player config strips that player from the user access filters
+    mass_minimal.webserver = MagicMock(auth=MagicMock(remove_from_user_filters=AsyncMock()))
     # discovery is not set up on the minimal instance and plays no part in this test
     monkeypatch.setattr(mass_minimal.discovery, "on_provider_unload", MagicMock())
 

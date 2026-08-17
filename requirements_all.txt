@@ -28,12 +28,12 @@ bandcamp-async-api==0.2.2
 beat-this==1.1.0
 bidict==0.23.1
 certifi==2025.11.12
-chardet>=5.2.0
-colorlog==6.10.1
+chardet==7.6.0
+colorlog==6.12.0
 cryptography==50.0.0
 deezer-python-gql==0.17.1
 defusedxml==0.7.1
-deno==2.7.12
+deno==2.9.5
 duration-parser==1.0.1
 fastmcp==3.4.4
 getmac==0.9.5
@@ -50,12 +50,12 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.271
+music-assistant-frontend==2.17.277
 music-assistant-models==1.1.188
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.4
-numkong==7.7.0
+numkong==7.8.0
 numpy==2.3.5
 onedrive-personal-sdk==0.1.7
 orjson==3.11.6
@@ -83,7 +83,7 @@ pytz==2026.2
 pywam==0.2.0
 pywidevine==1.9.0
 PyYAML==6.0.3
-qqmusic-api-python==0.6.6
+qqmusic-api-python==0.7.2
 radios==0.3.2
 rokuecp==0.19.5
 segno==1.6.6
@@ -92,6 +92,7 @@ snapcast==2.3.8
 soco==0.31.2
 soundcloudpy==0.1.4
 sounddevice==0.5.5
+soxr==1.1.0
 sxm==0.2.8
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
