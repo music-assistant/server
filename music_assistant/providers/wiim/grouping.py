@@ -475,14 +475,19 @@ class NativeGroupCoordinator:
         """
         Validate a removal before any mutation, so a bad target fails the whole batch.
 
-        A same-backend generic follower leaves over its own client, so an unreachable one
-        cannot be detached and must fail up front rather than half-way through the batch.
+        Only a member the leader still owns is actually detached; one the freshly refreshed
+        leader no longer lists (moved away or absent) is an idempotent skip in :meth:`_leave`,
+        so its reachability is irrelevant and must not abort the batch. For a member still
+        owned, a same-backend generic follower leaves over its own client, so an unreachable
+        one cannot be detached and fails up front rather than half-way through the batch.
         Cross-backend and official removals go through the always-reachable leader (SDK
         ungroup or leader-side kick), so the follower's own reachability is not required.
 
         :param leader: The leader the member would leave.
         :param member: The member that would leave the leader.
         """
+        if member.player_id not in self.members_of(leader.player_id):
+            return
         if (
             leader.linkplay_backend == BACKEND_GENERIC
             and member.linkplay_backend == BACKEND_GENERIC

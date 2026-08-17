@@ -281,6 +281,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                     "Failed to reach LinkPlay device %s at %s: %s", self.name, new_ip, err
                 )
                 return
+            was_available = self._linkplay_available
             self._client = new_client
             self._cached_device_info = device_info
             self._description_url = description_url
@@ -289,6 +290,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_ip)
         # Re-read the topology from the new address so a stale entry never survives a move.
         await self._native_groups.refresh_leader(self, force=True)
+        if not was_available:
+            # recovering from an outage flips native availability, so peers must re-publish
+            # to stop excluding this device from their grouping candidates.
+            self._native_groups.schedule_republish()
         self.update_state()
 
     # --- Internals ---

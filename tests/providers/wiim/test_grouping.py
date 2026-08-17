@@ -1696,3 +1696,22 @@ class TestBatchValidation:
 
         leader.on_native_group_update.assert_called_once()
         peer.on_native_group_update.assert_called_once()
+
+    async def test_removal_of_absent_unreachable_member_is_skipped_not_aborted(self) -> None:
+        """An unreachable removal target the leader no longer lists is skipped, not fatal."""
+        slaves = [FOLLOWER_HTTP_UUID]  # the leader currently lists only the reachable member
+        good_client = _member_client()
+
+        async def _leave() -> None:
+            slaves.remove(FOLLOWER_HTTP_UUID)
+
+        good_client.leave_group = AsyncMock(side_effect=_leave)
+        leader = _make_player(LEADER_ID, BACKEND_GENERIC, command_client=_leader_client(slaves))
+        good = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=good_client)
+        gone = _make_player(SECOND_ID, BACKEND_GENERIC, available=False)  # unreachable, not owned
+        coordinator, _ = _make_coordinator(leader, good, gone)
+
+        # removing both must not abort on the absent, unreachable target
+        await coordinator.set_members(leader, None, [FOLLOWER_ID, SECOND_ID])
+
+        good_client.leave_group.assert_awaited_once()

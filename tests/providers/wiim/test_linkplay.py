@@ -802,3 +802,21 @@ class TestAvailabilityRepublish:
         await player._refresh_reachability()  # stays reachable
 
         mock_provider.native_groups.schedule_republish.assert_not_called()
+
+    async def test_address_change_recovery_republishes_peers(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Recovering an unavailable shell via an address change re-publishes its peers."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        new_client = MagicMock(host="192.168.1.99")
+        new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
+        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+        with patch(
+            "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
+        ):
+            await player.async_handle_address_change(
+                "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
+            )
+
+        mock_provider.native_groups.schedule_republish.assert_called()
