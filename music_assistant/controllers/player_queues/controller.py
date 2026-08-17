@@ -1795,10 +1795,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.transitioning = value
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
-        """Drop the queue's items and playback position, leaving its settings untouched."""
+        """Drop the queue's items and playback position, leaving user settings untouched."""
         queue = self._queue_data[queue_id].queue
         self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
+        if queue.is_dynamic:
+            # Dynamic sources impose shuffle, so clearing the source clears that shuffle too.
+            queue.shuffle_enabled = False
         queue.is_dynamic = False
         # dropping the dynamic source changes what smart shuffle resolves to, so the derived
         # flag has to follow or clients keep showing a smart mix on a plain queue
