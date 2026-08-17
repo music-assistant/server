@@ -363,6 +363,74 @@ class TestGrouping:
         await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
         member_client.leave_group.assert_not_awaited()
 
+    async def test_unhealthy_current_removal_aborts_batch(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """An unreachable current removal target fails the batch before any leave."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        healthy_client = MagicMock(leave_group=AsyncMock())
+        healthy = _make_shell(mock_provider, healthy_client, mock_upnp_device, PEER_PLAYER_ID)
+        healthy._linkplay_available = True
+        unhealthy_client = MagicMock(leave_group=AsyncMock())
+        unhealthy = _make_shell(
+            mock_provider, unhealthy_client, mock_upnp_device, "wiim_uuid:third"
+        )
+        unhealthy._linkplay_available = False  # a current member that is unreachable
+        players = {PEER_PLAYER_ID: healthy, "wiim_uuid:third": unhealthy}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        # both are current members of the leader
+        leader._current_slave_ids = AsyncMock(  # type: ignore[method-assign]
+            return_value={PEER_PLAYER_ID, "wiim_uuid:third"}
+        )
+        with pytest.raises(PlayerCommandFailed):
+            await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID, "wiim_uuid:third"])
+        healthy_client.leave_group.assert_not_awaited()
+        unhealthy_client.leave_group.assert_not_awaited()
+
+    async def test_absent_unhealthy_removal_skipped_healthy_left(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """An absent unreachable target is skipped while a healthy current member is left."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        healthy_client = MagicMock(leave_group=AsyncMock())
+        healthy = _make_shell(mock_provider, healthy_client, mock_upnp_device, PEER_PLAYER_ID)
+        healthy._linkplay_available = True
+        absent_client = MagicMock(leave_group=AsyncMock())
+        absent = _make_shell(mock_provider, absent_client, mock_upnp_device, "wiim_uuid:third")
+        absent._linkplay_available = False  # unreachable, but no longer a member
+        players = {PEER_PLAYER_ID: healthy, "wiim_uuid:third": absent}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        # only the healthy member is still owned; the unreachable one has moved away
+        leader._current_slave_ids = AsyncMock(return_value={PEER_PLAYER_ID})  # type: ignore[method-assign]
+        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID, "wiim_uuid:third"])
+        healthy_client.leave_group.assert_awaited_once()
+        absent_client.leave_group.assert_not_awaited()
+
+    async def test_valid_removal_batch_leaves_all(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A fully valid multi-member removal leaves every current member."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        first_client = MagicMock(leave_group=AsyncMock())
+        first = _make_shell(mock_provider, first_client, mock_upnp_device, PEER_PLAYER_ID)
+        first._linkplay_available = True
+        second_client = MagicMock(leave_group=AsyncMock())
+        second = _make_shell(mock_provider, second_client, mock_upnp_device, "wiim_uuid:third")
+        second._linkplay_available = True
+        players = {PEER_PLAYER_ID: first, "wiim_uuid:third": second}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        leader._current_slave_ids = AsyncMock(  # type: ignore[method-assign]
+            return_value={PEER_PLAYER_ID, "wiim_uuid:third"}
+        )
+        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID, "wiim_uuid:third"])
+        first_client.leave_group.assert_awaited_once()
+        second_client.leave_group.assert_awaited_once()
+
     async def test_cross_backend_member_rejected(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:

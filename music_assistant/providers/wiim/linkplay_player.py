@@ -208,16 +208,25 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             self._validate_leader_state()
             self._validate_additions(to_add)
             try:
+                # Identify which removals we still own from the leader's live topology and
+                # prevalidate their health before any hardware change, so a batch containing
+                # an unreachable current member fails whole rather than half-applied. Targets
+                # already absent (e.g. moved to another group) stay idempotent skips.
+                current_slaves = await self._current_slave_ids() if to_remove else set()
+                for member_id, member in to_remove:
+                    if member.player_id in current_slaves and (
+                        not member._linkplay_available or member._cached_device_info is None
+                    ):
+                        raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
                 for member_id, member in to_add:
                     await member._client.join_slave(
                         self._client.host, master_device_info=self._cached_device_info
                     )
                     await self._verify_group_change(member, member_id, expect_slave=True)
-                # Only leave members this leader still owns: a removal target that has since
-                # moved to another (possibly read-only mixed) group must not be torn out of it.
-                current_slaves = await self._current_slave_ids() if to_remove else set()
                 for member_id, member in to_remove:
                     if member.player_id not in current_slaves:
+                        # a removal target that has since moved to another (possibly read-only
+                        # mixed) group is left alone instead of being torn out of it
                         self.logger.debug(
                             "%s is no longer a member of %s; skipping leave",
                             member_id,
