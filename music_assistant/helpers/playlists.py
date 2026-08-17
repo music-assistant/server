@@ -34,12 +34,19 @@ from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
+    from aiohttp import StreamReader
+
     from music_assistant.mass import MusicAssistant
 
 
 LOGGER = logging.getLogger(__name__)
 HLS_CONTENT_TYPES = ("application/vnd.apple.mpegurl",)
+PLAYLIST_CONTENT_TYPES = ("audio/x-mpegurl", "audio/x-scpls")
 FIELD_SEPARATOR = "||"
+# playlists are small text files: cap the read so a stream served under a
+# playlist content-type does not pull an endless body into memory
+MAX_PLAYLIST_SIZE = 64 * 1024
+PLAYLIST_READ_TIMEOUT = 5
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -292,28 +299,40 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
     return playlist
 
 
-async def fetch_playlist(
-    mass: MusicAssistant, url: str, raise_on_hls: bool = True
+async def read_playlist_body(content: StreamReader) -> bytes:
+    """
+    Read a playlist body, up to MAX_PLAYLIST_SIZE bytes.
+
+    :param content: Response body to read from.
+    """
+    # a single read returns whatever happens to be buffered, so a playlist spread over
+    # several chunks would otherwise be parsed truncated
+    raw_data = bytearray()
+    while len(raw_data) < MAX_PLAYLIST_SIZE:
+        chunk = await content.read(MAX_PLAYLIST_SIZE - len(raw_data))
+        if not chunk:
+            break
+        raw_data += chunk
+    return bytes(raw_data)
+
+
+async def parse_playlist_data(
+    url: str, raw_data: bytes, charset: str | None = None, raise_on_hls: bool = True
 ) -> list[PlaylistItem]:
-    """Fetch and parse a remote M3U or PLS playlist."""
-    try:
-        async with mass.http_session.get(
-            encoded_request_url(url), allow_redirects=True, timeout=ClientTimeout(total=5)
-        ) as resp:
-            # an error page is still a body: its markup would otherwise parse into entries
-            resp.raise_for_status()
-            raw_data = await resp.content.read(64 * 1024)
-            encoding = await detect_charset(raw_data, preferred=resp.charset)
-            playlist_data = raw_data.decode(encoding, errors="replace")
-    except TimeoutError as err:
-        msg = f"Timeout while fetching playlist {url}"
-        raise InvalidDataError(msg) from err
-    except client_exceptions.ClientError as err:
-        msg = f"Error while fetching playlist {url}"
-        raise InvalidDataError(msg) from err
+    """
+    Parse the raw body of an M3U or PLS playlist into entries.
+
+    :param url: URL the body was fetched from, used to pick the playlist flavour.
+    :param raw_data: Raw (undecoded) playlist body.
+    :param charset: Charset declared by the server, if any.
+    :param raise_on_hls: Raise IsHLSPlaylist for an HLS media playlist.
+    """
+    encoding = await detect_charset(raw_data, preferred=charset)
+    playlist_data = raw_data.decode(encoding, errors="replace")
 
     if (
-        raise_on_hls and "#EXT-X-VERSION:" in playlist_data
+        raise_on_hls
+        and ("#EXT-X-VERSION:" in playlist_data or "#EXT-X-TARGETDURATION:" in playlist_data)
     ) or "#EXT-X-STREAM-INF:" in playlist_data:
         raise IsHLSPlaylist
 
@@ -327,6 +346,30 @@ async def fetch_playlist(
         raise InvalidDataError(msg)
 
     return playlist
+
+
+async def fetch_playlist(
+    mass: MusicAssistant, url: str, raise_on_hls: bool = True
+) -> list[PlaylistItem]:
+    """Fetch and parse a remote M3U or PLS playlist."""
+    try:
+        async with mass.http_session.get(
+            encoded_request_url(url),
+            allow_redirects=True,
+            timeout=ClientTimeout(total=PLAYLIST_READ_TIMEOUT),
+        ) as resp:
+            # an error page is still a body: its markup would otherwise parse into entries
+            resp.raise_for_status()
+            raw_data = await read_playlist_body(resp.content)
+            charset = resp.charset
+    except TimeoutError as err:
+        msg = f"Timeout while fetching playlist {url}"
+        raise InvalidDataError(msg) from err
+    except client_exceptions.ClientError as err:
+        msg = f"Error while fetching playlist {url}"
+        raise InvalidDataError(msg) from err
+
+    return await parse_playlist_data(url, raw_data, charset, raise_on_hls)
 
 
 # --------------------------------------------------------------------------- #
