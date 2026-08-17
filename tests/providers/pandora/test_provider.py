@@ -210,6 +210,24 @@ async def test_search_without_radio_media_type_skips_the_station_lookup() -> Non
     assert results == SearchResults()
 
 
+@pytest.mark.parametrize("search_query", ["", "   "])
+async def test_search_for_an_empty_query_returns_nothing(search_query: str) -> None:
+    """An empty query matches every station as a substring, so it must not reach the lookup."""
+    provider = _provider(stations=_stations(["Coldplay Radio", "Jazz Radio"]))
+    calls: list[str] = []
+    inner = provider._api_request
+
+    async def _recording_api_request(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        """Record the endpoint before delegating, so a needless lookup is visible."""
+        calls.append(url)
+        return await inner(method, url, **kwargs)
+
+    provider._api_request = _recording_api_request  # type: ignore[method-assign, assignment]
+    results = await provider.search(search_query, [MediaType.RADIO])
+    assert results.radio == []
+    assert calls == []
+
+
 async def test_first_request_returns_a_fragment() -> None:
     """A station with no session yet fetches and returns its first fragment."""
     provider = _provider()

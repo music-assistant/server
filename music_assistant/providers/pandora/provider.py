@@ -183,7 +183,11 @@ class PandoraProvider(MusicProvider):
         # substring rather than compare_strings: that helper answers "are these the same
         # entity", and its fuzzy mode rejects a length difference over four characters, so a
         # short query like "rock" could never reach a station called "Classic Rock Radio"
-        query = search_query.lower()
+        query = search_query.lower().strip()
+        if not query:
+            # every name contains the empty string, so an empty query would match the whole
+            # library rather than nothing
+            return SearchResults()
         results: list[Radio] = []
         async for station in self._get_stations():
             if query in station.name.lower():
