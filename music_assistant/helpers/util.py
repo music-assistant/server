@@ -1618,12 +1618,13 @@ async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | 
         return "utf-8-sig"
 
     if preferred:
-        # a declared charset is only worth anything if Python has a codec for it:
-        # servers do send misspelled or plain made-up names in their Content-Type
+        # a declared charset is only worth anything if Python can actually decode text with
+        # it: servers do send misspelled or plain made-up names in their Content-Type, and a
+        # handful of names that do resolve to a codec still cannot decode text (base64, idna)
         try:
-            codecs.lookup(preferred)
-        except LookupError:
-            LOGGER.debug("Ignoring unknown charset: %s", preferred)
+            data[:16].decode(preferred, errors="replace")
+        except (LookupError, ValueError) as err:
+            LOGGER.debug("Ignoring unusable charset %s: %s", preferred, err)
         else:
             return preferred
 

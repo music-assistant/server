@@ -66,8 +66,9 @@ CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
 # receivers whose automatic route misbehaves. Options are offered per device
-# capability; Automatic is the default and the only value MA itself may write
-# away from (a receiver measured never answering PTP is switched to NTP).
+# capability; Automatic is the default and the only value MA itself writes away
+# from: a receiver that never answers PTP is switched to NTP, while one whose
+# native control channel conclusively fails is switched to compatibility mode.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
 STREAMING_MODE_AUTO: Final[str] = "auto"
 STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
@@ -134,18 +135,14 @@ AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = ()
 # Per-player override of the splice receiver-queue depth in ms (0 = automatic).
 CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
-# Nothing holds that ack back, so the window only has to cover the command's trip
-# down the pipe and the answer coming back - unlike a join's ack below, which is
-# withheld whenever the receiver clock verification arms.
-AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 2000
-# How long a join START waits for the binary's [STATUS] started ack. That ack is
-# held back whenever the clock verification above arms, so the window must
-# cover the verification arm window plus a poll round on top of the commanded
-# anchor (which bounds the verification), where a plain START acks within the
-# command round-trip. On timeout the server falls back to trusting the commanded
-# instant, so a window shorter than the binary's verification silently maps the
-# joiner's content onto an instant the binary never used.
-AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 5000
+# A strict buffered receiver can reject its anchor until its clock is seated;
+# cliairplay then makes up to 12 attempts, 500 ms apart. Cover that 5.5-second
+# retry span plus control-response and status-delivery margin.
+AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 7000
+# A join can additionally withhold its ack while receiver-clock verification
+# settles. Keep its independently named bound aligned with the buffered retry
+# span too; command failures still answer either wait immediately.
+AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 7000
 # How far the content a corrected anchor actually cut may fall short of the cut
 # it asked for before the reported media position is re-based and the shortfall
 # reported. The binary derives the cut it took from the bytes it discarded, so a

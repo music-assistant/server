@@ -121,10 +121,11 @@ lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
 and Apple receivers get every lane except NTP timing (they render silence on an
 NTP-timed realtime stream). The modes map
 onto the binary's `--protocol`/`--timing` arguments. Music Assistant writes the
-setting itself in exactly one case: a device that advertises PTP but is measured
-never answering a clock probe (AirPlay 2 video-class TVs) is switched to
-"AirPlay 2 - NTP timing" and playback restarts on it; setting it back to
-Automatic retries PTP.
+setting itself when an automatic route has conclusively failed: a device that
+advertises PTP but never answers a clock probe is switched to "AirPlay 2 - NTP
+timing", while a native route whose control channel fails after its keepalive
+retries is switched to "AirPlay 2 - compatibility mode". The next playback uses
+the new route; setting the mode back to Automatic retries the original one.
 
 The selector is hidden only for RAOP-only devices (no alternative lane; a
 stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
@@ -552,7 +553,7 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ## Configuration Options
 
 ### Protocol Selection
-- **`streaming_mode`**: Advanced per-player pin of the protocol/timing lane (default: Automatic). Options are offered per advertised capability; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT). Auto-set to NTP timing when the device is measured never answering the PTP clock
+- **`streaming_mode`**: Advanced per-player pin of the protocol/timing lane (default: Automatic). Options are offered per advertised capability; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT). Auto-pinned to NTP timing when the device never answers the PTP clock, or to compatibility mode after the native control channel conclusively fails
 
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again
