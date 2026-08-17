@@ -336,10 +336,10 @@ async def _preferred_entry_with_default_domain(
     return next(entry for entry in entries if entry.key == CONF_PREFERRED_OUTPUT_PROTOCOL)
 
 
-async def test_default_domain_available_becomes_entry_default(
+async def test_default_domain_available_stays_auto(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """With no native output, an available matching default-domain output is the default."""
+    """A no-native player defaults to auto even when its default-domain output is available."""
     entry = await _preferred_entry_with_default_domain(
         mass_minimal,
         [
@@ -348,13 +348,15 @@ async def test_default_domain_available_becomes_entry_default(
         ],
         default_domain="dlna",
     )
-    assert entry.default_value == _DLNA_ID
+    # The stored default must not depend on which linked protocols happen to be available;
+    # runtime selection applies the default domain, but the persisted entry stays "auto".
+    assert entry.default_value == "auto"
     # auto and both protocols remain selectable so the user can still override
     assert {option.value for option in entry.options} >= {"auto", _DLNA_ID, _AIRPLAY_ID}
 
 
 async def test_default_domain_unavailable_stays_auto(mass_minimal: MusicAssistant) -> None:
-    """An unavailable matching default-domain output does not become the default."""
+    """A no-native player defaults to auto even when its default-domain output is unavailable."""
     entry = await _preferred_entry_with_default_domain(
         mass_minimal,
         [
