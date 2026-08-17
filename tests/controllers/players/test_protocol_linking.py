@@ -9321,6 +9321,78 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         assert disabled_ids == {ap_id, dlna_id}
 
     @pytest.mark.asyncio
+    async def test_universal_replaced_by_linkplay_shell(self, mock_mass: MagicMock) -> None:
+        """A generic LinkPlay shell that owns DLNA+AirPlay children replaces the Universal."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_edifier"
+        shell_id = "wiim_uuid:FF97F002-783E-6505-6579-F15FFF97F002"
+        ap_id = "airplay_edifier"
+        dlna_id = "dlna_edifier"
+
+        all_configs = {
+            universal_id: {
+                "values": {
+                    "linked_protocol_ids": [ap_id, dlna_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Edifier MS50A",
+            },
+            shell_id: {
+                "enabled": True,
+                "provider": "wiim",
+                "player_type": "player",
+                "values": {"linked_protocol_ids": [ap_id, dlna_id]},
+            },
+            ap_id: {
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+            dlna_id: {
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        # both protocol children are reparented from the Universal to the LinkPlay shell
+        parent_restorations = {
+            call.args[0]: call.args[1]
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in call.args[0]
+        }
+        assert parent_restorations == {
+            f"{CONF_PLAYERS}/{ap_id}/values/protocol_parent_id": shell_id,
+            f"{CONF_PLAYERS}/{dlna_id}/values/protocol_parent_id": shell_id,
+        }
+        # the Universal's saved config/name/DSP/preference and group refs migrate to the
+        # shell, and the now-obsolete Universal is removed
+        mock_mass.players._migrate_universal_player_config.assert_called_once_with(
+            universal_id, shell_id
+        )
+        mock_mass.players._repoint_group_memberships.assert_called_once_with(universal_id, shell_id)
+        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+
+    @pytest.mark.asyncio
     async def test_protocols_reparented_to_their_own_native_claimer(
         self, mock_mass: MagicMock
     ) -> None:

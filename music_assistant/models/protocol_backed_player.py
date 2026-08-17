@@ -70,7 +70,11 @@ class ProtocolBackedPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         if ext_player := self._get_protocol_player_with_external_source():
-            return ext_player.supported_features & FORWARDED_FEATURES
+            # Keep this player's own native capabilities (a subclass may add some, e.g.
+            # grouping) and add the forwardable transport controls of the external source.
+            return self._attr_supported_features | (
+                ext_player.supported_features & FORWARDED_FEATURES
+            )
         return self._attr_supported_features
 
     @property

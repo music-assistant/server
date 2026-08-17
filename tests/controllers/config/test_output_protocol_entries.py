@@ -317,3 +317,88 @@ async def test_protocol_dependency_never_binds_to_the_players_own_setting(
     # gated the protocol's entry on the player's own flow mode instead of the protocol's
     assert entries[f"{_DLNA_PREFIX}{CONF_FLOW_MODE}"].default_value is False
     assert entries[CONF_FLOW_MODE].default_value is True
+
+
+async def _preferred_entry_with_default_domain(
+    mass: MusicAssistant,
+    protocols: list[OutputProtocol],
+    default_domain: str | None,
+) -> ConfigEntry:
+    """Build the preferred-output entry for a player that declares a default protocol domain."""
+    player = MagicMock()
+    player.needs_setup = False
+    player.output_protocols = protocols
+    player.default_output_protocol_domain = default_domain
+    mass.players = MagicMock()
+    mass.players.get_player.return_value = None
+    with patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest):
+        entries = await mass.config._create_output_protocol_config_entries(player)
+    return next(entry for entry in entries if entry.key == CONF_PREFERRED_OUTPUT_PROTOCOL)
+
+
+async def test_default_domain_available_becomes_entry_default(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """With no native output, an available matching default-domain output is the default."""
+    entry = await _preferred_entry_with_default_domain(
+        mass_minimal,
+        [
+            _make_output_protocol(_DLNA_ID, "dlna", 50, available=True),
+            _make_output_protocol(_AIRPLAY_ID, "airplay", 10, available=True),
+        ],
+        default_domain="dlna",
+    )
+    assert entry.default_value == _DLNA_ID
+    # auto and both protocols remain selectable so the user can still override
+    assert {option.value for option in entry.options} >= {"auto", _DLNA_ID, _AIRPLAY_ID}
+
+
+async def test_default_domain_unavailable_stays_auto(mass_minimal: MusicAssistant) -> None:
+    """An unavailable matching default-domain output does not become the default."""
+    entry = await _preferred_entry_with_default_domain(
+        mass_minimal,
+        [
+            _make_output_protocol(_DLNA_ID, "dlna", 50, available=False),
+            _make_output_protocol(_AIRPLAY_ID, "airplay", 10, available=True),
+        ],
+        default_domain="dlna",
+    )
+    assert entry.default_value == "auto"
+
+
+async def test_default_domain_absent_stays_auto(mass_minimal: MusicAssistant) -> None:
+    """A player whose default domain is not among its outputs falls back to auto."""
+    entry = await _preferred_entry_with_default_domain(
+        mass_minimal,
+        [_make_output_protocol(_AIRPLAY_ID, "airplay", 10, available=True)],
+        default_domain="dlna",
+    )
+    assert entry.default_value == "auto"
+
+
+async def test_no_default_domain_stays_auto(mass_minimal: MusicAssistant) -> None:
+    """Without a declared default domain, a player with no native output defaults to auto."""
+    entry = await _preferred_entry_with_default_domain(
+        mass_minimal,
+        [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)],
+        default_domain=None,
+    )
+    assert entry.default_value == "auto"
+
+
+async def test_available_native_ignores_default_domain(mass_minimal: MusicAssistant) -> None:
+    """An available native output still wins over a declared default protocol domain."""
+    native = OutputProtocol(
+        output_protocol_id="native_x",
+        name="Native",
+        protocol_domain="soundtouch",
+        is_native=True,
+        priority=1,
+        available=True,
+    )
+    entry = await _preferred_entry_with_default_domain(
+        mass_minimal,
+        [native, _make_output_protocol(_DLNA_ID, "dlna", 50, available=True)],
+        default_domain="dlna",
+    )
+    assert entry.default_value == "native"

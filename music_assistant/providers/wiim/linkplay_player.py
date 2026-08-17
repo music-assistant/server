@@ -118,10 +118,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """Return the supported features; native grouping needs a reachable LinkPlay API."""
         features = super().supported_features
         # Native multiroom grouping depends only on the LinkPlay HTTP API being reachable,
-        # not on what is playing, so it is re-added even while the base masks features to a
-        # linked protocol's external source.
+        # not on what is playing; the correctly unioned base already carries SET_MEMBERS,
+        # so it is only withdrawn while the API is unreachable.
         if self._linkplay_available:
-            return features | {PlayerFeature.SET_MEMBERS}
+            return features
         return features - {PlayerFeature.SET_MEMBERS}
 
     @property
