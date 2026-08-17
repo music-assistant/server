@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from pywiim import WiiMError, WiiMGroupCompatibilityError
 
@@ -223,11 +223,10 @@ class TestHealthGating:
         peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
         peer._linkplay_available = True
         mock_provider.players = [player, peer]
-        if True:
-            player._linkplay_available = False
-            assert player.can_group_with == set()
-            player._linkplay_available = True
-            assert player.can_group_with == {PEER_PLAYER_ID}
+        player._linkplay_available = False
+        assert player.can_group_with == set()
+        player._linkplay_available = True
+        assert player.can_group_with == {PEER_PLAYER_ID}
 
     def test_can_group_with_skips_unhealthy_peer(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -238,8 +237,7 @@ class TestHealthGating:
         peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
         peer._linkplay_available = False
         mock_provider.players = [player, peer]
-        if True:
-            assert player.can_group_with == set()
+        assert player.can_group_with == set()
 
 
 class TestPlaybackAvailability:
@@ -294,8 +292,7 @@ class TestGrouping:
             return_value=_group_info("master", [PEER_HTTP_UUID])
         )
         mock_provider.players = [leader, member]
-        if True:
-            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
+        await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
         member_client.join_slave.assert_awaited_once()
         args, kwargs = member_client.join_slave.call_args
         assert args[0] == "192.168.1.50"  # leader ip
@@ -312,8 +309,7 @@ class TestGrouping:
         mock_provider.mass.players.get_player.return_value = member
         mock_client.get_device_group_info = AsyncMock(return_value=_group_info("master", []))
         mock_provider.players = [leader, member]
-        if True:
-            await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
+        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
         member_client.leave_group.assert_awaited_once()
 
     async def test_cross_backend_member_rejected(
@@ -373,9 +369,47 @@ class TestGrouping:
         # leader keeps reporting no slaves -> join not verified
         mock_client.get_device_group_info = AsyncMock(return_value=_group_info("master", []))
         mock_provider.players = [leader, member]
-        if True:
-            with pytest.raises(PlayerCommandFailed):
-                await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
+        with (
+            patch("music_assistant.providers.wiim.linkplay_player.asyncio.sleep", AsyncMock()),
+            pytest.raises(PlayerCommandFailed),
+        ):
+            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
+
+    async def test_join_verification_retries_until_settled(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A join that the device reports only after settling still succeeds."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
+        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        mock_provider.mass.players.get_player.return_value = member
+        # first read still shows no slaves (group forming), second read shows the member
+        mock_client.get_device_group_info = AsyncMock(
+            side_effect=[_group_info("master", []), _group_info("master", [PEER_HTTP_UUID])]
+        )
+        mock_provider.players = [leader, member]
+        with patch("music_assistant.providers.wiim.linkplay_player.asyncio.sleep", AsyncMock()):
+            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
+        assert mock_client.get_device_group_info.await_count == 2
+
+    async def test_grouping_available_during_external_source(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Native grouping stays available while a linked protocol plays an external source."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        # a linked DLNA protocol player is casting an external source
+        player.set_linked_output_protocols([LinkedOutputProtocol("dlna_x", "dlna", priority=50)])
+        ext_player = MagicMock(
+            available=True,
+            active_source="spotify",
+            playback_state=PlaybackState.PLAYING,
+            supported_features={PlayerFeature.PAUSE, PlayerFeature.SEEK},
+        )
+        ext_player.provider.domain = "dlna"
+        mock_provider.mass.players.get_player.return_value = ext_player
+        assert PlayerFeature.SET_MEMBERS in player.supported_features
 
 
 class TestTopology:
@@ -391,8 +425,7 @@ class TestTopology:
             return_value=_group_info("master", [PEER_HTTP_UUID])
         )
         mock_provider.players = [leader, peer]
-        if True:
-            await leader._update_group_members()
+        await leader._update_group_members()
         assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
 
     async def test_solo_has_no_members(
@@ -422,8 +455,7 @@ class TestTopology:
             return_value=_group_info("master", ["001122334455667788990011"])
         )
         mock_provider.players = [leader]
-        if True:
-            await leader._update_group_members()
+        await leader._update_group_members()
         assert leader._attr_group_members == []
 
 

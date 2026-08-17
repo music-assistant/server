@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 # comes from the linked protocol players, so a slow interval is plenty.
 POLL_INTERVAL = 30
 
+# A native multiroom join/leave is fire-and-forget and the group takes a few seconds to
+# settle, so the leader's topology is re-read a few times before a change is rejected.
+GROUP_VERIFY_ATTEMPTS = 5
+GROUP_VERIFY_INTERVAL = 1.5
+
 
 class LinkPlayPlayer(ProtocolBackedPlayer):
     """
@@ -110,10 +115,13 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
-        """Return the supported features; grouping needs a reachable LinkPlay API."""
+        """Return the supported features; native grouping needs a reachable LinkPlay API."""
         features = super().supported_features
+        # Native multiroom grouping depends only on the LinkPlay HTTP API being reachable,
+        # not on what is playing, so it is re-added even while the base masks features to a
+        # linked protocol's external source.
         if self._linkplay_available:
-            return features
+            return features | {PlayerFeature.SET_MEMBERS}
         return features - {PlayerFeature.SET_MEMBERS}
 
     @property
@@ -247,20 +255,25 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         self, member: LinkPlayPlayer, member_id: str, expect_slave: bool
     ) -> None:
         """Confirm a grouping operation actually took effect on THIS leader's group."""
-        try:
-            info = await self._client.get_device_group_info()
-        except WiiMError as err:
-            raise PlayerCommandFailed(
-                f"Could not verify grouping of {member_id} on {self.name}: {err}"
-            ) from err
-        current_members = {
-            resolved
-            for slave_uuid in (info.slave_uuids or [])
-            if (resolved := self._resolve_member_player_id(slave_uuid)) is not None
-        }
-        if (member.player_id in current_members) != expect_slave:
-            verb = "join" if expect_slave else "leave"
-            raise PlayerCommandFailed(f"{member_id} did not {verb} the group led by {self.name}")
+        for attempt in range(GROUP_VERIFY_ATTEMPTS):
+            try:
+                info = await self._client.get_device_group_info()
+            except WiiMError as err:
+                raise PlayerCommandFailed(
+                    f"Could not verify grouping of {member_id} on {self.name}: {err}"
+                ) from err
+            current_members = {
+                resolved
+                for slave_uuid in (info.slave_uuids or [])
+                if (resolved := self._resolve_member_player_id(slave_uuid)) is not None
+            }
+            if (member.player_id in current_members) == expect_slave:
+                return
+            # The group is still settling; wait briefly and re-read before giving up.
+            if attempt + 1 < GROUP_VERIFY_ATTEMPTS:
+                await asyncio.sleep(GROUP_VERIFY_INTERVAL)
+        verb = "join" if expect_slave else "leave"
+        raise PlayerCommandFailed(f"{member_id} did not {verb} the group led by {self.name}")
 
     def _resolve_member_player_id(self, slave_uuid: str | None) -> str | None:
         """
