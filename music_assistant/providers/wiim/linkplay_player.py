@@ -213,7 +213,17 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                         self._client.host, master_device_info=self._cached_device_info
                     )
                     await self._verify_group_change(member, member_id, expect_slave=True)
+                # Only leave members this leader still owns: a removal target that has since
+                # moved to another (possibly read-only mixed) group must not be torn out of it.
+                current_slaves = await self._current_slave_ids() if to_remove else set()
                 for member_id, member in to_remove:
+                    if member.player_id not in current_slaves:
+                        self.logger.debug(
+                            "%s is no longer a member of %s; skipping leave",
+                            member_id,
+                            self.name,
+                        )
+                        continue
                     await member._client.leave_group()
                     await self._verify_group_change(member, member_id, expect_slave=False)
             except WiiMError as err:
@@ -304,6 +314,15 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             if resolved and resolved not in members:
                 members.append(resolved)
         self._attr_group_members = members if len(members) > 1 else []
+
+    async def _current_slave_ids(self) -> set[str]:
+        """Return the player ids this leader currently reports as its native group slaves."""
+        slaves = await self._client.get_slaves_info()
+        return {
+            resolved
+            for slave in slaves
+            if (resolved := self._resolve_member_player_id(slave.get("uuid"))) is not None
+        }
 
     @property
     def _in_mixed_group(self) -> bool:

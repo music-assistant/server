@@ -332,17 +332,36 @@ class TestGrouping:
     async def test_leave_uses_low_level_client(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """Removing a member calls leave_group and verifies it left the leader's group."""
+        """Removing a current member calls leave_group and verifies it left the leader's group."""
         leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
         leader._linkplay_available = True
         member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
         member._linkplay_available = True
         mock_provider.mass.players.get_player.return_value = member
-        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+        # the leader currently owns the member, then reports it gone after the leave
+        mock_client.get_slaves_info = AsyncMock(
+            side_effect=[_slaves([PEER_HTTP_UUID]), _slaves([])]
+        )
         mock_provider.players = [leader, member]
         await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
         member_client.leave_group.assert_awaited_once()
+
+    async def test_remove_member_not_in_group_skips_leave(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Removing a member the leader no longer owns issues no leave_group."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
+        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
+        mock_provider.mass.players.get_player.return_value = member
+        mock_provider.players = [leader, member]
+        # the leader's live topology no longer lists the member (it moved to another group)
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+        await leader.set_members(player_ids_to_remove=[PEER_PLAYER_ID])
+        member_client.leave_group.assert_not_awaited()
 
     async def test_cross_backend_member_rejected(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
