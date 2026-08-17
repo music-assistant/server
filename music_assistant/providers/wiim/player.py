@@ -434,7 +434,9 @@ class WiimPlayer(Player):
 
     def _update_ma_state_from_sdk_cache(self) -> None:
         """Update MA state from SDK's cache/HTTP poll attributes."""
+        was_available = self._attr_available
         self._attr_available = self.device.available
+        self._republish_peers_if_availability_changed(was_available)
         if self.device.name != self._attr_name:
             self._attr_name = self.device.name
 
@@ -602,6 +604,13 @@ class WiimPlayer(Player):
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
+
+    def _republish_peers_if_availability_changed(self, was_available: bool) -> None:
+        """Re-publish every native peer when this device's availability just flipped."""
+        # availability changes whether every peer can offer this device as a native grouping
+        # candidate, which no topology reconcile would otherwise pick up.
+        if was_available != self._attr_available:
+            self._native_groups.schedule_republish()
 
     def _publish_follower_state(self) -> None:
         """Publish the volume-only state of a native follower and clear its playback."""

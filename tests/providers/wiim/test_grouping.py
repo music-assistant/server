@@ -1649,3 +1649,50 @@ class TestBatchValidation:
         coordinator, _ = _make_coordinator(me, peer)
 
         assert coordinator.can_group_with(me) == {FOLLOWER_ID}
+
+    async def test_add_remove_conflict_rejected(self) -> None:
+        """The same id in both add and remove is a contradictory request and is rejected."""
+        leader = _make_player(LEADER_ID, BACKEND_OFFICIAL, command_client=_leader_client([]))
+        member = _make_player(FOLLOWER_ID, BACKEND_OFFICIAL)
+        coordinator, provider = _make_coordinator(leader, member)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID], [FOLLOWER_ID])
+        provider.wiim_controller.async_join_group.assert_not_called()
+
+    async def test_duplicate_ids_rejected(self) -> None:
+        """A duplicate id within a single add/remove list is rejected up front."""
+        leader = _make_player(LEADER_ID, BACKEND_OFFICIAL, command_client=_leader_client([]))
+        member = _make_player(FOLLOWER_ID, BACKEND_OFFICIAL)
+        coordinator, provider = _make_coordinator(leader, member)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID, FOLLOWER_ID], None)
+        provider.wiim_controller.async_join_group.assert_not_called()
+
+    async def test_newer_observation_wins_ownership_despite_later_apply(self) -> None:
+        """A follower belongs to the most recently OBSERVED leader, not the last one applied."""
+        other_leader_id = "wiim_uuid:22222222-3333-4444-5555-666666666666"
+        leader_a = _make_player(LEADER_ID, BACKEND_GENERIC)
+        leader_b = _make_player(other_leader_id, BACKEND_GENERIC)
+        follower = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
+        coordinator, _ = _make_coordinator(leader_a, leader_b, follower)
+
+        # leader B observed the follower more recently, but leader A's older observation is
+        # applied afterwards (a longer-running read that completed late)
+        coordinator.set_leader_slaves(other_leader_id, [FOLLOWER_HTTP_UUID], observed_at=200.0)
+        coordinator.set_leader_slaves(LEADER_ID, [FOLLOWER_HTTP_UUID], observed_at=100.0)
+        await coordinator.reconcile()
+
+        assert coordinator.leader_of(FOLLOWER_ID) == other_leader_id
+
+    async def test_republish_all_republishes_every_native_player(self) -> None:
+        """schedule_republish's work re-publishes every registered native player's state."""
+        leader = _make_player(LEADER_ID, BACKEND_GENERIC)
+        peer = _make_player(FOLLOWER_ID, BACKEND_OFFICIAL)
+        coordinator, _ = _make_coordinator(leader, peer)
+
+        coordinator._republish_all()
+
+        leader.on_native_group_update.assert_called_once()
+        peer.on_native_group_update.assert_called_once()

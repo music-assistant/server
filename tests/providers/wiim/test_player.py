@@ -31,6 +31,7 @@ def _mock_native_groups() -> MagicMock:
     groups.reconcile = AsyncMock()
     groups.set_members = AsyncMock()
     groups.schedule_reconcile = MagicMock()
+    groups.schedule_republish = MagicMock()
     groups.unregister = MagicMock()
     groups.is_unknown_leader_follower = MagicMock(return_value=False)
     groups.set_self_role = MagicMock(return_value=False)
@@ -777,3 +778,24 @@ class TestSetMembersDelegation:
         mock_provider.native_groups.set_members.assert_awaited_once_with(
             leader, ["wiim_uuid:add"], ["wiim_uuid:remove"]
         )
+
+
+class TestAvailabilityRepublish:
+    """A native-availability flip re-publishes peers so their candidate sets don't go stale."""
+
+    def test_availability_flip_republishes_peers(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """When the device becomes unavailable, every native peer is re-published."""
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._attr_available = True
+        mock_wiim_device.available = False
+
+        player._update_ma_state_from_sdk_cache()
+
+        mock_provider.native_groups.schedule_republish.assert_called()

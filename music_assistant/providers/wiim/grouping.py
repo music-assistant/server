@@ -40,6 +40,7 @@ VERIFY_POLL_INTERVAL = 1.0
 # a burst of them heals discovery-order misses just once.
 RECONCILE_DEBOUNCE = 1.0
 RECONCILE_TASK_ID = "wiim_native_reconcile"
+REPUBLISH_TASK_ID = "wiim_native_republish"
 
 _NATIVE_BACKENDS = (BACKEND_OFFICIAL, BACKEND_GENERIC)
 
@@ -166,17 +167,23 @@ class NativeGroupCoordinator:
         self._self_follower.discard(player_id)
         return True
 
-    def set_leader_slaves(self, player_id: str, raw_slave_uuids: list[str]) -> bool:
+    def set_leader_slaves(
+        self, player_id: str, raw_slave_uuids: list[str], observed_at: float | None = None
+    ) -> bool:
         """
         Record a leader's raw slave-uuid list from a topology read.
 
         :param player_id: The leader that reported the slave list.
         :param raw_slave_uuids: The slave uuids exactly as the device reported them.
+        :param observed_at: The monotonic time the read that produced this list *started*.
+            The single-owner tie-break ranks claims by this, so a longer-running older read
+            that completes late cannot outrank a newer read; defaults to now for a list set
+            directly (e.g. cleared on a confirmed join), which is a genuine "now" observation.
         :return: Whether the recorded list differs from the previously cached one.
         """
         changed = self._raw_slaves.get(player_id) != raw_slave_uuids
         self._raw_slaves[player_id] = raw_slave_uuids
-        self._refreshed_at[player_id] = time.monotonic()
+        self._refreshed_at[player_id] = time.monotonic() if observed_at is None else observed_at
         return changed
 
     async def refresh_leader(self, player: NativePlayer, *, force: bool = False) -> bool:
@@ -205,6 +212,10 @@ class NativeGroupCoordinator:
             ):
                 return False
             client = player.make_command_client()
+            # stamp the read by when it STARTED, so a longer-running older observation that
+            # completes after a newer one cannot win the single-owner tie-break and move a
+            # follower back to a stale leader.
+            observed_at = time.monotonic()
             try:
                 info = await client.get_device_group_info()
                 if info.role == "slave":
@@ -230,7 +241,7 @@ class NativeGroupCoordinator:
             # official backend builds one per call) does not re-probe the device
             player.store_command_capabilities(client.capabilities)
             self.set_self_role(player.player_id, is_follower)
-            self.set_leader_slaves(player.player_id, raw)
+            self.set_leader_slaves(player.player_id, raw, observed_at=observed_at)
         await self.reconcile()
         return True
 
@@ -244,6 +255,18 @@ class NativeGroupCoordinator:
     def schedule_reconcile(self) -> None:
         """Schedule a debounced reconcile, coalescing bursts into one rebuild."""
         self._mass.call_later(RECONCILE_DEBOUNCE, self.reconcile, task_id=RECONCILE_TASK_ID)
+
+    def schedule_republish(self) -> None:
+        """
+        Schedule every native player to re-publish its state, coalescing bursts.
+
+        A player's ``can_group_with`` depends on its peers' native availability and
+        compatibility, but a peer's health/metadata transition does not change the topology
+        and so is not picked up by :meth:`reconcile`. This forces every native player to
+        recompute and re-publish, so no peer keeps a stale candidate set that would offer a
+        native command the coordinator then rejects.
+        """
+        self._mass.call_later(RECONCILE_DEBOUNCE, self._republish_all, task_id=REPUBLISH_TASK_ID)
 
     async def reconcile(self) -> None:
         """Rebuild the topology indexes from the cached slave lists and notify changes."""
@@ -270,12 +293,25 @@ class NativeGroupCoordinator:
         :param player_ids_to_add: Player ids to join to this leader's group.
         :param player_ids_to_remove: Player ids to remove from this leader's group.
         """
+        add_ids = player_ids_to_add or []
+        remove_ids = player_ids_to_remove or []
+        # reject a contradictory request before any work: core can forward the same id in
+        # both lists when the parent membership is stale but the child still reports synced_to,
+        # and joining then immediately removing it is never the intent.
+        if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
+            raise PlayerCommandFailed(
+                f"Duplicate member id in grouping request on {leader.player_id}"
+            )
+        if conflicting := set(add_ids) & set(remove_ids):
+            raise PlayerCommandFailed(
+                f"Cannot add and remove the same member on {leader.player_id}: {conflicting}"
+            )
         # core only locks the command's own leader, so serialize here: a concurrent move of
         # the same member under a different leader must not interleave with this command's
         # live check, mutation and verification.
         async with self._command_lock, AsyncExitStack() as stack:
-            add_members = [self._require_member(mid) for mid in player_ids_to_add or []]
-            remove_members = [self._require_member(mid) for mid in player_ids_to_remove or []]
+            add_members = [self._require_member(mid) for mid in add_ids]
+            remove_members = [self._require_member(mid) for mid in remove_ids]
             held: set[str] = set()
             # Phase 1: lock the leader and the explicit targets before reading their live
             # state, so a concurrent address rebuild cannot swap a generic client mid-read
@@ -461,6 +497,11 @@ class NativeGroupCoordinator:
             for player in self._provider.players
             if getattr(player, "linkplay_backend", None) in _NATIVE_BACKENDS
         ]
+
+    def _republish_all(self) -> None:
+        """Re-publish the state of every registered native player."""
+        for player in self._native_players():
+            player.on_native_group_update()
 
     def _is_unknown_leader_follower(self, player_id: str) -> bool:
         """Return whether a player follows a leader MA has not discovered."""

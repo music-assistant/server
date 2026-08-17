@@ -300,14 +300,22 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """Refresh the LinkPlay grouping API reachability and cached device info."""
         # Serialize with async_handle_address_change so an in-flight read against the old
         # client cannot land after a validated client swap and overwrite it with stale state.
+        health_changed = False
         async with self._rebuild_lock:
+            was_available = self._linkplay_available
             try:
                 self._cached_device_info = await self._client.get_device_info_model()
             except WiiMError as err:
                 if self._linkplay_available:
                     self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
                 self._linkplay_available = False
+                health_changed = was_available
                 self.update_state()
-                return
-            self._linkplay_available = True
-            self.update_state()
+            else:
+                self._linkplay_available = True
+                health_changed = not was_available
+                self.update_state()
+        if health_changed:
+            # this shell's native availability just flipped, which changes whether every peer
+            # can offer it as a native grouping candidate; make them re-publish.
+            self._native_groups.schedule_republish()

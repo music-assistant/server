@@ -141,6 +141,7 @@ def _mock_native_groups() -> MagicMock:
     groups.reconcile = AsyncMock()
     groups.set_members = AsyncMock()
     groups.schedule_reconcile = MagicMock()
+    groups.schedule_republish = MagicMock()
     groups.unregister = MagicMock()
     groups.is_unknown_leader_follower = MagicMock(return_value=False)
     groups.set_self_role = MagicMock(return_value=False)
@@ -755,3 +756,30 @@ class TestFinalGroupingState:
         player._linkplay_available = True
         assert PlayerFeature.SET_MEMBERS in player.supported_features
         assert player.grouping_locked is False
+
+
+class TestAvailabilityRepublish:
+    """A native-availability flip re-publishes peers so their candidate sets don't go stale."""
+
+    async def test_health_flip_republishes_peers(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Losing the LinkPlay API re-publishes every native peer."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
+
+        await player._refresh_reachability()
+
+        mock_provider.native_groups.schedule_republish.assert_called()
+
+    async def test_no_republish_when_health_unchanged(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A refresh that does not change availability does not churn peers."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+
+        await player._refresh_reachability()  # stays reachable
+
+        mock_provider.native_groups.schedule_republish.assert_not_called()
