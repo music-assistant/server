@@ -128,7 +128,16 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
-from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from music_assistant.helpers.playlists import (
+    HLS_CONTENT_TYPES,
+    PLAYLIST_CONTENT_TYPES,
+    PLAYLIST_READ_TIMEOUT,
+    IsHLSPlaylist,
+    PlaylistItem,
+    parse_m3u,
+    parse_playlist_data,
+    read_playlist_body,
+)
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -299,6 +308,7 @@ class StreamsAudio:
             # Remember the last AudioError so we can re-raise its (actionable)
             # message instead of the generic MediaNotFoundError below.
             last_audio_error: AudioError | None = None
+            attempted: set[tuple[str, str]] = set()
             for allow_other_provider in (False, True):
                 if streamdetails:
                     break
@@ -314,11 +324,19 @@ class StreamsAudio:
                         and prov_media.provider_instance not in preferred_providers
                     ):
                         continue
+                    # the second pass is there to widen to providers the steering held back,
+                    # not to give a mapping a second chance: without a user provider filter
+                    # the first pass already tried them all, so re-attempting one just buys
+                    # the same failure at the cost of another provider round-trip
+                    attempt = (prov_media.provider_instance, prov_media.item_id)
+                    if attempt in attempted:
+                        continue
                     # guard that provider is available
                     provider = mass.get_provider(prov_media.provider_instance)
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
+                    attempted.add(attempt)
                     # get streamdetails from provider; music and plugin providers
                     # share this signature, so either type can own the item.
                     try:
@@ -684,6 +702,8 @@ class StreamsAudio:
 
         stream_type = StreamType.HTTP
         timeout = ClientTimeout(total=None, connect=10, sock_read=5)
+        playlist_data: bytes | None = None
+        playlist_charset: str | None = None
 
         try:
             async with self._connect_radio_stream(
@@ -693,23 +713,45 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
+                # media types are case insensitive, the comparisons below are all lower case
+                content_type = headers.get("content-type", "").lower()
+                # a server declaring HLS settles it: a media playlist is free to carry none
+                # of the tags the parser recognises an HLS playlist by
+                is_hls = any(hls_type in content_type for hls_type in HLS_CONTENT_TYPES)
+                if not is_hls and (
+                    url.endswith((".m3u", ".m3u8", ".pls"))
+                    or ".m3u?" in url
+                    or ".m3u8?" in url
+                    or ".pls?" in url
+                    or any(
+                        playlist_type in content_type for playlist_type in PLAYLIST_CONTENT_TYPES
+                    )
+                ):
+                    # take the playlist from this very response: a separate request would
+                    # go out with another user agent and stricter TLS than the rest of the
+                    # radio paths, so a host could answer it differently
+                    try:
+                        # the probe has no total timeout, so bound the body on its own:
+                        # a server trickling bytes would otherwise stall resolving for hours
+                        async with asyncio.timeout(PLAYLIST_READ_TIMEOUT):
+                            playlist_data = await read_playlist_body(resp.content)
+                    except aiohttp.ClientError as err:
+                        # the endpoint answered as a playlist, so a truncated body is a bad
+                        # playlist - not a reason to fall back to streaming the URL directly
+                        raise InvalidDataError(f"Error while fetching playlist {url}") from err
+                    playlist_charset = resp.charset
 
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
-            elif headers.get("content-type", "") in ("application/ogg", "audio/ogg"):
+            elif is_hls:
+                stream_type = StreamType.HLS
+            elif content_type in ("application/ogg", "audio/ogg"):
                 # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
                 stream_type = StreamType.IN_BAND
 
-            if (
-                url.endswith((".m3u", ".m3u8", ".pls"))
-                or ".m3u?" in url
-                or ".m3u8?" in url
-                or ".pls?" in url
-                or "audio/x-mpegurl" in headers.get("content-type", "")
-                or "audio/x-scpls" in headers.get("content-type", "")
-            ):
+            if playlist_data is not None:
                 try:
-                    substreams = await fetch_playlist(mass, url)
+                    substreams = await parse_playlist_data(url, playlist_data, playlist_charset)
                     if not any(x for x in substreams if x.length):
                         for line in substreams:
                             if not line.is_url:
@@ -951,8 +993,8 @@ class StreamsAudio:
         ) as resp:
             resp.raise_for_status()
             raw_data = await resp.read()
-            encoding = resp.charset or await detect_charset(raw_data)
-            master_m3u_data = raw_data.decode(encoding)
+            encoding = await detect_charset(raw_data, preferred=resp.charset)
+            master_m3u_data = raw_data.decode(encoding, errors="replace")
         substreams = parse_m3u(master_m3u_data)
         # There is a chance that we did not get a master playlist with subplaylists
         # but just a single master/sub playlist with the actual audio stream(s)
@@ -1440,6 +1482,13 @@ class StreamsAudio:
             the crossfade path to keep a track's replayed intro and its body on the same mode.
         :param session_id: Queue session that owns processing-detail updates.
         """
+        streamdetails = queue_item.streamdetails
+        assert streamdetails
+
+        # streamdetails are cached and reused for retries; reset this before any
+        # media-type-specific dispatch so AudioSource failures do not stick.
+        streamdetails.stream_error = False
+
         if queue_item.media_type == MediaType.AUDIO_SOURCE:
             async for chunk in self.get_audio_source_stream(
                 queue_item=queue_item,
@@ -1448,9 +1497,6 @@ class StreamsAudio:
             ):
                 yield chunk
             return
-
-        streamdetails = queue_item.streamdetails
-        assert streamdetails
         filter_params: list[str] = []
 
         logger = self.logger.getChild("queue_item_stream")
@@ -1612,10 +1658,6 @@ class StreamsAudio:
                     self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-            # if we received no audio and the buffer has a producer error,
-            # the error was swallowed by the FFmpeg stdin feeder - re-raise it
-            if bytes_received == 0 and audio_buffer.has_error:
-                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
@@ -2341,6 +2383,26 @@ class StreamsAudio:
                     del crossfade_buffer[:pcm_sample_size]
                     await asyncio.sleep(0)
 
+            # A source error after partial audio must not look like a completed item.
+            # Progress reporting skips items with stream_error, so the item is not
+            # marked played; move on to the next queue item like the zero-audio path.
+            if first_chunk_received and queue_track.streamdetails.stream_error:
+                if _superseded():
+                    return
+                self.logger.warning(
+                    "Track %s (%s) on queue %s aborted by a stream error - skipping",
+                    queue_track.name,
+                    queue_track.streamdetails.uri,
+                    queue.display_name,
+                )
+                # the audio sent so far will still play out; keep the play log entry
+                # honest about how much of this item was actually streamed
+                play_log_entry.seconds_streamed = bytes_written / pcm_sample_size
+                if last_fadeout_part:
+                    # crossfade into this item never happened — undo the eager seek_position
+                    queue_track.streamdetails.seek_position = raw_seek_position
+                continue
+
             #### HANDLE END OF TRACK
             if not first_chunk_received:
                 self.logger.warning(
@@ -2351,6 +2413,8 @@ class StreamsAudio:
                 )
                 queue_track.streamdetails.stream_error = True
                 play_log_entry.seconds_streamed = 0
+                if last_fadeout_part:
+                    queue_track.streamdetails.seek_position = raw_seek_position
                 continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade

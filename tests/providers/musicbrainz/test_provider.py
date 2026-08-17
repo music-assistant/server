@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.errors import RateLimited
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 # ---------------------------------------------------------------------------
@@ -181,6 +182,11 @@ async def test_recordings_by_isrc_rejects_a_malformed_isrc() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _credit(name: str, artist_id: str) -> dict[str, Any]:
+    """Return one artist credit of a release."""
+    return {"name": name, "artist": {"id": artist_id, "name": name, "sort-name": name}}
+
+
 def _release(
     date: str,
     *,
@@ -188,6 +194,7 @@ def _release(
     primary_type: str = "Album",
     secondary_types: list[str] | None = None,
     status: str = "Official",
+    credit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return one release of a searched recording."""
     release: dict[str, Any] = {
@@ -203,6 +210,8 @@ def _release(
     }
     if secondary_types:
         release["release-group"]["secondary-types"] = secondary_types
+    if credit is not None:
+        release["artist-credit"] = [credit]
     return release
 
 
@@ -266,6 +275,160 @@ async def test_release_year_by_track_name_ignores_untrustworthy_releases() -> No
     )
 
     assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_dates_a_song_by_its_soundtrack() -> None:
+    """Date a song written for a film by that film's soundtrack."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                _release(
+                    "1994-05-31",
+                    title="The Lion King: Original Motion Picture Soundtrack",
+                    secondary_types=["Soundtrack"],
+                ),
+                _release("2013-09-13", title="The Diving Board"),
+                title="Circle of Life",
+                artist="Elton John",
+            )
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Elton John", "Circle of Life") == 1994
+
+
+async def test_release_year_by_track_name_ignores_a_soundtrack_compilation() -> None:
+    """Never date a song by a film compilation of songs released before it."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                # the compilation predates the studio album, so the secondary type filter
+                # has to hold on its own for the studio year to win
+                _release(
+                    "1968-10-26",
+                    title="Music From the Motion Picture",
+                    secondary_types=["Compilation", "Soundtrack"],
+                ),
+                _release("1975-11-21"),
+            )
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_ignores_a_various_artists_soundtrack() -> None:
+    """Never date a song by a film compilation credited to Various Artists."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                # most film soundtracks are compilations of several artists, and the credit
+                # filter is what keeps them out now that soundtracks are allowed through
+                _release(
+                    "1968-10-26",
+                    title="Music From the Motion Picture",
+                    secondary_types=["Soundtrack"],
+                    credit=_credit("Various Artists", VARIOUS_ARTISTS_MBID),
+                ),
+                _release("1975-11-21", credit=_credit("Queen", "artist-1")),
+            )
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_ignores_a_various_artists_release() -> None:
+    """Never date a song by a hits compilation that carries no Compilation type."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                # the compilation predates the studio album, so the credit filter has to
+                # hold on its own for the studio year to win
+                _release(
+                    "1968-10-26",
+                    title="Hits of the 60s",
+                    credit=_credit("Various Artists", VARIOUS_ARTISTS_MBID),
+                ),
+                _release("1975-11-21", credit=_credit("Queen", "artist-1")),
+            )
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_identifies_various_artists_by_id() -> None:
+    """
+    Recognise the Various Artists entity by its id rather than by its name.
+
+    MusicBrainz localizes the name it credits that entity under, and unrelated artists
+    are named after it.
+    """
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                _release(
+                    "1968-10-26",
+                    title="Artisti Vari Compilation",
+                    credit=_credit("Artisti Vari", VARIOUS_ARTISTS_MBID),
+                ),
+                _release(
+                    "1975-11-21",
+                    credit=_credit("Various Artist", "artist-named-like-various"),
+                ),
+            )
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_group_by_track_name_drops_a_various_artists_release() -> None:
+    """Offer no artwork candidate when a song is only listed on a hits compilation."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                _release(
+                    "1981-10-26",
+                    title="Hits of the 80s",
+                    credit=_credit("Various Artists", VARIOUS_ARTISTS_MBID),
+                )
+            )
+        )
+    )
+
+    result = await provider.get_release_group_by_track_name("Queen", "Bohemian Rhapsody")
+
+    assert result is not None
+    artist, release_groups = result
+    assert artist.name == "Queen"
+    assert release_groups == []
+
+
+async def test_release_group_by_track_name_offers_a_soundtrack_as_artwork() -> None:
+    """Offer the soundtrack of a song written for a film as an artwork candidate."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(
+                _release(
+                    "1994-05-31",
+                    title="The Lion King: Original Motion Picture Soundtrack",
+                    secondary_types=["Soundtrack"],
+                ),
+                title="Circle of Life",
+                artist="Elton John",
+            )
+        )
+    )
+
+    result = await provider.get_release_group_by_track_name("Elton John", "Circle of Life")
+
+    assert result is not None
+    _, release_groups = result
+    assert [rg.title for rg in release_groups] == [
+        "The Lion King: Original Motion Picture Soundtrack"
+    ]
 
 
 async def test_release_year_by_track_name_ignores_an_undated_release_group() -> None:

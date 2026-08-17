@@ -17,6 +17,7 @@ import builtins
 import time
 from abc import ABC
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
@@ -114,7 +115,7 @@ def _resolve_position(
 # position change (seek/buffer correction) instead of regular playback progression
 POSITION_JUMP_THRESHOLD = 1.0
 
-# Changes to any of these state keys fire the (debounced) _on_player_media_updated
+# Changes to any of these state keys fire the (debounced) on_player_media_updated
 # callback. The palette is included because it resolves asynchronously (shortly
 # after a track change) and players push it to their device from the callback.
 MEDIA_IDENTITY_KEYS = frozenset(
@@ -134,6 +135,29 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # only invalidated by set_config, all other cached properties (including those
 # defined by player implementations) are invalidated on every update_state call
 _CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedOutputProtocol:
+    """
+    A protocol player linked to a parent player.
+
+    Records the link itself (which protocol player, on which domain, how preferred)
+    and nothing about its current state: whether the protocol can actually be reached
+    right now is answered by Player.output_protocols / Player.playback_domains, which
+    resolve it from the live protocol player on every read.
+
+    :param output_protocol_id: player_id of the linked protocol player.
+    :param protocol_domain: Domain of the protocol, e.g. "airplay" or "dlna".
+    :param priority: Selection preference, lower is more preferred.
+    :param derived_from: output_protocol_id of the base output this transport runs on
+        top of ("native" when it rides on the parent player itself), if any.
+    """
+
+    output_protocol_id: str
+    protocol_domain: str
+    priority: int = 100
+    derived_from: str | None = None
 
 
 def _reconcile_position_anchor(
@@ -363,6 +387,12 @@ class Player(ABC):
     _attr_setup_reason: str | None = None
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
     _attr_underlying_player_id: str | None = None
+    # Seconds an external source may sit paused before its session is considered ended.
+    # Set this on players whose device keeps a source such as Spotify Connect loaded and
+    # paused after the app released it, offering nothing that tells an abandoned session
+    # apart from a real pause - time is then the only signal left. Leave at None for
+    # devices that report a source they no longer play as stopped by themselves.
+    _attr_external_pause_idle_timeout: int | None = None
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -380,7 +410,7 @@ class Player(ABC):
         self._attr_options = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
-        self.__attr_linked_protocols: list[OutputProtocol] = []
+        self.__attr_linked_protocols: list[LinkedOutputProtocol] = []
         self.__attr_protocol_parent_id: str | None = None
         self.__attr_active_output_protocol: str | None = None
         self._player_id = player_id
@@ -393,6 +423,8 @@ class Player(ABC):
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.__active_mass_source: str | None = None
+        self.__external_pause_since: float | None = None
+        self.__ended_external_source: str | None = None
         self.__initialized = asyncio.Event()
         # Change-tracking internals for update_state:
         # - state_dirty forces a recalculation (state derived from other
@@ -629,6 +661,19 @@ class Player(ABC):
         If there are currently no group members, this should return an empty list.
         """
         return self._attr_group_members
+
+    @property
+    def live_session_members(self) -> list[str]:
+        """
+        Return the id's of the players that take part in this player's live playback session.
+
+        Defaults to :attr:`group_members`, which is the right answer where grouping and
+        the playback session are the same thing. Providers where the two drift apart
+        (a member the session dropped, one that never managed to join it, or no session
+        at all) should override this and answer from the session itself, so callers can
+        tell actual playback partners from tracked group membership.
+        """
+        return self.group_members
 
     @property
     def can_group_with(self) -> set[str]:
@@ -1120,6 +1165,8 @@ class Player(ABC):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        if self._attr_external_pause_idle_timeout is not None:
+            self.mass.cancel_timer(f"external_pause_{self.player_id}")
         for callback in self._on_unload_callbacks:
             try:
                 callback()
@@ -1218,7 +1265,7 @@ class Player(ABC):
             self.device_info.model,
         )
 
-    def _on_player_media_updated(self) -> None:  # noqa: B027
+    def on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
         # optional callback for players that want to be informed when the final
         # current media is updated (after applying group/sync membership logic).
@@ -1372,13 +1419,9 @@ class Player(ABC):
     @final
     def power_control(self) -> str:
         """Return the power control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_POWER_CONTROL)
+        conf = self.__stored_control_conf(CONF_POWER_CONTROL, PlayerFeature.POWER)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-            # validate that NATIVE is still backed by an actual POWER feature.
-            # this handles graceful degradation for players (e.g. group players)
-            # that previously advertised POWER but no longer do.
-            if conf == PLAYER_CONTROL_NATIVE and PlayerFeature.POWER not in self.supported_features:
-                return PLAYER_CONTROL_NONE
+            # the control type is explicitly set in the config, use that
             return str(conf)
         if conf and (_control := self.mass.players.get_player_control(str(conf))):
             # the control type is explicitly set to a player control,
@@ -1393,7 +1436,7 @@ class Player(ABC):
     @final
     def volume_control(self) -> str:
         """Return the volume control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_VOLUME_CONTROL)
+        conf = self.__stored_control_conf(CONF_VOLUME_CONTROL, PlayerFeature.VOLUME_SET)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
@@ -1419,7 +1462,7 @@ class Player(ABC):
     @final
     def mute_control(self) -> str:
         """Return the mute control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL)
+        conf = self.__stored_control_conf(CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE)
         if conf == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
             # fake mute is simulated by setting the volume to zero, so without a volume
             # control to drive there is no way to mute this player at all
@@ -1438,7 +1481,11 @@ class Player(ABC):
         if PlayerFeature.VOLUME_MUTE in self.supported_features:
             # player supports native mute control, always prefer that
             return PLAYER_CONTROL_NATIVE
-        # check for protocol player with mute support, and use that if found
+        # check for protocol player with mute support, and use that if found.
+        # this resolves independently from volume_control, so a device whose interfaces
+        # advertise volume and mute separately (DLNA derives both from its own
+        # RenderingControl actions) can end up with the two controls on different
+        # siblings.
         if protocol_player := self._get_protocol_player_for_feature(
             PlayerFeature.VOLUME_MUTE, require_active=False
         ):
@@ -1686,9 +1733,21 @@ class Player(ABC):
         result.sort(key=lambda o: o.priority)
         return result
 
+    @cached_property
+    @final
+    def playback_domains(self) -> set[str]:
+        """
+        Return the protocol domains this player can be reached on right now.
+
+        Only outputs that are available at this moment are included, so a protocol
+        whose player went offline is left out. A wrapper player (UniversalPlayer)
+        contributes its linked protocols but never its own domain.
+        """
+        return {output.protocol_domain for output in self.output_protocols if output.available}
+
     @property
     @final
-    def linked_output_protocols(self) -> list[OutputProtocol]:
+    def linked_output_protocols(self) -> list[LinkedOutputProtocol]:
         """Return the list of actively linked output protocol players."""
         return self.__attr_linked_protocols
 
@@ -1751,11 +1810,11 @@ class Player(ABC):
         self.update_state()
 
     @final
-    def set_linked_output_protocols(self, protocols: list[OutputProtocol]) -> None:
+    def set_linked_output_protocols(self, protocols: list[LinkedOutputProtocol]) -> None:
         """
         Set the actively linked output protocol players.
 
-        :param protocols: List of OutputProtocol objects representing active protocol players.
+        :param protocols: List of links to the active protocol players.
         """
         self.__attr_linked_protocols = protocols
         self.mass.players.trigger_player_update(self.player_id)
@@ -1771,14 +1830,15 @@ class Player(ABC):
         self.mass.players.trigger_player_update(self.player_id)
 
     @final
-    def get_linked_protocol(self, protocol_domain: str) -> OutputProtocol | None:
-        """Get a linked protocol by domain with current availability."""
+    def get_linked_protocol(self, output_protocol_id: str) -> OutputProtocol | None:
+        """
+        Get a linked output protocol by its id, with its name and availability resolved.
+
+        :param output_protocol_id: player_id of the linked protocol player.
+        """
         for linked in self.__attr_linked_protocols:
-            if linked.protocol_domain == protocol_domain:
-                protocol_player = self.mass.players.get_player(linked.output_protocol_id)
-                current_available = (
-                    protocol_player.available_for_playback if protocol_player else False
-                )
+            if linked.output_protocol_id == output_protocol_id:
+                protocol_player = self.mass.players.get_player(output_protocol_id)
                 return OutputProtocol(
                     output_protocol_id=linked.output_protocol_id,
                     name=protocol_player.provider.name
@@ -1786,8 +1846,7 @@ class Player(ABC):
                     else linked.protocol_domain.title(),
                     protocol_domain=linked.protocol_domain,
                     priority=linked.priority,
-                    available=current_available,
-                    is_native=False,
+                    available=protocol_player.available_for_playback if protocol_player else False,
                     derived_from=linked.derived_from,
                 )
         return None
@@ -1797,8 +1856,7 @@ class Player(ABC):
         """
         Get an output protocol by domain, including native protocol.
 
-        Unlike get_linked_protocol, this also checks if the player's native protocol
-        matches the requested domain.
+        Unlike get_linked_protocol, this also covers the player's own native output.
 
         :param protocol_domain: The protocol domain to search for (e.g., "airplay", "sonos").
         """
@@ -1869,6 +1927,7 @@ class Player(ABC):
         for key in list(self._cache):
             if key not in _CONFIG_CACHED_PROPS:
                 del self._cache[key]
+        self.__expire_stale_external_pause()
         new_snapshot = self.__collect_input_snapshot()
         if (
             not force_update
@@ -1898,7 +1957,7 @@ class Player(ABC):
             # debounce the callback to avoid multiple calls when multiple
             # state updates happen in a short time
             self.mass.call_later(
-                1, self._on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
+                1, self.on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
             )
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
@@ -1920,6 +1979,25 @@ class Player(ABC):
             self.mass.players.signal_player_state_update(
                 self, changed_values, media_position_jumped=media_position_jumped
             )
+
+    @final
+    def mark_external_source_ended(self) -> None:
+        """
+        Stop presenting the external source the device has loaded as something to resume.
+
+        Call this when the device makes clear that the session is gone, for example when
+        it refuses to resume playback. Normal queue handling takes over from there.
+        Call :meth:`update_state` afterwards to publish the change.
+        """
+        if self._attr_active_source is not None:
+            # the updates that follow rebuild the state from the device, which keeps
+            # reporting the very same source as paused, so remembering which source we
+            # gave up on is what keeps this applied
+            self.__ended_external_source = self._attr_active_source
+        self.__external_pause_since = None
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
 
     @final
     def set_current_media(  # noqa: PLR0913
@@ -2019,6 +2097,45 @@ class Player(ABC):
                 f"Player {self.display_name} does not support feature {feature.name}"
             )
 
+    @final
+    def volume_control_for_output(self, output_protocol_id: str) -> str:
+        """
+        Return the volume control that owns audio rendered over the given output.
+
+        Unlike :attr:`volume_control`, which answers where a volume command should go
+        right now, this answers who owns the volume of one specific output. Callers that
+        know which interface is about to carry the audio must use this, so the answer does
+        not depend on whether that output has been marked active yet.
+
+        :param output_protocol_id: Player id of the output protocol rendering the audio.
+        :return: A control id, or NATIVE/FAKE/NONE. NONE means nothing in the signal path
+            of that output owns the volume; no sibling interface is offered as a fallback.
+        """
+        return self.__control_for_output(
+            PlayerFeature.VOLUME_SET, CONF_VOLUME_CONTROL, output_protocol_id
+        )
+
+    @final
+    def mute_control_for_output(self, output_protocol_id: str) -> str:
+        """
+        Return the mute control that owns audio rendered over the given output.
+
+        The mute counterpart of :meth:`volume_control_for_output`.
+
+        :param output_protocol_id: Player id of the output protocol rendering the audio.
+        """
+        control = self.__control_for_output(
+            PlayerFeature.VOLUME_MUTE, CONF_MUTE_CONTROL, output_protocol_id
+        )
+        if (
+            control == PLAYER_CONTROL_FAKE
+            and self.volume_control_for_output(output_protocol_id) == PLAYER_CONTROL_NONE
+        ):
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control on this output there is no way to mute it at all
+            return PLAYER_CONTROL_NONE
+        return control
+
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """
         Update a single setup_data value for this player (e.g. a rotated pairing credential).
@@ -2072,7 +2189,19 @@ class Player(ABC):
         feature: PlayerFeature,
         require_active: bool = True,
     ) -> Player | None:
-        """Get player(protocol) which has the given PlayerFeature."""
+        """
+        Get player(protocol) which has the given PlayerFeature.
+
+        Resolves control-plane features (volume, mute), so the native player wins even
+        while a protocol renders the audio: a device's own volume is its own volume,
+        whichever interface the sound arrives on. Commands that travel with the audio
+        resolve through :meth:`PlayerController._get_control_target` instead, which
+        prefers the rendering output.
+
+        :param feature: The feature the resolved player has to support.
+        :param require_active: Only accept the output that is already rendering,
+            instead of falling back to an idle one.
+        """
         # prefer native player
         if feature in self.supported_features:
             return self
@@ -2091,18 +2220,24 @@ class Player(ABC):
             # doesn't support the feature, return None
             return None
 
-        # fallback to preferred protocol from config
+        # fallback to preferred protocol from config. the stored value survives a
+        # relink, so it only counts while it still names one of this player's own
+        # outputs - otherwise the command would land on another speaker.
         preferred_conf = self.mass.config.get_raw_player_config_value(
             self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred_conf and preferred_conf not in ("auto", "native"):
             preferred_protocol = str(preferred_conf)
-            if (
-                (_player := self.mass.players.get_player(preferred_protocol))
-                and _player.available_for_playback
-                and feature in _player.supported_features
-            ):
-                return _player
+            for linked in self.linked_output_protocols:
+                if linked.output_protocol_id != preferred_protocol:
+                    continue
+                if (
+                    (_player := self.mass.players.get_player(preferred_protocol))
+                    and _player.available_for_playback
+                    and feature in _player.supported_features
+                ):
+                    return _player
+                break
 
         # Otherwise, use the first available linked protocol.
         # Prefer protocols that can process commands without active streaming
@@ -2120,6 +2255,50 @@ class Player(ABC):
                 return protocol_player
 
         return None
+
+    @final
+    def __stored_control_conf(self, conf_key: str, feature: PlayerFeature) -> ConfigValueType:
+        """
+        Return the stored control selection, dropping a NATIVE the player can no longer back.
+
+        A NATIVE selection is only meaningful while the player advertises the matching feature.
+        Dropping a stale one makes the caller fall back to its auto-select logic instead of
+        re-exposing a control the provider can no longer drive - the resolved control is what
+        the final feature set is derived from, so an unchecked value would put the feature back.
+
+        :param conf_key: Config key holding the control selection.
+        :param feature: Feature a NATIVE selection requires the player to advertise.
+        """
+        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(feature):
+            return None
+        return conf
+
+    @final
+    def __control_for_output(
+        self, feature: PlayerFeature, conf_key: str, output_protocol_id: str
+    ) -> str:
+        """Resolve the control owning the given feature for one specific output."""
+        conf = self.__stored_control_conf(conf_key, feature)
+        if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
+            return str(conf)
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
+            # An explicitly configured control is a statement about the device as a whole,
+            # so it stays in charge no matter which of its interfaces renders the audio.
+            if (_player := self.mass.players.get_player(str(conf))) and _player.available:
+                return _player.player_id
+            if _control := self.mass.players.get_player_control(str(conf)):
+                return _control.id
+        if feature in self.supported_features:
+            return PLAYER_CONTROL_NATIVE
+        # Deliberately no fallback to a sibling interface: the caller named the output that
+        # carries the audio, so anything else is by definition not in that signal path.
+        # Availability is not checked either - the named output is the one about to render.
+        if (
+            protocol_player := self.mass.players.get_player(output_protocol_id)
+        ) and feature in protocol_player.supported_features:
+            return protocol_player.player_id
+        return PLAYER_CONTROL_NONE
 
     @final
     def __collect_input_snapshot(self) -> dict[str, Any]:
@@ -2194,10 +2373,7 @@ class Player(ABC):
                 self._extra_data.get(ATTR_FAKE_VOLUME),
                 self._extra_data.get(ATTR_FAKE_MUTE),
             ),
-            "linked_protocols": tuple(
-                (p.output_protocol_id, p.protocol_domain, p.priority, p.derived_from)
-                for p in self.__attr_linked_protocols
-            ),
+            "linked_protocols": tuple(self.__attr_linked_protocols),
             "protocol_parent_id": self.__attr_protocol_parent_id,
             "active_output_protocol": self.__attr_active_output_protocol,
             "active_mass_source": self.__active_mass_source,
@@ -2488,33 +2664,15 @@ class Player(ABC):
             return None
         # handle protocol player as volume control
         if control := self.mass.players.get_player(volume_control):
-            control_volume = control.volume_level
-            if (
-                control_volume == 0
-                and control.player_id != self.active_output_protocol
-                and any(
-                    linked.output_protocol_id == control.player_id
-                    for linked in self.linked_output_protocols
-                )
-            ):
-                # A linked protocol interface that is not actively rendering audio
-                # may report volume 0 while the device is in standby (e.g. the cast
-                # side of some devices), which doesn't reflect the real device volume.
-                # Treat it as unknown so we fall back to other sources instead of
-                # propagating a spurious hard mute.
-                control_volume = None
-            if control_volume is not None:
-                return self.mass.players.scale_volume_from_device(self.player_id, control_volume)
+            if control.volume_level is None:
+                return None
+            return self.mass.players.scale_volume_from_device(self.player_id, control.volume_level)
         # handle player control for volume if set
         if player_control := self.mass.players.get_player_control(volume_control):
-            if player_control.volume_level is not None:
-                return self.mass.players.scale_volume_from_device(
-                    self.player_id, player_control.volume_level
-                )
-        # control not (yet) available or has no volume, fall back to native
-        if self.volume_level is None:
-            return None
-        return self.mass.players.scale_volume_from_device(self.player_id, self.volume_level)
+            return self.mass.players.scale_volume_from_device(
+                self.player_id, player_control.volume_level
+            )
+        return None
 
     @cached_property
     @final
@@ -2529,14 +2687,11 @@ class Player(ABC):
             return None
         # handle protocol player as mute control
         if control := self.mass.players.get_player(mute_control):
-            if control.volume_muted is not None:
-                return control.volume_muted
+            return control.volume_muted
         # handle player control for mute if set
         if player_control := self.mass.players.get_player_control(mute_control):
-            if player_control.volume_muted is not None:
-                return player_control.volume_muted
-        # control not (yet) available or has no mute state, fall back to native
-        return self.volume_muted
+            return player_control.volume_muted
+        return None
 
     @cached_property
     @final
@@ -3129,6 +3284,55 @@ class Player(ABC):
     def __ne__(self, other: object) -> bool:
         """Check inequality of two Player objects."""
         return not self.__eq__(other)
+
+    @final
+    def __external_source_active(self) -> bool:
+        """Return whether the source the player reports for itself is an external one."""
+        # deliberately the raw source rather than the resolved one of
+        # _has_external_source_active: what has to expire is what the device itself keeps
+        # reporting, not what the group or protocol it belongs to resolves that to
+        source = self._attr_active_source
+        if source is None or source == self.player_id:
+            return False
+        return self.mass.player_queues.get(source) is None
+
+    @final
+    def __expire_stale_external_pause(self) -> None:
+        """Report an external source that has been paused for a while as no longer active."""
+        if (timeout := self._attr_external_pause_idle_timeout) is None:
+            return
+        if (
+            self._attr_playback_state != PlaybackState.PAUSED
+            # while an output protocol renders the audio, MA owns playback and the
+            # source the device reports for itself is overruled anyway
+            or self.active_output_protocol not in (None, "native")
+            or not self.__external_source_active()
+        ):
+            self.__external_pause_since = None
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                # the device plays again, so the source we gave up on is live once more
+                self.__ended_external_source = None
+            return
+        if self._attr_active_source == self.__ended_external_source:
+            # the device keeps handing us the source we already gave up on
+            self.mark_external_source_ended()
+            return
+        # any other source is a session of its own and gets the full grace period
+        self.__ended_external_source = None
+        if self.__external_pause_since is None:
+            self.__external_pause_since = time.time()
+        elif (time.time() - self.__external_pause_since) >= timeout:
+            self.mark_external_source_ended()
+            return
+        # nothing changes on the device side when the session goes stale, so there is no
+        # event to react to. Keep the check armed rather than relying on a single timer:
+        # an update that bails out early would otherwise consume it and leave the source
+        # paused for good.
+        self.mass.call_later(
+            timeout + 1,
+            self.update_state,
+            task_id=f"external_pause_{self.player_id}",
+        )
 
 
 __all__ = [

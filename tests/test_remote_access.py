@@ -13,7 +13,14 @@ from urllib.parse import urlparse
 
 import aiohttp
 import pytest
-from aiolibdatachannel import DataChannel, IceServer, LogLevel, PeerConnection, RTCConfiguration
+from aiolibdatachannel import (
+    DataChannel,
+    IceServer,
+    LogLevel,
+    PeerConnection,
+    RTCConfiguration,
+    RTCError,
+)
 from cryptography.hazmat.primitives import serialization
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -24,7 +31,8 @@ from music_assistant.controllers.webserver.remote_access import (
     RemoteAccessManager,
 )
 from music_assistant.controllers.webserver.remote_access.gateway import (
-    MA_API_CHUNK_SIZE,
+    DATA_CHANNEL_CHUNK_SIZE,
+    HTTP_PROXY_CONCURRENCY,
     WebRTCGateway,
     WebRTCSession,
     _is_usable_ice_url,
@@ -33,6 +41,8 @@ from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
     _remote_id_from_certificate,
 )
+
+_GATEWAY_MODULE = "music_assistant.controllers.webserver.remote_access.gateway"
 
 
 async def test_remote_id_from_certificate() -> None:
@@ -699,10 +709,9 @@ async def test_http_proxy_request_cannot_change_host(
         key_pem=key_pem,
         local_ws_url="ws://localhost:8095/ws",
     )
-    session = WebRTCSession(session_id="s1", pc=Mock())
 
     await gateway._handle_http_proxy_request(
-        session, {"id": "1", "method": "GET", "path": malicious_path}
+        None, {"id": "1", "method": "GET", "path": malicious_path}
     )
 
     parsed = urlparse(captured_url["url"])
@@ -740,9 +749,8 @@ async def test_http_proxy_request_keeps_the_unverified_dial_on_this_host(
         key_pem=key_pem,
         local_ws_url="wss://127.0.0.1:8095/ws",
     )
-    session = WebRTCSession(session_id="s1", pc=Mock())
 
-    await gateway._handle_http_proxy_request(session, {"id": "1", "method": "GET", "path": "/info"})
+    await gateway._handle_http_proxy_request(None, {"id": "1", "method": "GET", "path": "/info"})
 
     assert captured_kwargs["ssl"] is False
     assert captured_kwargs["allow_redirects"] is False
@@ -844,6 +852,10 @@ class _FakeLocalWS:
         """Queue a text message as if the local server sent it."""
         self._incoming.put_nowait(SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=data))
 
+    def feed_bytes(self, data: bytes) -> None:
+        """Queue a binary message as if the local server sent it."""
+        self._incoming.put_nowait(SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=data))
+
     def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
         return self
 
@@ -863,10 +875,12 @@ class _FakeBidiChannel:
     what the gateway sent back on ``sent``.
     """
 
-    def __init__(self, label: str = "ma-api") -> None:
+    def __init__(self, label: str = "ma-api", max_message_size: int = 256 * 1024) -> None:
         self.label = label
         self.is_open = True
+        self.is_closed = False
         self.closed = False
+        self.max_message_size = max_message_size
         self.sent: list[str | bytes] = []
         self._inbound: asyncio.Queue[str | bytes | None] = asyncio.Queue()
 
@@ -874,6 +888,8 @@ class _FakeBidiChannel:
         return
 
     async def send(self, data: str | bytes) -> None:
+        # a real send always suspends, which is what lets concurrent senders interleave
+        await asyncio.sleep(0)
         self.sent.append(data)
 
     def feed(self, message: str | bytes) -> None:
@@ -882,6 +898,7 @@ class _FakeBidiChannel:
 
     def close(self) -> None:
         self.closed = True
+        self.is_closed = True
         self.is_open = False
         self._inbound.put_nowait(None)
 
@@ -898,14 +915,54 @@ class _FakeBidiChannel:
         return message
 
 
+class _FakeHttpSession:
+    """ClientSession stand-in handing out one fake WebSocket per dialed url."""
+
+    def __init__(self) -> None:
+        self.dialed: list[str] = []
+        self.dial_kwargs: list[dict[str, Any]] = []
+        self.websockets: dict[str, _FakeLocalWS] = {}
+        self.requested: list[str] = []
+        self.response_body = b""
+        self.bodies: dict[str, bytes] = {}
+
+    async def ws_connect(self, url: str, **kwargs: Any) -> _FakeLocalWS:
+        self.dialed.append(url)
+        self.dial_kwargs.append(kwargs)
+        local_ws = _FakeLocalWS()
+        self.websockets[url] = local_ws
+        return local_ws
+
+    def request(self, _method: str, url: str, **_kwargs: Any) -> AsyncMock:
+        """Serve this url's entry in ``bodies``, falling back to ``response_body``."""
+        self.requested.append(url)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {"Content-Type": "image/jpeg"}
+        response.read = AsyncMock(return_value=self.bodies.get(url, self.response_body))
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+
 class _FakePeerConnection:
     """PeerConnection stand-in that runs gateway-spawned pumps as asyncio tasks."""
 
     def __init__(self) -> None:
         self._tasks: list[asyncio.Task[None]] = []
+        self._incoming: asyncio.Queue[_FakeBidiChannel] = asyncio.Queue()
 
     def spawn_task(self, coro: Coroutine[Any, Any, None]) -> None:
         self._tasks.append(asyncio.ensure_future(coro))
+
+    def offer_channel(self, channel: _FakeBidiChannel) -> None:
+        """Offer a data channel as if the browser had opened it."""
+        self._incoming.put_nowait(channel)
+
+    async def incoming_data_channels(self) -> AsyncIterator[DataChannel]:
+        while True:
+            yield cast("DataChannel", await self._incoming.get())
 
     async def aclose(self) -> None:
         for task in self._tasks:
@@ -925,6 +982,17 @@ def _register_bridge_session(
     )
     gateway.sessions[session_id] = session
     return session
+
+
+def _register_routed_session(
+    gateway: WebRTCGateway, session_id: str
+) -> tuple[WebRTCSession, _FakePeerConnection]:
+    """Register a session that routes the data channels offered to its PeerConnection."""
+    pc = _FakePeerConnection()
+    session = WebRTCSession(session_id=session_id, pc=cast("PeerConnection", pc))
+    gateway.sessions[session_id] = session
+    pc.spawn_task(gateway._accept_channels(session))
+    return session, pc
 
 
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 15.0) -> None:
@@ -1068,15 +1136,673 @@ async def test_session_closes_when_ma_api_channel_closes(cert_pems: tuple[str, s
     await asyncio.wait_for(bridge, timeout=5)
 
 
-class _FakeDataChannel:
-    """Data channel stand-in that captures outbound messages for proxy tests."""
+# ---- channel routing -------------------------------------------------------
 
-    def __init__(self) -> None:
-        self.is_open = True
+LOCAL_WS_URL = "ws://127.0.0.1:8095/ws"
+SENDSPIN_URL = "ws://127.0.0.1:8927/sendspin"
+
+
+def _routing_gateway(
+    cert_pems: tuple[str, str],
+    http_session: _FakeHttpSession,
+    local_ws_url: str = LOCAL_WS_URL,
+    set_sendspin_player_callback: Callable[[str, str], None] | None = None,
+) -> WebRTCGateway:
+    """Create a gateway whose local WebSockets are all served by the fake HTTP session."""
+    cert_pem, key_pem = cert_pems
+    return WebRTCGateway(
+        http_session=cast("aiohttp.ClientSession", http_session),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url=local_ws_url,
+        sendspin_url=SENDSPIN_URL,
+        set_sendspin_player_callback=set_sendspin_player_callback,
+    )
+
+
+async def test_sendspin_channel_bridges_to_the_sendspin_server(cert_pems: tuple[str, str]) -> None:
+    """A sendspin channel reaches the internal sendspin server, web player id and all."""
+    http_session = _FakeHttpSession()
+    announced_players: list[tuple[str, str]] = []
+    gateway = _routing_gateway(
+        cert_pems,
+        http_session,
+        set_sendspin_player_callback=lambda session_id, player_id: announced_players.append(
+            (session_id, player_id)
+        ),
+    )
+    session, pc = _register_routed_session(gateway, "sendspin-session")
+    channel = _FakeBidiChannel(label="sendspin")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: SENDSPIN_URL in http_session.websockets)
+        local_ws = http_session.websockets[SENDSPIN_URL]
+
+        # the first message announces the web player, and is forwarded verbatim
+        auth = json.dumps({"type": "auth", "token": "t", "client_id": "web-player-1"})
+        channel.feed(auth)
+        await _wait_for(lambda: local_ws.sent == [auth])
+        assert announced_players == [("sendspin-session", "web-player-1")]
+        assert session.sendspin_player_id == "web-player-1"
+
+        # audio keeps flowing in both directions, text and binary alike
+        channel.feed(b"\x01\x02")
+        await _wait_for(lambda: local_ws.sent == [auth, b"\x01\x02"])
+        local_ws.feed_text('{"type":"hello"}')
+        local_ws.feed_bytes(b"\x03\x04")
+        await _wait_for(lambda: channel.sent == ['{"type":"hello"}', b"\x03\x04"])
+    finally:
+        await gateway._close_session("sendspin-session")
+
+
+@pytest.mark.parametrize(
+    ("local_ws_url", "expected_url"),
+    [
+        ("ws://127.0.0.1:8095/ws", "ws://127.0.0.1:8095/live_announcement"),
+        # an https webserver is still dialed on its bind address, which no cert covers
+        ("wss://127.0.0.1:8095/ws", "wss://127.0.0.1:8095/live_announcement"),
+    ],
+)
+async def test_live_announcement_channel_bridges_to_the_webserver(
+    cert_pems: tuple[str, str], local_ws_url: str, expected_url: str
+) -> None:
+    """A live announcement channel reaches the webserver route that takes the audio."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session, local_ws_url=local_ws_url)
+    session, pc = _register_routed_session(gateway, "announce-session")
+    channel = _FakeBidiChannel(label="live_announcement")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: expected_url in http_session.websockets)
+        local_ws = http_session.websockets[expected_url]
+        assert http_session.dial_kwargs == [{"ssl": False}]
+
+        # the client authenticates on the route itself, so its handshake passes through
+        handshake = [
+            json.dumps({"type": "auth", "token": "t"}),
+            json.dumps({"type": "start", "player_id": "player1", "sample_rate": 16000}),
+        ]
+        for message in handshake:
+            channel.feed(message)
+        await _wait_for(lambda: local_ws.sent == handshake)
+        # the sendspin snoop belongs to the sendspin bridge only
+        assert session.sendspin_player_id is None
+
+        # spoken audio goes up, the route's replies come back
+        channel.feed(b"\x00\x01")
+        await _wait_for(lambda: local_ws.sent == [*handshake, b"\x00\x01"])
+        local_ws.feed_text('{"type":"started"}')
+        await _wait_for(lambda: channel.sent == ['{"type":"started"}'])
+    finally:
+        await gateway._close_session("announce-session")
+
+
+@pytest.mark.parametrize("closed_by", ["browser", "local"])
+async def test_closing_a_bridged_channel_leaves_the_api_session_up(
+    cert_pems: tuple[str, str], closed_by: str
+) -> None:
+    """Losing a bridged WebSocket tears down that bridge only, never the API session."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "mixed-session")
+    api_channel = _FakeBidiChannel()
+    sendspin_channel = _FakeBidiChannel(label="sendspin")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(sendspin_channel)
+    try:
+        await _wait_for(
+            lambda: session.local_ws is not None and SENDSPIN_URL in http_session.dialed
+        )
+        sendspin_ws = http_session.websockets[SENDSPIN_URL]
+
+        if closed_by == "browser":
+            sendspin_channel.close()
+        else:
+            await sendspin_ws.close()
+        await _wait_for(lambda: not session.channels)
+
+        assert sendspin_ws.closed is True
+        assert sendspin_channel.closed is True
+        # the API session is untouched: still registered, still bridged, channel still open
+        assert "mixed-session" in gateway.sessions
+        assert session.local_ws is not None
+        assert cast("_FakeLocalWS", session.local_ws).closed is False
+        assert api_channel.closed is False
+    finally:
+        await gateway._close_session("mixed-session")
+
+
+async def test_the_first_channel_is_the_api_channel_whatever_its_label(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Clients may label their API channel freely, so the first channel bridges to the API."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "labelled-session")
+    channel = _FakeBidiChannel(label="ma-api-v2")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+        assert session.data_channel is cast("DataChannel", channel)
+        assert http_session.dialed == [f"{LOCAL_WS_URL}?webrtc_session_id=labelled-session"]
+    finally:
+        await gateway._close_session("labelled-session")
+
+
+async def test_unknown_channel_label_cannot_replace_the_api_channel(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A channel this server has no route for is refused instead of hijacking the session."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "unknown-session")
+    api_channel = _FakeBidiChannel()
+    unknown_channel = _FakeBidiChannel(label="channel-from-the-future")
+    pc.offer_channel(api_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+        pc.offer_channel(unknown_channel)
+        await _wait_for(lambda: unknown_channel.closed)
+
+        assert session.data_channel is cast("DataChannel", api_channel)
+        assert "unknown-session" in gateway.sessions
+        # only the API channel was ever bridged
+        assert http_session.dialed == [f"{LOCAL_WS_URL}?webrtc_session_id=unknown-session"]
+    finally:
+        await gateway._close_session("unknown-session")
+
+
+def _proxy_request(request_id: str, path: str) -> str:
+    """Build the http-proxy-request message a client sends for a proxied path."""
+    return json.dumps(
+        {"type": "http-proxy-request", "id": request_id, "method": "GET", "path": path}
+    )
+
+
+def _body_delivered(sent: list[str | bytes], size: int) -> bool:
+    """Return whether the binary frames sent so far add up to a whole body of ``size``."""
+    return sum(len(m) for m in sent if isinstance(m, bytes)) >= size
+
+
+def _read_proxy_response(sent: list[str | bytes]) -> tuple[dict[str, Any], bytes]:
+    """
+    Read the binary-framed response a client would reassemble from the proxy channel.
+
+    :param sent: Messages the gateway sent, starting at the response's JSON header.
+    """
+    header = json.loads(cast("str", sent[0]))
+    body = b""
+    for message in sent[1:]:
+        assert isinstance(message, bytes), f"expected a binary body frame, got {message!r}"
+        body += message
+        if len(body) >= header["size"]:
+            break
+    assert len(body) == header["size"]
+    return header, body
+
+
+async def test_http_proxy_channel_answers_on_its_own_channel(cert_pems: tuple[str, str]) -> None:
+    """A proxied request on the http proxy channel is answered there, not on the API channel."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"\xff\xd8jpeg-bytes"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-session")
+    api_channel = _FakeBidiChannel()
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        proxy_channel.feed(_proxy_request("img-1", "/imageproxy/abc"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
+
+        assert http_session.requested == ["http://127.0.0.1:8095/imageproxy/abc"]
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["type"] == "http-proxy-response"
+        assert response["id"] == "img-1"
+        assert response["status"] == 200
+        # the body rides as raw binary, so it costs its own size on the wire and no more
+        assert body == b"\xff\xd8jpeg-bytes"
+        assert "body" not in response
+        # the image never touches the API channel, nor the local API WebSocket
+        assert api_channel.sent == []
+        assert cast("_FakeLocalWS", session.local_ws).sent == []
+    finally:
+        await gateway._close_session("proxy-session")
+
+
+async def test_http_proxy_request_on_the_api_channel_is_still_answered(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Clients that predate the http proxy channel keep proxying over the API channel."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"legacy-body"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "legacy-session")
+    api_channel = _FakeBidiChannel()
+    pc.offer_channel(api_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        api_channel.feed(_proxy_request("img-2", "/imageproxy/def"))
+        await _wait_for(lambda: bool(api_channel.sent))
+
+        assert http_session.requested == ["http://127.0.0.1:8095/imageproxy/def"]
+        response = json.loads(cast("str", api_channel.sent[0]))
+        assert response["type"] == "http-proxy-response"
+        assert response["id"] == "img-2"
+        assert bytes.fromhex(response["body"]) == b"legacy-body"
+        # the proxy request is served here, never forwarded to the local API WebSocket
+        assert cast("_FakeLocalWS", session.local_ws).sent == []
+    finally:
+        await gateway._close_session("legacy-session")
+
+
+async def test_http_proxy_channel_reports_a_failed_fetch_on_its_own_channel(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A fetch that raises still answers the client, on the channel it asked over."""
+    http_session = _FakeHttpSession()
+    http_session.request = Mock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-error-session")
+    api_channel = _FakeBidiChannel()
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        proxy_channel.feed(_proxy_request("img-3", "/imageproxy/boom"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
+
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["id"] == "img-3"
+        assert response["status"] == 500
+        assert b"boom" in body
+        assert api_channel.sent == []
+    finally:
+        await gateway._close_session("proxy-error-session")
+
+
+async def test_http_proxy_channel_splits_a_large_body_into_binary_frames(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A body past the channel's message limit arrives as raw frames that concatenate back."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = bytes(range(256)) * 2048  # 512 KiB
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-large-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-5", "/imageproxy/large"))
+        await _wait_for(
+            lambda: _body_delivered(proxy_channel.sent, len(http_session.response_body))
+        )
+
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["size"] == len(http_session.response_body)
+        assert body == http_session.response_body
+        frames = proxy_channel.sent[1:]
+        assert all(len(frame) <= proxy_channel.max_message_size for frame in frames)
+        # the wire cost is the body itself, not the ~2.7x a hex-in-base64 response took
+        assert sum(len(frame) for frame in frames) == len(http_session.response_body)
+    finally:
+        await gateway._close_session("proxy-large-session")
+
+
+async def test_http_proxy_channel_honours_the_negotiated_message_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A peer that advertises a small limit gets frames it can actually accept."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"x" * (200 * 1024)
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-small-frames-session")
+    # what a peer that advertises no a=max-message-size in its SDP is assumed to accept
+    proxy_channel = _FakeBidiChannel(label="http_proxy", max_message_size=64 * 1024)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-6", "/imageproxy/small-frames"))
+        await _wait_for(
+            lambda: _body_delivered(proxy_channel.sent, len(http_session.response_body))
+        )
+
+        _, body = _read_proxy_response(proxy_channel.sent)
+        assert body == http_session.response_body
+        assert all(len(frame) <= 64 * 1024 for frame in proxy_channel.sent[1:])
+    finally:
+        await gateway._close_session("proxy-small-frames-session")
+
+
+async def test_http_proxy_channel_never_interleaves_two_responses(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Body frames carry no request id, so each response must reach the client in one run."""
+    http_session = _FakeHttpSession()
+    http_session.bodies = {
+        "http://127.0.0.1:8095/imageproxy/one": b"1" * (300 * 1024),
+        "http://127.0.0.1:8095/imageproxy/two": b"2" * (300 * 1024),
+    }
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-concurrent-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-one", "/imageproxy/one"))
+        proxy_channel.feed(_proxy_request("img-two", "/imageproxy/two"))
+        await _wait_for(lambda: sum(isinstance(m, str) for m in proxy_channel.sent) == 2)
+        await _wait_for(lambda: len(proxy_channel.sent) >= 6)
+
+        # split at the second header: each response owns an unbroken run of body frames
+        second = next(i for i, m in enumerate(proxy_channel.sent) if i and isinstance(m, str))
+        first_header, first_body = _read_proxy_response(proxy_channel.sent[:second])
+        second_header, second_body = _read_proxy_response(proxy_channel.sent[second:])
+        assert {first_header["id"], second_header["id"]} == {"img-one", "img-two"}
+        # each body is one repeated byte, so any interleaving shows up as a mixed run
+        filler = {"img-one": ord("1"), "img-two": ord("2")}
+        assert set(first_body) == {filler[first_header["id"]]}
+        assert set(second_body) == {filler[second_header["id"]]}
+        assert len(first_body) == len(second_body) == 300 * 1024
+    finally:
+        await gateway._close_session("proxy-concurrent-session")
+
+
+@pytest.mark.parametrize(
+    "junk",
+    [
+        "not json at all",
+        json.dumps(["not", "a", "dict"]),
+        json.dumps({"type": "something-else"}),
+        b"\x00\x01binary",
+    ],
+)
+async def test_http_proxy_channel_survives_junk(
+    cert_pems: tuple[str, str], junk: str | bytes
+) -> None:
+    """Anything that is not a proxy request is ignored without killing the channel."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"still-here"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-junk-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(junk)
+        proxy_channel.feed(_proxy_request("img-4", "/imageproxy/ok"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
+
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["id"] == "img-4"
+        assert body == b"still-here"
+    finally:
+        await gateway._close_session("proxy-junk-session")
+
+
+async def test_closing_the_http_proxy_channel_leaves_the_api_session_up(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Losing the http proxy channel tears down that channel only, never the API session."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-close-session")
+    api_channel = _FakeBidiChannel()
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(api_channel)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.close()
+        await _wait_for(lambda: not session.channels)
+
+        assert "proxy-close-session" in gateway.sessions
+        assert session.local_ws is not None
+        assert api_channel.closed is False
+    finally:
+        await gateway._close_session("proxy-close-session")
+
+
+async def test_a_second_http_proxy_channel_is_refused(cert_pems: tuple[str, str]) -> None:
+    """A duplicate label is refused so the running handler is never left untracked."""
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "duplicate-session")
+    first = _FakeBidiChannel(label="http_proxy")
+    second = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(first)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+        pc.offer_channel(second)
+        await _wait_for(lambda: second.closed)
+
+        assert first.closed is False
+        assert session.channels["http_proxy"].channel is cast("DataChannel", first)
+    finally:
+        await gateway._close_session("duplicate-session")
+
+
+class _StallingProxyChannel(_FakeBidiChannel):
+    """
+    Proxy-channel stand-in whose sends park until the test lets them through.
+
+    Stands in for a client that stopped draining what it asked for: a real ``send`` then
+    waits on the channel's drain event, which is what parks the gateway's write-back.
+
+    :param stall_after: Let this many messages through before parking, matching a real
+        channel that only waits once its buffer holds something.
+    """
+
+    def __init__(self, stall_after: int = 0) -> None:
+        super().__init__(label="http_proxy")
+        self.drained = asyncio.Event()
+        self.abandoned = 0
+        self._stall_after = stall_after
+
+    async def send(self, data: str | bytes) -> None:
+        if len(self.sent) >= self._stall_after:
+            try:
+                await self.drained.wait()
+            except asyncio.CancelledError:
+                self.abandoned += 1
+                raise
+        await super().send(data)
+
+
+async def test_a_client_that_stops_draining_does_not_hold_the_proxy_channel(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A response the client never takes is abandoned instead of parking the send lock."""
+    gateway = _proxy_gateway(cert_pems)
+    gateway.logger = logging.getLogger("test_webrtc_stalled_send")
+    # the header goes out and the body frame is what parks, as on a channel that only waits
+    # once its buffer holds something
+    channel = _StallingProxyChannel(stall_after=1)
+    send_lock = asyncio.Lock()
+
+    with (
+        patch(f"{_GATEWAY_MODULE}.HTTP_PROXY_SEND_TIMEOUT", 0.05),
+        caplog.at_level(logging.WARNING, logger="test_webrtc_stalled_send"),
+    ):
+        await asyncio.wait_for(
+            gateway._send_http_proxy_response(
+                cast("DataChannel", channel), "img-stalled", 200, {}, b"art-bytes", send_lock
+            ),
+            timeout=5,
+        )
+
+    # the reply ends short of its announced size rather than half-way into a frame
+    assert json.loads(cast("str", channel.sent[0]))["size"] == len(b"art-bytes")
+    assert channel.sent[1:] == []
+    assert not send_lock.locked()
+    assert "Timeout sending proxy response img-stalled" in caplog.text
+
+
+async def test_a_stalled_response_does_not_block_the_next_one(cert_pems: tuple[str, str]) -> None:
+    """One wedged response must not stop the rest of the art for the life of the session."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"\xff\xd8second-image"
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-stalled-session")
+    proxy_channel = _StallingProxyChannel(stall_after=1)
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        with patch(f"{_GATEWAY_MODULE}.HTTP_PROXY_SEND_TIMEOUT", 0.05):
+            proxy_channel.feed(_proxy_request("img-stalls", "/imageproxy/stalls"))
+            await _wait_for(lambda: proxy_channel.abandoned >= 1)
+
+        proxy_channel.drained.set()
+        proxy_channel.feed(_proxy_request("img-next", "/imageproxy/next"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 3)
+
+        # the abandoned reply is the header alone; the next one follows it whole
+        assert json.loads(cast("str", proxy_channel.sent[0]))["id"] == "img-stalls"
+        response, body = _read_proxy_response(proxy_channel.sent[1:])
+        assert response["id"] == "img-next"
+        assert body == b"\xff\xd8second-image"
+    finally:
+        await gateway._close_session("proxy-stalled-session")
+
+
+async def test_a_stalled_response_frees_its_slot_for_other_requests(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Wedged write-backs must not leave the gateway-wide proxy budget exhausted."""
+    http_session = _FakeHttpSession()
+    http_session.response_body = b"art-bytes"
+    gateway = _routing_gateway(cert_pems, http_session)
+    channel = _StallingProxyChannel()
+    send_lock = asyncio.Lock()
+
+    with patch(f"{_GATEWAY_MODULE}.HTTP_PROXY_SEND_TIMEOUT", 0.05):
+        # take the whole budget, so a single slot left behind is enough to fail this
+        requests = [
+            asyncio.ensure_future(
+                gateway._handle_http_proxy_request(
+                    cast("DataChannel", channel),
+                    {"id": f"img-{index}", "method": "GET", "path": f"/imageproxy/{index}"},
+                    send_lock,
+                )
+            )
+            for index in range(HTTP_PROXY_CONCURRENCY)
+        ]
+        try:
+            await asyncio.wait_for(asyncio.gather(*requests), timeout=15)
+        finally:
+            for request in requests:
+                request.cancel()
+
+    for _ in range(HTTP_PROXY_CONCURRENCY):
+        await asyncio.wait_for(gateway._http_proxy_semaphore.acquire(), timeout=5)
+
+
+async def test_http_proxy_fetch_carries_an_explicit_timeout(cert_pems: tuple[str, str]) -> None:
+    """The proxied fetch must be bounded rather than left on aiohttp's five minute default."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, Any] = {}
+
+    def fake_request(_method: str, _url: str, **kwargs: Any) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+
+    await gateway._handle_http_proxy_request(None, {"id": "1", "method": "GET", "path": "/info"})
+
+    timeout = cast("aiohttp.ClientTimeout", captured_kwargs["timeout"])
+    assert timeout.total is not None
+    assert timeout.total < 300
+
+
+async def test_a_timed_out_fetch_answers_the_client(cert_pems: tuple[str, str]) -> None:
+    """A fetch that runs out of time still answers, so the client is not left waiting."""
+
+    def timing_out_request(_method: str, _url: str, **_kwargs: Any) -> AsyncMock:
+        # aiohttp hands out its context manager first and only raises once the body is read
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(side_effect=TimeoutError)
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    http_session = _FakeHttpSession()
+    http_session.request = timing_out_request  # type: ignore[assignment]
+    gateway = _routing_gateway(cert_pems, http_session)
+    session, pc = _register_routed_session(gateway, "proxy-timeout-session")
+    proxy_channel = _FakeBidiChannel(label="http_proxy")
+    pc.offer_channel(proxy_channel)
+    try:
+        await _wait_for(lambda: "http_proxy" in session.channels)
+
+        proxy_channel.feed(_proxy_request("img-slow", "/imageproxy/slow"))
+        await _wait_for(lambda: len(proxy_channel.sent) >= 2)
+
+        response, body = _read_proxy_response(proxy_channel.sent)
+        assert response["id"] == "img-slow"
+        assert response["status"] == 504
+        assert body == b"Gateway Timeout"
+    finally:
+        await gateway._close_session("proxy-timeout-session")
+
+
+class _FakeDataChannel:
+    """
+    Data channel stand-in that captures outbound messages for proxy tests.
+
+    :param close_after: Close the channel once this many messages have been sent.
+    """
+
+    def __init__(self, max_message_size: int = 256 * 1024, close_after: int | None = None) -> None:
+        self.is_closed = False
+        self.max_message_size = max_message_size
         self.sent: list[str] = []
+        # the gateway consults the channel once per outbound message, so this counts how far
+        # a send loop got even when the messages themselves are discarded
+        self.open_checks = 0
+        self._is_open = True
+        self._close_after = close_after
+
+    @property
+    def is_open(self) -> bool:
+        self.open_checks += 1
+        return self._is_open
 
     async def send(self, data: str) -> None:
         self.sent.append(data)
+        if self._close_after is not None and len(self.sent) >= self._close_after:
+            self._is_open = False
+            self.is_closed = True
 
 
 def _proxy_gateway(cert_pems: tuple[str, str]) -> WebRTCGateway:
@@ -1104,13 +1830,14 @@ def _reassemble_chunks(frames: list[str]) -> str:
 async def test_http_proxy_response_small_body_single_message(
     cert_pems: tuple[str, str],
 ) -> None:
-    """A body within the chunk size is sent as one legacy http-proxy-response message."""
+    """A body within the chunk size is sent as one http-proxy-response message."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
     body = b"\x00\x01\x02small-body"
 
-    await gateway._send_http_proxy_response(session, "req-small", 200, {"X-Test": "y"}, body)
+    await gateway._send_http_proxy_response(
+        cast("DataChannel", channel), "req-small", 200, {"X-Test": "y"}, body
+    )
 
     assert len(channel.sent) == 1
     msg = json.loads(channel.sent[0])
@@ -1125,10 +1852,10 @@ async def test_http_proxy_response_large_body_chunked(cert_pems: tuple[str, str]
     """A large HTTP-proxy response is split into base64 chunk frames the client reassembles."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
-    body = bytes(range(256)) * ((MA_API_CHUNK_SIZE * 5) // 512)  # big body -> big JSON message
+    # big body -> big JSON message
+    body = bytes(range(256)) * ((DATA_CHANNEL_CHUNK_SIZE * 5) // 512)
 
-    await gateway._send_http_proxy_response(session, "req-big", 200, {}, body)
+    await gateway._send_http_proxy_response(cast("DataChannel", channel), "req-big", 200, {}, body)
 
     assert len(channel.sent) > 1
     assert all(json.loads(m)["type"] == "__chunk__" for m in channel.sent)
@@ -1142,23 +1869,158 @@ async def test_http_proxy_response_large_body_chunked(cert_pems: tuple[str, str]
     assert bytes.fromhex(reassembled["body"]) == body
 
 
-async def test_send_ma_api_small_message_passthrough(cert_pems: tuple[str, str]) -> None:
-    """A ma-api message within the limit is sent verbatim, not chunked."""
+async def test_send_chunked_small_message_passthrough(cert_pems: tuple[str, str]) -> None:
+    """A message within the limit is sent verbatim, not chunked."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    await gateway._send_ma_api(cast("DataChannel", channel), '{"event":"player_updated"}')
+    await gateway._send_chunked(cast("DataChannel", channel), '{"event":"player_updated"}')
     assert channel.sent == ['{"event":"player_updated"}']
 
 
-async def test_send_ma_api_large_message_chunked(cert_pems: tuple[str, str]) -> None:
-    """A large ma-api message is chunked and reassembles byte-identically (multibyte-safe)."""
+async def test_send_chunked_large_message_chunked(cert_pems: tuple[str, str]) -> None:
+    """A large message is chunked and reassembles byte-identically (multibyte-safe)."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
     # multibyte payload so chunk boundaries fall mid-character, exercising the byte-level split
-    text = '{"data":"' + "音楽" * MA_API_CHUNK_SIZE + '"}'
+    text = '{"data":"' + "音楽" * DATA_CHANNEL_CHUNK_SIZE + '"}'
 
-    await gateway._send_ma_api(cast("DataChannel", channel), text)
+    await gateway._send_chunked(cast("DataChannel", channel), text)
 
     assert len(channel.sent) > 1
     assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
     assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_send_chunked_keeps_the_framing_released_clients_expect(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Against the 256 KiB limit every browser advertises, the frames must not move."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel()
+    text = '{"event":"' + "x" * (DATA_CHANNEL_CHUNK_SIZE * 2 + 5000) + '"}'
+    data = text.encode()
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    # the exact wire format the bundled frontend and the mobile app reassemble: 64 KiB pieces,
+    # numbered from zero within a group id that counts up per message
+    assert channel.sent == [
+        json.dumps(
+            {
+                "type": "__chunk__",
+                "id": 1,
+                "seq": seq,
+                "count": 3,
+                "b64": base64.b64encode(
+                    data[seq * DATA_CHANNEL_CHUNK_SIZE : (seq + 1) * DATA_CHANNEL_CHUNK_SIZE]
+                ).decode(),
+            }
+        )
+        for seq in range(3)
+    ]
+    # a full piece has always serialised well past 64 KiB, which only a peer advertising no
+    # limit of its own would reject
+    assert len(channel.sent[0].encode()) == 87447
+
+
+async def test_send_chunked_honours_the_negotiated_message_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A peer that advertises no limit in its SDP gets frames it can actually accept."""
+    gateway = _proxy_gateway(cert_pems)
+    # what libdatachannel assumes when the peer advertises no a=max-message-size
+    channel = _FakeDataChannel(max_message_size=64 * 1024)
+    text = '{"data":"' + "音楽" * DATA_CHANNEL_CHUNK_SIZE + '"}'
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    assert len(channel.sent) > 1
+    assert all(len(m.encode()) <= channel.max_message_size for m in channel.sent)
+    assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_send_chunked_passthrough_stops_at_the_negotiated_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A message past a small peer's limit is chunked rather than sent whole."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel(max_message_size=16 * 1024)
+    text = '{"data":"' + "x" * (32 * 1024) + '"}'
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    assert len(channel.sent) > 1
+    assert all(len(m.encode()) <= channel.max_message_size for m in channel.sent)
+    assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_send_chunked_stops_framing_once_the_channel_closes(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A channel that goes away mid-message stops the loop instead of encoding the rest."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel(close_after=1)
+    text = '{"data":"' + "x" * (DATA_CHANNEL_CHUNK_SIZE * 10) + '"}'
+
+    await gateway._send_chunked(cast("DataChannel", channel), text)
+
+    assert len(channel.sent) == 1
+    # the guard and the send of the first piece, then the guard again: the other ten pieces
+    # are never framed
+    assert channel.open_checks == 3
+
+
+async def test_dropped_message_is_logged_with_its_size_on_the_wire(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The size in the drop warning counts bytes, so it can be read against the channel limit."""
+    gateway = _proxy_gateway(cert_pems)
+    gateway.logger = logging.getLogger("test_webrtc_dropped_message_size")
+    channel = Mock()
+    channel.is_open = True
+    channel.send = AsyncMock(side_effect=RTCError("message too large"))
+    # 100 characters, 300 bytes once encoded
+    text = "音" * 100
+
+    with caplog.at_level(logging.WARNING, logger="test_webrtc_dropped_message_size"):
+        await gateway._send_on_channel(cast("DataChannel", channel), text)
+
+    assert "Dropping 300-byte data channel message" in caplog.text
+
+
+async def test_ma_api_channel_chunks_within_the_negotiated_limit(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A large API event reaches a peer that advertises no limit instead of being dropped."""
+    cert_pem, key_pem = cert_pems
+    fake_ws = _FakeLocalWS()
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(
+        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    )
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    # what libdatachannel assumes when the peer advertises no a=max-message-size
+    channel = _FakeBidiChannel(max_message_size=64 * 1024)
+    session = _register_bridge_session(gateway, "small-limit-session", channel)
+    bridge = asyncio.ensure_future(gateway._bridge_ma_api(session, cast("DataChannel", channel)))
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+
+        event = json.dumps({"event": "queue_updated", "data": "x" * (200 * 1024)})
+        fake_ws.feed_text(event)
+        await _wait_for(
+            lambda: bool(channel.sent) and len(channel.sent) == json.loads(channel.sent[0])["count"]
+        )
+
+        frames = cast("list[str]", channel.sent)
+        assert all(len(frame.encode()) <= channel.max_message_size for frame in frames)
+        assert _reassemble_chunks(frames) == event
+    finally:
+        channel.close()
+        await asyncio.wait_for(bridge, timeout=5)
+        await _wait_for(lambda: "small-limit-session" not in gateway.sessions)

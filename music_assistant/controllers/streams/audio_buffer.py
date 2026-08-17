@@ -559,10 +559,11 @@ class AudioBuffer:
         """
         async with self._data_available:
             if len(self._chunks) == 0:
-                if self._eof_received or self.cancelled:
-                    raise AudioBufferEOF
+                # Producer errors also set EOF after buffered data; preserve the real failure.
                 if self._producer_error:
                     raise self._producer_error
+                if self._eof_received or self.cancelled:
+                    raise AudioBufferEOF
             if self.cancelled:
                 raise AudioBufferEOF
 
@@ -604,10 +605,11 @@ class AudioBuffer:
 
         buffer_index = chunk_number - self._discarded_chunks
         while buffer_index >= len(self._chunks):
-            if self.cancelled or self._eof_received:
-                raise AudioBufferEOF
+            # Producer errors also set EOF after buffered data; preserve the real failure.
             if self._producer_error:
                 raise self._producer_error
+            if self.cancelled or self._eof_received:
+                raise AudioBufferEOF
             # if the buffer is full and we need a chunk that hasn't arrived yet,
             # the producer is blocked waiting for space — evict to unblock it
             if len(self._chunks) >= self.max_size_seconds:

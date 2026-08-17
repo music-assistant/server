@@ -8,7 +8,8 @@ import pytest
 from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
-from tests.common import use_real_create_task
+
+from .conftest import use_real_create_task
 
 
 def _fake_album(*, album_id: int, title: str, meta_type: str | None, type_: str | None) -> Mock:

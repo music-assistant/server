@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -49,7 +50,7 @@ def _make_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
     config.instance_id = "universal_player"
     config.name = None
     provider.config = config
-    provider._universal_player_locks = {}
+    provider._lock = asyncio.Lock()
     return provider
 
 

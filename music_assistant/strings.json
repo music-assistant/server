@@ -225,14 +225,18 @@
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
         "aac": "AAC (lossy)",
-        "wav": "WAV (lossless, uncompressed)"
+        "wav": "WAV (uncompressed PCM)"
       },
       "option_descriptions": {
         "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
         "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
         "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
-        "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
+        "wav": "Uncompressed PCM audio in a WAV container — highest bandwidth. Only needed for players that can't handle FLAC."
       }
+    },
+    "prefer_wav_for_live_sources": {
+      "label": "Prefer low-latency WAV for live sources",
+      "description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed PCM audio in a WAV container to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead."
     },
     "play_media_overrides_group": {
       "label": "Play Media overrides active group",
@@ -434,6 +438,7 @@
     "playback": "Queue Playback",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
+    "click_actions": "Click actions",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "smart_shuffle": "Smart shuffle",
@@ -1133,6 +1138,9 @@
     },
     "link_control": {
       "name": "Link control"
+    },
+    "network_name": {
+      "name": "Network name"
     },
     "party_mode": {
       "name": "Party mode"

@@ -1,0 +1,425 @@
+{
+  "data": {
+    "id": "58756128",
+    "type": "tracks",
+    "attributes": {
+      "title": "7 Years",
+      "version": null,
+      "isrc": "USWB11506516",
+      "duration": "PT3M57S",
+      "copyright": {
+        "text": "℗ 2015 Universal Music A/S"
+      },
+      "explicit": false,
+      "ai": false,
+      "key": "Eb",
+      "keyScale": "MAJOR",
+      "bpm": 120.0,
+      "popularity": 0.7728257326881044,
+      "accessType": "PUBLIC",
+      "availability": [
+        "STREAM",
+        "DJ"
+      ],
+      "mediaTags": [
+        "LOSSLESS"
+      ],
+      "toneTags": [],
+      "externalLinks": [
+        {
+          "href": "https://tidal.com/browse/track/58756128",
+          "meta": {
+            "type": "TIDAL_SHARING"
+          }
+        }
+      ],
+      "spotlighted": false,
+      "createdAt": "2016-03-25T03:36:55Z"
+    },
+    "relationships": {
+      "albums": {
+        "data": [
+          {
+            "id": "58756127",
+            "type": "albums"
+          }
+        ],
+        "links": {
+          "self": "/tracks/58756128/relationships/albums?countryCode=AT"
+        }
+      },
+      "credits": {
+        "data": [
+          {
+            "id": "827Wzzg9sfyhjOXwuKvD3ZHQRifhjxqlTh05jEoyOqbmdUGWVHVznsHqGH",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXnNHGmRh8vWRqsURm0oWTdTKNUSTGttAXvXFo2sVfkob",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXxoZXGWk3JcuVpIRl4cVLFpCJMCS1mr7UO1mco6vT2a8",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXlWTUp81CTOYWvIApRdddeqmrAQ1pXFYEsfMyWTDOb93",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXmuJxMFKP6Pt1MY5UGfGqw9fADW5GA1LeC7JP4nuzUFX",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXliT0iJLQVX1fX19aKqqJYSLsHrumZY5h9licAONny4H",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXlTeN03NwpICDwYjzm6Pfx6luzcai7l3CzfnIscQ4K6p",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXxr9lWWhFP4AwKb1UYenA0eI4HqPPwEVoJUshDz81hWo",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXx6L7BH5bGtaj5EVBoWUkjtWjS4q7Z87L75ZVoCefkeG",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXy3GRWy8CkgbyvhLzMlCRiEkXlAVPD5Fx8VKWfKRhvxT",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXy5nkWjmpZ9uVRmy3jtzY3LsthptzqKBp1YzigDd8F3n",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXlxWX0HdwEQ7Mhk56p31Aen2Zgqixio6SBakLLFkk2Fx",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXlxHfpwgCCVPvYHv9mVkyGatRfxEhwCVfS7ebr2sklSy",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXmfLLTRGFlHIZE0ZEonDhjq4mppmfaytE6iTBhnOyM8m",
+            "type": "credits"
+          },
+          {
+            "id": "827Wzzg9sfyhjOXlTiaRXnNe9m04nYKNoaDFGh6cLkhiAK9Fxx577ZdzGv",
+            "type": "credits"
+          }
+        ],
+        "links": {
+          "self": "/tracks/58756128/relationships/credits?countryCode=AT"
+        }
+      },
+      "artists": {
+        "data": [
+          {
+            "id": "4184211",
+            "type": "artists"
+          }
+        ],
+        "links": {
+          "self": "/tracks/58756128/relationships/artists?countryCode=AT"
+        }
+      },
+      "genres": {
+        "data": [
+          {
+            "id": "1",
+            "type": "genres"
+          }
+        ],
+        "links": {
+          "self": "/tracks/58756128/relationships/genres?countryCode=AT"
+        }
+      }
+    }
+  },
+  "links": {
+    "self": "/tracks/58756128?include=albums.coverArt%2Cartists%2Ccredits%2Cgenres&countryCode=AT"
+  },
+  "included": [
+    {
+      "id": "58756127",
+      "type": "albums",
+      "attributes": {
+        "title": "Lukas Graham (Blue Album) (International Version)",
+        "barcodeId": "00602547852748",
+        "numberOfVolumes": 1,
+        "numberOfItems": 11,
+        "duration": "PT40M5S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2015-05-29",
+        "copyright": {
+          "text": "© 2016 Then We Take The World / Copenhagen Records / Universal Music"
+        },
+        "popularity": 0.7480961442649546,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/58756127",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "ALBUM",
+        "albumType": "ALBUM",
+        "version": "International Version",
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IPMMti8ralux",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/58756127/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "4184211",
+      "type": "artists",
+      "attributes": {
+        "name": "Lukas Graham",
+        "popularity": 0.8177526593208313,
+        "externalLinks": [
+          {
+            "href": "https://www.facebook.com/LukasGraham",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "http://instagram.com/lukasinstagraham",
+            "meta": {
+              "type": "INSTAGRAM"
+            }
+          },
+          {
+            "href": "https://www.twitter.com/LukeTheDuke_",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/4184211",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "iWOu0yW0IPMMti8ralux",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#775434",
+          "blurHash": "ULM7cP9G_29E?wxv%L%1~ojXD+NK_1ocE3xv",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXlTeN03NwpICDwYjzm6Pfx6luzcai7l3CzfnIscQ4K6p",
+      "type": "credits",
+      "attributes": {
+        "name": "David LaBrel",
+        "role": "Composer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXlTiaRXnNe9m04nYKNoaDFGh6cLkhiAK9Fxx577ZdzGv",
+      "type": "credits",
+      "attributes": {
+        "name": "Robin Florent",
+        "role": "Second Engineer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXlWTUp81CTOYWvIApRdddeqmrAQ1pXFYEsfMyWTDOb93",
+      "type": "credits",
+      "attributes": {
+        "name": "Morten Pilegaard",
+        "role": "Composer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXliT0iJLQVX1fX19aKqqJYSLsHrumZY5h9licAONny4H",
+      "type": "credits",
+      "attributes": {
+        "name": "Lukas Forchhammer",
+        "role": "Composer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXlxHfpwgCCVPvYHv9mVkyGatRfxEhwCVfS7ebr2sklSy",
+      "type": "credits",
+      "attributes": {
+        "name": "Robin Florent",
+        "role": "Mixing"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXlxWX0HdwEQ7Mhk56p31Aen2Zgqixio6SBakLLFkk2Fx",
+      "type": "credits",
+      "attributes": {
+        "name": "David LaBrel",
+        "role": "Lyricist"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXmfLLTRGFlHIZE0ZEonDhjq4mppmfaytE6iTBhnOyM8m",
+      "type": "credits",
+      "attributes": {
+        "name": "Delbert Bowers",
+        "role": "Mixing Engineer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXmuJxMFKP6Pt1MY5UGfGqw9fADW5GA1LeC7JP4nuzUFX",
+      "type": "credits",
+      "attributes": {
+        "name": "Stefan Forrest",
+        "role": "Composer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXnNHGmRh8vWRqsURm0oWTdTKNUSTGttAXvXFo2sVfkob",
+      "type": "credits",
+      "attributes": {
+        "name": "Future Animals",
+        "role": "Producer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXwuKvD3ZHQRifhjxqlTh05jEoyOqbmdUGWVHVznsHqGH",
+      "type": "credits",
+      "attributes": {
+        "name": "Pilo",
+        "role": "Producer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXx6L7BH5bGtaj5EVBoWUkjtWjS4q7Z87L75ZVoCefkeG",
+      "type": "credits",
+      "attributes": {
+        "name": "Morten Ristorp",
+        "role": "Lyricist"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXxoZXGWk3JcuVpIRl4cVLFpCJMCS1mr7UO1mco6vT2a8",
+      "type": "credits",
+      "attributes": {
+        "name": "Morten Ristorp",
+        "role": "Composer"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXxr9lWWhFP4AwKb1UYenA0eI4HqPPwEVoJUshDz81hWo",
+      "type": "credits",
+      "attributes": {
+        "name": "Morten Pilegaard",
+        "role": "Lyricist"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXy3GRWy8CkgbyvhLzMlCRiEkXlAVPD5Fx8VKWfKRhvxT",
+      "type": "credits",
+      "attributes": {
+        "name": "Stefan Forrest",
+        "role": "Lyricist"
+      }
+    },
+    {
+      "id": "827Wzzg9sfyhjOXy5nkWjmpZ9uVRmy3jtzY3LsthptzqKBp1YzigDd8F3n",
+      "type": "credits",
+      "attributes": {
+        "name": "Lukas Forchhammer",
+        "role": "Lyricist"
+      }
+    },
+    {
+      "id": "1",
+      "type": "genres",
+      "attributes": {
+        "genreName": "Pop"
+      }
+    }
+  ]
+}

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -20,7 +21,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
 
 from . import CONF_AUTH_FILE, CONF_LOCALE
 from .audible_helper import audible_custom_login, audible_get_auth_info, remove_file
@@ -64,18 +65,24 @@ async def run_setup(session: SetupSession) -> None:
         # a fresh authorize URL (+ PKCE verifier + device serial) per attempt, since the
         # pasted redirect carries a single-use authorization code
         code_verifier, login_url, serial = await audible_get_auth_info(locale)
+        with suppress(StepExpiredError, OSError):
+            await session.external_until(
+                asyncio.Future(),
+                login_url,
+                step_id="authorize",
+                expires_in=30,
+            )
         values = await session.form(
             [
                 ConfigEntry(
-                    key="authorize",
-                    type=ConfigEntryType.LABEL,
-                    help_link=login_url,
+                    key=CONF_POST_LOGIN_URL,
+                    type=ConfigEntryType.STRING,
+                    required=True,
                 ),
-                ConfigEntry(key=CONF_POST_LOGIN_URL, type=ConfigEntryType.STRING, required=True),
             ],
             step_id="authenticate",
-            errors=errors,
             last_step=True,
+            errors=errors,
         )
         post_login_url = str(values[CONF_POST_LOGIN_URL])
         try:

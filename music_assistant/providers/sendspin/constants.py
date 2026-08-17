@@ -10,7 +10,7 @@ CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
 CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
-CONF_ALLOW_UNENCRYPTED = "allow_unencrypted"
+CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
 CONF_MIN_PIN_LENGTH = "min_pin_length"
 DEFAULT_MIN_PIN_LENGTH = 4
 
@@ -36,3 +36,7 @@ CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE = "management_static_pin_enable"
 CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE = "management_static_pin_disable"
 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE = "management_dynamic_pin_enable"
 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE = "management_dynamic_pin_disable"
+
+# Declared here because only the player provider can add player config entries.
+CONF_SOURCE_AUTOSTART_TARGET = "source_autostart_target"
+SOURCE_AUTOSTART_OFF = "off"

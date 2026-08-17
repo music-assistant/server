@@ -1,10 +1,11 @@
 """Tests for filesystem provider sync behavior when the storage misbehaves."""
 
 import errno
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -49,6 +50,19 @@ def _create_provider() -> LocalFileSystemProvider:
     provider._process_deletions = AsyncMock()  # type: ignore[method-assign]
     provider._process_orphaned_albums_and_artists = AsyncMock()  # type: ignore[method-assign]
     provider._set_available = MagicMock()  # type: ignore[method-assign]
+    return provider
+
+
+def _create_unavailable_provider() -> LocalFileSystemProvider:
+    """Create a provider already flagged down, with real availability handling."""
+    with patch.object(LocalFileSystemProvider, "__init__", lambda *_a, **_kw: None):
+        provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+    provider.mass = MagicMock()
+    provider.base_path = "/media"
+    provider.available = False
+    provider.unloading = False
     return provider
 
 
@@ -169,3 +183,93 @@ async def test_sync_aborts_on_fatal_scan_error() -> None:
     provider._process_deletions.assert_not_called()  # type: ignore[attr-defined]
     provider._process_orphaned_albums_and_artists.assert_not_called()  # type: ignore[attr-defined]
     provider._set_available.assert_called_once_with(False)  # type: ignore[attr-defined]
+
+
+async def test_aborted_sync_starts_checking_for_the_storage() -> None:
+    """A scan aborted by the circuit breaker leaves a reachability check running."""
+    provider = _create_provider()
+    provider.base_path = "/media"
+    # exercise the real availability handling rather than the mock _create_provider installs
+    provider._set_available = LocalFileSystemProvider._set_available.__get__(  # type: ignore[method-assign]
+        provider, LocalFileSystemProvider
+    )
+    provider._enumerate_files_for_sync = _enumerate_result(  # type: ignore[method-assign]
+        failed_dirs=20, fatal=True
+    )
+
+    await provider.sync_library(MediaType.TRACK)
+
+    assert provider.available is False
+    cast("MagicMock", provider.mass.call_later).assert_called_once()
+
+
+async def test_probe_keeps_waiting_while_the_storage_is_gone() -> None:
+    """A provider whose storage is still missing stays down and checks again later."""
+    provider = _create_unavailable_provider()
+    call_later = cast("MagicMock", provider.mass.call_later)
+    provider._is_reachable = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    await provider._probe_availability()
+
+    assert provider.available is False
+    assert call_later.call_count == 1
+
+
+async def test_probe_brings_the_provider_back() -> None:
+    """The provider becomes available again as soon as its storage can be read."""
+    provider = _create_unavailable_provider()
+    call_later = cast("MagicMock", provider.mass.call_later)
+    provider._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    await provider._probe_availability()
+
+    assert provider.available is True
+    # recovered, so no further check is scheduled
+    assert call_later.call_count == 0
+
+
+async def test_probe_treats_an_error_as_still_unreachable() -> None:
+    """A provider whose reachability check raises keeps waiting instead of coming back."""
+    provider = _create_unavailable_provider()
+    call_later = cast("MagicMock", provider.mass.call_later)
+    provider._is_reachable = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ProviderUnavailableError("cloud api down")
+    )
+
+    await provider._probe_availability()
+
+    assert provider.available is False
+    assert call_later.call_count == 1
+
+
+async def test_unload_stops_checking() -> None:
+    """Unloading a provider that went down leaves no timer behind."""
+    provider = _create_unavailable_provider()
+    provider._schedule_availability_probe()
+
+    await provider.unload()
+
+    cast("MagicMock", provider.mass.cancel_timer).assert_called_once_with(
+        provider._availability_probe_id
+    )
+    # a check that already started is a task under the same id, and must stop too
+    cast("MagicMock", provider.mass.cancel_task).assert_called_once_with(
+        provider._availability_probe_id
+    )
+
+
+async def test_probe_does_not_rearm_after_the_provider_is_unloaded() -> None:
+    """A check still running when the provider is torn down must not schedule another."""
+    provider = _create_unavailable_provider()
+    call_later = cast("MagicMock", provider.mass.call_later)
+
+    async def _unload_midway() -> bool:
+        # the provider is torn down while this check is in flight
+        provider.unloading = True
+        return False
+
+    provider._is_reachable = _unload_midway  # type: ignore[method-assign]
+
+    await provider._probe_availability()
+
+    assert call_later.call_count == 0
