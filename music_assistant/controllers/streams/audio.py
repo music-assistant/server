@@ -1637,10 +1637,6 @@ class StreamsAudio:
                     self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-            # The FFmpeg stdin feeder swallows producer errors; re-raise even after
-            # partial audio so a failed source is not mistaken for a completed stream.
-            if audio_buffer.has_error:
-                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
@@ -2396,6 +2392,8 @@ class StreamsAudio:
                 )
                 queue_track.streamdetails.stream_error = True
                 play_log_entry.seconds_streamed = 0
+                if last_fadeout_part:
+                    queue_track.streamdetails.seek_position = raw_seek_position
                 continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade

@@ -89,6 +89,7 @@ def _shuffle_controller(
     source_shuffle_enabled: bool,
     source_shuffle_set_at: float | None,
     target_shuffle_set_at: float | None,
+    source_is_dynamic: bool = False,
 ) -> MagicMock:
     """
     Build a controller stand-in whose two queues carry real state records.
@@ -99,6 +100,7 @@ def _shuffle_controller(
     :param source_shuffle_enabled: Whether shuffle is on for the queue being handed over.
     :param source_shuffle_set_at: When the user last switched shuffle on for the source queue.
     :param target_shuffle_set_at: When the user last switched shuffle on for the target queue.
+    :param source_is_dynamic: Whether the source queue is managed by a dynamic source.
     """
     source_queue = PlayerQueue(
         queue_id="src",
@@ -107,6 +109,8 @@ def _shuffle_controller(
         available=True,
         items=0,
         shuffle_enabled=source_shuffle_enabled,
+        smart_shuffle_active=source_is_dynamic,
+        is_dynamic=source_is_dynamic,
     )
     target_queue = PlayerQueue(
         queue_id="tgt", active=True, display_name="Tgt", available=True, items=0
@@ -123,7 +127,7 @@ def _shuffle_controller(
     fake.resume = AsyncMock()
     fake._clear = MagicMock()
     fake.update_items = MagicMock()
-    fake.is_smart_shuffle_active = MagicMock(return_value=False)
+    fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
     target_player = MagicMock()
     target_player.state.synced_to = None
     target_player.state.active_group = None
@@ -171,3 +175,26 @@ async def test_transfer_queue_carries_the_source_shuffle_intent() -> None:
     # the gesture is good for one play and it followed the queue, so it must not be left behind
     # to shuffle whatever gets started on the player it was moved off
     assert fake._queue_data["src"].shuffle_set_at is None
+
+
+async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
+    """The shuffle imposed by a dynamic source follows it to the target queue."""
+    fake = _shuffle_controller(
+        source_shuffle_enabled=True,
+        source_shuffle_set_at=None,
+        target_shuffle_set_at=None,
+        source_is_dynamic=True,
+    )
+    fake._clear.side_effect = lambda queue_id, skip_stop=False: PlayerQueuesController._clear(
+        cast("PlayerQueuesController", fake), queue_id, skip_stop
+    )
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake.get("tgt").is_dynamic is True
+    assert fake.get("tgt").shuffle_enabled is True
+    assert fake.get("src").is_dynamic is False
+    assert fake.get("src").shuffle_enabled is False
+    assert fake.get("src").smart_shuffle_active is False
