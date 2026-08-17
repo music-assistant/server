@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import AsyncExitStack
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
@@ -99,6 +100,18 @@ class NativeGroupCoordinator:
     def leader_of(self, player_id: str) -> str | None:
         """Return the leader a follower belongs to, or None when not a follower."""
         return self._reverse.get(player_id)
+
+    def is_unknown_leader_follower(self, player_id: str) -> bool:
+        """
+        Return whether a player follows a leader MA has not discovered.
+
+        Such a device belongs to an externally-created group MA cannot see the leader of,
+        so it can be neither cleanly detached nor safely regrouped and must have grouping
+        withdrawn entirely.
+
+        :param player_id: The player to check.
+        """
+        return self._is_unknown_leader_follower(player_id)
 
     def can_group_with(self, player: NativePlayer) -> set[str]:
         """
@@ -253,24 +266,94 @@ class NativeGroupCoordinator:
         # the same member under a different leader must not interleave with this command's
         # live check, mutation and verification.
         async with self._command_lock:
-            await self._apply_members(leader, player_ids_to_add, player_ids_to_remove)
+            add_members = [self._require_member(mid) for mid in player_ids_to_add or []]
+            remove_members = [self._require_member(mid) for mid in player_ids_to_remove or []]
+            # a concurrent address rebuild on any involved generic device must not swap its
+            # client or move its address mid-command; hold each device's rebuild lock for the
+            # whole check/mutate/verify sequence. Acquiring in sorted player-id order gives a
+            # deadlock-free order, and the recursive dissolve below never re-takes them.
+            affected: dict[str, NativePlayer] = {leader.player_id: leader}
+            for member in (*add_members, *remove_members):
+                affected[member.player_id] = member
+            async with AsyncExitStack() as stack:
+                for player_id in sorted(affected):
+                    if (lock := self._rebuild_lock_for(affected[player_id])) is not None:
+                        await stack.enter_async_context(lock)
+                await self._apply_members(leader, add_members, remove_members)
 
     # --- Private helpers ---
 
     async def _apply_members(
         self,
         leader: NativePlayer,
-        player_ids_to_add: list[str] | None,
-        player_ids_to_remove: list[str] | None,
+        add_members: list[NativePlayer],
+        remove_members: list[NativePlayer],
     ) -> None:
-        """Run the add/remove grouping operations for a leader (caller holds the lock)."""
+        """Validate the whole batch, then run the grouping operations (caller holds locks)."""
         try:
-            for member_id in player_ids_to_add or []:
-                await self._join(leader, self._require_member(member_id))
-            for member_id in player_ids_to_remove or []:
-                await self._leave(leader, self._require_member(member_id))
+            # full validation before any hardware mutation, so an unknown, unreachable or
+            # generation-incompatible target fails the whole request before any speaker has
+            # joined or left, rather than leaving a partially formed group behind.
+            self._guard_regroupable(leader)
+            join_plan: dict[str, tuple[DeviceInfo | None, DeviceInfo | None] | None] = {}
+            for member in add_members:
+                self._guard_regroupable(member)
+                join_plan[member.player_id] = await self._prevalidate_join(leader, member)
+            for member in add_members:
+                await self._join(leader, member, join_plan[member.player_id])
+            for member in remove_members:
+                await self._leave(leader, member)
         finally:
             await self.refresh_leader(leader, force=True)
+
+    def _rebuild_lock_for(self, player: NativePlayer) -> asyncio.Lock | None:
+        """Return the per-device rebuild lock that grouping must hold, if the backend has one."""
+        return getattr(player, "grouping_rebuild_lock", None)
+
+    def _guard_regroupable(self, player: NativePlayer) -> None:
+        """
+        Assert a player can take part in an MA-driven grouping command right now.
+
+        A device that follows a leader MA has not discovered belongs to an external group
+        that cannot be cleanly detached, so it can be neither a leader nor a member here.
+        Re-checked at command time because core may have cached the request (or it may have
+        waited on the command lock) since the candidate set was computed.
+
+        :param player: The leader or member to validate.
+        """
+        if self._is_unknown_leader_follower(player.player_id):
+            raise PlayerCommandFailed(
+                f"Cannot regroup {player.player_id}: it follows a group MA has not discovered"
+            )
+
+    async def _prevalidate_join(
+        self, leader: NativePlayer, member: NativePlayer
+    ) -> tuple[DeviceInfo | None, DeviceInfo | None] | None:
+        """
+        Validate an addition before any mutation and return the device info the join needs.
+
+        Same-backend official joins are validated by the SDK itself (returns ``None``);
+        every other combination must reach both devices and share a known, matching
+        router-based multiroom generation, failing closed on an unreadable or legacy device.
+
+        :param leader: The leader the member would join.
+        :param member: The member that would join the leader.
+        """
+        if (
+            leader.linkplay_backend == BACKEND_OFFICIAL
+            and member.linkplay_backend == BACKEND_OFFICIAL
+        ):
+            return None
+        if not leader.native_ip:
+            raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
+        leader_info = await self._device_info(leader)
+        member_info = await self._device_info(member)
+        if not linkplay_group_compatible(leader_info, member_info):
+            raise PlayerCommandFailed(
+                f"Cannot group {member.player_id} with {leader.player_id}: incompatible or "
+                "legacy Wi-Fi Direct LinkPlay multiroom"
+            )
+        return leader_info, member_info
 
     def _native_players(self) -> list[NativePlayer]:
         """Return this provider's players that belong to either native backend."""
@@ -399,15 +482,13 @@ class NativeGroupCoordinator:
             raise PlayerCommandFailed(f"Cannot group unknown or unsupported player {player_id}")
         return cast("NativePlayer", member)
 
-    async def _join(self, leader: NativePlayer, member: NativePlayer) -> None:
+    async def _join(
+        self,
+        leader: NativePlayer,
+        member: NativePlayer,
+        join_info: tuple[DeviceInfo | None, DeviceInfo | None] | None,
+    ) -> None:
         """Join a member to a leader over the correct backend path and verify it."""
-        if self._is_unknown_leader_follower(member.player_id):
-            # re-check at command time: another player's cached can_group_with may still
-            # list this device after a live refresh flipped only its internal role. It
-            # follows a group MA has not discovered and cannot be cleanly detached first.
-            raise PlayerCommandFailed(
-                f"Cannot group {member.player_id}: it follows a group MA has not discovered"
-            )
         if (
             leader.linkplay_backend == BACKEND_OFFICIAL
             and member.linkplay_backend == BACKEND_OFFICIAL
@@ -419,7 +500,8 @@ class NativeGroupCoordinator:
             except WiimException as err:
                 raise PlayerCommandFailed(f"Failed to group {member.player_id}: {err}") from err
         else:
-            await self._low_level_join(leader, member)
+            assert join_info is not None  # a low-level join is always prevalidated
+            await self._low_level_join(leader, member, join_info[0])
         await self._verify_membership(leader, member, joined=True)
         # the member is now a follower and manages no members of its own; drop any slave
         # list it cached while it was a leader so a later leave cannot resurrect a ghost
@@ -428,26 +510,21 @@ class NativeGroupCoordinator:
         self.set_leader_slaves(member.player_id, [])
         self.set_self_role(member.player_id, True)
 
-    async def _low_level_join(self, leader: NativePlayer, member: NativePlayer) -> None:
+    async def _low_level_join(
+        self, leader: NativePlayer, member: NativePlayer, leader_info: DeviceInfo | None
+    ) -> None:
         """Join a member to a leader over the low-level LinkPlay client (generic or mixed)."""
         if not (leader_ip := leader.native_ip):
             raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
-        # a Wi-Fi Direct join moves the follower onto the leader's private network, where MA
-        # can no longer poll or control it, and a cross-generation group is unsupported. Only
-        # group two devices that both use a known, matching router-based multiroom generation,
-        # rather than form an uncontrollable or broken group.
-        leader_info = await self._device_info(leader)
-        member_info = await self._device_info(member)
-        if not linkplay_group_compatible(leader_info, member_info):
-            raise PlayerCommandFailed(
-                f"Cannot group {member.player_id} with {leader.player_id}: incompatible or "
-                "legacy Wi-Fi Direct LinkPlay multiroom"
-            )
         # the low-level join_slave (unlike the official SDK) does not disband a member that
         # leads its own group, so dissolve that group first: otherwise its followers are
         # orphaned once the member becomes this leader's follower.
-        if followers := [m for m in self.members_of(member.player_id) if m != member.player_id]:
-            await self._apply_members(member, None, followers)
+        if followers := [
+            self._require_member(m)
+            for m in self.members_of(member.player_id)
+            if m != member.player_id
+        ]:
+            await self._apply_members(member, [], followers)
         try:
             await member.make_command_client().join_slave(leader_ip, master_device_info=leader_info)
         except WiiMError as err:

@@ -12,16 +12,23 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.player import DeviceInfo
 from pywiim import WiiMClient, WiiMError
 
 from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 
 from .constants import BACKEND_GENERIC, PLAYER_ID_PREFIX
+from .grouping import NativeGroupRole
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice
+    from music_assistant_models.player import PlayerMedia
     from pywiim.models import DeviceInfo as PywiimDeviceInfo
 
     from music_assistant.models.player import Player
@@ -61,8 +68,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # Health of the LinkPlay HTTP API, separate from playback availability (which the
         # base derives from linked protocols): it gates the native grouping capability.
         # A device info primed from the discovery probe means the API is reachable.
-        # Set before super().__init__ because the base reads supported_features during init.
+        # Set before super().__init__ because the base reads supported_features and the
+        # follower-suppressed playback state (via the coordinator) during init.
         self._linkplay_available = device_info is not None
+        self._native_groups: NativeGroupCoordinator = provider.native_groups
         super().__init__(provider, player_id)
         # Low-level LinkPlay HTTP client over MA's shared aiohttp session. Its close()
         # would close that shared session, so it is never closed here.
@@ -73,7 +82,6 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # Cached pywiim device info, refreshed on poll and passed to a follower's
         # join_slave so it can pick the correct (router vs WiFi-Direct) join mode.
         self._cached_device_info: PywiimDeviceInfo | None = device_info
-        self._native_groups: NativeGroupCoordinator = provider.native_groups
         self._rebuild_lock = asyncio.Lock()
 
         self._attr_name = upnp_device.friendly_name or player_id
@@ -138,9 +146,43 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         return host
 
     @property
+    def grouping_rebuild_lock(self) -> asyncio.Lock:
+        """Return the lock the coordinator holds so grouping and address rebuilds serialize."""
+        return self._rebuild_lock
+
+    @property
     def grouping_locked(self) -> bool:
-        """Suppress grouping while the LinkPlay grouping API is unreachable."""
-        return not self._linkplay_available
+        """Withdraw grouping while unreachable or following a group MA has not discovered."""
+        # An unknown-leader follower belongs to an external group whose leader MA cannot
+        # see; without this lock core would re-offer it as a grouping target through its
+        # linked DLNA/AirPlay protocols and let that external group be repurposed.
+        return not self._linkplay_available or self._native_groups.is_unknown_leader_follower(
+            self.player_id
+        )
+
+    @property
+    def playback_state(self) -> PlaybackState:
+        """Suppress delegated playback while natively grouped as a follower."""
+        if self._is_native_follower:
+            # a native follower plays its leader's stream at the hardware level; a known
+            # leader's state is mirrored by core through synced_to, an undiscovered one
+            # reports idle rather than the shell's stale linked-protocol playback.
+            return PlaybackState.IDLE
+        return super().playback_state
+
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Suppress delegated media while natively grouped as a follower."""
+        if self._is_native_follower:
+            return None
+        return super().current_media
+
+    @property
+    def active_source(self) -> str | None:
+        """Suppress the delegated active source while natively grouped as a follower."""
+        if self._is_native_follower:
+            return None
+        return super().active_source
 
     @property
     def prefer_native_grouping(self) -> bool:
@@ -238,6 +280,11 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
     def _backing_protocol_player_ids(self) -> list[str]:
         """Return the ids of the linked protocol players backing this shell's playback."""
         return [linked.output_protocol_id for linked in self.linked_output_protocols]
+
+    @property
+    def _is_native_follower(self) -> bool:
+        """Whether the coordinator currently resolves this shell as a native follower."""
+        return self._native_groups.role_of(self.player_id) == NativeGroupRole.FOLLOWER
 
     async def _refresh_reachability(self) -> None:
         """Refresh the LinkPlay grouping API reachability and cached device info."""

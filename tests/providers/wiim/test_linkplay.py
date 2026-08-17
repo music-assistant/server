@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from pywiim import WiiMError
 
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
@@ -133,6 +138,7 @@ def _mock_native_groups() -> MagicMock:
     groups.set_members = AsyncMock()
     groups.schedule_reconcile = MagicMock()
     groups.unregister = MagicMock()
+    groups.is_unknown_leader_follower = MagicMock(return_value=False)
     groups.set_self_role = MagicMock(return_value=False)
     return groups
 
@@ -342,6 +348,32 @@ class TestGrouping:
         player._linkplay_available = False
         assert player.grouping_locked is True
         assert PlayerFeature.SET_MEMBERS not in player.supported_features
+
+    def test_unknown_leader_follower_locks_grouping(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A reachable shell that follows an undiscovered group still withdraws grouping."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        assert player.grouping_locked is True
+
+    def test_grouping_rebuild_lock_serializes_with_address_change(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """The lock the coordinator holds during a command is the shell's address-rebuild lock."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        assert player.grouping_rebuild_lock is player._rebuild_lock
+
+    def test_native_follower_suppresses_playback(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A native follower reports idle and no media instead of its delegated state."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        assert player.playback_state == PlaybackState.IDLE
+        assert player.current_media is None
+        assert player.active_source is None
 
 
 class TestTopology:

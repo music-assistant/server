@@ -1,5 +1,6 @@
 """Tests for WiiM player provider."""
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,6 +32,7 @@ def _mock_native_groups() -> MagicMock:
     groups.set_members = AsyncMock()
     groups.schedule_reconcile = MagicMock()
     groups.unregister = MagicMock()
+    groups.is_unknown_leader_follower = MagicMock(return_value=False)
     groups.set_self_role = MagicMock(return_value=False)
     return groups
 
@@ -302,7 +304,7 @@ class TestGroupMembers:
     def test_follower_publishes_no_members(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """A follower manages no members of its own, whatever it last held."""
+        """A follower manages no members and clears its own delegated playback state."""
         mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
         player = WiimPlayer(
             provider=mock_provider,
@@ -311,10 +313,34 @@ class TestGroupMembers:
         )
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
         player._attr_group_members = ["stale"]
+        pre_group_state: PlaybackState = PlaybackState.PLAYING
+        player._attr_playback_state = pre_group_state
+        pre_group_media: PlayerMedia | None = cast("PlayerMedia", MagicMock())
+        player._attr_current_media = pre_group_media
 
         player._update_ma_state_from_sdk_cache()
 
         assert player._attr_group_members == []
+        assert player._attr_playback_state == PlaybackState.IDLE
+        assert player._attr_current_media is None
+        assert player._attr_active_source is None
+
+    def test_unknown_leader_follower_locks_grouping(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A follower of an undiscovered group withdraws grouping so it is not regrouped."""
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        locked_when_unknown = player.grouping_locked
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = False
+        locked_when_known = player.grouping_locked
+        assert locked_when_unknown is True
+        assert locked_when_known is False
 
     """Test dynamic source list construction."""
 

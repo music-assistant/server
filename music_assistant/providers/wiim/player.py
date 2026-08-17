@@ -131,6 +131,14 @@ class WiimPlayer(Player):
         """Return the ids of the peers of either backend this player can group with."""
         return self._native_groups.can_group_with(self)
 
+    @property
+    def grouping_locked(self) -> bool:
+        """Withdraw grouping while following a group MA has not discovered."""
+        # An unknown-leader follower belongs to an external group MA cannot see the leader
+        # of; locking here keeps core from offering it as a grouping target for a regroup
+        # the coordinator would then have to refuse.
+        return self._native_groups.is_unknown_leader_follower(self.player_id)
+
     def is_native_group_compatible(self, other: Player) -> bool:
         """Only reachable coordinator-approved peers of either backend group natively."""
         return other.player_id in self.can_group_with
@@ -443,11 +451,7 @@ class WiimPlayer(Player):
         # mapper only reads the role, never writes it. The self-follower signal is fed from a
         # live group read on the poll/event refresh path.
         if self._native_groups.role_of(self.player_id) == NativeGroupRole.FOLLOWER:
-            # Following a leader (possibly a generic one): MA derives playback from the
-            # leader, so this player publishes only its own volume/mute here and manages no
-            # members of its own.
-            self._attr_group_members = []
-            self.update_state()
+            self._publish_follower_state()
             return
 
         media = self.device.current_media
@@ -598,6 +602,19 @@ class WiimPlayer(Player):
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
+
+    def _publish_follower_state(self) -> None:
+        """Publish the volume-only state of a native follower and clear its playback."""
+        # MA derives a follower's playback from the leader, so this player publishes only
+        # its own volume/mute and manages no members. Reset the raw playback state so a
+        # self-reported follower whose leader MA has not discovered (no synced_to parent)
+        # does not keep publishing its stale pre-group state; a known follower still mirrors
+        # its resolved leader through synced_to.
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
+        self._attr_group_members = []
+        self.update_state()
 
     def _schedule_topology_refresh(self) -> None:
         """Schedule a live topology + self-role re-read, preempting any stale one."""

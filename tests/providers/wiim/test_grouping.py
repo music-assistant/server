@@ -1370,3 +1370,67 @@ class TestCommandSerialization:
         gate.set()
         await asyncio.gather(task_a, task_b)
         assert order == ["a", "b"]  # only after the first finished did the second run
+
+
+# a second follower identity for whole-batch validation tests
+SECOND_HTTP_UUID = "D1B2C3D4E5F6A7B8C9D0E1F2"
+SECOND_ID = "wiim_uuid:D1B2C3D4-E5F6-A7B8-C9D0-E1F2D1B2C3D4"
+
+
+class TestBatchValidation:
+    """The whole batch is validated before any speaker joins or leaves."""
+
+    async def test_incompatible_later_addition_aborts_before_any_join(self) -> None:
+        """A legacy/incompatible target later in the batch stops every join up front."""
+        good_slaves: list[str] = []
+        good_client = _member_client()
+        good_client.join_slave = AsyncMock(
+            side_effect=lambda *_a, **_k: good_slaves.append(FOLLOWER_HTTP_UUID)
+        )
+        bad_client = _member_client()
+        bad_client.join_slave = AsyncMock()
+        # the second target is a legacy Wi-Fi Direct device the compatibility gate refuses
+        bad_client.get_device_info_model = AsyncMock(
+            return_value=MagicMock(needs_wifi_direct_multiroom=True, wmrm_version="4.2")
+        )
+        leader = _make_player(
+            LEADER_ID, BACKEND_GENERIC, ip="192.168.1.20", command_client=_leader_client([])
+        )
+        good = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=good_client)
+        bad = _make_player(SECOND_ID, BACKEND_GENERIC, command_client=bad_client)
+        coordinator, _ = _make_coordinator(leader, good, bad)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID, SECOND_ID], None)
+        # the whole batch was validated first, so the compatible target never joined either
+        good_client.join_slave.assert_not_called()
+        bad_client.join_slave.assert_not_called()
+
+    async def test_leader_following_unknown_group_cannot_lead(self) -> None:
+        """A leader that itself follows an undiscovered group is refused before any mutation."""
+        leader_client = _leader_client([])
+        leader = _make_player(
+            LEADER_ID, BACKEND_GENERIC, ip="192.168.1.20", command_client=leader_client
+        )
+        member_client = _member_client()
+        member_client.join_slave = AsyncMock()
+        member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=member_client)
+        coordinator, _ = _make_coordinator(leader, member)
+        coordinator.set_self_role(LEADER_ID, True)  # the leader follows an undiscovered group
+        await coordinator.reconcile()
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID], None)
+        member_client.join_slave.assert_not_called()
+
+    async def test_is_unknown_leader_follower_query(self) -> None:
+        """The public query flags a self-reported follower whose leader is undiscovered."""
+        follower = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
+        coordinator, _ = _make_coordinator(follower)
+        coordinator.set_self_role(FOLLOWER_ID, True)
+        await coordinator.reconcile()
+        assert coordinator.is_unknown_leader_follower(FOLLOWER_ID) is True
+
+        coordinator.set_self_role(FOLLOWER_ID, False)
+        await coordinator.reconcile()
+        assert coordinator.is_unknown_leader_follower(FOLLOWER_ID) is False
