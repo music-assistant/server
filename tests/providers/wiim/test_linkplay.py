@@ -407,6 +407,45 @@ class TestTopology:
         mock_client.get_device_info_model.assert_awaited()
         mock_provider.native_groups.refresh_leader.assert_awaited_with(player, force=True)
 
+    def test_becoming_follower_clears_active_output_protocol(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A shell that was playing through DLNA drops that output when it becomes a follower."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player.set_active_output_protocol("dlna_x")
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+
+        player.on_native_group_update()
+
+        assert player.active_output_protocol is None
+        assert player.playback_state == PlaybackState.IDLE
+        assert player.current_media is None
+
+    def test_leaving_follower_does_not_resurrect_protocol(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """The dropped output stays cleared after leaving; normal playback reselects it."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player.set_active_output_protocol("dlna_x")
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player.on_native_group_update()
+
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.STANDALONE
+        player.on_native_group_update()
+
+        assert player.active_output_protocol is None
+
+    def test_standalone_update_keeps_active_output_protocol(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A non-follower topology update never touches the active output (no churn)."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player.set_active_output_protocol("dlna_x")
+
+        player.on_native_group_update()  # role stays standalone
+
+        assert player.active_output_protocol == "dlna_x"
+
 
 class TestGroupCompatibility:
     """Only compatible, modern router-based generic LinkPlay devices may be grouped."""

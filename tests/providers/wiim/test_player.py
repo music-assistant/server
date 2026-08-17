@@ -342,6 +342,44 @@ class TestGroupMembers:
         assert locked_when_unknown is True
         assert locked_when_known is False
 
+    def test_becoming_follower_clears_active_output_protocol(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """An official device drops a still-active output when it becomes a native follower."""
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player.set_active_output_protocol("airplay_x")
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player.active_output_protocol is None
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    def test_leaving_follower_keeps_output_cleared(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The dropped output is not restored once the device leaves the group."""
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player.set_active_output_protocol("airplay_x")
+        player._update_ma_state_from_sdk_cache()
+        assert player.active_output_protocol is None
+
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.STANDALONE
+        player._update_ma_state_from_sdk_cache()
+
+        assert player.active_output_protocol is None
+
     """Test dynamic source list construction."""
 
     @pytest.mark.asyncio

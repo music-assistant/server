@@ -606,10 +606,14 @@ class WiimPlayer(Player):
     def _publish_follower_state(self) -> None:
         """Publish the volume-only state of a native follower and clear its playback."""
         # MA derives a follower's playback from the leader, so this player publishes only
-        # its own volume/mute and manages no members. Reset the raw playback state so a
-        # self-reported follower whose leader MA has not discovered (no synced_to parent)
-        # does not keep publishing its stale pre-group state; a known follower still mirrors
-        # its resolved leader through synced_to.
+        # its own volume/mute and manages no members. Clear any active output first so the
+        # final state mirrors the leader (synced_to) or falls back to idle instead of a
+        # stale linked protocol, which the base otherwise prioritizes over synced_to; it is
+        # left cleared on leaving, where normal playback reselects an output. Reset the raw
+        # playback state too so a self-reported follower whose leader MA has not discovered
+        # (no synced_to parent) does not keep publishing its stale pre-group state.
+        if self.active_output_protocol is not None:
+            self.set_active_output_protocol(None)
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_active_source = None
         self._attr_current_media = None

@@ -228,6 +228,13 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # role/membership are derived by the coordinator, not from this player's own
         # attributes, so force a recalculation (e.g. synced_to) even when idle.
         self._attr_group_members = self._native_groups.members_of(self.player_id)
+        if self._is_native_follower and self.active_output_protocol is not None:
+            # a native follower gets audio from its leader at the hardware level, not from a
+            # linked protocol. Clear any active output so the final state mirrors the leader
+            # (synced_to) or falls back to idle instead of a stale DLNA/AirPlay player, which
+            # the base otherwise prioritizes over synced_to. It is left cleared on leaving:
+            # normal playback reselects an output DLNA-first / by user preference.
+            self.set_active_output_protocol(None)
         self.mark_state_dirty()
         self.update_state()
 
