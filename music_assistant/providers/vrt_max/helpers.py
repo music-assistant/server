@@ -248,6 +248,8 @@ AGGREGATOR_CLIENT = "vrtnu-web@PROD"
 RESUMEPOINTS_URL = "https://ddt.profiel.vrt.be/resumePoints"
 # Snap the resume position to 0/end within this many seconds of the start/end.
 _RESUMEPOINT_MARGIN = 30
+# Upper bound on the in-memory resume-target cache (evicts oldest when exceeded).
+_RESUME_TARGET_CACHE_MAX = 512
 SSO_INIT_URL = "https://www.vrt.be/vrtnu/sso/login?scope=openid,mid"
 SSO_LOGIN_URL = "https://login.vrt.be/perform_login"
 # VRT's login endpoint expects a browser-like client.
@@ -704,7 +706,11 @@ class VrtEpisode:
 
 
 class VrtApiError(Exception):
-    """Raised when the VRT GraphQL API returns an error or unexpected payload."""
+    """Raised on a VRT API transport/protocol error (network, HTTP, bad payload)."""
+
+
+class VrtNotFoundError(VrtApiError):
+    """Raised when requested VRT content genuinely does not exist (empty page)."""
 
 
 class VrtAuthError(Exception):
@@ -797,7 +803,7 @@ class VrtMaxClient:
         data = await self._graphql(_QUERY_PROGRAM, {"pageId": page_id})
         page = data.get("page")
         if not isinstance(page, dict) or not page.get("__typename"):
-            raise VrtApiError(f"No program page for {page_id!r}")
+            raise VrtNotFoundError(f"No program page for {page_id!r}")
 
         description, image_url = _parse_header(page.get("header"))
         seasons: list[VrtSeason] = []
@@ -856,7 +862,7 @@ class VrtMaxClient:
         data = await self._graphql(_QUERY_EPISODE, {"pageId": page_id})
         page = data.get("page")
         if not isinstance(page, dict) or not page.get("__typename"):
-            raise VrtApiError(f"No episode page for {page_id!r}")
+            raise VrtNotFoundError(f"No episode page for {page_id!r}")
         description, header_image = _parse_header(page.get("header"))
         date_label = _first_meta(_header_meta(page.get("header")))
         player = page.get("player")
@@ -891,7 +897,7 @@ class VrtMaxClient:
                     stream_id=stream_id,
                     duration=int(duration) if isinstance(duration, (int, float)) else 0,
                 )
-        raise VrtApiError(f"No audio stream for {page_id!r}")
+        raise VrtNotFoundError(f"No audio stream for {page_id!r}")
 
     async def resolve_ondemand_hls(self, stream_id: str, player_token: str) -> str:
         """
@@ -902,16 +908,19 @@ class VrtMaxClient:
         """
         url = f"{AGGREGATOR_URL}/media-items/{stream_id}"
         params = {"vrtPlayerToken": player_token, "client": AGGREGATOR_CLIENT}
-        async with self._session.get(
-            url,
-            params=params,
-            headers={"User-Agent": "Music Assistant"},
-            timeout=GRAPHQL_TIMEOUT,
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise VrtApiError(f"Aggregator returned HTTP {resp.status}: {body[:200]}")
-            body = await resp.json()
+        try:
+            async with self._session.get(
+                url,
+                params=params,
+                headers={"User-Agent": "Music Assistant"},
+                timeout=GRAPHQL_TIMEOUT,
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    raise VrtApiError(f"Aggregator returned HTTP {resp.status}: {body[:200]}")
+                body = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise VrtApiError(f"Aggregator request failed: {err}") from err
         hls_urls: list[str] = []
         for target in body.get("targetUrls") or []:
             if not isinstance(target, dict) or target.get("type") != "hls":
@@ -1019,9 +1028,12 @@ class VrtMaxClient:
                     else "",
                     duration=int(duration) if isinstance(duration, (int, float)) else 0,
                 )
+                # Bound the cache so a long-running instance cannot grow unbounded.
+                if len(self._resume_targets) >= _RESUME_TARGET_CACHE_MAX:
+                    self._resume_targets.pop(next(iter(self._resume_targets)))
                 self._resume_targets[page_id] = target
                 return target
-        raise VrtApiError(f"No resume target for {page_id!r}")
+        raise VrtNotFoundError(f"No resume target for {page_id!r}")
 
     async def post_resume_point(
         self,
@@ -1057,12 +1069,15 @@ class VrtMaxClient:
             "User-Agent": "Music Assistant",
         }
         url = f"{RESUMEPOINTS_URL}/{target.media_id}"
-        async with self._session.post(
-            url, json=payload, headers=headers, timeout=GRAPHQL_TIMEOUT
-        ) as resp:
-            if resp.status not in (200, 201, 204):
-                body = await resp.text()
-                raise VrtApiError(f"resumePoints returned HTTP {resp.status}: {body[:200]}")
+        try:
+            async with self._session.post(
+                url, json=payload, headers=headers, timeout=GRAPHQL_TIMEOUT
+            ) as resp:
+                if resp.status not in (200, 201, 204):
+                    body = await resp.text()
+                    raise VrtApiError(f"resumePoints returned HTTP {resp.status}: {body[:200]}")
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise VrtApiError(f"resumePoints request failed: {err}") from err
 
     async def iter_favourite_ids(self, access_token: str) -> AsyncGenerator[str]:
         """
@@ -1193,11 +1208,14 @@ class VrtMaxClient:
         headers = GRAPHQL_HEADERS
         if bearer:
             headers = {**GRAPHQL_HEADERS, "Authorization": f"Bearer {bearer}"}
-        async with self._session.post(
-            GRAPHQL_URL, json=payload, headers=headers, timeout=GRAPHQL_TIMEOUT
-        ) as resp:
-            resp.raise_for_status()
-            body = await resp.json()
+        try:
+            async with self._session.post(
+                GRAPHQL_URL, json=payload, headers=headers, timeout=GRAPHQL_TIMEOUT
+            ) as resp:
+                resp.raise_for_status()
+                body = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise VrtApiError(f"GraphQL request failed: {err}") from err
         if not isinstance(body, dict):
             raise VrtApiError("Unexpected GraphQL response")
         if body.get("errors"):
@@ -1284,50 +1302,59 @@ class VrtMaxAuth:
         ):
             return
         jar = aiohttp.CookieJar()
-        async with aiohttp.ClientSession(
-            cookie_jar=jar, headers={"User-Agent": BROWSER_UA}
-        ) as session:
-            async with session.get(SSO_INIT_URL, timeout=GRAPHQL_TIMEOUT) as resp:
-                await resp.read()
-            xsrf = _cookie_value(jar, "OIDCXSRF")
-            if not xsrf:
-                raise VrtAuthError("VRT SSO init failed (no OIDCXSRF cookie)")
-            payload = {
-                "clientId": "vrtnu-site",
-                "loginID": self._username,
-                "password": self._password,
-            }
-            async with session.post(
-                SSO_LOGIN_URL, json=payload, headers={"OIDCXSRF": xsrf}, timeout=GRAPHQL_TIMEOUT
-            ) as resp:
-                info = await resp.json(content_type=None)
-            if not isinstance(info, dict) or info.get("errorCode") != 0:
-                message = (info or {}).get("errorMessage") or "invalid credentials"
-                raise VrtAuthError(f"VRT login failed: {message}")
-            redirect_url = info.get("redirectUrl")
-            if not redirect_url:
-                raise VrtAuthError("VRT login returned no redirect url")
-            async with session.get(redirect_url, timeout=GRAPHQL_TIMEOUT) as resp:
-                await resp.read()
-            access_token = _cookie_value(jar, "vrtnu-site_profile_at")
-            identity_token = _cookie_value(jar, "vrtnu-site_profile_vt")
-            if not access_token or not identity_token:
-                raise VrtAuthError("VRT login did not yield the expected tokens")
-            self._access_token = access_token
-            self._identity_token = identity_token
-            self._login_expiry = min(_jwt_expiry(access_token), _jwt_expiry(identity_token))
+        try:
+            async with aiohttp.ClientSession(
+                cookie_jar=jar, headers={"User-Agent": BROWSER_UA}
+            ) as session:
+                async with session.get(SSO_INIT_URL, timeout=GRAPHQL_TIMEOUT) as resp:
+                    await resp.read()
+                xsrf = _cookie_value(jar, "OIDCXSRF")
+                if not xsrf:
+                    raise VrtAuthError("VRT SSO init failed (no OIDCXSRF cookie)")
+                payload = {
+                    "clientId": "vrtnu-site",
+                    "loginID": self._username,
+                    "password": self._password,
+                }
+                async with session.post(
+                    SSO_LOGIN_URL,
+                    json=payload,
+                    headers={"OIDCXSRF": xsrf},
+                    timeout=GRAPHQL_TIMEOUT,
+                ) as resp:
+                    info = await resp.json(content_type=None)
+                if not isinstance(info, dict) or info.get("errorCode") != 0:
+                    message = (info or {}).get("errorMessage") or "invalid credentials"
+                    raise VrtAuthError(f"VRT login failed: {message}")
+                redirect_url = info.get("redirectUrl")
+                if not redirect_url:
+                    raise VrtAuthError("VRT login returned no redirect url")
+                async with session.get(redirect_url, timeout=GRAPHQL_TIMEOUT) as resp:
+                    await resp.read()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise VrtAuthError(f"VRT login request failed: {err}") from err
+        access_token = _cookie_value(jar, "vrtnu-site_profile_at")
+        identity_token = _cookie_value(jar, "vrtnu-site_profile_vt")
+        if not access_token or not identity_token:
+            raise VrtAuthError("VRT login did not yield the expected tokens")
+        self._access_token = access_token
+        self._identity_token = identity_token
+        self._login_expiry = min(_jwt_expiry(access_token), _jwt_expiry(identity_token))
 
     async def _request_player_token(self, identity_token: str) -> tuple[str, float]:
         """Exchange an identity token for a vrtPlayerToken and its expiry epoch."""
         payload = {"identityToken": identity_token, "playerInfo": ""}
-        async with self._session.post(
-            TOKEN_URL,
-            json=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "Music Assistant"},
-            timeout=GRAPHQL_TIMEOUT,
-        ) as resp:
-            resp.raise_for_status()
-            body = await resp.json()
+        try:
+            async with self._session.post(
+                TOKEN_URL,
+                json=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "Music Assistant"},
+                timeout=GRAPHQL_TIMEOUT,
+            ) as resp:
+                resp.raise_for_status()
+                body = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise VrtAuthError(f"Player token request failed: {err}") from err
         token = body.get("vrtPlayerToken") if isinstance(body, dict) else None
         if not isinstance(token, str) or not token:
             raise VrtAuthError("No vrtPlayerToken in token response")

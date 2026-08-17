@@ -57,6 +57,7 @@ from .helpers import (
     VrtEpisode,
     VrtMaxAuth,
     VrtMaxClient,
+    VrtNotFoundError,
     VrtProgram,
     VrtProgramTile,
     VrtStation,
@@ -187,9 +188,11 @@ class VrtMaxProvider(MusicProvider):
     @use_cache(3600 * 6)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get a single podcast / radio programme archive by page id."""
+        # Only a genuine "not found" maps to MediaNotFoundError; a transient
+        # VrtApiError propagates so the library sync aborts instead of pruning.
         try:
             program = await self._client.get_program(prov_podcast_id)
-        except VrtApiError as err:
+        except VrtNotFoundError as err:
             raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}") from err
         return self._podcast_from_program(program)
 
@@ -214,11 +217,16 @@ class VrtMaxProvider(MusicProvider):
                 self.logger.debug("No access token for episode progress: %s", err)
         position = 0
         for season in program.seasons:
-            async for episode in self._client.iter_season_episodes(
-                season.component_id, access_token
-            ):
-                position += 1
-                yield self._episode_item(episode, podcast_mapping, position)
+            try:
+                async for episode in self._client.iter_season_episodes(
+                    season.component_id, access_token
+                ):
+                    position += 1
+                    yield self._episode_item(episode, podcast_mapping, position)
+            except VrtApiError as err:
+                # A transient failure mid-pagination shouldn't drop the whole list.
+                self.logger.warning("Stopped listing episodes for %s: %s", prov_podcast_id, err)
+                return
 
     @use_cache(3600 * 6)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
