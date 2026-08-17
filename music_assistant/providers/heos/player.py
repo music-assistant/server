@@ -64,6 +64,7 @@ class HeosPlayer(Player):
         self._ma_controls_playback = False
         self._ma_playback_starting = False
         self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.player_id}"
+        self._on_unload_callbacks.append(self._cancel_ma_playback_transition)
         self._queue_cleanup_lock = asyncio.Lock()
         self._queue_cleanup_pending = False
 

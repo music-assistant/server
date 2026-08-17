@@ -178,6 +178,18 @@ async def test_select_source_ends_ma_playback_transition() -> None:
     mass.cancel_timer.assert_called_once_with(f"heos_playback_transition_{player.player_id}")
 
 
+async def test_player_unload_cancels_playback_transition() -> None:
+    """Cancel the playback transition when the player unloads."""
+    player = _make_player(_url_stream_now_playing())
+    mass = cast("MagicMock", player.mass)
+    player._ma_playback_starting = True
+
+    await player.on_unload()
+
+    mass.cancel_timer.assert_any_call(f"heos_playback_transition_{player.player_id}")
+    assert player._ma_playback_starting is False
+
+
 def test_media_position_and_duration_reported_in_seconds() -> None:
     """HEOS reports milliseconds; the media must carry seconds."""
     player = _make_player(_external_now_playing(113000))
