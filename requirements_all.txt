@@ -82,6 +82,7 @@ python-slugify==8.0.4
 pytz==2026.2
 pywam==0.2.0
 pywidevine==1.9.0
+pywiim==2.3.0
 PyYAML==6.0.3
 qqmusic-api-python==0.7.2
 radios==0.3.2

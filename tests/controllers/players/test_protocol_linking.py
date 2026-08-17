@@ -9321,6 +9321,78 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         assert disabled_ids == {ap_id, dlna_id}
 
     @pytest.mark.asyncio
+    async def test_universal_replaced_by_linkplay_shell(self, mock_mass: MagicMock) -> None:
+        """A generic LinkPlay shell that owns DLNA+AirPlay children replaces the Universal."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_edifier"
+        shell_id = "wiim_uuid:FF97F002-783E-6505-6579-F15FFF97F002"
+        ap_id = "airplay_edifier"
+        dlna_id = "dlna_edifier"
+
+        all_configs = {
+            universal_id: {
+                "values": {
+                    "linked_protocol_ids": [ap_id, dlna_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Edifier MS50A",
+            },
+            shell_id: {
+                "enabled": True,
+                "provider": "wiim",
+                "player_type": "player",
+                "values": {"linked_protocol_ids": [ap_id, dlna_id]},
+            },
+            ap_id: {
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+            dlna_id: {
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        # both protocol children are reparented from the Universal to the LinkPlay shell
+        parent_restorations = {
+            call.args[0]: call.args[1]
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in call.args[0]
+        }
+        assert parent_restorations == {
+            f"{CONF_PLAYERS}/{ap_id}/values/protocol_parent_id": shell_id,
+            f"{CONF_PLAYERS}/{dlna_id}/values/protocol_parent_id": shell_id,
+        }
+        # the Universal's saved config/name/DSP/preference and group refs migrate to the
+        # shell, and the now-obsolete Universal is removed
+        mock_mass.players._migrate_universal_player_config.assert_called_once_with(
+            universal_id, shell_id
+        )
+        mock_mass.players._repoint_group_memberships.assert_called_once_with(universal_id, shell_id)
+        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+
+    @pytest.mark.asyncio
     async def test_protocols_reparented_to_their_own_native_claimer(
         self, mock_mass: MagicMock
     ) -> None:
@@ -10427,3 +10499,237 @@ class TestLocalAudioStubMigration:
 
         assert await migrate(data) is True
         assert await migrate(data) is False
+
+
+class _LockedMockPlayer(MockPlayer):
+    """A player that keeps its group read-only (e.g. an externally-created mixed group)."""
+
+    @property
+    def grouping_locked(self) -> bool:
+        """Suppress grouping in the exposed state."""
+        return True
+
+
+class TestGroupingLockedPolicy:
+    """A grouping-locked player withholds SET_MEMBERS and group targets in its final state."""
+
+    def test_locked_player_withholds_set_members(self, mock_mass: MagicMock) -> None:
+        """A locked player drops SET_MEMBERS from its exposed features."""
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = _LockedMockPlayer(provider, "shell_1", "Shell")
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS, PlayerFeature.VOLUME_SET}
+        player._cache.clear()
+        player.update_state(signal_event=False)
+        assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
+        assert PlayerFeature.VOLUME_SET in player.state.supported_features
+
+    def test_locked_player_withholds_protocol_derived_set_members(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Even a linked protocol player's SET_MEMBERS is suppressed while locked."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = _LockedMockPlayer(provider, "shell_1", "Shell")
+        player._attr_supported_features = set()  # no native grouping of its own
+        protocol = MockPlayer(provider, "airplay_p", "P (AirPlay)", player_type=PlayerType.PROTOCOL)
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol._cache.clear()
+        protocol.set_protocol_parent_id("shell_1")
+        player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_p", protocol_domain="airplay", priority=10
+                )
+            ]
+        )
+        mock_mass.players = controller
+        controller._players = {"shell_1": player, "airplay_p": protocol}
+        protocol.refresh_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
+
+    def test_locked_player_offers_no_group_targets(self, mock_mass: MagicMock) -> None:
+        """A locked player exposes no group targets, even an otherwise groupable peer."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = _LockedMockPlayer(provider, "shell_1", "Shell")
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        player._attr_can_group_with = {"peer_1"}
+        peer = MockPlayer(provider, "peer_1", "Peer")
+        mock_mass.players = controller
+        controller._players = {"shell_1": player, "peer_1": peer}
+        player._cache.clear()
+        peer.refresh_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        assert player.state.can_group_with == set()
+
+    def test_unlocked_player_keeps_grouping(self, mock_mass: MagicMock) -> None:
+        """A normal (unlocked) player keeps SET_MEMBERS and its group targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = MockPlayer(provider, "shell_2", "Shell2")
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        player._attr_can_group_with = {"peer_2"}
+        peer = MockPlayer(provider, "peer_2", "Peer2")
+        mock_mass.players = controller
+        controller._players = {"shell_2": player, "peer_2": peer}
+        player._cache.clear()
+        peer.refresh_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        assert PlayerFeature.SET_MEMBERS in player.state.supported_features
+        assert "peer_2" in player.state.can_group_with
+
+    def test_locked_peer_excluded_from_group_targets(self, mock_mass: MagicMock) -> None:
+        """An unlocked leader drops a locked peer but keeps an unlocked one as a target."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        leader = MockPlayer(provider, "shell_1", "Shell")
+        leader._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        leader._attr_can_group_with = {"locked_peer", "open_peer"}
+        locked_peer = _LockedMockPlayer(provider, "locked_peer", "Locked Peer")
+        open_peer = MockPlayer(provider, "open_peer", "Open Peer")
+        mock_mass.players = controller
+        controller._players = {
+            "shell_1": leader,
+            "locked_peer": locked_peer,
+            "open_peer": open_peer,
+        }
+        leader._cache.clear()
+        for player in (locked_peer, open_peer, leader):
+            player.refresh_state(signal_event=False)
+        # the locked peer keeps its own group read-only, so it is not offered as a target,
+        # while the ordinary peer still is
+        assert "locked_peer" not in leader.state.can_group_with
+        assert "open_peer" in leader.state.can_group_with
+
+    def test_linked_protocol_cannot_reintroduce_locked_member(self, mock_mass: MagicMock) -> None:
+        """A locked member offered by a linked protocol is still kept out of the targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        leader = MockPlayer(provider, "shell_1", "Shell")
+        leader._attr_supported_features = set()  # no native grouping of its own
+        protocol = MockPlayer(provider, "airplay_p", "P (AirPlay)", player_type=PlayerType.PROTOCOL)
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol._attr_can_group_with = {"locked_peer", "open_peer"}
+        protocol._cache.clear()
+        protocol.set_protocol_parent_id("shell_1")
+        leader.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_p", protocol_domain="airplay", priority=10
+                )
+            ]
+        )
+        locked_peer = _LockedMockPlayer(provider, "locked_peer", "Locked Peer")
+        open_peer = MockPlayer(provider, "open_peer", "Open Peer")
+        mock_mass.players = controller
+        controller._players = {
+            "shell_1": leader,
+            "airplay_p": protocol,
+            "locked_peer": locked_peer,
+            "open_peer": open_peer,
+        }
+        for player in (locked_peer, open_peer, protocol):
+            player.refresh_state(signal_event=False)
+        leader._cache.clear()
+        leader.refresh_state(signal_event=False)
+        # the linked protocol lists the locked peer, but the final filter still excludes it
+        assert "locked_peer" not in leader.state.can_group_with
+        assert "open_peer" in leader.state.can_group_with
+
+
+class _NativeGroupingMockPlayer(MockPlayer):
+    """A player that runs its own multiroom and prefers native grouping."""
+
+    @property
+    def prefer_native_grouping(self) -> bool:
+        """Prefer native grouping over any linked protocol."""
+        return True
+
+
+class _RejectsNativeGroupingMockPlayer(MockPlayer):
+    """A parent that never accepts another player as a native group peer."""
+
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """Reject every peer as native-incompatible (e.g. a cross-backend device)."""
+        return False
+
+
+class TestPreferNativeGrouping:
+    """A player that prefers native grouping uses it before its preferred output protocol."""
+
+    def test_prefer_native_uses_native_before_child_preferred(self, mock_mass: MagicMock) -> None:
+        """A prefer-native child groups natively even with an explicit protocol preference."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        parent = MockPlayer(provider, "shell_parent", "Parent")
+        child = _NativeGroupingMockPlayer(provider, "shell_child", "Child")
+        # an explicit child output-protocol preference that would otherwise win
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="airplay_child")
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "shell_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        assert native_members == ["shell_child"]
+        assert protocol_members == []
+
+    def test_prefer_native_falls_through_same_instance_not_native_peer(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A same-instance pair the parent rejects as a native peer is not forced native."""
+        controller = PlayerController(mock_mass)
+        # official + generic LinkPlay share one wiim provider instance, but a cross-backend
+        # peer is not native-group compatible, so the seam must not force native grouping.
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        parent = _RejectsNativeGroupingMockPlayer(provider, "shell_parent", "Parent")
+        child = _NativeGroupingMockPlayer(provider, "shell_child", "Child")
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "shell_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        assert native_members == []
+
+    def test_prefer_native_falls_through_when_incompatible(self, mock_mass: MagicMock) -> None:
+        """When native grouping is not possible (cross-backend), the seam does not force it."""
+        controller = PlayerController(mock_mass)
+        parent_provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        child_provider = MockProvider("other", instance_id="other_instance", mass=mock_mass)
+        parent = MockPlayer(parent_provider, "shell_parent", "Parent")
+        parent._attr_can_group_with = set()  # does not accept the cross-backend child
+        child = _NativeGroupingMockPlayer(child_provider, "other_child", "Child")
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "other_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        # the preferred-native seam did not force a cross-backend native group
+        assert native_members == []
+
+    def test_default_player_keeps_protocol_first_ordering(self, mock_mass: MagicMock) -> None:
+        """An ordinary player (no native preference) is unaffected by the seam."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        parent = MockPlayer(provider, "shell_parent", "Parent")
+        child = MockPlayer(provider, "plain_child", "Child")
+        assert child.prefer_native_grouping is False
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "plain_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        # with no preferred/active/common protocol, the default player still reaches
+        # native grouping via the normal priority (Priority 3), not the preferred seam
+        assert native_members == ["plain_child"]

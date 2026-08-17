@@ -1758,6 +1758,58 @@ class Player(ABC):
         return self.__attr_protocol_parent_id
 
     @property
+    def default_output_protocol_domain(self) -> str | None:
+        """
+        Return the protocol domain this player prefers as its default output, if any.
+
+        A player that has no native audio path of its own (e.g. a control/grouping shell
+        for a device whose playback runs over a linked protocol) can point the automatic
+        output selection at a specific protocol domain (such as ``dlna``). The base player
+        has no preference; an explicit user selection always overrides this default.
+        """
+        return None
+
+    @property
+    def grouping_locked(self) -> bool:
+        """
+        Return whether grouping must be suppressed in this player's exposed state.
+
+        A provider may lock grouping, for example while a device is in an externally-created
+        cross-backend group that Music Assistant keeps read-only, or while its control API is
+        unreachable. While locked, ``SET_MEMBERS`` is withdrawn and no group targets are
+        offered in the final state, even ones a linked protocol player would otherwise add.
+        """
+        return False
+
+    @property
+    def prefer_native_grouping(self) -> bool:
+        """
+        Return whether this player should group natively before any linked protocol.
+
+        A device that runs its own multiroom (e.g. a LinkPlay speaker exposed as a control
+        shell) should keep grouping on its native path rather than route it through a linked
+        AirPlay/DLNA protocol that merely happens to be its preferred playback output. When
+        this is set, grouping selection tries native grouping first; the usual compatibility
+        checks still decide whether native grouping is actually possible, and every other
+        player keeps the default protocol-first ordering. Playback output selection is
+        unaffected.
+        """
+        return False
+
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """
+        Return whether this player can natively group with the given player.
+
+        Native grouping normally works between any two players of the same provider
+        instance. A provider that hosts several incompatible device backends behind a
+        single instance can narrow this so the grouping layer never routes a cross-backend
+        pair onto a native group it cannot form.
+
+        :param other: The player considered for a native group with this one.
+        """
+        return self.provider.instance_id == other.provider.instance_id
+
+    @property
     @final
     def underlying_player_id(self) -> str | None:
         """
@@ -3000,6 +3052,10 @@ class Player(ABC):
             base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
+        if self.grouping_locked:
+            # A provider keeps this group read-only (e.g. an externally-created mixed group);
+            # withdraw grouping even if a linked protocol player would otherwise supply it.
+            base_features.discard(PlayerFeature.SET_MEMBERS)
         return base_features
 
     @cached_property
@@ -3025,6 +3081,11 @@ class Player(ABC):
                 return False
             if player.player_id == self.player_id:
                 return False  # Don't include self
+            if player.grouping_locked:
+                # The candidate keeps its own group read-only (e.g. an externally-created
+                # mixed group); never offer it as a target, including via a linked protocol
+                # that would otherwise reintroduce it.
+                return False
             # Don't include (playing) players that have group members (they are group leaders)
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
@@ -3035,6 +3096,11 @@ class Player(ABC):
 
         if self.__final_synced_to:
             # player is already synced/grouped, cannot group with others
+            return set()
+
+        if self.grouping_locked:
+            # A provider keeps this group read-only; offer no grouping targets, including
+            # any a linked protocol player would otherwise contribute.
             return set()
 
         expanded_can_group_with = self._expand_can_group_with()

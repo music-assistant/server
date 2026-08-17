@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import time
 import typing
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimException
@@ -20,6 +21,7 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
+    BACKEND_OFFICIAL,
     INPUT_MODE_SOURCES,
     PASSIVE_SOURCES,
     PLAYER_ID_PREFIX,
@@ -29,6 +31,7 @@ from .constants import (
     SOURCE_SPOTIFY,
     SOURCE_UNKNOWN,
 )
+from .helpers import is_in_mixed_group
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
@@ -46,6 +49,8 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
+
+    linkplay_backend = BACKEND_OFFICIAL
 
     # the device reports a source the app released as plain 'paused', indistinguishable
     # from a real pause, so only the grace period can tell us the session is over.
@@ -74,7 +79,6 @@ class WiimPlayer(Player):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.SELECT_SOURCE,
         }
-        self._attr_can_group_with = {provider.instance_id}
         self.device = device
         self._wiim_controller = provider.wiim_controller
 
@@ -97,6 +101,36 @@ class WiimPlayer(Player):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return supported features; grouping is withdrawn in a read-only mixed group."""
+        if self._in_mixed_group:
+            return self._attr_supported_features - {PlayerFeature.SET_MEMBERS}
+        return self._attr_supported_features
+
+    @property
+    def grouping_locked(self) -> bool:
+        """Suppress grouping while in a read-only externally-created mixed group."""
+        return self._in_mixed_group
+
+    @property
+    def can_group_with(self) -> set[str]:
+        """Return the ids of the other official WiiM players this player can group with."""
+        if self._in_mixed_group:
+            return set()
+        return {
+            player.player_id
+            for player in self.provider.players
+            if isinstance(player, WiimPlayer)
+            and player.available
+            and player.player_id != self.player_id
+            and not player._in_mixed_group
+        }
+
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """Only other official WiiM players group natively (never a generic LinkPlay shell)."""
+        return other.player_id in self.can_group_with
 
     # --- Lifecycle ---
 
@@ -268,6 +302,34 @@ class WiimPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
+        if self._in_mixed_group:
+            raise UnsupportedFeaturedException(
+                f"{self._attr_name} is in an externally-created mixed group and cannot be regrouped"
+            )
+        add_ids = player_ids_to_add or []
+        remove_ids = player_ids_to_remove or []
+        if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
+            raise PlayerCommandFailed(f"Duplicate member id in grouping request on {self.name}")
+        if conflicting := set(add_ids) & set(remove_ids):
+            raise PlayerCommandFailed(
+                f"Cannot add and remove the same member on {self.name}: {conflicting}"
+            )
+        # Resolve and validate the whole batch before any hardware call, so a stale, moved,
+        # mixed or cross-backend target can never leave the group partially mutated.
+        to_add = [self._require_wiim_member(mid) for mid in add_ids]
+        to_remove = [self._require_wiim_member(mid) for mid in remove_ids]
+        if to_remove:
+            # Only ungroup members this leader still owns per the freshest SDK snapshot: a
+            # target that has since moved to another (possibly read-only mixed) group must
+            # not be torn out of it.
+            current_member_udns = set(
+                self._wiim_controller.get_group_snapshot(self.device.udn).member_udns
+            )
+            for member in to_remove:
+                if member.device.udn not in current_member_udns:
+                    raise PlayerCommandFailed(
+                        f"{member.player_id} is no longer a member of {self.name}"
+                    )
         queue = self.mass.player_queues.get(self.player_id)
         pq_data = self.mass.player_queues.queue_data_or_none(self.player_id) if queue else None
         entry_sdk_uri = self.device.current_media.uri if self.device.current_media else None
@@ -286,23 +348,17 @@ class WiimPlayer(Player):
             self.device.playing_status,
         )
         try:
-            if player_ids_to_add:
-                follower_udns = [
-                    cast("WiimPlayer", member).device.udn
-                    for member_id in player_ids_to_add
-                    if (member := self.mass.players.get_player(member_id))
-                ]
-                if follower_udns:
-                    await self._wiim_controller.async_join_group(self.device.udn, follower_udns)
-
-            if player_ids_to_remove:
-                for member_id in player_ids_to_remove:
-                    if member := self.mass.players.get_player(member_id):
-                        await self._wiim_controller.async_ungroup_device(
-                            cast("WiimPlayer", member).device.udn
-                        )
+            if to_add:
+                await self._wiim_controller.async_join_group(
+                    self.device.udn, [member.device.udn for member in to_add]
+                )
+            for member in to_remove:
+                await self._wiim_controller.async_ungroup_device(member.device.udn)
         except WiimException as err:
+            # Log and refresh state as for any command, but surface grouping failures to the
+            # caller: a swallowed error would report a join/leave as succeeded.
             self._handle_command_error("set_members", err)
+            raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
         finally:
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
             self.logger.debug(
@@ -395,15 +451,7 @@ class WiimPlayer(Player):
             self._attr_playback_state = new_state
 
         # Group members
-        managed_member_ids = [
-            f"{PLAYER_ID_PREFIX}{member_udn}"
-            for member_udn in snapshot.member_udns
-            if member_udn != self.device.udn
-            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
-        ]
-        self._attr_group_members = (
-            [self.player_id, *managed_member_ids] if managed_member_ids else []
-        )
+        self._update_group_state(snapshot.member_udns)
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
@@ -552,3 +600,47 @@ class WiimPlayer(Player):
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
+
+    def _update_group_state(self, member_udns: tuple[str, ...]) -> None:
+        """Map the SDK's group snapshot to the managed group members."""
+        managed_member_ids = [
+            f"{PLAYER_ID_PREFIX}{member_udn}"
+            for member_udn in member_udns
+            if member_udn != self.device.udn
+            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
+        ]
+        self._attr_group_members = (
+            [self.player_id, *managed_member_ids] if managed_member_ids else []
+        )
+
+    @property
+    def _in_mixed_group(self) -> bool:
+        """Whether this device is in an externally-created mixed (cross-backend) group."""
+        return is_in_mixed_group(self)
+
+    def _require_wiim_member(self, player_id: str) -> WiimPlayer:
+        """
+        Return a same-backend, groupable member for a grouping command.
+
+        A request targeting this player itself, an unknown player, another backend
+        (e.g. a generic LinkPlay shell) or a device locked in an externally-created
+        mixed group is rejected with a typed error rather than applied.
+
+        :param player_id: The id of the member to resolve and validate.
+        """
+        if player_id == self.player_id:
+            raise UnsupportedFeaturedException(f"Cannot group {self.name} with itself")
+        member = self.mass.players.get_player(player_id)
+        if member is None:
+            raise PlayerCommandFailed(
+                f"{player_id} is not a known player for grouping on {self.name}"
+            )
+        if not isinstance(member, WiimPlayer):
+            raise UnsupportedFeaturedException(
+                f"Cannot group {player_id} with {self.name}: cross-backend grouping is unsupported"
+            )
+        if member._in_mixed_group:
+            raise PlayerCommandFailed(
+                f"{player_id} is in an externally-created mixed group and cannot be regrouped"
+            )
+        return member
