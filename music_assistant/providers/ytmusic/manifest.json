@@ -9,7 +9,7 @@
   "requirements": [
     "ytmusicapi==1.12.2",
     "duration-parser==1.0.1",
-    "deno==2.7.12"
+    "deno==2.9.5"
   ],
   "documentation": "https://music-assistant.io/music-providers/youtube-music/",
   "multi_instance": true

@@ -21,6 +21,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
+    CONF_PLAYERS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
 )
@@ -41,6 +42,8 @@ from .constants import (
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
     CONF_IGNORE_VOLUME,
+    CONF_PASSWORD_INVALID,
+    CONF_PASSWORD_MARKERS_REVIEWED,
     CONF_STORED_VOLUME,
     CONF_VERBOSE_PTP_LOGGING,
     DACP_DISCOVERY_TYPE,
@@ -221,8 +224,16 @@ class AirPlayProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._set_pyatv_log_level()
+        self._drop_unverified_password_markers()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+        # Shared audible instants for in-flight announcements, keyed by
+        # (group-or-leader player id, render key) -> unix ms. The controller
+        # forwards a group-entity announcement to every member concurrently;
+        # each call arms its own member and reuses the instant the first call
+        # planned, so all rooms render the clip in sync (managed by
+        # announce.py, pruned as plans pass).
+        self._announce_plans: dict[tuple[str, str], int] = {}
 
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
@@ -1164,3 +1175,35 @@ class AirPlayProvider(PlayerProvider):
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
+
+    def _drop_unverified_password_markers(self) -> None:
+        """
+        Clear the stored "password rejected" verdicts left by earlier releases, once.
+
+        Those releases marked a player whenever the binary reported an auth-shaped
+        rejection, without separating a password challenge from a device that
+        refused the handshake outright. The refusals put players that have no
+        password at all into a setup flow only a password could leave, so the
+        verdicts are dropped and left to be earned again on the next connect.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
+        ):
+            return
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not self.mass.config.get_raw_player_config_value(
+                player_id, CONF_PASSWORD_INVALID, False
+            ):
+                continue
+            self.logger.info("Clearing the unverified password marker on %s", player_id)
+            self.mass.config.set_raw_player_config_value(player_id, CONF_PASSWORD_INVALID, False)
+        # last, so a failure part-way through leaves the review to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
+        )

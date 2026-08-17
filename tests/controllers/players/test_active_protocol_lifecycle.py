@@ -17,9 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -98,9 +99,8 @@ def _make_player_with_protocol(
     controller._players = {"player_1": player, "proto_1": protocol_player}
     player.set_linked_output_protocols(
         [
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id="proto_1",
-                name="Sendspin",
                 protocol_domain="sendspin",
                 priority=40,
             )

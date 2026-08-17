@@ -183,6 +183,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        await super().unload(is_removed)
         if self._unregister_stream_route is not None:
             self._unregister_stream_route()
 
@@ -264,6 +265,13 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
     # filesystem hooks (these are what the parent calls)
     # ------------------------------------------------------------------
 
+    async def _is_reachable(self) -> bool:
+        """Return whether the cloud storage can be read."""
+        # this provider has no local path to stat, so ask the API for the root listing;
+        # an outage (or expired credentials) surfaces as a raised error
+        await self._scandir("", use_cache=False)
+        return True
+
     async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """
         List the children of a cloud folder.
@@ -306,7 +314,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],

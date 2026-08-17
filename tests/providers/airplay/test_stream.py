@@ -26,6 +26,12 @@ from music_assistant.providers.airplay.constants import (
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
+    CONF_STREAMING_MODE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
+    STREAMING_MODE_AUTO,
+    STREAMING_MODE_RAOP,
     AirPlayRemoteCommand,
     ClockReadiness,
     StreamingProtocol,
@@ -69,6 +75,13 @@ def _make_player() -> MagicMock:
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.state.active_group = None
+    player.streaming_mode = STREAMING_MODE_AUTO
+    player.streaming_mode_options = [
+        MagicMock(value=STREAMING_MODE_AUTO),
+        MagicMock(value=STREAMING_MODE_AP2_NTP),
+    ]
+    player.synced_to = None
+    player.group_members = []
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -312,29 +325,26 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
+async def test_cli_args_no_family_buffer_defaults() -> None:
     """
-    LinkPlay-family devices get the deep receiver queue from the family table.
+    Every device family stays on Automatic depth: no --latency by default.
 
-    Their pipeline starves at the stock depth - fully once the device is also
-    master of a native multiroom group - so the table maps them to 1750 ms.
-    Both platform generations must match: the newer names Linkplay as
-    manufacturer, the older only marks the platform in fv under OEM brands.
+    The LinkPlay generations that used to get a deepened realtime queue from
+    the family table manage their own buffer on the buffered stream, so the
+    table ships empty and only the per-player setting adds the argument.
     """
     player = _make_player()
     player.device_info.manufacturer = "Linkplay Technology Inc."
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "1750"
+    assert "--latency" not in args
     assert "--ptp-shared" in args
 
-    # Old platform: OEM brand, the Linkplay token only in fv.
     player = _make_player()
     player.device_info.manufacturer = "Edifier Inc"
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "1750"
+    assert "--latency" not in args
 
-    # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()
     args = await _build_args(player)
     assert "--latency" not in args
@@ -1585,7 +1595,7 @@ async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
     ids=["join", "plain"],
 )
 async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: float) -> None:
-    """A join's ack is held for clock verification, so it waits far longer than a plain start."""
+    """Each START uses the acknowledgement window assigned to its contract."""
     stream = AirPlayStream(_make_player())
     stream._cli_proc = _make_cli_proc()
     stream._connected.set()
@@ -1607,6 +1617,16 @@ async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: fl
         await stream.start(START_UNIX_MS, 0, join=join)
 
     assert timeouts == [expected_timeout]
+
+
+@pytest.mark.parametrize(
+    "timeout_ms",
+    [AIRPLAY_START_ACK_TIMEOUT_MS, AIRPLAY_JOIN_START_ACK_TIMEOUT_MS],
+    ids=["plain", "join"],
+)
+def test_start_ack_window_covers_buffered_anchor_retries(timeout_ms: int) -> None:
+    """The acknowledgement window outlives cliairplay's buffered anchor retry span."""
+    assert timeout_ms > 5_500
 
 
 @pytest.mark.asyncio
@@ -1718,6 +1738,311 @@ async def test_flush_clears_the_pending_stdin_depth() -> None:
     assert stream.audio_pending_ms == 0
 
 
+def test_announce_started_status_records_instant_and_duration() -> None:
+    """The started report carries the ACTUAL audible instant and the clip duration."""
+    stream = AirPlayStream(_make_player())
+    assert not stream._announce_started.is_set()
+
+    assert (
+        stream._handle_status_line(
+            f"[STATUS] announce_started at_unix_ms={START_UNIX_MS} duration_ms=1800"
+        )
+        is False
+    )
+
+    assert stream._announce_started.is_set()
+    assert stream._announce_ack == (START_UNIX_MS, 1800)
+
+
+def test_announce_started_status_with_unusable_values_reports_zeroes() -> None:
+    """Unusable fields land on 0 (unreported) instead of failing the whole answer."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line("[STATUS] announce_started at_unix_ms=nonsense")
+
+    assert stream._announce_started.is_set()
+    assert stream._announce_ack == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("line", "cancelled"),
+    [
+        ("[STATUS] announce_done", False),
+        ("[STATUS] announce_done cancelled=1", True),
+    ],
+    ids=["completed", "cancelled"],
+)
+def test_announce_done_status_sets_done_and_cancelled(line: str, cancelled: bool) -> None:
+    """The done report releases the done wait, carrying whether the clip was cut short."""
+    stream = AirPlayStream(_make_player())
+    assert not stream._announce_done.is_set()
+
+    assert stream._handle_status_line(line) is False
+
+    assert stream._announce_done.is_set()
+    assert stream._announce_done_cancelled is cancelled
+
+
+def test_announce_failed_is_routed_to_the_announce_waiter() -> None:
+    """A rejected arm answers both announce waits at once and stays off the connect error."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line('[STATUS] error code=announce_failed http=0 detail="not playing"')
+
+    assert stream._announce_started.is_set()
+    assert stream._announce_done.is_set()
+    assert stream._announce_error is not None
+    assert stream._announce_error.detail == "not playing"
+    # a command failure must not poison how a NEW connection is reported
+    assert stream._connect_error is None
+
+
+@pytest.mark.asyncio
+async def test_announce_sends_the_arm_command() -> None:
+    """ANNOUNCE is delivered as the four-line arm the binary expects."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+
+    with patch.object(
+        stream, "_write_cli_command", new_callable=AsyncMock, return_value=True
+    ) as write_command:
+        assert await stream.announce("/fake/clip.pcm", START_UNIX_MS, -12) is True
+
+    write_command.assert_awaited_once_with(
+        f"ANNOUNCE_FILE=/fake/clip.pcm\nANNOUNCE_AT_UNIX_MS={START_UNIX_MS}\n"
+        "ANNOUNCE_DUCK_DB=-12\nACTION=ANNOUNCE"
+    )
+
+
+@pytest.mark.asyncio
+async def test_announce_resets_the_previous_answer() -> None:
+    """Arming clears every slot so only this arm's answer is read."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._handle_status_line("[STATUS] announce_started at_unix_ms=5 duration_ms=6")
+    stream._handle_status_line("[STATUS] announce_done cancelled=1")
+    stream._handle_status_line("[STATUS] error code=announce_failed")
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        assert await stream.announce("/fake/clip.pcm", 0, -12) is True
+
+    assert not stream._announce_started.is_set()
+    assert not stream._announce_done.is_set()
+    assert stream._announce_ack is None
+    assert stream._announce_error is None
+    assert stream._announce_done_cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_announce_requires_a_running_connected_stream() -> None:
+    """An arm on a stream that is not up is refused without touching the pipe."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    # not connected
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        assert await stream.announce("/fake/clip.pcm", 0, -12) is False
+
+    write_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_returns_the_ack() -> None:
+    """The started wait hands back the acked instant and duration."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_started(1.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line(
+        f"[STATUS] announce_started at_unix_ms={START_UNIX_MS} duration_ms=900"
+    )
+
+    assert await wait_task == (START_UNIX_MS, 900)
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_resolves_on_done_without_started() -> None:
+    """A done (cancelled) without a start means the clip never played: None, right away."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_started(30.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line("[STATUS] announce_done cancelled=1")
+
+    assert await wait_task is None
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_times_out_on_a_silent_binary() -> None:
+    """An outdated binary ignores the arm entirely; the bounded wait returns None."""
+    stream = AirPlayStream(_make_player())
+
+    assert await stream.wait_announce_started(0) is None
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_started_returns_none_on_reported_failure() -> None:
+    """A reported announce failure answers the started wait as a failure, not a timeout."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_started(30.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line("[STATUS] error code=announce_failed")
+
+    assert await wait_task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("[STATUS] announce_done", True),
+        ("[STATUS] announce_done cancelled=1", False),
+        ("[STATUS] error code=announce_failed", False),
+    ],
+    ids=["completed", "cancelled", "failed"],
+)
+async def test_wait_announce_done_outcomes(line: str, expected: bool) -> None:
+    """Only a completed clip resolves the done wait as True."""
+    stream = AirPlayStream(_make_player())
+
+    wait_task = asyncio.create_task(stream.wait_announce_done(1.0))
+    await asyncio.sleep(0)
+    stream._handle_status_line(line)
+
+    assert await wait_task is expected
+
+
+@pytest.mark.asyncio
+async def test_wait_announce_done_times_out() -> None:
+    """The done wait stays bounded (eof can end the status stream mid-clip)."""
+    stream = AirPlayStream(_make_player())
+
+    assert await stream.wait_announce_done(0) is False
+
+
+@pytest.mark.asyncio
+async def test_cli_args_streaming_mode_lanes() -> None:
+    """
+    The streaming-mode pin maps onto the binary's protocol/timing arguments.
+
+    The timing lanes ride --timing on a forced airplay2 protocol, the compat
+    mode forces the auth-setup + RAOP flow, RAOP arrives through the protocol
+    override exactly as before, and Automatic leaves the route to the binary.
+    """
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_NTP
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "airplay2"
+    assert _arg_value(args, "--timing") == "ntp"
+
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_PTP
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "airplay2"
+    assert _arg_value(args, "--timing") == "ptp"
+
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_COMPAT
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "airplay2-compat"
+    assert "--timing" not in args
+
+    player = _make_player()
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "auto"
+    assert "--timing" not in args
+
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_RAOP
+    player.protocol_override = StreamingProtocol.RAOP
+    player.protocol = StreamingProtocol.RAOP
+    args = await _build_args(player)
+    assert _arg_value(args, "--protocol") == "raop"
+    assert "--timing" not in args
+
+
+@pytest.mark.asyncio
+async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
+    """
+    A measured PTP stall on a solo Automatic player self-heals onto NTP.
+
+    The visible streaming-mode setting is written (so the user can see and
+    revert the decision) and a playback restart is scheduled; a synced member
+    or a pinned mode only gets the warning.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    mass = player.provider.mass
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_NTP
+    )
+    assert mass.create_task.called
+
+    # A grouped member is reported, never moved: restarting one member of a
+    # live sync group would desync it.
+    grouped_player = _make_player()
+    grouped_player.synced_to = "apleader"
+    grouped = AirPlayStream(grouped_player)
+    grouped._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    grouped_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+    # An explicitly pinned mode is the user's choice: warn only.
+    pinned_player = _make_player()
+    pinned_player.streaming_mode = STREAMING_MODE_AP2_PTP
+    pinned = AirPlayStream(pinned_player)
+    pinned._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+
+def test_native_control_failure_switches_automatic_player_to_compatibility() -> None:
+    """A terminal native control failure persists the compatibility route once."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+    )
+    player.provider.mass.create_task.assert_not_called()
+
+
+def test_native_control_failure_does_not_override_pinned_mode() -> None:
+    """A terminal native control failure leaves an explicit streaming mode unchanged."""
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_PTP
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.create_task.assert_not_called()
+
+
+def test_unrelated_cli_error_does_not_switch_to_compatibility() -> None:
+    """A different runtime failure does not diagnose the native control route."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 audio send failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_clock_ready_projection_resolves_the_wait() -> None:
     """A probing receiver reports when its clock becomes usable, from its first probe."""
@@ -1785,8 +2110,16 @@ async def test_wait_clock_ready_times_out_for_a_binary_that_never_reports() -> N
 
 @pytest.mark.asyncio
 async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFixture) -> None:
-    """A receiver that never answers our clock is reported loudly once and carries no projection."""
-    stream = AirPlayStream(_make_player())
+    """
+    A stalled receiver that cannot be self-healed is reported loudly, once.
+
+    A grouped member is never auto-switched (moving one member of a live sync
+    group would desync it), so it takes the warn-only path; the solo Automatic
+    self-heal has its own test.
+    """
+    grouped_player = _make_player()
+    grouped_player.synced_to = "apleader"
+    stream = AirPlayStream(grouped_player)
 
     with caplog.at_level(logging.DEBUG):
         ended = stream._handle_status_line(
@@ -2023,10 +2356,10 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     # Nothing is written before the binary has a reader on the command pipe.
     assert operation_order == ["reader", "metadata"]
     # Metadata pushed synchronously on connect...
-    player._on_player_media_updated.assert_called_once_with()
+    player.on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
     deferred_callables = [call.args[1] for call in player.provider.mass.call_later.call_args_list]
-    assert player._on_player_media_updated not in deferred_callables
+    assert player.on_player_media_updated not in deferred_callables
     # The volume resend is still deferred (existing behavior preserved).
     assert player.provider.mass.call_later.call_count == 1
     assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
@@ -2062,6 +2395,87 @@ async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
         await deferred()
 
     send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_when_player_owns_it() -> None:
+    """The initial volume push is sent when this output owns its own volume."""
+    player = _make_player()
+    player.owns_volume = True
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_skips_volume_when_another_control_owns_it() -> None:
+    """No unsolicited volume push when another control owns this output's volume."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -> None:
+    """A latched mute is still pushed even when another control owns the volume."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = True
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_volume_for_a_requested_session_volume() -> None:
+    """A volume explicitly requested for the session is pushed, even without ownership."""
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream.session = MagicMock(requested_volume=85)
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
 
 
 @pytest.mark.asyncio
@@ -3120,6 +3534,41 @@ async def test_auth_failed_surfaces_authentication_failed_error() -> None:
         await stream.wait_for_connection()
 
     assert err.value.translation_key == "authentication_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["auth_required", "auth_failed"])
+async def test_refused_connection_is_not_reported_as_a_password_problem(code: str) -> None:
+    """A device that turns the handshake away points at pairing, not at a password."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line(f'[STATUS] error code={code} http=403 detail="refused"')
+    stream._process_ended.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        pytest.raises(PlayerCommandFailed) as err,
+    ):
+        await stream.wait_for_connection()
+
+    assert err.value.translation_key == "connection_refused"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["auth_required", "auth_failed"])
+async def test_refused_connection_never_marks_the_password_invalid(code: str) -> None:
+    """
+    A refusal must not leave a player demanding a password it may not even have.
+
+    tvOS 26 answers the pairing handshake with 403 for reasons unrelated to any
+    secret, and the marker persists across restarts - so latching it there would
+    strand the player in a setup flow no password can complete.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line(f'[STATUS] error code={code} http=403 detail="refused"')
+
+    player.set_password_invalid.assert_not_called()
 
 
 @pytest.mark.asyncio

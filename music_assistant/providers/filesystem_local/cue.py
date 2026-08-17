@@ -52,6 +52,9 @@ if TYPE_CHECKING:
 
 CUE_TRACK_ID_DELIMITER = "::track"
 
+# Bump when CUE decoding or parsing changes so cached and library metadata are refreshed.
+_CUE_METADATA_VERSION = 1
+
 
 @dataclass(frozen=True, slots=True)
 class _TrackBuildContext:
@@ -64,6 +67,15 @@ class _TrackBuildContext:
     track_genres: set[str] | None  # fallback genres from the audio file
     album: Album | None
     album_performers: tuple[str, ...]  # sheet-level PERFORMER values, fallback for track artists
+
+
+def cue_metadata_checksum(file_checksum: str | None) -> str:
+    """
+    Return the checksum for metadata derived from a CUE sheet.
+
+    :param file_checksum: The checksum of the source CUE file.
+    """
+    return f"{_CUE_METADATA_VERSION}:{file_checksum}"
 
 
 def make_cue_track_id(cue_relative_path: str, track_number: int) -> str:
@@ -139,11 +151,12 @@ class CueSheetHandler:
         """
         # cached by (path, checksum) so unchanged CUE files skip the file read
         provider = self.provider
+        metadata_checksum = cue_metadata_checksum(cue_item.checksum)
         cached = await provider.mass.cache.get(
             key=cue_item.relative_path,
             provider=provider.instance_id,
             category=CACHE_CATEGORY_CUE_SHEETS,
-            checksum=cue_item.checksum,
+            checksum=metadata_checksum,
             default=None,
         )
         if cached is not None:
@@ -155,7 +168,7 @@ class CueSheetHandler:
             data=asdict(sheet),
             provider=provider.instance_id,
             category=CACHE_CATEGORY_CUE_SHEETS,
-            checksum=cue_item.checksum,
+            checksum=metadata_checksum,
             expiration=3600 * 24 * 365,
         )
         return sheet
@@ -479,7 +492,7 @@ class CueSheetHandler:
                     provider_domain=provider.domain,
                     provider_instance=provider.instance_id,
                     audio_format=ctx.audio_format,
-                    details=cue_item.checksum,
+                    details=cue_metadata_checksum(cue_item.checksum),
                     in_library=True,
                 )
             },

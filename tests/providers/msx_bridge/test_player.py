@@ -649,6 +649,19 @@ def test_update_position(player: MSXPlayer) -> None:
     player.update_state.assert_called()  # type: ignore[attr-defined]
 
 
+def test_update_position_clamps_to_served_stream_duration(player: MSXPlayer) -> None:
+    """Position reports must not exceed the shortened stream served after a seek."""
+    media = Mock(spec=PlayerMedia)
+    media.duration = 300
+    media.stream_duration = 120
+    player._attr_current_media = media
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    player.update_position(150)
+
+    assert player._attr_elapsed_time == 120
+
+
 def test_update_position_ignored_when_paused(player: MSXPlayer) -> None:
     """update_position should be ignored when PAUSED to protect accumulated time."""
     player._attr_playback_state = PlaybackState.PAUSED
@@ -694,6 +707,24 @@ async def test_poll_uses_wall_clock_when_ws_stale(player: MSXPlayer) -> None:
         await player.poll()
 
     assert player._attr_elapsed_time == 35.0  # 30 + (205 - 200)
+
+
+async def test_poll_clamps_to_served_stream_duration(player: MSXPlayer) -> None:
+    """Wall-clock progress must stop at the shortened stream served after a seek."""
+    media = Mock(spec=PlayerMedia)
+    media.duration = 300
+    media.stream_duration = 120
+    player._attr_current_media = media
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 115.0
+    player._attr_elapsed_time_last_updated = 200.0
+    player._last_ws_position = None
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 210.0
+        await player.poll()
+
+    assert player._attr_elapsed_time == 120
 
 
 async def test_poll_ws_staleness_immune_to_wall_clock_jump(player: MSXPlayer) -> None:

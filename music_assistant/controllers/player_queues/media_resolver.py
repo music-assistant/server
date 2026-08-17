@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
+    Radio,
     Track,
     UniqueList,
 )
@@ -238,6 +239,19 @@ class MediaResolver:
             artist_tracks = await self.get_artist_tracks(artist)
             result.extend(artist_tracks[:5])
         return result
+
+    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic playlist or radio station.
+
+        :param item: The dynamic source to fetch the next batch for.
+        """
+        if isinstance(item, Radio):
+            return await self.mass.music.radio.dynamic_tracks(item)
+        if isinstance(item, Playlist):
+            tracks = await self.get_playlist_tracks(item, start_item=None)
+            return [track for track in tracks if isinstance(track, Track)]
+        return []
 
     async def get_playlist_tracks(
         self,

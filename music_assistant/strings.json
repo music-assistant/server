@@ -438,6 +438,7 @@
     "playback": "Queue Playback",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
+    "click_actions": "Click actions",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "smart_shuffle": "Smart shuffle",
@@ -1137,6 +1138,9 @@
     },
     "link_control": {
       "name": "Link control"
+    },
+    "network_name": {
+      "name": "Network name"
     },
     "party_mode": {
       "name": "Party mode"
