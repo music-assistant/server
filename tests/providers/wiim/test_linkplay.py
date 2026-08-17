@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -761,6 +762,172 @@ class TestAddressChange:
                 "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
             )
         assert player._client is mock_client
+
+
+class TestGroupingConcurrency:
+    """Grouping and address rebuilds serialize per device via a deterministic lock order."""
+
+    async def test_concurrent_grouping_sharing_device_serializes(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Two leaders adding the same member never touch that member's hardware at once."""
+        overlap = {"current": 0, "max": 0}
+
+        async def _join(*_args: Any, **_kwargs: Any) -> None:
+            overlap["current"] += 1
+            overlap["max"] = max(overlap["max"], overlap["current"])
+            await asyncio.sleep(0)  # yield so a second, unserialized join could overlap
+            overlap["current"] -= 1
+
+        member_client = MagicMock(join_slave=AsyncMock(side_effect=_join), leave_group=AsyncMock())
+        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
+        leader_one = _make_shell(
+            mock_provider, MagicMock(host="192.168.1.51"), mock_upnp_device, "wiim_uuid:leader-1"
+        )
+        leader_two = _make_shell(
+            mock_provider, MagicMock(host="192.168.1.52"), mock_upnp_device, "wiim_uuid:leader-2"
+        )
+        for leader in (leader_one, leader_two):
+            leader._linkplay_available = True
+            leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        players = {
+            PEER_PLAYER_ID: member,
+            "wiim_uuid:leader-1": leader_one,
+            "wiim_uuid:leader-2": leader_two,
+        }
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        await asyncio.wait_for(
+            asyncio.gather(
+                leader_one.set_members(player_ids_to_add=[PEER_PLAYER_ID]),
+                leader_two.set_members(player_ids_to_add=[PEER_PLAYER_ID]),
+            ),
+            timeout=5,
+        )
+        # the shared member lock forced the two joins to run one after the other
+        assert overlap["max"] == 1
+        assert member_client.join_slave.await_count == 2
+
+    async def test_cross_grouping_does_not_deadlock(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Two leaders adding each other complete because every caller locks in the same order."""
+        x_client = MagicMock(host="192.168.1.60", join_slave=AsyncMock(), leave_group=AsyncMock())
+        y_client = MagicMock(host="192.168.1.61", join_slave=AsyncMock(), leave_group=AsyncMock())
+        shell_x = _make_shell(mock_provider, x_client, mock_upnp_device, "wiim_uuid:x")
+        shell_y = _make_shell(mock_provider, y_client, mock_upnp_device, "wiim_uuid:y")
+        for shell in (shell_x, shell_y):
+            shell._linkplay_available = True
+            shell._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        players = {"wiim_uuid:x": shell_x, "wiim_uuid:y": shell_y}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        # Pre-hold the lowest-ordered lock so both requests are queued and contending before
+        # either runs; a non-deterministic per-caller order would deadlock this arrangement.
+        await shell_x._rebuild_lock.acquire()
+        task_x = asyncio.create_task(shell_x.set_members(player_ids_to_add=["wiim_uuid:y"]))
+        task_y = asyncio.create_task(shell_y.set_members(player_ids_to_add=["wiim_uuid:x"]))
+        await asyncio.sleep(0)  # let both tasks reach their first lock acquisition
+        shell_x._rebuild_lock.release()
+        await asyncio.wait_for(asyncio.gather(task_x, task_y), timeout=5)
+        # each leader joined the other exactly once, with no deadlock
+        y_client.join_slave.assert_awaited_once()
+        x_client.join_slave.assert_awaited_once()
+
+    async def test_address_change_waits_for_in_flight_grouping(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A member's address rebuild blocks until the grouping holding its lock finishes."""
+        join_started = asyncio.Event()
+        release_join = asyncio.Event()
+
+        async def _join(*_args: Any, **_kwargs: Any) -> None:
+            join_started.set()
+            await release_join.wait()
+
+        member_client = MagicMock(
+            host="192.168.1.50", join_slave=AsyncMock(side_effect=_join), leave_group=AsyncMock()
+        )
+        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
+        leader = _make_shell(
+            mock_provider, MagicMock(host="192.168.1.51"), mock_upnp_device, "wiim_uuid:leader-1"
+        )
+        leader._linkplay_available = True
+        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        players = {PEER_PLAYER_ID: member, "wiim_uuid:leader-1": leader}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        new_client = MagicMock(host="192.168.1.99")
+        new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
+        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+
+        group_task = asyncio.create_task(leader.set_members(player_ids_to_add=[PEER_PLAYER_ID]))
+        await asyncio.wait_for(join_started.wait(), timeout=5)  # grouping now holds member's lock
+        with patch(
+            "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
+        ):
+            addr_task = asyncio.create_task(
+                member.async_handle_address_change(
+                    "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
+                )
+            )
+            await asyncio.sleep(0)
+            # the rebuild cannot proceed while grouping holds the member lock
+            assert not addr_task.done()
+            assert member._client is member_client
+            release_join.set()
+            await asyncio.wait_for(asyncio.gather(group_task, addr_task), timeout=5)
+        assert member._client is new_client
+
+    async def test_unrelated_player_not_locked_during_grouping(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A device outside the group request can rebuild its address while grouping runs."""
+        join_started = asyncio.Event()
+        release_join = asyncio.Event()
+
+        async def _join(*_args: Any, **_kwargs: Any) -> None:
+            join_started.set()
+            await release_join.wait()
+
+        member_client = MagicMock(
+            host="192.168.1.50", join_slave=AsyncMock(side_effect=_join), leave_group=AsyncMock()
+        )
+        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
+        leader = _make_shell(
+            mock_provider, MagicMock(host="192.168.1.51"), mock_upnp_device, "wiim_uuid:leader-1"
+        )
+        leader._linkplay_available = True
+        leader._verify_group_change = AsyncMock()  # type: ignore[method-assign]
+        other = _make_shell(
+            mock_provider, MagicMock(host="192.168.1.70"), mock_upnp_device, "wiim_uuid:other"
+        )
+        other._linkplay_available = True
+        players = {
+            PEER_PLAYER_ID: member,
+            "wiim_uuid:leader-1": leader,
+            "wiim_uuid:other": other,
+        }
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: players.get(pid)
+        new_client = MagicMock(host="192.168.1.99")
+        new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
+        new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
+
+        group_task = asyncio.create_task(leader.set_members(player_ids_to_add=[PEER_PLAYER_ID]))
+        await asyncio.wait_for(join_started.wait(), timeout=5)  # grouping holds leader + member
+        with patch(
+            "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
+        ):
+            # the unrelated device is not part of the request, so its rebuild is not blocked
+            await asyncio.wait_for(
+                other.async_handle_address_change(
+                    "192.168.1.99", mock_upnp_device, "http://192.168.1.99:49152/description.xml"
+                ),
+                timeout=5,
+            )
+        assert other._client is new_client
+        release_join.set()
+        await asyncio.wait_for(group_task, timeout=5)
 
 
 class TestProviderRouting:

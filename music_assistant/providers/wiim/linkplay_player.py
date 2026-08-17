@@ -10,6 +10,7 @@ adds device identity and native LinkPlay multiroom grouping/topology on top.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
@@ -178,14 +179,9 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """Handle SET_MEMBERS command on the player."""
         add_ids = player_ids_to_add or []
         remove_ids = player_ids_to_remove or []
-        # Validate the whole request before touching any hardware, so a bad target never
-        # leaves a partially applied group.
-        if not self._linkplay_available or self._cached_device_info is None:
-            raise PlayerCommandFailed(f"{self.name} is not reachable for grouping")
-        if self._in_mixed_group:
-            raise PlayerCommandFailed(
-                f"{self.name} is in an externally-created mixed group and cannot be regrouped"
-            )
+        # Prevalidate the whole batch before taking any locks, so an obviously bad request
+        # fails fast without contending for a device that a rebuild may be using.
+        self._validate_leader_state()
         if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
             raise PlayerCommandFailed(f"Duplicate member id in grouping request on {self.name}")
         if conflicting := set(add_ids) & set(remove_ids):
@@ -195,31 +191,37 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # Resolve every target to a same-backend member (rejects unknown/cross-backend/self).
         to_add = [(mid, self._require_linkplay_member(mid)) for mid in add_ids]
         to_remove = [(mid, self._require_linkplay_member(mid)) for mid in remove_ids]
-        # Every addition must be reachable and of a compatible multiroom generation.
-        for member_id, member in to_add:
-            if not member._linkplay_available or member._cached_device_info is None:
-                raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
-            if not linkplay_group_compatible(self._cached_device_info, member._cached_device_info):
-                raise UnsupportedFeaturedException(
-                    f"Cannot group {member_id} with {self.name}: "
-                    "incompatible LinkPlay multiroom generation"
+        self._validate_additions(to_add)
+        # Lock this leader and every affected member for the entire mutation + verification.
+        # Acquiring in sorted player_id order gives every caller the same lock ordering, so
+        # concurrent grouping requests that share a device serialize instead of deadlocking,
+        # a concurrent address rebuild on any involved device waits its turn, and unrelated
+        # players keep their locks free.
+        affected: dict[str, LinkPlayPlayer] = {self.player_id: self}
+        for _, member in (*to_add, *to_remove):
+            affected[member.player_id] = member
+        async with AsyncExitStack() as stack:
+            for player_id in sorted(affected):
+                await stack.enter_async_context(affected[player_id]._rebuild_lock)
+            # Revalidate now the locks are held: a rebuild or poll may have changed a
+            # device's reachability, swapped its client or moved its IP since prevalidation.
+            self._validate_leader_state()
+            self._validate_additions(to_add)
+            try:
+                for member_id, member in to_add:
+                    await member._client.join_slave(
+                        self._client.host, master_device_info=self._cached_device_info
+                    )
+                    await self._verify_group_change(member, member_id, expect_slave=True)
+                for member_id, member in to_remove:
+                    await member._client.leave_group()
+                    await self._verify_group_change(member, member_id, expect_slave=False)
+            except WiiMError as err:
+                raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
+            finally:
+                self.mass.create_task(
+                    self._refresh_linkplay(), task_id=f"linkplay_refresh_{self.player_id}"
                 )
-        # The request is proven valid; apply it sequentially.
-        try:
-            for member_id, member in to_add:
-                await member._client.join_slave(
-                    self._client.host, master_device_info=self._cached_device_info
-                )
-                await self._verify_group_change(member, member_id, expect_slave=True)
-            for member_id, member in to_remove:
-                await member._client.leave_group()
-                await self._verify_group_change(member, member_id, expect_slave=False)
-        except WiiMError as err:
-            raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
-        finally:
-            self.mass.create_task(
-                self._refresh_linkplay(), task_id=f"linkplay_refresh_{self.player_id}"
-            )
 
     async def async_handle_address_change(
         self, new_ip: str, upnp_device: UpnpDevice, description_url: str
@@ -323,6 +325,30 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                 f"Cannot group {player_id} with {self.name}: cross-backend grouping is unsupported"
             )
         return member
+
+    def _validate_leader_state(self) -> None:
+        """Assert this leader's LinkPlay API is reachable and it owns a regroupable group."""
+        if not self._linkplay_available or self._cached_device_info is None:
+            raise PlayerCommandFailed(f"{self.name} is not reachable for grouping")
+        if self._in_mixed_group:
+            raise PlayerCommandFailed(
+                f"{self.name} is in an externally-created mixed group and cannot be regrouped"
+            )
+
+    def _validate_additions(self, to_add: list[tuple[str, LinkPlayPlayer]]) -> None:
+        """
+        Assert every addition is reachable and of a compatible multiroom generation.
+
+        :param to_add: The resolved (id, member) pairs that would join this leader.
+        """
+        for member_id, member in to_add:
+            if not member._linkplay_available or member._cached_device_info is None:
+                raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
+            if not linkplay_group_compatible(self._cached_device_info, member._cached_device_info):
+                raise UnsupportedFeaturedException(
+                    f"Cannot group {member_id} with {self.name}: "
+                    "incompatible LinkPlay multiroom generation"
+                )
 
     async def _verify_group_change(
         self, member: LinkPlayPlayer, member_id: str, expect_slave: bool
