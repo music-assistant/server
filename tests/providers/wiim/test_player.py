@@ -8,6 +8,7 @@ from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeatur
 from wiim import PlayingStatus
 from wiim.exceptions import (
     WiimDeviceException,
+    WiimException,
     WiimInvalidDataException,
     WiimRequestException,
 )
@@ -950,3 +951,33 @@ class TestSetMembersTypeSafety:
         with pytest.raises(PlayerCommandFailed):
             await leader.set_members(player_ids_to_remove=["wiim_uuid:good", "wiim_uuid:bad"])
         mock_provider.wiim_controller.async_ungroup_device.assert_not_awaited()
+
+    async def test_join_sdk_error_propagates_typed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A controller error while joining surfaces as a typed failure, not a false success."""
+        leader = self._leader(mock_provider, mock_wiim_device)
+        mock_provider.mass.players.get_player.return_value = self._follower(
+            "wiim_uuid:follower", "uuid:follower"
+        )
+        cause = WiimException("join boom")
+        mock_provider.wiim_controller.async_join_group.side_effect = cause
+        with pytest.raises(PlayerCommandFailed) as excinfo:
+            await leader.set_members(player_ids_to_add=["wiim_uuid:follower"])
+        assert excinfo.value.__cause__ is cause
+
+    async def test_remove_sdk_error_propagates_typed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A controller error while ungrouping surfaces as a typed failure with its cause."""
+        leader = self._leader(mock_provider, mock_wiim_device)
+        mock_provider.mass.players.get_player.return_value = self._follower(
+            "wiim_uuid:follower", "uuid:follower"
+        )
+        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
+        snapshot.member_udns = (mock_wiim_device.udn, "uuid:follower")
+        cause = WiimException("ungroup boom")
+        mock_provider.wiim_controller.async_ungroup_device.side_effect = cause
+        with pytest.raises(PlayerCommandFailed) as excinfo:
+            await leader.set_members(player_ids_to_remove=["wiim_uuid:follower"])
+        assert excinfo.value.__cause__ is cause

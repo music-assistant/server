@@ -355,7 +355,10 @@ class WiimPlayer(Player):
             for member in to_remove:
                 await self._wiim_controller.async_ungroup_device(member.device.udn)
         except WiimException as err:
+            # Log and refresh state as for any command, but surface grouping failures to the
+            # caller: a swallowed error would report a join/leave as succeeded.
             self._handle_command_error("set_members", err)
+            raise PlayerCommandFailed(f"set_members failed on {self.name}: {err}") from err
         finally:
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
             self.logger.debug(
