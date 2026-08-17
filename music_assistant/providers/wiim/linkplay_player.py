@@ -60,12 +60,14 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         upnp_device: UpnpDevice,
         description_url: str,
         mac_address: str | None = None,
+        device_info: PywiimDeviceInfo | None = None,
     ) -> None:
         """Initialize the LinkPlay player shell."""
         # Health of the LinkPlay HTTP API, separate from playback availability (which the
         # base derives from linked protocols): it gates the native grouping capability.
+        # A device info primed from the discovery probe means the API is reachable.
         # Set before super().__init__ because the base reads supported_features during init.
-        self._linkplay_available = False
+        self._linkplay_available = device_info is not None
         super().__init__(provider, player_id)
         # Low-level LinkPlay HTTP client over MA's shared aiohttp session. Its close()
         # would close that shared session, so it is never closed here.
@@ -75,7 +77,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         self._mac_address = mac_address
         # Cached pywiim device info, refreshed on poll and passed to a follower's
         # join_slave so it can pick the correct (router vs WiFi-Direct) join mode.
-        self._cached_device_info: PywiimDeviceInfo | None = None
+        self._cached_device_info: PywiimDeviceInfo | None = device_info
         self._rebuild_lock = asyncio.Lock()
 
         self._attr_name = upnp_device.friendly_name or player_id
@@ -98,7 +100,18 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     async def setup(self) -> None:
         """Handle logic when the player is set up in the Player controller."""
-        await self._refresh_linkplay()
+        # The discovery probe already fetched and validated the device info and primed it
+        # on this shell, so setup only needs an initial native-group topology read; the
+        # regular poll refreshes reachability and device info from here on.
+        if self._cached_device_info is None:
+            await self._refresh_linkplay()
+            return
+        async with self._rebuild_lock:
+            try:
+                await self._update_group_members()
+            except WiiMError as err:
+                self.logger.debug("Failed to read group topology for %s: %s", self.name, err)
+        self.update_state()
 
     async def poll(self) -> None:
         """Poll the device for reachability and native group topology."""

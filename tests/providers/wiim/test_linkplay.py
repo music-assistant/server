@@ -707,6 +707,24 @@ class TestRefreshResilience:
         # last known topology is kept so the reachable side stays locked read-only
         assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
 
+    async def test_setup_without_primed_info_does_full_refresh(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A shell built without a primed device info probes the API during setup."""
+        player = LinkPlayPlayer(
+            provider=mock_provider,
+            player_id=EDIFIER_PLAYER_ID,
+            client=mock_client,
+            upnp_device=mock_upnp_device,
+            description_url="http://192.168.1.50:49152/description.xml",
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        mock_provider.players = [player]
+        assert player._linkplay_available is False
+        await player.setup()
+        mock_client.get_device_info_model.assert_awaited_once()
+        assert player._linkplay_available is True
+
 
 class TestAddressChange:
     """A moved device rebuilds its low-level client without touching the MA player."""
@@ -768,6 +786,10 @@ class TestProviderRouting:
             )
         assert registered
         assert isinstance(registered[0], LinkPlayPlayer)
+        # discovery does a single authoritative device-info probe that primes the shell:
+        # setup must not repeat it, and the shell is registered already reachable.
+        mock_client.get_device_info_model.assert_awaited_once()
+        assert registered[0]._linkplay_available is True
 
     async def test_unreachable_device_not_registered(
         self, mock_provider: MagicMock, mock_upnp_device: MagicMock

@@ -164,9 +164,10 @@ class WiimProvider(PlayerProvider):
         """Add a generic LinkPlay device as a grouping/identity shell."""
         client = WiiMClient(ip_address, session=self.mass.http_session)
         try:
-            # A successful call confirms the device speaks the LinkPlay API and primes
-            # the shell's cached device info used for native group join-mode selection.
-            await client.get_device_info_model()
+            # A successful call confirms the device speaks the LinkPlay API and yields the
+            # device info primed on the shell (used for native group join-mode selection),
+            # so this stays the single authoritative probe done at discovery.
+            device_info = await client.get_device_info_model()
         except WiiMError as err:
             self.logger.warning(
                 "Device at %s is not a controllable LinkPlay device: %s", ip_address, err
@@ -180,6 +181,7 @@ class WiimProvider(PlayerProvider):
             upnp_device=upnp_device,
             description_url=description_url,
             mac_address=mac_address,
+            device_info=device_info,
         )
         await player.setup()
         await self.mass.players.register_or_update(player)
