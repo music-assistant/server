@@ -1770,6 +1770,18 @@ class Player(ABC):
         return None
 
     @property
+    def grouping_locked(self) -> bool:
+        """
+        Return whether grouping must be suppressed in this player's exposed state.
+
+        A provider may lock grouping, for example while a device is in an externally-created
+        cross-backend group that Music Assistant keeps read-only, or while its control API is
+        unreachable. While locked, ``SET_MEMBERS`` is withdrawn and no group targets are
+        offered in the final state, even ones a linked protocol player would otherwise add.
+        """
+        return False
+
+    @property
     @final
     def underlying_player_id(self) -> str | None:
         """
@@ -3012,6 +3024,10 @@ class Player(ABC):
             base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
+        if self.grouping_locked:
+            # A provider keeps this group read-only (e.g. an externally-created mixed group);
+            # withdraw grouping even if a linked protocol player would otherwise supply it.
+            base_features.discard(PlayerFeature.SET_MEMBERS)
         return base_features
 
     @cached_property
@@ -3047,6 +3063,11 @@ class Player(ABC):
 
         if self.__final_synced_to:
             # player is already synced/grouped, cannot group with others
+            return set()
+
+        if self.grouping_locked:
+            # A provider keeps this group read-only; offer no grouping targets, including
+            # any a linked protocol player would otherwise contribute.
             return set()
 
         expanded_can_group_with = self._expand_can_group_with()

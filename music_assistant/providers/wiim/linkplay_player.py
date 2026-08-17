@@ -115,6 +115,11 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         return self._cached_device_info
 
     @property
+    def grouping_locked(self) -> bool:
+        """Suppress grouping while the LinkPlay API is unreachable or the group is mixed."""
+        return not self._linkplay_available or self._in_mixed_group
+
+    @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features; native grouping needs a reachable, non-mixed group."""
         features = super().supported_features

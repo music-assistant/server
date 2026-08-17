@@ -60,9 +60,9 @@ def linkplay_group_compatible(
     Return whether two generic LinkPlay devices can share a router-based multiroom group.
 
     Grouping is only allowed between devices that both use modern router-based multiroom
-    and belong to the same WiiM multiroom (WMRM) major generation. Legacy Wi-Fi Direct
-    devices are rejected because MA does not move a follower onto the master's private
-    network. Unknown WMRM generations are treated leniently once router-based is confirmed.
+    and belong to the same, known WiiM multiroom (WMRM) major generation. Legacy Wi-Fi
+    Direct devices are rejected because MA does not move a follower onto the master's
+    private network, and a device whose generation cannot be determined is not grouped.
 
     :param first: The cached device info of one device, if known.
     :param second: The cached device info of the other device, if known.
@@ -75,9 +75,7 @@ def linkplay_group_compatible(
         return False
     first_major = _wmrm_major(first)
     second_major = _wmrm_major(second)
-    return not (
-        first_major is not None and second_major is not None and first_major != second_major
-    )
+    return first_major is not None and first_major == second_major
 
 
 def is_official_manufacturer(manufacturer: str | None) -> bool:

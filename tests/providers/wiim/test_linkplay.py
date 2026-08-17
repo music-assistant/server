@@ -493,6 +493,7 @@ class TestMixedGroupReadOnly:
         """Grouping feature and targets are withdrawn while in a mixed group."""
         leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
         await leader._update_group_members()
+        assert leader.grouping_locked is True
         assert PlayerFeature.SET_MEMBERS not in leader.supported_features
         assert leader.can_group_with == set()
 
@@ -547,6 +548,15 @@ class TestGroupCompatibility:
         """An unknown (missing) device info is treated as incompatible."""
         known = _device_info("4.2")
         assert linkplay_group_compatible(None, known) is False
+
+    def test_unknown_generation_rejected(self) -> None:
+        """A device whose WMRM generation cannot be determined is not grouped."""
+        known = _device_info("4.2")
+        unknown = cast(
+            "PywiimDeviceInfo",
+            SimpleNamespace(wmrm_version=None, needs_wifi_direct_multiroom=False),
+        )
+        assert linkplay_group_compatible(known, unknown) is False
 
     async def test_can_group_with_excludes_incompatible_peer(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock

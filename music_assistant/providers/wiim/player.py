@@ -110,6 +110,11 @@ class WiimPlayer(Player):
         return self._attr_supported_features
 
     @property
+    def grouping_locked(self) -> bool:
+        """Suppress grouping while in a read-only externally-created mixed group."""
+        return self._in_mixed_group
+
+    @property
     def can_group_with(self) -> set[str]:
         """Return the ids of the other official WiiM players this player can group with."""
         if self._in_mixed_group:

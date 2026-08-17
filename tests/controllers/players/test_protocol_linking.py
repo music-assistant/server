@@ -10499,3 +10499,82 @@ class TestLocalAudioStubMigration:
 
         assert await migrate(data) is True
         assert await migrate(data) is False
+
+
+class _LockedMockPlayer(MockPlayer):
+    """A player that keeps its group read-only (e.g. an externally-created mixed group)."""
+
+    @property
+    def grouping_locked(self) -> bool:
+        """Suppress grouping in the exposed state."""
+        return True
+
+
+class TestGroupingLockedPolicy:
+    """A grouping-locked player withholds SET_MEMBERS and group targets in its final state."""
+
+    def test_locked_player_withholds_set_members(self, mock_mass: MagicMock) -> None:
+        """A locked player drops SET_MEMBERS from its exposed features."""
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = _LockedMockPlayer(provider, "shell_1", "Shell")
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS, PlayerFeature.VOLUME_SET}
+        player._cache.clear()
+        player.update_state(signal_event=False)
+        assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
+        assert PlayerFeature.VOLUME_SET in player.state.supported_features
+
+    def test_locked_player_withholds_protocol_derived_set_members(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Even a linked protocol player's SET_MEMBERS is suppressed while locked."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = _LockedMockPlayer(provider, "shell_1", "Shell")
+        player._attr_supported_features = set()  # no native grouping of its own
+        protocol = MockPlayer(provider, "airplay_p", "P (AirPlay)", player_type=PlayerType.PROTOCOL)
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol._cache.clear()
+        protocol.set_protocol_parent_id("shell_1")
+        player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_p", protocol_domain="airplay", priority=10
+                )
+            ]
+        )
+        mock_mass.players = controller
+        controller._players = {"shell_1": player, "airplay_p": protocol}
+        protocol.refresh_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
+
+    def test_locked_player_offers_no_group_targets(self, mock_mass: MagicMock) -> None:
+        """A locked player exposes no group targets, even an otherwise groupable peer."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = _LockedMockPlayer(provider, "shell_1", "Shell")
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        player._attr_can_group_with = {"peer_1"}
+        peer = MockPlayer(provider, "peer_1", "Peer")
+        mock_mass.players = controller
+        controller._players = {"shell_1": player, "peer_1": peer}
+        player._cache.clear()
+        peer.refresh_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        assert player.state.can_group_with == set()
+
+    def test_unlocked_player_keeps_grouping(self, mock_mass: MagicMock) -> None:
+        """A normal (unlocked) player keeps SET_MEMBERS and its group targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        player = MockPlayer(provider, "shell_2", "Shell2")
+        player._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        player._attr_can_group_with = {"peer_2"}
+        peer = MockPlayer(provider, "peer_2", "Peer2")
+        mock_mass.players = controller
+        controller._players = {"shell_2": player, "peer_2": peer}
+        player._cache.clear()
+        peer.refresh_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        assert PlayerFeature.SET_MEMBERS in player.state.supported_features
+        assert "peer_2" in player.state.can_group_with
