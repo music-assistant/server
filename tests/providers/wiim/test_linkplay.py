@@ -445,6 +445,52 @@ class TestTopology:
         assert leader._attr_group_members == []
 
 
+class TestMixedGroupReadOnly:
+    """An externally-created mixed group is read-only from the generic side (until layer 2)."""
+
+    def _mixed_leader(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> LinkPlayPlayer:
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        # an official WiiM member (not a LinkPlayPlayer) shares the hardware group
+        official = MagicMock()
+        official.player_id = PEER_PLAYER_ID
+        mock_provider.players = [leader, official]
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: (
+            official if pid == PEER_PLAYER_ID else None
+        )
+        mock_client.get_slaves_info = AsyncMock(return_value=_slaves([PEER_HTTP_UUID]))
+        return leader
+
+    async def test_mixed_group_detected_and_represented(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A group containing an official member is flagged mixed but still shown read-only."""
+        leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
+        await leader._update_group_members()
+        assert leader._in_mixed_group is True
+        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
+
+    async def test_mixed_group_withdraws_grouping(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Grouping feature and targets are withdrawn while in a mixed group."""
+        leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
+        await leader._update_group_members()
+        assert PlayerFeature.SET_MEMBERS not in leader.supported_features
+        assert leader.can_group_with == set()
+
+    async def test_mixed_group_rejects_set_members(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Mutating a mixed group is rejected rather than partially applied."""
+        leader = self._mixed_leader(mock_provider, mock_client, mock_upnp_device)
+        await leader._update_group_members()
+        with pytest.raises(PlayerCommandFailed):
+            await leader.set_members(player_ids_to_add=[EDIFIER_PLAYER_ID])
+
+
 class TestRefreshResilience:
     """A poll must survive a transient topology blip and detect an unreachable API."""
 

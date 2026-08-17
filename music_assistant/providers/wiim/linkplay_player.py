@@ -63,6 +63,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # base derives from linked protocols): it gates the native grouping capability.
         # Set before super().__init__ because the base reads supported_features during init.
         self._linkplay_available = False
+        # Whether this device is currently part of an externally-created MIXED group (a
+        # group that also contains an official WiiM member). Such groups are read-only until
+        # cross-backend grouping is supported, so grouping is withdrawn while it holds.
+        self._in_mixed_group = False
         super().__init__(provider, player_id)
         # Low-level LinkPlay HTTP client over MA's shared aiohttp session. Its close()
         # would close that shared session, so it is never closed here.
@@ -115,19 +119,18 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
-        """Return the supported features; native grouping needs a reachable LinkPlay API."""
+        """Return the supported features; native grouping needs a reachable, non-mixed group."""
         features = super().supported_features
-        # Native multiroom grouping depends only on the LinkPlay HTTP API being reachable,
-        # not on what is playing; the correctly unioned base already carries SET_MEMBERS,
-        # so it is only withdrawn while the API is unreachable.
-        if self._linkplay_available:
+        # Native multiroom grouping needs the LinkPlay HTTP API to be reachable and the
+        # device to not be in an externally-created mixed group (read-only until layer 2).
+        if self._linkplay_available and not self._in_mixed_group:
             return features
         return features - {PlayerFeature.SET_MEMBERS}
 
     @property
     def can_group_with(self) -> set[str]:
         """Return the ids of the reachable generic LinkPlay peers this player can group with."""
-        if not self._linkplay_available:
+        if not self._linkplay_available or self._in_mixed_group:
             return set()
         return {
             player.player_id
@@ -135,6 +138,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             if isinstance(player, LinkPlayPlayer)
             and player is not self
             and player._linkplay_available
+            and not player._in_mixed_group
         }
 
     # --- Player commands ---
@@ -147,6 +151,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         """Handle SET_MEMBERS command on the player."""
         if not self._linkplay_available:
             raise PlayerCommandFailed(f"{self.name} is not reachable for grouping")
+        if self._in_mixed_group:
+            raise PlayerCommandFailed(
+                f"{self.name} is in an externally-created mixed group and cannot be regrouped"
+            )
         try:
             for member_id in player_ids_to_add or []:
                 member = self._require_linkplay_member(member_id)
@@ -224,6 +232,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                     self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
                 self._linkplay_available = False
                 self._attr_group_members = []
+                self._in_mixed_group = False
                 self.update_state()
                 return
             self._linkplay_available = True
@@ -242,12 +251,17 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         # real group. It returns the slaves only for a master; a follower/solo returns none.
         slaves = await self._client.get_slaves_info()
         members = [self.player_id]
+        mixed = False
         for slave in slaves:
-            if not isinstance(slave, dict):
-                continue
             resolved = self._resolve_member_player_id(slave.get("uuid"))
-            if resolved and resolved not in members:
-                members.append(resolved)
+            if not resolved or resolved in members:
+                continue
+            members.append(resolved)
+            # A resolved member that is not a generic LinkPlay shell (i.e. an official
+            # WiiM member) makes this an externally-created mixed group, read-only for now.
+            if not isinstance(self.mass.players.get_player(resolved), LinkPlayPlayer):
+                mixed = True
+        self._in_mixed_group = mixed
         self._attr_group_members = members if len(members) > 1 else []
 
     def _require_linkplay_member(self, player_id: str) -> LinkPlayPlayer:
@@ -278,8 +292,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             current_members = {
                 resolved
                 for slave in slaves
-                if isinstance(slave, dict)
-                and (resolved := self._resolve_member_player_id(slave.get("uuid"))) is not None
+                if (resolved := self._resolve_member_player_id(slave.get("uuid"))) is not None
             }
             if (member.player_id in current_members) == expect_slave:
                 return
