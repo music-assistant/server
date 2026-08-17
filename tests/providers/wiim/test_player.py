@@ -409,6 +409,34 @@ class TestMixedGroupReadOnly:
         assert PlayerFeature.SET_MEMBERS not in player.supported_features
         assert player.can_group_with == set()
 
+    def test_can_group_with_excludes_official_peer_in_mixed_group(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """An official peer locked in a generic-led mixed group is not offered as a target."""
+        leader = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        leader.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        leader._attr_available = True
+        # an official peer that is a follower in a generic-led mixed group
+        peer = WiimPlayer(
+            provider=mock_provider,
+            player_id="wiim_uuid:official-peer",
+            device=mock_wiim_device,
+        )
+        peer.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        peer._attr_available = True
+        peer._attr_group_members = []
+        generic_leader = MagicMock(
+            player_id="wiim_uuid:generic-leader", linkplay_backend=BACKEND_GENERIC
+        )
+        generic_leader._attr_group_members = [generic_leader.player_id, peer.player_id]
+        mock_provider.players = [leader, peer, generic_leader]
+        assert peer._in_mixed_group is True
+        assert peer.player_id not in leader.can_group_with
+
 
 class TestSourceList:
     """Test dynamic source list construction."""

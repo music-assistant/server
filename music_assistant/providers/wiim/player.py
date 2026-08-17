@@ -125,6 +125,7 @@ class WiimPlayer(Player):
             if isinstance(player, WiimPlayer)
             and player.available
             and player.player_id != self.player_id
+            and not player._in_mixed_group
         }
 
     def is_native_group_compatible(self, other: Player) -> bool:

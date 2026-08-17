@@ -10589,6 +10589,14 @@ class _NativeGroupingMockPlayer(MockPlayer):
         return True
 
 
+class _RejectsNativeGroupingMockPlayer(MockPlayer):
+    """A parent that never accepts another player as a native group peer."""
+
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """Reject every peer as native-incompatible (e.g. a cross-backend device)."""
+        return False
+
+
 class TestPreferNativeGrouping:
     """A player that prefers native grouping uses it before its preferred output protocol."""
 
@@ -10618,8 +10626,7 @@ class TestPreferNativeGrouping:
         # official + generic LinkPlay share one wiim provider instance, but a cross-backend
         # peer is not native-group compatible, so the seam must not force native grouping.
         provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
-        parent = MockPlayer(provider, "shell_parent", "Parent")
-        parent.is_native_group_compatible = lambda _other: False  # type: ignore[method-assign]
+        parent = _RejectsNativeGroupingMockPlayer(provider, "shell_parent", "Parent")
         child = _NativeGroupingMockPlayer(provider, "shell_child", "Child")
         mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
         mock_mass.players = controller
