@@ -2417,6 +2417,8 @@ class StreamsAudio:
                 )
                 queue_track.streamdetails.stream_error = True
                 play_log_entry.seconds_streamed = 0
+                if last_fadeout_part:
+                    queue_track.streamdetails.seek_position = raw_seek_position
                 continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade

@@ -992,6 +992,106 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
     assert entry.seconds_streamed > 0
 
 
+@pytest.mark.asyncio
+async def test_flow_zero_audio_skip_restores_seek_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero-audio item keeps its original seek position when its crossfade is skipped."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    first_streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        fade_in=False,
+        stream_error=False,
+        uri="test://first",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=120,
+    )
+    first_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="first",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=first_streamdetails,
+        extra_attributes={},
+    )
+    raw_seek_position = 12
+    skipped_streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        fade_in=False,
+        stream_error=False,
+        uri="test://skipped",
+        seek_position=raw_seek_position,
+        seconds_streamed=0,
+        duration=120,
+    )
+    skipped_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-2",
+        name="skipped",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=skipped_streamdetails,
+        extra_attributes={},
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[skipped_item, QueueEmpty])
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.get_next_item.return_value = skipped_item
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    mass.streams.audio_processing.update_item_context = MagicMock()
+    mass.player_queues.queue_buffer_completed = MagicMock()
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=2,
+                crossfade_duration=8,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+
+    async def _item_stream(
+        queue_item: SimpleNamespace,
+        *_args: object,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        if queue_item is first_item:
+            yield bytes(pcm_format.pcm_sample_size * 8)
+            yield bytes(pcm_format.pcm_sample_size)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue),
+        cast("Any", first_item),
+        pcm_format,
+        session_id="session-1",
+    )
+
+    async for _ in stream:
+        pass
+
+    build.assert_awaited_once()
+    assert skipped_streamdetails.seek_position == raw_seek_position
+
+
 def _manager_context(
     *,
     alters_audio: bool = False,
