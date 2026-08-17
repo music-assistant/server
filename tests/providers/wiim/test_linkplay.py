@@ -611,6 +611,29 @@ class TestMixedGroupReadOnly:
         with pytest.raises(PlayerCommandFailed):
             await leader.set_members(player_ids_to_add=[EDIFIER_PLAYER_ID])
 
+    async def test_mixed_group_member_rejected(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A member that is itself in a mixed group is rejected before any join."""
+        leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        leader._linkplay_available = True
+        member_client = MagicMock(join_slave=AsyncMock(), leave_group=AsyncMock())
+        member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
+        member._linkplay_available = True
+        # the member leads an externally-created mixed group with an official (other-backend) device
+        official = MagicMock(player_id="wiim_uuid:official", linkplay_backend="official")
+        official._attr_group_members = []
+        member._attr_group_members = [PEER_PLAYER_ID, "wiim_uuid:official"]
+        mock_provider.players = [leader, member, official]
+        registered = {PEER_PLAYER_ID: member, "wiim_uuid:official": official}
+        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: registered.get(
+            pid
+        )
+        assert member._in_mixed_group is True
+        with pytest.raises(PlayerCommandFailed):
+            await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
+        member_client.join_slave.assert_not_awaited()
+
     def test_generic_follower_of_official_leader_is_mixed(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:

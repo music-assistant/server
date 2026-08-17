@@ -344,6 +344,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         for member_id, member in to_add:
             if not member._linkplay_available or member._cached_device_info is None:
                 raise PlayerCommandFailed(f"{member_id} is not reachable for grouping")
+            if member._in_mixed_group:
+                raise PlayerCommandFailed(
+                    f"{member_id} is in an externally-created mixed group and cannot be regrouped"
+                )
             if not linkplay_group_compatible(self._cached_device_info, member._cached_device_info):
                 raise UnsupportedFeaturedException(
                     f"Cannot group {member_id} with {self.name}: "
