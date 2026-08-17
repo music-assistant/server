@@ -4,23 +4,35 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from wiim import PlayingStatus
 from wiim.exceptions import (
     WiimDeviceException,
-    WiimException,
     WiimInvalidDataException,
     WiimRequestException,
 )
 
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.wiim.constants import (
-    BACKEND_GENERIC,
-    BACKEND_OFFICIAL,
     PLAYER_ID_PREFIX,
     SOURCE_NETWORK,
 )
+from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
+
+
+def _mock_native_groups() -> MagicMock:
+    """Create a coordinator mock that reports a standalone topology by default."""
+    groups = MagicMock()
+    groups.role_of.return_value = NativeGroupRole.STANDALONE
+    groups.members_of.return_value = []
+    groups.can_group_with.return_value = set()
+    groups.refresh_leader = AsyncMock()
+    groups.reconcile = AsyncMock()
+    groups.set_members = AsyncMock()
+    groups.schedule_reconcile = MagicMock()
+    groups.unregister = MagicMock()
+    groups.set_self_role = MagicMock(return_value=False)
+    return groups
 
 
 @pytest.fixture
@@ -85,6 +97,8 @@ def mock_provider(mock_controller: MagicMock) -> MagicMock:
     provider.manifest.domain = "wiim"
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
+    provider.players = []
+    provider.native_groups = _mock_native_groups()
 
     config = MagicMock()
     config.name = None
@@ -262,23 +276,18 @@ class TestSupportedFeatures:
 
 
 class TestGroupMembers:
-    """Test group member state handling."""
+    """Group membership is published from the coordinator's resolved topology."""
 
-    def test_unmanaged_group_members_are_ignored(
+    def test_leader_publishes_coordinator_members(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """Only group members registered in Music Assistant should be reported."""
-        managed_udn = "uuid:test-wiim-002"
-        unmanaged_udn = "uuid:test-linkplay-001"
+        """A leader publishes exactly the members the coordinator resolved for it."""
         leader_player_id = f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}"
-        managed_player_id = f"{PLAYER_ID_PREFIX}{managed_udn}"
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.role = "leader"
-        snapshot.member_udns = (mock_wiim_device.udn, managed_udn, unmanaged_udn)
-        mock_provider.wiim_controller.get_group_members.side_effect = ValueError(
-            f"Device {unmanaged_udn} is not managed by the controller"
-        )
-        mock_provider.mass.players.get_player.side_effect = {managed_player_id: MagicMock()}.get
+        managed_player_id = f"{PLAYER_ID_PREFIX}uuid:test-wiim-002"
+        mock_provider.native_groups.members_of.return_value = [
+            leader_player_id,
+            managed_player_id,
+        ]
         player = WiimPlayer(
             provider=mock_provider,
             player_id=leader_player_id,
@@ -289,157 +298,24 @@ class TestGroupMembers:
         player._update_ma_state_from_sdk_cache()
 
         assert player._attr_group_members == [leader_player_id, managed_player_id]
-        mock_provider.wiim_controller.get_group_members.assert_not_called()
 
-    def test_only_unmanaged_group_members_reports_no_group(
+    def test_follower_publishes_no_members(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """A group without any MA-managed followers should not be reported."""
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.role = "leader"
-        snapshot.member_udns = (mock_wiim_device.udn, "uuid:test-linkplay-001")
-        mock_provider.mass.players.get_player.return_value = None
+        """A follower manages no members of its own, whatever it last held."""
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
         player = WiimPlayer(
             provider=mock_provider,
             player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
             device=mock_wiim_device,
         )
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._attr_group_members = ["stale"]
 
         player._update_ma_state_from_sdk_cache()
 
         assert player._attr_group_members == []
 
-
-class TestMixedGroupReadOnly:
-    """An externally-created mixed group is read-only from the official side (until layer 2)."""
-
-    def _leader_with_member(
-        self,
-        mock_provider: MagicMock,
-        mock_wiim_device: MagicMock,
-        member_udn: str,
-        member_backend: str,
-    ) -> WiimPlayer:
-        leader_player_id = f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}"
-        member_player_id = f"{PLAYER_ID_PREFIX}{member_udn}"
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.role = "leader"
-        snapshot.member_udns = (mock_wiim_device.udn, member_udn)
-        member = MagicMock(linkplay_backend=member_backend)
-        mock_provider.mass.players.get_player.side_effect = {member_player_id: member}.get
-        player = WiimPlayer(
-            provider=mock_provider, player_id=leader_player_id, device=mock_wiim_device
-        )
-        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
-        # the shared mixed-group predicate scans registered provider players
-        mock_provider.players = [player]
-        return player
-
-    def test_generic_member_makes_group_mixed_and_read_only(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A generic LinkPlay member makes the group mixed; grouping is withdrawn."""
-        player = self._leader_with_member(
-            mock_provider, mock_wiim_device, "uuid:test-linkplay-001", BACKEND_GENERIC
-        )
-        player._update_ma_state_from_sdk_cache()
-        assert player._in_mixed_group is True
-        # the mixed group is still represented read-only (leader first)
-        assert player._attr_group_members == [
-            f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
-            f"{PLAYER_ID_PREFIX}uuid:test-linkplay-001",
-        ]
-        assert PlayerFeature.SET_MEMBERS not in player.supported_features
-        assert player.can_group_with == set()
-
-    def test_official_member_group_is_not_mixed(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """An all-official group is not mixed; grouping stays available."""
-        player = self._leader_with_member(
-            mock_provider, mock_wiim_device, "uuid:test-wiim-002", BACKEND_OFFICIAL
-        )
-        player._update_ma_state_from_sdk_cache()
-        assert player._in_mixed_group is False
-        assert PlayerFeature.SET_MEMBERS in player.supported_features
-
-    def test_mixed_to_same_backend_transition_restores_grouping(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """Leaving a mixed group restores the grouping capability on the next update."""
-        player = self._leader_with_member(
-            mock_provider, mock_wiim_device, "uuid:test-linkplay-001", BACKEND_GENERIC
-        )
-        player._update_ma_state_from_sdk_cache()
-        assert PlayerFeature.SET_MEMBERS not in player.supported_features
-        # the device becomes standalone again
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.role = "standalone"
-        snapshot.member_udns = (mock_wiim_device.udn,)
-        player._update_ma_state_from_sdk_cache()
-        assert PlayerFeature.SET_MEMBERS in player.supported_features
-
-    async def test_set_members_rejected_while_mixed(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A direct set_members on a mixed group is rejected, not partially applied."""
-        player = self._leader_with_member(
-            mock_provider, mock_wiim_device, "uuid:test-linkplay-001", BACKEND_GENERIC
-        )
-        player._update_ma_state_from_sdk_cache()  # populates a mixed group
-        with pytest.raises(UnsupportedFeaturedException):
-            await player.set_members(player_ids_to_add=["wiim_uuid:other"])
-
-    def test_official_follower_of_generic_leader_is_mixed(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """An official device a generic leader lists as a follower is read-only too."""
-        player = WiimPlayer(
-            provider=mock_provider,
-            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
-            device=mock_wiim_device,
-        )
-        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
-        player._attr_group_members = []  # a follower manages nothing itself
-        generic_leader = MagicMock(
-            player_id="wiim_uuid:generic-leader", linkplay_backend=BACKEND_GENERIC
-        )
-        generic_leader._attr_group_members = [generic_leader.player_id, player.player_id]
-        mock_provider.players = [player, generic_leader]
-        assert PlayerFeature.SET_MEMBERS not in player.supported_features
-        assert player.can_group_with == set()
-
-    def test_can_group_with_excludes_official_peer_in_mixed_group(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """An official peer locked in a generic-led mixed group is not offered as a target."""
-        leader = WiimPlayer(
-            provider=mock_provider,
-            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
-            device=mock_wiim_device,
-        )
-        leader.update_state = MagicMock()  # type: ignore[misc,method-assign]
-        leader._attr_available = True
-        # an official peer that is a follower in a generic-led mixed group
-        peer = WiimPlayer(
-            provider=mock_provider,
-            player_id="wiim_uuid:official-peer",
-            device=mock_wiim_device,
-        )
-        peer.update_state = MagicMock()  # type: ignore[misc,method-assign]
-        peer._attr_available = True
-        peer._attr_group_members = []
-        generic_leader = MagicMock(
-            player_id="wiim_uuid:generic-leader", linkplay_backend=BACKEND_GENERIC
-        )
-        generic_leader._attr_group_members = [generic_leader.player_id, peer.player_id]
-        mock_provider.players = [leader, peer, generic_leader]
-        assert peer._in_mixed_group is True
-        assert peer.player_id not in leader.can_group_with
-
-
-class TestSourceList:
     """Test dynamic source list construction."""
 
     @pytest.mark.asyncio
@@ -815,169 +691,23 @@ class TestPollRefreshesTransportState:
         mock_wiim_device.async_update_http_status.assert_not_awaited()
 
 
-class TestSetMembersTypeSafety:
-    """Official grouping must reject cross-backend members instead of crashing."""
+class TestSetMembersDelegation:
+    """The official player delegates grouping to the shared coordinator."""
 
-    async def test_add_generic_member_raises_unsupported(
+    async def test_set_members_delegates_to_coordinator(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """Adding a non-WiimPlayer member raises a typed error rather than AttributeError."""
+        """set_members forwards the add/remove batch to the coordinator unchanged."""
         leader = WiimPlayer(
             provider=mock_provider,
             player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
             device=mock_wiim_device,
         )
-        # a registered generic LinkPlay player (no .device attribute)
-        mock_provider.mass.players.get_player.return_value = MagicMock(spec=[])
 
-        with pytest.raises(UnsupportedFeaturedException):
-            await leader.set_members(player_ids_to_add=["wiim_uuid:generic"])
-
-    async def test_add_same_backend_member_joins(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """Adding another official WiiM player joins it via the controller."""
-        leader = WiimPlayer(
-            provider=mock_provider,
-            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
-            device=mock_wiim_device,
-        )
-        follower = MagicMock(spec=WiimPlayer)
-        follower.player_id = "wiim_uuid:follower"
-        follower.device = MagicMock()
-        follower.device.udn = "uuid:follower"
-        follower._in_mixed_group = False
-        mock_provider.mass.players.get_player.return_value = follower
-
-        await leader.set_members(player_ids_to_add=["wiim_uuid:follower"])
-
-        mock_provider.wiim_controller.async_join_group.assert_awaited_once_with(
-            mock_wiim_device.udn, ["uuid:follower"]
+        await leader.set_members(
+            player_ids_to_add=["wiim_uuid:add"], player_ids_to_remove=["wiim_uuid:remove"]
         )
 
-    def _leader(self, mock_provider: MagicMock, mock_wiim_device: MagicMock) -> WiimPlayer:
-        return WiimPlayer(
-            provider=mock_provider,
-            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
-            device=mock_wiim_device,
+        mock_provider.native_groups.set_members.assert_awaited_once_with(
+            leader, ["wiim_uuid:add"], ["wiim_uuid:remove"]
         )
-
-    def _follower(self, player_id: str, udn: str, *, mixed: bool = False) -> MagicMock:
-        follower = MagicMock(spec=WiimPlayer)
-        follower.player_id = player_id
-        follower.device = MagicMock(udn=udn)
-        follower._in_mixed_group = mixed
-        return follower
-
-    async def test_add_remove_conflict_rejected(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """Adding and removing the same member in one request is rejected before any call."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(
-                player_ids_to_add=["wiim_uuid:x"], player_ids_to_remove=["wiim_uuid:x"]
-            )
-        mock_provider.wiim_controller.async_join_group.assert_not_awaited()
-        mock_provider.wiim_controller.async_ungroup_device.assert_not_awaited()
-
-    async def test_remove_current_member_ungroups(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """Removing a current member ungroups it via the controller."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        follower = self._follower("wiim_uuid:follower", "uuid:follower")
-        mock_provider.mass.players.get_player.return_value = follower
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.member_udns = (mock_wiim_device.udn, "uuid:follower")
-        await leader.set_members(player_ids_to_remove=["wiim_uuid:follower"])
-        mock_provider.wiim_controller.async_ungroup_device.assert_awaited_once_with("uuid:follower")
-
-    async def test_valid_batch_removes_all(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A fully valid multi-member removal ungroups every member."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        members = {
-            "wiim_uuid:a": self._follower("wiim_uuid:a", "uuid:a"),
-            "wiim_uuid:b": self._follower("wiim_uuid:b", "uuid:b"),
-        }
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: members.get(pid)
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.member_udns = (mock_wiim_device.udn, "uuid:a", "uuid:b")
-        await leader.set_members(player_ids_to_remove=["wiim_uuid:a", "wiim_uuid:b"])
-        assert mock_provider.wiim_controller.async_ungroup_device.await_count == 2
-
-    async def test_remove_moved_member_untouched(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A removal target the leader no longer owns is rejected without any ungroup."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        follower = self._follower("wiim_uuid:follower", "uuid:follower")
-        mock_provider.mass.players.get_player.return_value = follower
-        # the leader's freshest snapshot no longer lists the follower (it moved elsewhere)
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.member_udns = (mock_wiim_device.udn,)
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_remove=["wiim_uuid:follower"])
-        mock_provider.wiim_controller.async_ungroup_device.assert_not_awaited()
-
-    async def test_remove_member_in_mixed_group_rejected(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A member that has moved into a read-only mixed group is not ungrouped."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        follower = self._follower("wiim_uuid:follower", "uuid:follower", mixed=True)
-        mock_provider.mass.players.get_player.return_value = follower
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.member_udns = (mock_wiim_device.udn, "uuid:follower")
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_remove=["wiim_uuid:follower"])
-        mock_provider.wiim_controller.async_ungroup_device.assert_not_awaited()
-
-    async def test_later_invalid_removal_aborts_batch(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A later invalid removal target aborts the batch before any ungroup runs."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        members = {
-            "wiim_uuid:good": self._follower("wiim_uuid:good", "uuid:good"),
-            "wiim_uuid:bad": self._follower("wiim_uuid:bad", "uuid:bad"),
-        }
-        mock_provider.mass.players.get_player.side_effect = lambda pid, *_a, **_k: members.get(pid)
-        # only 'good' is a current member; 'bad' has moved away
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.member_udns = (mock_wiim_device.udn, "uuid:good")
-        with pytest.raises(PlayerCommandFailed):
-            await leader.set_members(player_ids_to_remove=["wiim_uuid:good", "wiim_uuid:bad"])
-        mock_provider.wiim_controller.async_ungroup_device.assert_not_awaited()
-
-    async def test_join_sdk_error_propagates_typed(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A controller error while joining surfaces as a typed failure, not a false success."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        mock_provider.mass.players.get_player.return_value = self._follower(
-            "wiim_uuid:follower", "uuid:follower"
-        )
-        cause = WiimException("join boom")
-        mock_provider.wiim_controller.async_join_group.side_effect = cause
-        with pytest.raises(PlayerCommandFailed) as excinfo:
-            await leader.set_members(player_ids_to_add=["wiim_uuid:follower"])
-        assert excinfo.value.__cause__ is cause
-
-    async def test_remove_sdk_error_propagates_typed(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
-    ) -> None:
-        """A controller error while ungrouping surfaces as a typed failure with its cause."""
-        leader = self._leader(mock_provider, mock_wiim_device)
-        mock_provider.mass.players.get_player.return_value = self._follower(
-            "wiim_uuid:follower", "uuid:follower"
-        )
-        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
-        snapshot.member_udns = (mock_wiim_device.udn, "uuid:follower")
-        cause = WiimException("ungroup boom")
-        mock_provider.wiim_controller.async_ungroup_device.side_effect = cause
-        with pytest.raises(PlayerCommandFailed) as excinfo:
-            await leader.set_members(player_ids_to_remove=["wiim_uuid:follower"])
-        assert excinfo.value.__cause__ is cause
