@@ -6870,6 +6870,7 @@ class TestUniversalPlayerReplacement:
         mock_mass.config.remove = MagicMock(side_effect=config_remove)
         mock_mass.players = controller
         mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get.return_value = None
         mock_mass.call_later = MagicMock()
         mock_mass.loop = MagicMock()
         mock_mass.create_task = MagicMock(side_effect=capture_task)
@@ -7166,6 +7167,9 @@ class TestUniversalPlayerReplacement:
         controller._check_replace_universal_player(native)
         task = next(t for t in scheduled_tasks if "unregister" in repr(t))
         await task
+        for scheduled_task in scheduled_tasks:
+            if scheduled_task is not task:
+                await scheduled_task
 
         mock_mass.player_queues.stop.assert_not_awaited()
         assert "up_old" not in controller._players
