@@ -173,4 +173,6 @@ def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
     """Set date_added from a userCollection linkage item's addedAt meta."""
     if added := (item.get("meta") or {}).get("addedAt"):
         with suppress(ValueError):
-            media_item.date_added = datetime.fromisoformat(added)
+            # the DB only persists whole-second precision, so truncate here to avoid
+            # every sync seeing a (sub-second) mismatch and flagging the item as changed
+            media_item.date_added = datetime.fromisoformat(added).replace(microsecond=0)
