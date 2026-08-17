@@ -1772,12 +1772,17 @@ class Player(ABC):
     @property
     def grouping_locked(self) -> bool:
         """
-        Return whether grouping must be suppressed in this player's exposed state.
+        Return whether ALL grouping must be suppressed in this player's exposed state.
 
-        A provider may lock grouping, for example while a device is in an externally-created
-        cross-backend group that Music Assistant keeps read-only, or while its control API is
-        unreachable. While locked, ``SET_MEMBERS`` is withdrawn and no group targets are
-        offered in the final state, even ones a linked protocol player would otherwise add.
+        This is the broad, final lock: while it holds, ``SET_MEMBERS`` is withdrawn and no
+        group targets are offered in the final state, even ones a linked protocol player
+        would otherwise supply. It must therefore be reserved for a genuinely read-only
+        topology — for example a device in an externally-created cross-backend group that
+        Music Assistant keeps read-only — and NOT used merely because a device's own native
+        grouping capability is unavailable. A provider that only wants to disable its native
+        grouping path (e.g. while its control API is unreachable) should instead withhold the
+        native ``SET_MEMBERS`` from ``supported_features`` and return no native
+        ``can_group_with`` candidates, leaving core free to still group via a linked protocol.
         """
         return False
 

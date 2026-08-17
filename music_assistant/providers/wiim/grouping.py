@@ -118,18 +118,20 @@ class NativeGroupCoordinator:
         Return every reachable peer of either backend this player may group with.
 
         Core applies the final grouping filter and auto-ungroups a known follower before
-        regrouping it. A follower of a leader MA has NOT discovered is excluded (it cannot
-        be cleanly moved), and two generic devices are only paired when they share a known,
-        matching router-based multiroom generation, so the UI never offers a generic pair
-        that the command path would then reject. Cross-backend generation cannot be known
-        without a device read, so those pairs stay candidates and fail closed at command
-        time if incompatible.
+        regrouping it. A device whose own native grouping API is unreachable offers no native
+        peers (grouping via a linked protocol is decided separately by core), and a follower
+        of a leader MA has NOT discovered is excluded (it cannot be cleanly moved). Two generic
+        devices are only paired when they share a known, matching router-based multiroom
+        generation, so the UI never offers a generic pair that the command path would then
+        reject. Cross-backend generation cannot be known without a device read, so those pairs
+        stay candidates and fail closed at command time if incompatible.
 
         :param player: The player requesting its grouping candidates.
         """
-        if self._is_unknown_leader_follower(player.player_id):
-            # this device follows a group MA has not discovered: it cannot be cleanly
-            # detached, so it must not be offered any grouping candidates of its own.
+        if not player.native_available or self._is_unknown_leader_follower(player.player_id):
+            # the requesting device cannot lead a native group right now (its grouping API is
+            # unreachable, or it follows a group MA has not discovered and cannot be moved),
+            # so it offers no native candidates of its own.
             return set()
         return {
             peer.player_id

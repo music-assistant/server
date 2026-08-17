@@ -1633,3 +1633,19 @@ class TestBatchValidation:
             await coordinator.set_members(leader, [FOLLOWER_ID], None)
         assert isinstance(exc_info.value.__cause__, WiiMError)
         member_client.join_slave.assert_not_called()
+
+    async def test_unavailable_requester_offers_no_native_peers(self) -> None:
+        """A device whose own grouping API is unreachable offers no native candidates."""
+        me = _make_player(LEADER_ID, BACKEND_GENERIC, available=False)
+        peer = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
+        coordinator, _ = _make_coordinator(me, peer)
+
+        assert coordinator.can_group_with(me) == set()
+
+    async def test_available_requester_still_offers_peers(self) -> None:
+        """A reachable device is unaffected: it still offers its available native peers."""
+        me = _make_player(LEADER_ID, BACKEND_GENERIC)
+        peer = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
+        coordinator, _ = _make_coordinator(me, peer)
+
+        assert coordinator.can_group_with(me) == {FOLLOWER_ID}

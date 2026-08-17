@@ -152,13 +152,16 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
 
     @property
     def grouping_locked(self) -> bool:
-        """Withdraw grouping while unreachable or following a group MA has not discovered."""
-        # An unknown-leader follower belongs to an external group whose leader MA cannot
-        # see; without this lock core would re-offer it as a grouping target through its
-        # linked DLNA/AirPlay protocols and let that external group be repurposed.
-        return not self._linkplay_available or self._native_groups.is_unknown_leader_follower(
-            self.player_id
-        )
+        """Withdraw ALL grouping only while following a group MA has not discovered."""
+        # grouping_locked is the broad, final lock: it suppresses native AND linked-protocol
+        # grouping. It must therefore be reserved for a genuinely read-only topology, not for
+        # native capability being unavailable. An unknown-leader follower belongs to an
+        # external group whose leader MA cannot see, so it can be neither detached nor
+        # regrouped, and without this lock core would re-offer it as a grouping target through
+        # its linked DLNA/AirPlay protocols. LinkPlay API health only gates NATIVE grouping,
+        # which is handled by supported_features and the coordinator's can_group_with, so a
+        # reachable linked protocol can still form a group while the LinkPlay API is down.
+        return self._native_groups.is_unknown_leader_follower(self.player_id)
 
     @property
     def playback_state(self) -> PlaybackState:

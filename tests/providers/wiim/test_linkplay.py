@@ -124,6 +124,10 @@ def mock_provider() -> MagicMock:
     config.player_type = None
     config.get_value = MagicMock(return_value=None)
     provider.mass.config.get_base_player_config.return_value = config
+    # used by the core final-state calculation to resolve power/volume controls
+    provider.mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
     return provider
 
 
@@ -272,11 +276,9 @@ class TestHealthGating:
         healthy = _make_shell(mock_provider, mock_client, mock_upnp_device)
         healthy._linkplay_available = True
         assert healthy.native_available is True
-        assert healthy.grouping_locked is False
         unhealthy = _make_shell(mock_provider, mock_client, mock_upnp_device)
         unhealthy._linkplay_available = False
         assert unhealthy.native_available is False
-        assert unhealthy.grouping_locked is True
 
     def test_native_group_compat_follows_can_group_with(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -340,22 +342,27 @@ class TestGrouping:
             player, [PEER_PLAYER_ID], ["wiim_uuid:gone"]
         )
 
-    def test_grouping_withdrawn_when_api_unreachable(
+    def test_api_unreachable_gates_only_native_grouping(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """An unreachable LinkPlay API withdraws SET_MEMBERS and locks grouping."""
+        """An unreachable LinkPlay API withdraws only native grouping, not the broad lock."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
         player._linkplay_available = False
-        assert player.grouping_locked is True
+        # the broad lock stays off, so core may still group this device via a linked protocol
+        assert player.grouping_locked is False
+        # but native grouping is gated: the raw SET_MEMBERS is withdrawn ...
         assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        # ... and the coordinator offers no native peers for an unreachable device
+        assert player.can_group_with == set()
 
     def test_unknown_leader_follower_locks_grouping(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A reachable shell that follows an undiscovered group still withdraws grouping."""
+        """A reachable shell that follows an undiscovered group withdraws ALL grouping."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
         player._linkplay_available = True
         mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        # the broad lock holds, so even a linked-protocol group is withdrawn in the final state
         assert player.grouping_locked is True
 
     def test_grouping_rebuild_lock_serializes_with_address_change(
@@ -499,13 +506,15 @@ class TestRefreshResilience:
     async def test_unreachable_api_marks_unhealthy(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A failed device-info read marks the shell unhealthy, withdrawing grouping."""
+        """A failed device-info read marks the shell unhealthy, withdrawing NATIVE grouping."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
         player._linkplay_available = True
         mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
         await player.poll()
         assert player._linkplay_available is False
-        assert player.grouping_locked is True
+        # only native grouping is gated; the broad lock stays off so a linked protocol can group
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert player.grouping_locked is False
 
     async def test_setup_without_primed_info_does_full_refresh(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -692,3 +701,57 @@ class TestDefaultProtocolSelection:
         player = self._shell_player(links)
         target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
         assert target is players["dlna_x"]
+
+
+class TestFinalGroupingState:
+    """The FINAL state gates native grouping by API health but keeps linked-protocol grouping."""
+
+    @staticmethod
+    def _final_supported_features(player: LinkPlayPlayer) -> set[PlayerFeature]:
+        return cast(
+            "set[PlayerFeature]",
+            player._Player__final_supported_features,  # type: ignore[attr-defined]
+        )
+
+    def _link_grouping_protocol(self, player: LinkPlayPlayer, mock_provider: MagicMock) -> None:
+        """Link a DLNA protocol player that itself supports SET_MEMBERS."""
+        player.set_linked_output_protocols([LinkedOutputProtocol("dlna_x", "dlna", priority=50)])
+        protocol_player = MagicMock()
+        protocol_player.available = True
+        protocol_player.available_for_playback = True
+        protocol_player.supported_features = {PlayerFeature.SET_MEMBERS, PlayerFeature.PAUSE}
+        mock_provider.mass.players.get_player.return_value = protocol_player
+
+    def test_protocol_grouping_survives_api_outage(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """With the LinkPlay API down, a linked protocol still supplies SET_MEMBERS to the final state."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = False
+        self._link_grouping_protocol(player, mock_provider)
+
+        # native raw is gated, but the broad lock is off, so the linked protocol re-adds it
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert player.grouping_locked is False
+        assert PlayerFeature.SET_MEMBERS in self._final_supported_features(player)
+
+    def test_unknown_leader_follower_withdraws_even_protocol_grouping(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """The broad lock withdraws grouping in the final state even a linked protocol would add."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        self._link_grouping_protocol(player, mock_provider)
+
+        assert player.grouping_locked is True
+        assert PlayerFeature.SET_MEMBERS not in self._final_supported_features(player)
+
+    def test_healthy_native_keeps_set_members(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A reachable, standalone shell keeps native SET_MEMBERS and no broad lock."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        assert PlayerFeature.SET_MEMBERS in player.supported_features
+        assert player.grouping_locked is False
