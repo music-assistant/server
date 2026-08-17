@@ -139,7 +139,7 @@ async def test_the_load_budget_is_not_spent_more_than_twice_over() -> None:
     ctrl, queue_data, fill_mock = _controller_with_dead_head(dead=5, pre_marked=False)
 
     async def _fill_with_more_dead(_queue_id: str) -> None:
-        """A refill that supplies nothing but further dead items."""
+        """Supply nothing but further dead items, so the refill never yields a live track."""
         queue_data.items.extend(
             QueueItem(queue_id=QUEUE_ID, queue_item_id=f"dead{i}", name=f"dead{i}", duration=180)
             for i in range(5, 10)
