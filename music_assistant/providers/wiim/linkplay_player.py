@@ -19,7 +19,7 @@ from pywiim import WiiMClient, WiiMError, WiiMGroupCompatibilityError
 
 from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 
-from .constants import PLAYER_ID_PREFIX
+from .constants import BACKEND_GENERIC, PLAYER_ID_PREFIX
 from .helpers import linkplay_slave_uuid_to_udn
 
 if TYPE_CHECKING:
@@ -48,6 +48,7 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
     """
 
     _attr_type = PlayerType.PLAYER
+    linkplay_backend = BACKEND_GENERIC
 
     def __init__(
         self,
@@ -257,9 +258,11 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
             if not resolved or resolved in members:
                 continue
             members.append(resolved)
-            # A resolved member that is not a generic LinkPlay shell (i.e. an official
-            # WiiM member) makes this an externally-created mixed group, read-only for now.
-            if not isinstance(self.mass.players.get_player(resolved), LinkPlayPlayer):
+            # A resolved member whose backend is not the generic LinkPlay shell (i.e. an
+            # official WiiM member) makes this an externally-created mixed group, which is
+            # read-only until cross-backend grouping is supported.
+            member = self.mass.players.get_player(resolved)
+            if getattr(member, "linkplay_backend", None) != BACKEND_GENERIC:
                 mixed = True
         self._in_mixed_group = mixed
         self._attr_group_members = members if len(members) > 1 else []

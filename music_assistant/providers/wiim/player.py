@@ -21,6 +21,8 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
+    BACKEND_GENERIC,
+    BACKEND_OFFICIAL,
     INPUT_MODE_SOURCES,
     PASSIVE_SOURCES,
     PLAYER_ID_PREFIX,
@@ -48,6 +50,8 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
 
+    linkplay_backend = BACKEND_OFFICIAL
+
     # the device reports a source the app released as plain 'paused', indistinguishable
     # from a real pause, so only the grace period can tell us the session is over.
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
@@ -60,6 +64,10 @@ class WiimPlayer(Player):
         mac_address: str | None = None,
     ) -> None:
         """Initialize the Player."""
+        # Whether this device is in an externally-created MIXED group (one that also holds
+        # a generic LinkPlay member). Set before super().__init__ because the base reads
+        # supported_features during init. Such groups are read-only until layer 2.
+        self._in_mixed_group = False
         super().__init__(provider, player_id)
 
         self._attr_name = device.name
@@ -99,8 +107,17 @@ class WiimPlayer(Player):
         self._ma_stream_uri: str | None = None
 
     @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return supported features; grouping is withdrawn in a read-only mixed group."""
+        if self._in_mixed_group:
+            return self._attr_supported_features - {PlayerFeature.SET_MEMBERS}
+        return self._attr_supported_features
+
+    @property
     def can_group_with(self) -> set[str]:
         """Return the ids of the other official WiiM players this player can group with."""
+        if self._in_mixed_group:
+            return set()
         return {
             player.player_id
             for player in self.provider.players
@@ -279,6 +296,10 @@ class WiimPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
+        if self._in_mixed_group:
+            raise UnsupportedFeaturedException(
+                f"{self._attr_name} is in an externally-created mixed group and cannot be regrouped"
+            )
         queue = self.mass.player_queues.get(self.player_id)
         pq_data = self.mass.player_queues.queue_data_or_none(self.player_id) if queue else None
         entry_sdk_uri = self.device.current_media.uri if self.device.current_media else None
@@ -404,15 +425,7 @@ class WiimPlayer(Player):
             self._attr_playback_state = new_state
 
         # Group members
-        managed_member_ids = [
-            f"{PLAYER_ID_PREFIX}{member_udn}"
-            for member_udn in snapshot.member_udns
-            if member_udn != self.device.udn
-            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
-        ]
-        self._attr_group_members = (
-            [self.player_id, *managed_member_ids] if managed_member_ids else []
-        )
+        self._update_group_state(snapshot.member_udns)
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
@@ -561,6 +574,25 @@ class WiimPlayer(Player):
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
+
+    def _update_group_state(self, member_udns: tuple[str, ...]) -> None:
+        """Map the SDK's group snapshot to managed members and detect a mixed group."""
+        managed_member_ids = [
+            f"{PLAYER_ID_PREFIX}{member_udn}"
+            for member_udn in member_udns
+            if member_udn != self.device.udn
+            and self.mass.players.get_player(f"{PLAYER_ID_PREFIX}{member_udn}")
+        ]
+        self._attr_group_members = (
+            [self.player_id, *managed_member_ids] if managed_member_ids else []
+        )
+        # A managed member on the generic LinkPlay backend makes this a read-only mixed
+        # group; withdraw grouping while it holds and restore it once same-backend again.
+        self._in_mixed_group = any(
+            getattr(self.mass.players.get_player(member_id), "linkplay_backend", None)
+            == BACKEND_GENERIC
+            for member_id in managed_member_ids
+        )
 
     def _resolve_wiim_member(self, player_id: str) -> WiimPlayer | None:
         """

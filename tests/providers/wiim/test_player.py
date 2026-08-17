@@ -13,7 +13,12 @@ from wiim.exceptions import (
 )
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX, SOURCE_NETWORK
+from music_assistant.providers.wiim.constants import (
+    BACKEND_GENERIC,
+    BACKEND_OFFICIAL,
+    PLAYER_ID_PREFIX,
+    SOURCE_NETWORK,
+)
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
 
 
@@ -303,6 +308,87 @@ class TestGroupMembers:
         player._update_ma_state_from_sdk_cache()
 
         assert player._attr_group_members == []
+
+
+class TestMixedGroupReadOnly:
+    """An externally-created mixed group is read-only from the official side (until layer 2)."""
+
+    def _leader_with_member(
+        self,
+        mock_provider: MagicMock,
+        mock_wiim_device: MagicMock,
+        member_udn: str,
+        member_backend: str,
+    ) -> WiimPlayer:
+        leader_player_id = f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}"
+        member_player_id = f"{PLAYER_ID_PREFIX}{member_udn}"
+        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
+        snapshot.role = "leader"
+        snapshot.member_udns = (mock_wiim_device.udn, member_udn)
+        member = MagicMock(linkplay_backend=member_backend)
+        mock_provider.mass.players.get_player.side_effect = {member_player_id: member}.get
+        player = WiimPlayer(
+            provider=mock_provider, player_id=leader_player_id, device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        return player
+
+    def test_generic_member_makes_group_mixed_and_read_only(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A generic LinkPlay member makes the group mixed; grouping is withdrawn."""
+        player = self._leader_with_member(
+            mock_provider, mock_wiim_device, "uuid:test-linkplay-001", BACKEND_GENERIC
+        )
+        player._update_ma_state_from_sdk_cache()
+        assert player._in_mixed_group is True
+        # the mixed group is still represented read-only (leader first)
+        assert player._attr_group_members == [
+            f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            f"{PLAYER_ID_PREFIX}uuid:test-linkplay-001",
+        ]
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert player.can_group_with == set()
+
+    def test_official_member_group_is_not_mixed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """An all-official group is not mixed; grouping stays available."""
+        player = self._leader_with_member(
+            mock_provider, mock_wiim_device, "uuid:test-wiim-002", BACKEND_OFFICIAL
+        )
+        player._update_ma_state_from_sdk_cache()
+        assert player._in_mixed_group is False
+        assert PlayerFeature.SET_MEMBERS in player.supported_features
+
+    def test_mixed_to_same_backend_transition_restores_grouping(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Leaving a mixed group restores the grouping capability on the next update."""
+        player = self._leader_with_member(
+            mock_provider, mock_wiim_device, "uuid:test-linkplay-001", BACKEND_GENERIC
+        )
+        player._update_ma_state_from_sdk_cache()
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        # the device becomes standalone again
+        snapshot = mock_provider.wiim_controller.get_group_snapshot.return_value
+        snapshot.role = "standalone"
+        snapshot.member_udns = (mock_wiim_device.udn,)
+        player._update_ma_state_from_sdk_cache()
+        assert PlayerFeature.SET_MEMBERS in player.supported_features
+
+    async def test_set_members_rejected_while_mixed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A direct set_members on a mixed group is rejected, not partially applied."""
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player._in_mixed_group = True
+        with pytest.raises(UnsupportedFeaturedException):
+            await player.set_members(player_ids_to_add=["wiim_uuid:other"])
 
 
 class TestSourceList:
