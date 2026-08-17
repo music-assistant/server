@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    CUSTOM_IMAGES_DIRNAME,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
@@ -677,6 +678,23 @@ class GenreController(MediaControllerBase[Genre]):
         """
         if full_restore:
             self.logger.warning("Performing FULL restore - deleting all existing genres")
+            # the table wipe below would orphan any user-uploaded custom images,
+            # so delete their files (and cached variants) first
+            rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT metadata FROM {DB_TABLE_GENRES} "
+                f"WHERE metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
+                limit=0,
+            )
+            for row in rows:
+                metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+                for img in metadata.get("images") or []:
+                    img_path = img.get("path") or ""
+                    if not img_path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
+                        continue
+                    await self.mass.metadata.invalidate_image_cache(
+                        img.get("provider") or "builtin", img_path
+                    )
+                    await self._delete_custom_image_file(img_path)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION)
             await self.mass.music.database.delete(
@@ -1222,6 +1240,16 @@ class GenreController(MediaControllerBase[Genre]):
             ),
             "last_scan_mapped": self._last_scan_mapped,
         }
+
+    def _get_default_images(
+        self, item: Genre, image_type: ImageType
+    ) -> UniqueList[MediaItemImage] | None:
+        """Return the builtin genre icon (if any) as the default thumb image."""
+        if image_type != ImageType.THUMB:
+            return None
+        if metadata := self._get_genre_icon_metadata(item.translation_key, item.content_type):
+            return metadata.images
+        return None
 
     @staticmethod
     def _get_genre_icon_metadata(
@@ -1846,8 +1874,14 @@ class GenreController(MediaControllerBase[Genre]):
                     await self._ensure_aliases(genre_id, all_aliases)
                     if icon_metadata is not None:
                         current_md = json.loads(rows[0]["metadata"]) if rows[0]["metadata"] else {}
+                        current_images = current_md.get("images") or []
+                        # never clobber a user-uploaded custom image with the builtin icon
+                        has_custom_image = any(
+                            (img.get("path") or "").startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+                            for img in current_images
+                        )
                         fresh_images = icon_metadata.to_dict().get("images")
-                        if current_md.get("images") != fresh_images:
+                        if not has_custom_image and current_md.get("images") != fresh_images:
                             current_md["images"] = fresh_images
                             await self.mass.music.database.update(
                                 DB_TABLE_GENRES,
