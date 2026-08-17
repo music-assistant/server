@@ -155,7 +155,7 @@ class YotoProvider(MusicProvider):
         :param prov_track_id: Track ID formatted as {card_id}:{chapter_key}.
         """
         if ":" not in prov_track_id:
-            raise MediaNotFoundError(f"Invalid track ID format: {prov_track_id}")
+            raise InvalidProviderID(f"Invalid track ID format: {prov_track_id}")
         card_id, _chapter_key = prov_track_id.split(":", 1)
         album_tracks = await self.get_album_tracks(card_id)
         for track in album_tracks:
