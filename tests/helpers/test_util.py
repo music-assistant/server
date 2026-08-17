@@ -129,6 +129,13 @@ class TestDetectCharset:
         encoding = await detect_charset(raw, preferred="utf8mb4")
         assert raw.decode(encoding) == CYRILLIC_CUE
 
+    @pytest.mark.parametrize("charset", ["base64", "zlib", "rot_13", "idna", "undefined"])
+    async def test_declared_charset_that_cannot_decode_text_is_ignored(self, charset: str) -> None:
+        """A charset name that resolves to a codec but cannot decode text is ignored."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred=charset)
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
 
 class TestGetSourceIpForTarget:
     """get_source_ip_for_target reports the interface the routing table egresses from."""

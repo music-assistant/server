@@ -1,9 +1,10 @@
 """Tests for protocol player linking and universal player creation."""
 
 import asyncio
+import inspect
 import logging
 import re
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -234,7 +235,7 @@ class SessionBoundMockPlayer(MockPlayer):
 
 
 @pytest.fixture
-def mock_mass() -> MagicMock:
+def mock_mass() -> Iterator[MagicMock]:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
     mass.closing = False
@@ -259,7 +260,10 @@ def mock_mass() -> MagicMock:
     mass.get_providers = MagicMock(return_value=[])
     # awaited by the tests that replay the tasks scheduled during a config wipe
     mass.webserver.auth.remove_from_user_filters = AsyncMock()
-    return mass
+    yield mass
+    for call in mass.create_task.call_args_list:
+        if call.args and inspect.iscoroutine(coro := call.args[0]):
+            coro.close()
 
 
 class TestIdentifiersMatch:
@@ -6870,6 +6874,7 @@ class TestUniversalPlayerReplacement:
         mock_mass.config.remove = MagicMock(side_effect=config_remove)
         mock_mass.players = controller
         mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get.return_value = None
         mock_mass.call_later = MagicMock()
         mock_mass.loop = MagicMock()
         mock_mass.create_task = MagicMock(side_effect=capture_task)

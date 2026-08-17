@@ -1000,6 +1000,13 @@ HLS_MEDIA_PLAYLIST = (
     "#EXTINF:10.0,\n"
     "http://stream.example.com/segment1.aac\n"
 )
+VERSIONLESS_HLS_MEDIA_PLAYLIST = (
+    "#EXTM3U\n"
+    "#EXT-X-TARGETDURATION:10\n"
+    '#EXT-X-KEY:METHOD=AES-128,URI="skd://test-key"\n'
+    "#EXTINF:10,\n"
+    "segment1.aac\n"
+)
 HLS_MASTER_PLAYLIST = (
     "#EXTM3U\n"
     '#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"\n'
@@ -1010,19 +1017,42 @@ HLS_MASTER_PLAYLIST = (
 class _FakeContent:
     """Stand-in for the payload stream of an aiohttp response."""
 
-    def __init__(self, raw_data: bytes) -> None:
+    def __init__(self, raw_data: bytes, chunk_size: int | None = None) -> None:
         self._raw_data = raw_data
+        # like the real stream, a read hands over what has arrived so far, not the full
+        # amount asked for
+        self._chunk_size = chunk_size or max(len(raw_data), 1)
+        self._pos = 0
 
     async def read(self, n: int = -1) -> bytes:
-        return self._raw_data if n < 0 else self._raw_data[:n]
+        available = len(self._raw_data) - self._pos
+        size = available if n < 0 else min(n, self._chunk_size, available)
+        chunk = self._raw_data[self._pos : self._pos + size]
+        self._pos += size
+        return chunk
 
 
 class _FakeResponse:
     """Stand-in for the aiohttp response of a playlist fetch."""
 
-    def __init__(self, raw_data: bytes, charset: str | None) -> None:
+    def __init__(
+        self,
+        raw_data: bytes,
+        charset: str | None,
+        status: int = 200,
+        chunk_size: int | None = None,
+    ) -> None:
         self.charset = charset
-        self.content = _FakeContent(raw_data)
+        self.content = _FakeContent(raw_data, chunk_size)
+        self.status = status
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise client_exceptions.ClientResponseError(
+                request_info=MagicMock(),
+                history=(),
+                status=self.status,
+            )
 
     async def __aenter__(self) -> Self:
         return self
@@ -1054,15 +1084,24 @@ class _FailingRequest:
         return None
 
 
-def _mass_serving(raw_data: bytes, charset: str | None = None) -> Any:
+def _mass_serving(
+    raw_data: bytes,
+    charset: str | None = None,
+    status: int = 200,
+    chunk_size: int | None = None,
+) -> Any:
     """
     Return a mock mass whose http session serves the given playlist bytes.
 
     :param raw_data: Raw response body handed to fetch_playlist.
     :param charset: Charset the server declares in its Content-Type header, if any.
+    :param status: HTTP status the server answers with.
+    :param chunk_size: Largest amount a single read hands over, if the body is chunked.
     """
     mass = MagicMock()
-    mass.http_session.get = MagicMock(return_value=_FakeResponse(raw_data, charset))
+    mass.http_session.get = MagicMock(
+        return_value=_FakeResponse(raw_data, charset, status, chunk_size)
+    )
     return mass
 
 
@@ -1096,9 +1135,35 @@ async def test_fetch_playlist_client_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_playlist_error_status() -> None:
+    """
+    An error response is rejected instead of parsed.
+
+    Without the status check every markup line of the error page becomes an entry.
+    """
+    error_page = (
+        b"<html>\n<head><title>404 Not Found</title></head>\n"
+        b"<body>\n<center><h1>404 Not Found</h1></center>\n</body>\n</html>\n"
+    )
+    mass = _mass_serving(error_page, status=404)
+
+    with pytest.raises(InvalidDataError, match="Error while fetching playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+@pytest.mark.asyncio
 async def test_fetch_playlist_hls_media_playlist() -> None:
     """An HLS media playlist is rejected for callers that cannot handle segments."""
     mass = _mass_serving(HLS_MEDIA_PLAYLIST.encode())
+
+    with pytest.raises(IsHLSPlaylist):
+        await fetch_playlist(mass, "http://example.com/station.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_versionless_hls_media_playlist() -> None:
+    """A version-less HLS media playlist is recognised by its required tag."""
+    mass = _mass_serving(VERSIONLESS_HLS_MEDIA_PLAYLIST.encode())
 
     with pytest.raises(IsHLSPlaylist):
         await fetch_playlist(mass, "http://example.com/station.m3u8")
@@ -1113,6 +1178,18 @@ async def test_fetch_playlist_hls_media_playlist_allowed() -> None:
 
     assert len(result) == 1
     assert result[0].path == "http://stream.example.com/segment1.aac"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_versionless_hls_media_playlist_allowed() -> None:
+    """Disabling HLS detection still exposes a version-less playlist's segment and key."""
+    mass = _mass_serving(VERSIONLESS_HLS_MEDIA_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u8", raise_on_hls=False)
+
+    assert len(result) == 1
+    assert result[0].path == "segment1.aac"
+    assert result[0].key == "skd://test-key"
 
 
 @pytest.mark.asyncio
@@ -1213,6 +1290,18 @@ async def test_fetch_playlist_declared_charset_is_used() -> None:
     result = await fetch_playlist(mass, "http://example.com/station.m3u")
 
     assert result[0].title == "Хит"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_reads_a_body_that_arrives_in_chunks() -> None:
+    """A playlist spread over several chunks is parsed whole, not just its first chunk."""
+    mass = _mass_serving(
+        b"#EXTM3U\n#EXTINF:-1,Station\nhttp://stream.example.com/aac\n", chunk_size=8
+    )
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert [x.path for x in result] == ["http://stream.example.com/aac"]
 
 
 @pytest.mark.asyncio
