@@ -10,6 +10,7 @@ requires authentication and is added in a later phase.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
@@ -85,6 +86,11 @@ BROWSE_PODCASTS = "podcasts"
 # Tile typenames that identify a program/podcast row on a landing page.
 _RADIO_ROW_TYPE = "RadioProgramTile"
 _PODCAST_ROW_TYPE = "PodcastProgramTile"
+
+# Only radio-archive episodes carry a played-songs tracklist (podcasts never do).
+# Their archives hold only a handful of recent broadcasts; the cap is a safety net
+# against a pathologically long archive triggering a burst of tracklist fetches.
+_MAX_TRACKLIST_EPISODES = 50
 
 
 async def setup(
@@ -215,18 +221,23 @@ class VrtMaxProvider(MusicProvider):
                 access_token = await self._auth.get_access_token()
             except VrtAuthError as err:
                 self.logger.debug("No access token for episode progress: %s", err)
-        position = 0
+        episodes: list[PodcastEpisode] = []
         for season in program.seasons:
             try:
                 async for episode in self._client.iter_season_episodes(
                     season.component_id, access_token
                 ):
-                    position += 1
-                    yield self._episode_item(episode, podcast_mapping, position)
+                    episodes.append(self._episode_item(episode, podcast_mapping, len(episodes) + 1))
             except VrtApiError as err:
                 # A transient failure mid-pagination shouldn't drop the whole list.
                 self.logger.warning("Stopped listing episodes for %s: %s", prov_podcast_id, err)
-                return
+                break
+        # MA plays the episode object from this list directly (there is no episode-detail
+        # fetch on the play path), so a radio episode's played-songs tracklist must be
+        # attached here rather than only in get_podcast_episode.
+        await self._attach_tracklists(episodes)
+        for item in episodes:
+            yield item
 
     @use_cache(3600 * 6)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -243,21 +254,9 @@ class VrtMaxProvider(MusicProvider):
             name=episode.title,
         )
         item = self._episode_item(episode, podcast_mapping, 0)
-        # Attach the played-songs tracklist as chapters (available anonymously).
-        try:
-            chapters = await self._client.get_episode_chapters(prov_episode_id)
-            if chapters:
-                item.metadata.chapters = [
-                    MediaItemChapter(
-                        position=chapter.position,
-                        name=chapter.name,
-                        start=chapter.start,
-                        end=chapter.end,
-                    )
-                    for chapter in chapters
-                ]
-        except VrtApiError as err:
-            self.logger.debug("Could not fetch chapters for %s: %s", prov_episode_id, err)
+        chapters = await self._episode_chapters(prov_episode_id)
+        if chapters:
+            item.metadata.chapters = chapters
         return item
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
@@ -548,6 +547,45 @@ class VrtMaxProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _attach_tracklists(self, episodes: list[PodcastEpisode]) -> None:
+        """Concurrently attach the played-songs tracklist (as chapters) to radio episodes."""
+        targets = [ep for ep in episodes if _has_tracklist(ep.item_id)][:_MAX_TRACKLIST_EPISODES]
+        if not targets:
+            return
+
+        async def attach(episode: PodcastEpisode) -> None:
+            chapters = await self._episode_chapters(episode.item_id)
+            if chapters:
+                episode.metadata.chapters = chapters
+
+        await asyncio.gather(*(attach(episode) for episode in targets))
+
+    async def _episode_chapters(self, page_id: str) -> list[MediaItemChapter] | None:
+        """Return a radio episode's played-songs tracklist as chapters, if it has one."""
+        if not _has_tracklist(page_id):
+            return None
+        try:
+            chapters = await self._client.get_episode_chapters(page_id)
+        except VrtApiError as err:
+            self.logger.debug("Could not fetch chapters for %s: %s", page_id, err)
+            return None
+        if not chapters:
+            return None
+        return [
+            MediaItemChapter(
+                position=chapter.position,
+                name=chapter.name,
+                start=chapter.start,
+                end=chapter.end,
+            )
+            for chapter in chapters
+        ]
+
+
+def _has_tracklist(page_id: str) -> bool:
+    """Only radio-archive episodes expose a played-songs tracklist; podcasts never do."""
+    return page_id.startswith("/vrtmax/luister/radio/")
 
 
 def _encode(component_id: str) -> str:
