@@ -132,6 +132,7 @@ class FFMpeg(AsyncProcess):
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
         self._stdin_feeder_task: asyncio.Task[None] | None = None
+        self._stdin_feeder_exception: Exception | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
         # holds the detached abort-on-corrupt-stream task from _log_reader_task so it
         # isn't garbage collected mid-flight; not otherwise awaited
@@ -153,6 +154,11 @@ class FFMpeg(AsyncProcess):
             stderr=True,
         )
         self.logger = LOGGER
+
+    @property
+    def stdin_feeder_exception(self) -> Exception | None:
+        """Return the exception raised by the stdin feeder task, if any."""
+        return self._stdin_feeder_exception
 
     async def start(self) -> None:
         """Perform Async init of process."""
@@ -280,12 +286,19 @@ class FFMpeg(AsyncProcess):
         self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
         try:
             start = time.time()
-            async for chunk in self.audio_input:
+            while True:
+                try:
+                    chunk = await anext(self.audio_input)
+                except StopAsyncIteration:
+                    generator_exhausted = True
+                    break
+                except Exception as err:
+                    self._stdin_feeder_exception = err
+                    raise
                 chunk_count += 1
                 if self.closed:
                     return
                 await self.write(chunk)
-            generator_exhausted = True
         except asyncio.CancelledError:
             status = "cancelled"
             raise
@@ -416,11 +429,13 @@ async def get_ffmpeg_stream(
         # the OS process has actually exited, leaving returncode as None if checked directly
         with suppress(TimeoutError):
             await ffmpeg_proc.wait_with_timeout(5)
-        if ffmpeg_proc.returncode not in (None, 0) or ffmpeg_proc.concat_error:
-            # unclean exit of ffmpeg - raise error with log tail
-            log_lines = -20 if ffmpeg_proc.concat_error else -5
-            log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[log_lines:])
-            raise AudioError(log_tail)
+    if ffmpeg_proc.returncode not in (None, 0) or ffmpeg_proc.concat_error:
+        # unclean exit of ffmpeg - raise error with log tail
+        log_lines = -20 if ffmpeg_proc.concat_error else -5
+        log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[log_lines:])
+        raise AudioError(log_tail)
+    if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
 
 
 async def get_ffmpeg_overlay_stream(
@@ -462,10 +477,12 @@ async def get_ffmpeg_overlay_stream(
         # the OS process has actually exited, leaving returncode as None if checked directly
         with suppress(TimeoutError):
             await ffmpeg_proc.wait_with_timeout(5)
-        if ffmpeg_proc.returncode not in (None, 0):
-            # unclean exit of ffmpeg - raise error with log tail
-            log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
-            raise AudioError(log_tail)
+    if ffmpeg_proc.returncode not in (None, 0):
+        # unclean exit of ffmpeg - raise error with log tail
+        log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
+        raise AudioError(log_tail)
+    if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
 
 
 def get_ffmpeg_resample_filter(

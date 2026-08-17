@@ -38,6 +38,11 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    CONF_STREAMING_MODE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
+    STREAMING_MODE_AUTO,
     AirPlayRemoteCommand,
     ClockReadiness,
     StreamingProtocol,
@@ -67,8 +72,14 @@ if TYPE_CHECKING:
 # and only the pending ack is answered with a failure.
 CLI_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
 CLI_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+# A receiver that wants a password challenges with 401. A 403 is a flat refusal
+# of the pairing handshake itself, which no password can satisfy, so it must not
+# be read as a verdict on one.
+CLI_STATUS_REFUSED: Final[int] = 403
 CLI_ERROR_START_FAILED: Final[str] = "start_failed"
 CLI_ERROR_FLUSH_FAILED: Final[str] = "flush_failed"
+CLI_ERROR_ANNOUNCE_FAILED: Final[str] = "announce_failed"
+CLI_NATIVE_CONTROL_FAILURE: Final[str] = "[ERROR] AirPlay 2 control channel failed"
 
 _CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
 _CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
@@ -106,7 +117,9 @@ class AirPlayStream:
     # which a START would anchor as if it were the new first sample.
     audio_pending_ms: int = 0
 
-    def __init__(self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None) -> None:
+    def __init__(  # noqa: PLR0915
+        self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None
+    ) -> None:
         """
         Initialize AirPlay stream.
 
@@ -164,6 +177,16 @@ class AirPlayStream:
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
         self._start_error: CliError | None = None
+        # The binary's answers to an ANNOUNCE arm: announce_started carries the
+        # actual audible instant plus clip duration, a reported announce failure
+        # fills the error slot instead (each answer clears the other), and
+        # announce_done is set once the clip is fully mixed - with the cancelled
+        # flag when it was cut short (or never played at all).
+        self._announce_started = asyncio.Event()
+        self._announce_done = asyncio.Event()
+        self._announce_ack: tuple[int, int] | None = None
+        self._announce_error: CliError | None = None
+        self._announce_done_cancelled = False
         # Whether the last commanded START was a late-join start: routes the
         # post-commit correction log level (a corrected join is the routine
         # landing path, a corrected origin start is a loud signal).
@@ -181,7 +204,14 @@ class AirPlayStream:
         # clock_ready): either it projected when the clock becomes usable, or it
         # reported that there is nothing to wait for. The projected instant
         # (unix ms) stays 0 in the latter case, and the readiness below says
-        # which of the reasons it was.
+        # which of the reasons it was. Never re-armed: the binary restarts this
+        # reporting on every FLUSH and START, but the re-armed report waits on
+        # its audio loop, which the flush ack ordinarily beats, so a warm
+        # re-anchor plans against what the previous cycle latched here - which
+        # still holds, a flush leaving the receiver's own clock undisturbed.
+        # Clearing it per cycle would cost a silent receiver its stall verdict:
+        # the binary restarts a five-second stall window at each re-arm, so the
+        # wait below could only ever time out to UNREPORTED.
         self._clock_ready = asyncio.Event()
         self._clock_ready_at_unix_ms: int = 0
         self._clock_readiness: ClockReadiness = ClockReadiness.UNREPORTED
@@ -213,9 +243,10 @@ class AirPlayStream:
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
         # Minimum lead (ms) a warm commanded START needs for exact placement.
-        # Nonzero on the Apple splice timeline, where the receiver's queued
-        # audio plays out before the new content can begin; a warm group
-        # anchor must sit beyond the largest member value. 0 = no constraint.
+        # Nonzero on the splice timeline, the default for every native AirPlay 2
+        # session, where the receiver's queued audio plays out before the new
+        # content can begin; a warm group anchor must sit beyond the largest
+        # member value. 0 = no constraint.
         self.warm_lead_ms: int = 0
         # Audible instant (unix ms) of the delivery head frozen by the latest
         # warm flush, from the flushed ack (0 = none/no constraint). The warm
@@ -234,6 +265,7 @@ class AirPlayStream:
         # stays a single support signal instead of repeating with every
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
+        self._native_control_failure_handled: bool = False
 
     @property
     def running(self) -> bool:
@@ -324,15 +356,23 @@ class AirPlayStream:
         # back audio rendering until they receive track metadata; deferring it
         # can keep them silent past the commanded start.
         await self._send_current_metadata(send_artwork=False)
-        # Send the mute-aware volume right away — audio can start within a
-        # second now that metadata goes out immediately — and repeat it after
-        # 2 seconds because some players ignore the first volume command
-        # (https://github.com/music-assistant/support/issues/3330). The repeat reads
-        # the level when it fires, so it never replays a value that changed since.
-        await self._send_current_volume()
-        self.mass.call_later(2, self._send_current_volume)
+        # An AirPlay volume command writes the receiver's own volume and persists there
+        # after the session ends, so it is only sent when nothing else owns this output's
+        # volume: otherwise the device keeps playing at the level its own app or remote is
+        # set to. A latched mute would start the stream silent, and a volume explicitly
+        # requested for this session (an announcement) is not an unsolicited push.
+        if (
+            self.player.owns_volume
+            or self.player.volume_muted
+            or (self.session is not None and self.session.requested_volume is not None)
+        ):
+            # Repeat after 2 seconds because some players ignore the first volume command
+            # (https://github.com/music-assistant/support/issues/3330). The repeat reads
+            # the level when it fires, so it never replays a value that changed since.
+            await self._send_current_volume()
+            self.mass.call_later(2, self._send_current_volume)
         # settle artwork and the position on top of the identity push above
-        self.player._on_player_media_updated()
+        self.player.on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
         """
@@ -409,9 +449,12 @@ class AirPlayStream:
         """
         Flush the live stream in place and wait for the binary's acknowledgement.
 
-        Sends ``ACTION=FLUSH`` — the binary stops sending audio, flushes the
-        receiver, discards its input ring and drains stdin, then reports
-        ``[STATUS] flushed`` while keeping the connection and stdin reader alive.
+        Sends ``ACTION=FLUSH`` — the binary stops sending content, discards its
+        input ring and drains stdin, then reports ``[STATUS] flushed`` while
+        keeping the connection and stdin reader alive. The receiver is not asked
+        to discard on the splice timeline: its queued audio plays out and the
+        next START splices onto the same line, so a warm anchor has to clear
+        :attr:`warm_lead_ms` and :attr:`flushed_head_unix_ms`.
         The caller must have stopped feeding old audio before calling this; what
         it already wrote is seen through to the binary here, and stdin is held
         quiet until the flush is acknowledged, so the drain removes exactly the
@@ -463,6 +506,76 @@ class AirPlayStream:
             )
             return False
         return True
+
+    async def announce(self, file_path: str, at_unix_ms: int, duck_db: float) -> bool:
+        """
+        Arm the binary's native announcement mixer with a clip file.
+
+        The clip is mixed over the outgoing music with the music ducked
+        underneath - no flush, no re-anchor, the group timeline is untouched.
+        The binary requires an anchored, playing stream to accept the arm.
+
+        :param file_path: Raw headerless PCM clip in exactly this stream's
+            stdin format.
+        :param at_unix_ms: Unix epoch ms at which the clip must be audible
+            (0 = earliest feasible).
+        :param duck_db: Music gain in dB while the clip plays (<= -60 mutes).
+        :return: True when the command was delivered; the binary then answers
+            with announce_started/announce_done (or a reported announce
+            failure), awaited via :meth:`wait_announce_started` and
+            :meth:`wait_announce_done`.
+        """
+        if not self.running or not self.connected:
+            return False
+        self._arm_announce_answer()
+        return await self._write_cli_command(
+            f"ANNOUNCE_FILE={file_path}\n"
+            f"ANNOUNCE_AT_UNIX_MS={at_unix_ms}\n"
+            f"ANNOUNCE_DUCK_DB={duck_db}\n"
+            "ACTION=ANNOUNCE"
+        )
+
+    async def wait_announce_started(self, timeout: float) -> tuple[int, int] | None:
+        """
+        Wait for the binary to commit the armed clip's first sample.
+
+        :param timeout: Seconds to wait for the report.
+        :return: The ACTUAL audible instant (unix ms, possibly corrected later
+            than requested) and the clip duration (ms), either 0 when
+            unreported. None when the arm failed, the clip was cancelled before
+            it played, or nothing arrived in time (an outdated binary ignores
+            the command entirely).
+        """
+        # announce_done can be the only answer (cancelled before the clip ever
+        # played), so the wait watches both events instead of running out its
+        # timeout on a clip that is already settled.
+        waiters = [
+            asyncio.ensure_future(self._announce_started.wait()),
+            asyncio.ensure_future(self._announce_done.wait()),
+        ]
+        try:
+            await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._announce_error is not None or not self._announce_started.is_set():
+            return None
+        return self._announce_ack or (0, 0)
+
+    async def wait_announce_done(self, timeout: float) -> bool:
+        """
+        Wait for the armed clip (and its tail ramp) to be fully mixed.
+
+        :param timeout: Seconds to wait for the report.
+        :return: True for a completed clip; False when it was cancelled, the arm
+            failed, or nothing arrived in time (e.g. the status stream ended on
+            the eof of a queue that ran out mid-clip).
+        """
+        try:
+            await asyncio.wait_for(self._announce_done.wait(), timeout)
+        except TimeoutError:
+            return False
+        return self._announce_error is None and not self._announce_done_cancelled
 
     async def wait_audio_present(self, timeout: float = 5.0) -> bool:
         """
@@ -520,10 +633,10 @@ class AirPlayStream:
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
-            late joiner): the binary then enforces receiver clock readiness and
-            holds its ack until that resolves, so the returned instant is the one
-            the caller must map the joiner's content onto. Group/solo origin
-            starts leave it False.
+            late joiner): the binary holds its ack until its receiver clock
+            verification resolves whenever it arms, so the returned instant is
+            the one the caller must map the joiner's content onto. Group/solo
+            origin starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise.
@@ -587,10 +700,9 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. A join's ack is held back until the receiver clock
-        # verification resolves and therefore gets a much wider window than a
-        # plain start, which acks within the command round-trip. A reported
-        # failure answers the wait immediately.
+        # re-align a group. Both windows cover the buffered anchor retries; a
+        # join may additionally hold its ack while receiver-clock verification
+        # is armed. A reported failure answers either wait immediately.
         ack_timeout = (
             AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
         ) / 1000
@@ -889,8 +1001,15 @@ class AirPlayStream:
         airplay_info = self.player.airplay_discovery_info
         raop_info = self.player.raop_discovery_info
         target_protocol = self.player.protocol_override or self.player.protocol
+        streaming_mode = self.player.streaming_mode
+        timing_arg: str | None = None
         if self.player.protocol_override == StreamingProtocol.RAOP:
             protocol_arg = "raop"
+        elif streaming_mode == STREAMING_MODE_AP2_COMPAT:
+            protocol_arg = "airplay2-compat"
+        elif streaming_mode in (STREAMING_MODE_AP2_PTP, STREAMING_MODE_AP2_NTP):
+            protocol_arg = "airplay2"
+            timing_arg = "ptp" if streaming_mode == STREAMING_MODE_AP2_PTP else "ntp"
         elif target_protocol == StreamingProtocol.AIRPLAY2 and not raop_info:
             # With no RAOP fallback, force AirPlay 2 because featureless AP2-only
             # receivers cannot be identified by the binary's TXT-bit test.
@@ -902,8 +1021,6 @@ class AirPlayStream:
             cli_binary,
             "--protocol",
             protocol_arg,
-            "--volume",
-            str(self.player.volume_level),
             "--dacp",
             prov.dacp_id,
             "--activeremote",
@@ -915,9 +1032,12 @@ class AirPlayStream:
             "--bitdepth",
             str(self.pcm_format.bit_depth),
         ]
+        if timing_arg:
+            args += ["--timing", timing_arg]
 
-        # The binary owns the playback lead/buffer (2000 ms default, clamped to
-        # the device-reported window); there is no user override for it.
+        # The binary owns the playback lead (2000 ms default, clamped to the
+        # device-reported window) and there is no user override for it; the
+        # receiver queue depth is the one tunable, passed as --latency below.
 
         # The endpoint must follow the same capability decision as the binary:
         # legacy RAOP uses _raop, while native and RAOP-compatible AP2 use _airplay.
@@ -1247,9 +1367,12 @@ class AirPlayStream:
           [STATUS] playing elapsed_ms=<ms>
           [STATUS] paused
           [STATUS] eof
+          [STATUS] announce_started at_unix_ms=<ms> duration_ms=<ms>
+          [STATUS] announce_done [cancelled=1]
           [STATUS] error code=<slug> http=<int> detail="<short text>"
             (auth_required/auth_failed/connect_failed are terminal; the
-             start_failed/flush_failed command slugs answer a pending ack)
+             start_failed/flush_failed/announce_failed command slugs answer
+             a pending ack)
           [ERROR] <message>
         """
         player = self.player
@@ -1420,6 +1543,19 @@ class AirPlayStream:
                 self.flushed_head_unix_ms = 0
             self._flush_error = None
             self._flushed.set()
+        elif "[STATUS] announce_started" in line:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            self._announce_ack = (
+                _status_int(fields, "at_unix_ms"),
+                _status_int(fields, "duration_ms"),
+            )
+            # The started report and a reported announce failure are the two
+            # mutually exclusive answers to one arm, so each clears the other.
+            self._announce_error = None
+            self._announce_started.set()
+        elif "[STATUS] announce_done" in line:
+            self._announce_done_cancelled = "cancelled=1" in line
+            self._announce_done.set()
         elif "[STATUS] audio " in line:
             if "buffered_ms=" in line:
                 try:
@@ -1446,6 +1582,9 @@ class AirPlayStream:
             self._parse_reanchor_status(line)
         elif "[STATUS] error " in line:
             self._parse_error_status(line)
+        elif CLI_NATIVE_CONTROL_FAILURE in line:
+            self._handle_native_control_failure()
+            player.logger.error("cliairplay: %s", line.strip())
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -1550,6 +1689,33 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
 
+    async def _restart_playback_on_ntp(self) -> None:
+        """
+        Restart this player's playback after its streaming mode switched to NTP.
+
+        The running session was spawned with PTP timing and needs a full cold
+        start to pick up the new mode, so the stream stops hard first; the
+        queue then restarts the current item. The receiver rendered nothing on
+        the stalled session, so restarting from the top loses no audio.
+        """
+        try:
+            queue = self.mass.player_queues.get_active_queue(self.player.player_id)
+            # Tear the whole owning session down, not just this stream: the
+            # session holds the audio source and ffmpeg feed, and a plain
+            # play_index would warm-replace onto the still-running (PTP)
+            # binary instead of cold-starting with the new timing.
+            if self.session is not None:
+                await self.session.stop()
+            else:
+                await self.stop(force=True)
+            if queue is None or queue.current_index is None:
+                return
+            await self.mass.player_queues.play_index(queue.queue_id, queue.current_index)
+        except Exception as err:
+            # Fire-and-forget heal: never let a failed restart replace one
+            # silent outcome with an unhandled-task error.
+            self.player.logger.warning("Restart on NTP timing failed: %s", err)
+
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -1585,6 +1751,14 @@ class AirPlayStream:
         """Clear the slots the binary answers a FLUSH in, so only this one's answer is read."""
         self._flushed.clear()
         self._flush_error = None
+
+    def _arm_announce_answer(self) -> None:
+        """Clear the slots the binary answers an ANNOUNCE in, so only this one's answer is read."""
+        self._announce_started.clear()
+        self._announce_done.clear()
+        self._announce_ack = None
+        self._announce_error = None
+        self._announce_done_cancelled = False
 
     async def _write_cli_command(self, command: str) -> bool:
         """Write an interactive command regardless of stream teardown state."""
@@ -1651,6 +1825,8 @@ class AirPlayStream:
         timeout the callers already handle.
         """
         error = self._connect_error
+        if error and error.http_status == CLI_STATUS_REFUSED:
+            return self._connection_refused_error()
         if error and error.code == CLI_ERROR_AUTH_REQUIRED:
             return self._password_required_error()
         if error and error.code == CLI_ERROR_AUTH_FAILED:
@@ -1669,6 +1845,15 @@ class AirPlayStream:
             f"{self.player.display_name} requires a password. "
             "Run the setup for this player to enter it.",
             translation_key="password_required",
+        )
+
+    def _connection_refused_error(self) -> PlayerCommandFailed:
+        """Return the error for a device that declined the handshake outright."""
+        return PlayerCommandFailed(
+            f"{self.player.display_name} refused the connection. "
+            "Run the setup for this player to pair it again.",
+            translation_key="connection_refused",
+            translation_owner=self.player.translation_owner,
         )
 
     def _parse_error_status(self, line: str) -> None:
@@ -1700,15 +1885,45 @@ class AirPlayStream:
             self._flush_error = error
             self._flushed.set()
             return
+        if error.code == CLI_ERROR_ANNOUNCE_FAILED:
+            # A rejected arm plays nothing, so both announce waits are answered
+            # at once - nothing else will ever answer them.
+            self._announce_error = error
+            self._announce_started.set()
+            self._announce_done.set()
+            return
         self._connect_error = error
-        if error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED):
+        if (
+            error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED)
+            and error.http_status != CLI_STATUS_REFUSED
+        ):
             # The stored password is wrong, or the device demanded one we could
             # not supply (devices can enforce a password without announcing it -
             # e.g. an Apple TV with stale TXT records after the password was
             # enabled). Persist that so the player keeps offering its setup
             # action (across restarts) until a working password is entered,
             # instead of only failing at the next play attempt.
+            # A refusal is excluded: the binary reports one as an auth failure
+            # because it happens on the pairing leg, but the device turned the
+            # handshake away rather than judging a secret, and a player with no
+            # password would otherwise be left demanding one forever.
             self.player.set_password_invalid(True)
+
+    def _handle_native_control_failure(self) -> None:
+        """Switch an automatic native AirPlay 2 route to compatibility mode."""
+        if self._native_control_failure_handled:
+            return
+        self._native_control_failure_handled = True
+        if self.player.streaming_mode != STREAMING_MODE_AUTO:
+            return
+        self.player.logger.warning(
+            "%s stopped answering native AirPlay 2 control keepalives; switching this "
+            "player to compatibility mode for its next playback.",
+            self.player.display_name,
+        )
+        self.mass.config.set_raw_player_config_value(
+            self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+        )
 
     def _parse_anchor_corrected(self, line: str) -> None:
         """
@@ -1866,14 +2081,43 @@ class AirPlayStream:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True
-            self.player.logger.warning(
-                "%s has not answered the server's PTP clock (%s clock exchange(s), "
-                "probe streak %s ms), so it will not play any audio. Check that UDP "
-                "319/320 traffic can flow between the speaker and the server.",
-                self.player.display_name,
-                fields.get("exchanges", "?"),
-                fields.get("streak_ms", "?"),
+            ntp_offered = any(
+                option.value == STREAMING_MODE_AP2_NTP
+                for option in self.player.streaming_mode_options
             )
+            if (
+                self.player.streaming_mode == STREAMING_MODE_AUTO
+                and ntp_offered
+                and not self.player.synced_to
+                and not self.player.group_members
+            ):
+                # Measured truth: the device advertises PTP but never answers a
+                # probe (AirPlay 2 video-class TVs). Pin the visible streaming
+                # mode to NTP timing and restart playback on it, so the user
+                # hears music instead of silence — and can see and revert the
+                # decision in the player's advanced settings.
+                self.player.logger.warning(
+                    "%s never answered the server's PTP clock; switching this "
+                    "player to NTP timing and restarting playback.",
+                    self.player.display_name,
+                )
+                self.mass.config.set_raw_player_config_value(
+                    self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_NTP
+                )
+                self.mass.create_task(self._restart_playback_on_ntp())
+            else:
+                # A pinned mode is the user's explicit choice, and moving one
+                # member of a live sync group would desync it: report instead.
+                self.player.logger.warning(
+                    "%s has not answered the server's PTP clock (%s clock exchange(s), "
+                    "probe streak %s ms), so it will not play any audio. Check that UDP "
+                    "319/320 traffic can flow between the speaker and the server, or "
+                    "pin one of the offered streaming modes in the player's advanced "
+                    "settings.",
+                    self.player.display_name,
+                    fields.get("exchanges", "?"),
+                    fields.get("streak_ms", "?"),
+                )
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive. A stalled clock

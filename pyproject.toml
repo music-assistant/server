@@ -19,15 +19,15 @@ dependencies = [
   "aiosqlite==0.22.1",
   "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
-  "colorlog==6.10.1",
+  "colorlog==6.12.0",
   "modern_colorthief==0.2.1",
   "cryptography==50.0.0",
-  "chardet>=5.2.0",
+  "chardet==7.6.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-models==1.1.185",
-  "music-assistant-frontend==2.17.267",
+  "music-assistant-models==1.1.188",
+  "music-assistant-frontend==2.17.277",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -58,7 +58,7 @@ version = "0.0.0"
 test = [
   "codespell==2.4.3",
   "mypy==2.3.0",
-  "pre-commit==4.6.1",
+  "pre-commit==4.6.2",
   "pre-commit-hooks==6.0.0",
   "psutil==7.2.2",
   "pytest==9.0.3",
@@ -85,10 +85,9 @@ mass = "music_assistant.__main__:main"
 # "speaches" is the name of a self-hostable OpenAI-compatible speech server
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 # tidal fixtures are captured API responses; foreign album/track titles aren't typos
-# pr-review/standards.md quotes reviewer comments verbatim (incl. their original typos)
+# instructions/*.instructions.md quotes reviewer comments verbatim (incl. their original typos)
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,"
 skip = """*.js,*.svg,\
-.github/pr-review/standards.md,\
 .github/instructions/music-assistant-standards.instructions.md,\
 music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\

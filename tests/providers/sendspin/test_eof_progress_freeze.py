@@ -20,7 +20,7 @@ def _session_mock() -> tuple[MagicMock, list[str]]:
     calls: list[str] = []
     push_stream = MagicMock()
     push_stream.is_stopped = False
-    push_stream.stop.side_effect = lambda: calls.append("stream_stop")
+    push_stream.stop.side_effect = lambda *, keep_stream=False: calls.append("stream_stop")  # noqa: ARG005
     session._push_stream = push_stream
     metadata_role = session.player._metadata_role
     metadata_role.freeze_progress.side_effect = lambda: calls.append("freeze")

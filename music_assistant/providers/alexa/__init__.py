@@ -333,7 +333,7 @@ class AlexaPlayer(Player):
         self._attr_current_media = media
         self.update_state()
 
-    def _on_player_media_updated(self) -> None:
+    def on_player_media_updated(self) -> None:
         """
         Handle callback when the current media of the player is updated.
 

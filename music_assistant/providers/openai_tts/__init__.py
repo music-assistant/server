@@ -16,7 +16,7 @@ import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 from aiofiles.os import makedirs, remove, replace
@@ -180,7 +180,11 @@ class OpenAITTSProvider(PluginProvider):
         return [TTSEngine(id=voice, name=voice, provider=self) for voice in self._voices]
 
     async def get_tts_message(
-        self, message: str, language: str | None = None, engine_id: str | None = None
+        self,
+        message: str,
+        language: str | None = None,
+        engine_id: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> StreamDetails:
         """
         Render the given message as speech.
@@ -189,6 +193,7 @@ class OpenAITTSProvider(PluginProvider):
         :param language: Ignored: the speech endpoint has no language parameter, the
             backend infers the language from the message itself.
         :param engine_id: The voice to render with; defaults to the first available voice.
+        :param options: Ignored: this provider has no configurable TTS options.
         :return: StreamDetails for the (cached) audio clip.
         """
         voice = engine_id or self._voices[0]

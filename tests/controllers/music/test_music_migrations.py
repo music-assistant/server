@@ -525,3 +525,20 @@ async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
 
     assert {"translation_key", "translation_params"} <= await _table_columns(database, "playlists")
     assert "playback_speed" in await _table_columns(database, DB_TABLE_PLAYLOG)
+
+
+async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConnection) -> None:
+    """A pre-58 database gets the radios.is_dynamic column, mirroring the playlist one."""
+    assert "is_dynamic" not in await _table_columns(database, "radios")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=57,
+        create_tables=AsyncMock(),
+    )
+
+    assert "is_dynamic" in await _table_columns(database, "radios")

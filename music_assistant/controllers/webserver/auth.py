@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
@@ -27,7 +27,13 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_PLAYERS,
+    CONF_PROVIDERS,
+    DB_TABLE_PLAYLOG,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ROLE_SCOPES,
     get_current_client_id,
@@ -116,6 +122,9 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        # Serialises the read-modify-write of the user access filters
+        self._user_filter_lock = asyncio.Lock()
+        self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -138,6 +147,9 @@ class AuthenticationManager:
 
         # migrate the Home Assistant system user of pre-existing installs to the service role
         await self._migrate_system_user_role()
+
+        # repair filters that were left pointing at removed providers/players
+        await self._prune_stale_user_filters()
 
         self._schedule_join_code_cleanup()
 
@@ -708,6 +720,26 @@ class AuthenticationManager:
             token_id,
         )
 
+    def subscribe_user_access_revoked(self, callback: Callable[[User], None]) -> Callable[[], None]:
+        """
+        Subscribe to a user's access being withdrawn.
+
+        Fires on deliberate access withdrawal: bulk token revocation
+        (revoke_tokens_for_user), account disable, and account deletion. Revoking a
+        single token (e.g. a logout) does not fire it, so credentials bound to the
+        account survive a plain logout.
+
+        :param callback: Called with the affected user.
+        :return: Callable that removes the subscription.
+        """
+        self._access_revoked_callbacks.append(callback)
+
+        def _unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._access_revoked_callbacks.remove(callback)
+
+        return _unsubscribe
+
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
         Revoke all auth tokens for a user.
@@ -719,21 +751,24 @@ class AuthenticationManager:
         :return: Number of tokens revoked.
         """
         token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
-        if not token_rows:
-            return 0
 
         # Disconnect any WebSocket connections using these tokens
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
-        # Delete all tokens in one go
-        await self.database.execute(
-            "DELETE FROM auth_tokens WHERE user_id = :user_id",
-            {"user_id": user.user_id},
-        )
-        await self.database.commit()
+        if token_rows:
+            # Delete all tokens in one go
+            await self.database.execute(
+                "DELETE FROM auth_tokens WHERE user_id = :user_id",
+                {"user_id": user.user_id},
+            )
+            await self.database.commit()
+            self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
 
-        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        # Notify even with no tokens left: subscribers may hold credentials tied to
+        # this user's access that must be withdrawn regardless.
+        self._notify_user_access_revoked(user)
+
         return len(token_rows)
 
     @api_command("auth/tokens")
@@ -857,6 +892,11 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot disable your own account")
 
+        # Look up the user before disabling (get_user hides disabled accounts)
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+
         await self.database.update(
             "users",
             {"user_id": user_id},
@@ -865,6 +905,12 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # A disabled account's tokens stop authenticating, so credentials bound to its
+        # access must be withdrawn with them (they return on the next login after enable).
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
 
         self.logger.info("User account disabled (user_id=%s)", user_id)
 
@@ -1160,6 +1206,12 @@ class AuthenticationManager:
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
+        # Deletion cascades the user's tokens away, so it must announce the access
+        # withdrawal itself for credentials bound to this user.
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
+
         self.logger.info(
             "User '%s' deleted by admin '%s'",
             user_row["username"],
@@ -1203,6 +1255,27 @@ class AuthenticationManager:
                 raise InvalidDataError("Failed to refresh user after filter update")
             return refreshed_user
         return target_user
+
+    async def remove_from_user_filters(
+        self,
+        provider_instance_ids: Collection[str] = (),
+        player_ids: Collection[str] = (),
+    ) -> None:
+        """
+        Remove the given providers and/or players from the access filters of all users.
+
+        Call this when a provider or player is permanently removed, so no user is left with
+        an access filter that points at something that no longer exists.
+
+        :param provider_instance_ids: Instance IDs of the removed providers.
+        :param player_ids: IDs of the removed players.
+        """
+        await self._rewrite_user_filters(
+            keep_provider=(lambda x: x not in provider_instance_ids)
+            if provider_instance_ids
+            else None,
+            keep_player=(lambda x: x not in player_ids) if player_ids else None,
+        )
 
     @api_command("auth/user/update")
     async def update_user_profile(
@@ -1868,6 +1941,60 @@ class AuthenticationManager:
                 "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
             )
 
+    async def _prune_stale_user_filters(self) -> None:
+        """Drop user access filter entries for providers or players that no longer exist."""
+        known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
+        known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
+        # an empty config section means nothing is configured yet, which must not be
+        # mistaken for everything having been removed
+        await self._rewrite_user_filters(
+            keep_provider=(lambda x: x in known_providers) if known_providers else None,
+            keep_player=(lambda x: x in known_players) if known_players else None,
+        )
+
+    async def _rewrite_user_filters(
+        self,
+        keep_provider: Callable[[str], bool] | None,
+        keep_player: Callable[[str], bool] | None,
+    ) -> None:
+        """Rewrite the access filters of all users, dropping the entries that are not kept."""
+        if keep_provider is None and keep_player is None:
+            return
+        # removing a provider wipes the config of its players one by one, so without the lock
+        # those rewrites would read the same filter and each undo the other's removal
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                updates: dict[str, str] = {}
+                for column, keep_func in (
+                    ("provider_filter", keep_provider),
+                    ("player_filter", keep_player),
+                ):
+                    if keep_func is None:
+                        continue
+                    current: list[str] = json_loads(row[column])
+                    remaining = [x for x in current if keep_func(x)]
+                    if remaining == current:
+                        continue
+                    updates[column] = json_dumps(remaining)
+                    dropped = ", ".join(x for x in current if x not in remaining)
+                    if remaining:
+                        self.logger.info(
+                            "Removed %s from the %s of user '%s'", dropped, column, row["username"]
+                        )
+                    else:
+                        # An empty filter means unrestricted. A user whose entries are all gone is
+                        # deliberately left unrestricted, the alternative being an account that
+                        # can see nothing at all.
+                        self.logger.warning(
+                            "Removed the last entries (%s) from the %s of user '%s'. This user is "
+                            "no longer restricted, adjust the access settings if needed.",
+                            dropped,
+                            column,
+                            row["username"],
+                        )
+                if updates:
+                    await self.database.update("users", {"user_id": row["user_id"]}, updates)
+
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
         Migrate all existing playlog entries to the first user.
@@ -2082,6 +2209,11 @@ class AuthenticationManager:
             days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
         )
         return now < rotate_after
+
+    def _notify_user_access_revoked(self, user: User) -> None:
+        """Dispatch an access withdrawal to subscribers, isolating them from each other."""
+        for callback in list(self._access_revoked_callbacks):
+            self.mass.loop.call_soon(callback, user)
 
 
 def _join_code_rate_limit_key() -> tuple[str, bool]:
