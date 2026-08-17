@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,6 +22,9 @@ from music_assistant.providers.wiim.helpers import (
 )
 from music_assistant.providers.wiim.linkplay_player import LinkPlayPlayer
 from music_assistant.providers.wiim.provider import WiimProvider
+
+if TYPE_CHECKING:
+    from pywiim.models import DeviceInfo as PywiimDeviceInfo
 
 # Verified Edifier MS50A identity used across the tests.
 EDIFIER_HTTP_UUID = "FF97F002783E65056579F15F"
@@ -91,6 +94,14 @@ def _slaves(uuids: list[str]) -> list[dict[str, str]]:
     return [{"uuid": uuid, "ip": f"10.0.0.{index + 2}"} for index, uuid in enumerate(uuids)]
 
 
+def _device_info(wmrm_version: str = "4.2", *, legacy: bool = False) -> PywiimDeviceInfo:
+    """Build a device-info stand-in; legacy=True marks it as a Wi-Fi-Direct device."""
+    return cast(
+        "PywiimDeviceInfo",
+        SimpleNamespace(wmrm_version=wmrm_version, needs_wifi_direct_multiroom=legacy),
+    )
+
+
 @pytest.fixture
 def mock_provider() -> MagicMock:
     """Create a mock WiimProvider suitable for constructing players."""
@@ -152,9 +163,7 @@ def _make_shell(
     )
     player.update_state = MagicMock()  # type: ignore[misc,method-assign]
     # a modern, router-based device so compatibility checks pass by default
-    player._cached_device_info = SimpleNamespace(
-        wmrm_version="4.2", needs_wifi_direct_multiroom=False
-    )
+    player._cached_device_info = _device_info("4.2")
     return player
 
 
@@ -347,9 +356,7 @@ class TestGrouping:
         member_client = MagicMock(join_slave=AsyncMock())
         member = _make_shell(mock_provider, member_client, mock_upnp_device, PEER_PLAYER_ID)
         # a legacy Wi-Fi-Direct / older-generation device that we do not group
-        member._cached_device_info = SimpleNamespace(
-            wmrm_version="2.0", needs_wifi_direct_multiroom=True
-        )
+        member._cached_device_info = _device_info("2.0", legacy=True)
         mock_provider.mass.players.get_player.return_value = member
         with pytest.raises(UnsupportedFeaturedException):
             await leader.set_members(player_ids_to_add=[PEER_PLAYER_ID])
@@ -520,25 +527,25 @@ class TestGroupCompatibility:
 
     def test_same_major_generation_compatible(self) -> None:
         """4.2 and 4.3 (same WMRM major, router-based) can be grouped."""
-        first = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
-        second = SimpleNamespace(wmrm_version="4.3", needs_wifi_direct_multiroom=False)
+        first = _device_info("4.2")
+        second = _device_info("4.3")
         assert linkplay_group_compatible(first, second) is True
 
     def test_wifi_direct_rejected(self) -> None:
         """A legacy Wi-Fi-Direct device is never grouped."""
-        first = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
-        second = SimpleNamespace(wmrm_version="2.0", needs_wifi_direct_multiroom=True)
+        first = _device_info("4.2")
+        second = _device_info("2.0", legacy=True)
         assert linkplay_group_compatible(first, second) is False
 
     def test_different_major_generation_rejected(self) -> None:
         """Different WMRM major generations are not grouped."""
-        first = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
-        second = SimpleNamespace(wmrm_version="3.0", needs_wifi_direct_multiroom=False)
+        first = _device_info("4.2")
+        second = _device_info("3.0")
         assert linkplay_group_compatible(first, second) is False
 
     def test_unknown_device_info_rejected(self) -> None:
         """An unknown (missing) device info is treated as incompatible."""
-        known = SimpleNamespace(wmrm_version="4.2", needs_wifi_direct_multiroom=False)
+        known = _device_info("4.2")
         assert linkplay_group_compatible(None, known) is False
 
     async def test_can_group_with_excludes_incompatible_peer(
@@ -549,9 +556,7 @@ class TestGroupCompatibility:
         player._linkplay_available = True
         peer = _make_shell(mock_provider, mock_client, mock_upnp_device, PEER_PLAYER_ID)
         peer._linkplay_available = True
-        peer._cached_device_info = SimpleNamespace(
-            wmrm_version="2.0", needs_wifi_direct_multiroom=True
-        )
+        peer._cached_device_info = _device_info("2.0", legacy=True)
         mock_provider.players = [player, peer]
         assert player.can_group_with == set()
 
