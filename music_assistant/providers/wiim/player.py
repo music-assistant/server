@@ -46,10 +46,6 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
 
-# A burst of RenderingControl Slave events is coalesced into one forced topology re-read
-# after this delay, so sustained event traffic cannot starve reconciliation.
-TOPOLOGY_REFRESH_DEBOUNCE = 1.0
-
 
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
@@ -633,12 +629,13 @@ class WiimPlayer(Player):
         self.update_state()
 
     def _schedule_topology_refresh(self) -> None:
-        """Schedule a debounced live topology + self-role re-read, coalescing event bursts."""
-        # a burst of RenderingControl Slave events must not repeatedly cancel and restart the
-        # HTTP read (which would starve reconciliation and hammer the device); the shared
-        # task_id makes each event reschedule one final forced refresh after a short delay.
-        self.mass.call_later(
-            TOPOLOGY_REFRESH_DEBOUNCE,
+        """Force one live topology + self-role re-read, deduplicated over Slave-event bursts."""
+        # abort_existing=False deduplicates on the shared task_id: while a forced read is in
+        # flight, further events neither start a second read (leading-edge throttle) nor
+        # cancel the running one, so a burst neither hammers the device nor starves
+        # reconciliation. Passing the coroutine function lets the runtime drop a deduplicated
+        # call cleanly.
+        self.mass.create_task(
             self._native_groups.refresh_leader,
             self,
             task_id=f"wiim_topology_{self.player_id}",

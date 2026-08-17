@@ -596,6 +596,17 @@ class NativeGroupCoordinator:
                 # following a leader MA has not discovered: a follower with no known leader
                 # (leader_of stays None), still suppressed and not groupable.
                 role[player_id] = NativeGroupRole.FOLLOWER
+            elif any(
+                match_slave_uuid_to_player_id(uuid, registered) is None
+                for uuid in self._raw_slaves.get(player_id, ())
+            ):
+                # leads a native group whose slaves MA cannot resolve to registered players:
+                # it manages no members here (members_of stays empty), but it is NOT
+                # standalone, so it is never offered for a second (linked-protocol) group on
+                # top of its existing hardware group — which matters most during an API outage
+                # when that native group cannot be dissolved. A stale entry that still resolves
+                # to a registered player (a follower that moved away) is not treated as leading.
+                role[player_id] = NativeGroupRole.LEADER
             else:
                 role[player_id] = NativeGroupRole.STANDALONE
 

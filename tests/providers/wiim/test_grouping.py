@@ -169,16 +169,18 @@ class TestTopologyResolution:
         assert coordinator.members_of(LEADER_ID) == [LEADER_ID, FOLLOWER_ID]
         assert coordinator.role_of(FOLLOWER_ID) == NativeGroupRole.FOLLOWER
 
-    async def test_unknown_slave_is_skipped(self) -> None:
-        """A slave uuid that resolves to no registered player is ignored."""
+    async def test_unknown_slave_manages_no_members_but_leads(self) -> None:
+        """A slave that resolves to no registered player yields no managed member but a leader role."""
         leader = _make_player(LEADER_ID, BACKEND_GENERIC)
         coordinator, _ = _make_coordinator(leader)
 
         coordinator.set_leader_slaves(LEADER_ID, ["FFFFFFFFFFFFFFFFFFFFFFFF"])
         await coordinator.reconcile()
 
-        assert coordinator.role_of(LEADER_ID) == NativeGroupRole.STANDALONE
+        # it manages no MA-resolvable members, but it is NOT standalone: it leads a native
+        # group MA cannot see, so it must not be offered for a second (protocol) group.
         assert coordinator.members_of(LEADER_ID) == []
+        assert coordinator.role_of(LEADER_ID) == NativeGroupRole.LEADER
 
     async def test_follower_leadership_is_ignored(self) -> None:
         """A device that is another leader's follower cannot also be a leader."""
