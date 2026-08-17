@@ -160,6 +160,10 @@ STATIONS_BY_ID: dict[str, VrtStation] = {s.id: s for s in STATIONS}
 # VRT changes this API periodically; keep every endpoint/query in this module.
 # ---------------------------------------------------------------------------
 
+# Used with the Bearer token for user-scoped queries (Mijn lijst, progress) and
+# anonymously for everything else. A public-only mirror exists at
+# `.../vrtnu-api/graphql/public/v1` (no auth) - a fallback should VRT ever start
+# requiring auth on this endpoint for anonymous catalogue/playlist queries.
 GRAPHQL_URL = "https://www.vrt.be/vrtnu-api/graphql/v1"
 GRAPHQL_HEADERS = {
     "Accept": "application/json",
