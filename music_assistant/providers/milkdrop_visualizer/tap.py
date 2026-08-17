@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import struct
 from collections import deque
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -20,6 +21,7 @@ from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.visualizer import ClientHelloVisualizerSupport
 from aiosendspin.server.roles.registry import register_role
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.providers.sendspin.bridge_role import BridgeVisualizerRole
 
@@ -38,9 +40,10 @@ if TYPE_CHECKING:
 
 MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
-# How long a viewerless tap stays attached, so refreshes and the next track
-# rejoin instantly instead of hitting the mid-stream join gap.
-TAP_LINGER_SECONDS = 600
+# How long to wait for the Sendspin provider to register a player for a freshly
+# created tap client, before grouping it onto the player being visualized.
+TAP_PLAYER_WAIT_ATTEMPTS = 25
+TAP_PLAYER_WAIT_INTERVAL = 0.2
 
 
 def get_sendspin_provider(mass: MusicAssistant) -> SendspinProvider | None:
@@ -210,6 +213,10 @@ class TapManager:
         """
         async with self._lock:
             if (existing := self._taps.get(target.player_id)) is not None:
+                if existing.client_id not in target.group_members:
+                    # a viewer arrived while a release was in flight, so the
+                    # tap is still here but no longer a member
+                    await self._join_group(target, existing)
                 return existing
             # Stable id: reconnects and multiple viewers reuse one hidden tap
             # player. Hash the full id rather than slicing its tail, so two
@@ -217,8 +224,8 @@ class TapManager:
             # Sendspin client id.
             digest = hashlib.blake2s(target.player_id.encode(), digest_size=6).hexdigest()
             tap = Tap(f"milkdrop-{digest}")
-            viz_client = self._register_client(tap)
-            await target.api.group.add_client(viz_client)
+            self._register_client(tap)
+            await self._join_group(target, tap)
             self._taps[target.player_id] = tap
             self.logger.info(
                 "Waveform tap %s attached to group of %s (state=%s)",
@@ -227,22 +234,22 @@ class TapManager:
                 target.playback_state,
             )
             if target.playback_state == PlaybackState.PLAYING:
-                self.mass.create_task(self._late_join_watchdog(target, tap, viz_client))
+                self.mass.create_task(self._late_join_watchdog(target, tap))
             return tap
 
     def schedule_release(self, target_player_id: str) -> None:
         """
-        Start the linger countdown for a tap whose viewer just left.
+        Tear down a tap whose last viewer just left.
 
         Keyed per target with abort_existing, so a target never accumulates
-        countdowns: an earlier one would otherwise still be sleeping and could
-        tear down a tap that a later viewer created.
+        releases: an earlier one could otherwise tear down a tap that a later
+        viewer created.
 
         :param target_player_id: The player whose tap may now be idle.
         """
         self.mass.create_task(
-            self._linger(target_player_id),
-            task_id=f"milkdrop_linger_{target_player_id}",
+            self._release(target_player_id),
+            task_id=f"milkdrop_release_{target_player_id}",
             abort_existing=True,
         )
 
@@ -250,7 +257,8 @@ class TapManager:
         """Tear down every live tap."""
         async with self._lock:
             sendspin = get_sendspin_provider(self.mass)
-            for tap in self._taps.values():
+            for target_player_id, tap in self._taps.items():
+                await self._leave_group(target_player_id, tap)
                 if sendspin is not None:
                     await sendspin.server_api.remove_client(tap.client_id)
             self._taps.clear()
@@ -267,23 +275,78 @@ class TapManager:
         now_us = sendspin.server_api.clock.now_us()
         return [frame for ts_us, frame in tap.beats if ts_us > now_us]
 
-    async def _linger(self, target_player_id: str) -> None:
+    async def _join_group(self, target: SendspinBasePlayer, tap: Tap) -> None:
         """
-        Remove a tap once it has been viewerless for the linger window.
+        Group the tap onto the player being visualized.
 
-        The linger keeps the tap in the group across refreshes and track
-        changes during a viewing session, so subsequent streams are covered
-        from their start (avoiding the mid-stream join gap).
+        Joining through the player controller rather than the Sendspin group
+        directly is what makes a player rendering over another protocol hand
+        its output over to Sendspin, exactly as it does when any other
+        Sendspin player joins it. The audio the tap needs follows from that
+        same membership.
+
+        :param target: The Sendspin player whose group to join.
+        :param tap: The tap joining the group.
         """
-        tap = self._taps.get(target_player_id)
-        if tap is None or tap.queues:
+        # Group onto the player itself, not its Sendspin output: the controller
+        # maps the tap onto that output and performs the handover.
+        parent_id = target.protocol_parent_id or target.player_id
+        parent = self.mass.players.get_player(parent_id)
+        if parent is None:
             return
-        await asyncio.sleep(TAP_LINGER_SECONDS)
+        # Two things have to catch up with the client that was just created:
+        # the Sendspin provider registers a player for it on the client added
+        # event, and only then does the target recalculate which players it
+        # accepts as members (that set is cached on its state).
+        for _ in range(TAP_PLAYER_WAIT_ATTEMPTS):
+            tap_player = self.mass.players.get_player(tap.client_id)
+            if tap_player is not None and tap_player.initialized.is_set():
+                parent.update_state()
+                if tap.client_id in parent.state.can_group_with:
+                    break
+            await asyncio.sleep(TAP_PLAYER_WAIT_INTERVAL)
+        else:
+            self.logger.warning(
+                "Tap %s never became groupable with %s; visualizing without grouping, "
+                "so the player only switches to Sendspin when something else moves it there",
+                tap.client_id,
+                parent.display_name,
+            )
+            return
+        await self.mass.players.cmd_set_members(parent_id, player_ids_to_add=[tap.client_id])
+
+    async def _leave_group(self, target_player_id: str, tap: Tap) -> None:
+        """
+        Ungroup a tap that is being torn down.
+
+        Leaves the player's output where it is: like any other member leaving,
+        the protocol it switched to lasts until the player next goes idle.
+
+        :param target_player_id: The Sendspin player the tap was tapping.
+        :param tap: The tap being removed.
+        """
+        target = self.mass.players.get_player(target_player_id)
+        if target is None:
+            return
+        parent_id = target.protocol_parent_id or target.player_id
+        with suppress(MusicAssistantError):
+            await self.mass.players.cmd_set_members(parent_id, player_ids_to_remove=[tap.client_id])
+
+    async def _release(self, target_player_id: str) -> None:
+        """
+        Ungroup and remove a tap as soon as its last viewer goes.
+
+        Nothing is kept back for a returning viewer: a tap costs about 20ms to
+        build, against the group join every viewer pays anyway, and a tap that
+        outlived its viewers would sit in the player list as a member of
+        nothing.
+        """
         async with self._lock:
             tap = self._taps.get(target_player_id)
             if tap is None or tap.queues:
                 return
             self._taps.pop(target_player_id, None)
+            await self._leave_group(target_player_id, tap)
             if (sendspin := get_sendspin_provider(self.mass)) is not None:
                 await sendspin.server_api.remove_client(tap.client_id)
             self.logger.info("Waveform tap %s removed (viewers gone)", tap.client_id)
@@ -322,8 +385,10 @@ class TapManager:
         if sendspin is None:
             msg = "Sendspin provider is not available"
             raise RuntimeError(msg)
-        # Taps must never surface as MA players (no group chips, no UI churn).
-        sendspin.register_headless_client(tap.client_id)
+        # A tap registers as an ordinary Sendspin client, so the player
+        # controller can group it and hand the target's output over to
+        # Sendspin. The resulting SendspinVisualizerPlayer keeps it out of the
+        # UI and Home Assistant, and gives it no controls.
         support = ClientHelloVisualizerSupport(buffer_capacity=65536, rate_max=60, types=["beat"])
         hello = ClientHelloPayload(
             client_id=tap.client_id,
@@ -354,9 +419,7 @@ class TapManager:
         viz_client.attach_preinitialized_roles()
         return viz_client
 
-    async def _late_join_watchdog(
-        self, target: SendspinBasePlayer, tap: Tap, viz_client: SendspinClient
-    ) -> None:
+    async def _late_join_watchdog(self, target: SendspinBasePlayer, tap: Tap) -> None:
         """
         Re-kick a tap that joined an active stream but received no audio.
 
@@ -374,8 +437,10 @@ class TapManager:
             return
         self.logger.info("Waveform tap %s got no audio after late join, re-kicking", tap.client_id)
         try:
-            await target.api.group.remove_client(viz_client)
-            await target.api.group.add_client(viz_client)
+            # Through the player controller, like the join itself, so the
+            # membership it tracks stays in step with the Sendspin group.
+            await self._leave_group(target.player_id, tap)
+            await self._join_group(target, tap)
         except Exception:
             self.logger.exception("Waveform tap %s re-kick failed", tap.client_id)
             return
