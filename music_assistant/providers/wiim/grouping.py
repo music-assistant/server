@@ -308,10 +308,18 @@ class NativeGroupCoordinator:
             # generation-incompatible target fails the whole request before any speaker has
             # joined or left, rather than leaving a partially mutated group behind.
             self._guard_regroupable(leader)
+            # a low-level (generic or mixed) join needs the leader's device info for the
+            # compatibility gate and the join itself; read it once for the whole batch and
+            # reuse it, rather than re-fetching it for every member.
+            leader_info: DeviceInfo | None = None
+            if any(not self._is_official_pair(leader, member) for member in add_members):
+                leader_info = await self._device_info(leader)
             join_plan: dict[str, tuple[DeviceInfo | None, DeviceInfo | None] | None] = {}
             for member in add_members:
                 self._guard_regroupable(member)
-                join_plan[member.player_id] = await self._prevalidate_join(leader, member)
+                join_plan[member.player_id] = await self._prevalidate_join(
+                    leader, member, leader_info
+                )
             for member in remove_members:
                 self._prevalidate_leave(leader, member)
             for member in add_members:
@@ -341,8 +349,19 @@ class NativeGroupCoordinator:
                 f"Cannot regroup {player.player_id}: it follows a group MA has not discovered"
             )
 
+    @staticmethod
+    def _is_official_pair(leader: NativePlayer, member: NativePlayer) -> bool:
+        """Return whether both players are official WiiM devices (the SDK grouping path)."""
+        return (
+            leader.linkplay_backend == BACKEND_OFFICIAL
+            and member.linkplay_backend == BACKEND_OFFICIAL
+        )
+
     async def _prevalidate_join(
-        self, leader: NativePlayer, member: NativePlayer
+        self,
+        leader: NativePlayer,
+        member: NativePlayer,
+        leader_info: DeviceInfo | None,
     ) -> tuple[DeviceInfo | None, DeviceInfo | None] | None:
         """
         Validate an addition before any mutation and return the device info the join needs.
@@ -353,15 +372,12 @@ class NativeGroupCoordinator:
 
         :param leader: The leader the member would join.
         :param member: The member that would join the leader.
+        :param leader_info: The leader's device info, read once for the whole batch.
         """
-        if (
-            leader.linkplay_backend == BACKEND_OFFICIAL
-            and member.linkplay_backend == BACKEND_OFFICIAL
-        ):
+        if self._is_official_pair(leader, member):
             return None
         if not leader.native_ip:
             raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
-        leader_info = await self._device_info(leader)
         member_info = await self._device_info(member)
         if not linkplay_group_compatible(leader_info, member_info):
             raise PlayerCommandFailed(
@@ -570,13 +586,25 @@ class NativeGroupCoordinator:
             raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
         # the low-level join_slave (unlike the official SDK) does not disband a member that
         # leads its own group, so dissolve that group first: otherwise its followers are
-        # orphaned once the member becomes this leader's follower.
+        # orphaned once the member becomes this leader's follower. Read the member's live
+        # group here rather than trusting the cache, which could miss a follower it gained
+        # since its last refresh.
+        if not await self.refresh_leader(member, force=True):
+            raise PlayerCommandFailed(
+                f"Cannot group {member.player_id}: its own group state is unreadable"
+            )
         if followers := [
             self._require_member(m)
             for m in self.members_of(member.player_id)
             if m != member.player_id
         ]:
             await self._apply_members(member, [], followers)
+        # every managed follower is now detached; a remaining live slave is unmanaged and
+        # would be orphaned by the join, so fail closed rather than strand it.
+        if self._raw_slaves.get(member.player_id):
+            raise PlayerCommandFailed(
+                f"Cannot group {member.player_id}: it still leads slaves MA cannot dissolve"
+            )
         try:
             await member.make_command_client().join_slave(leader_ip, master_device_info=leader_info)
         except WiiMError as err:

@@ -78,6 +78,9 @@ def _member_client() -> MagicMock:
     client.get_device_info_model = AsyncMock(
         return_value=MagicMock(needs_wifi_direct_multiroom=False, wmrm_version="4.2")
     )
+    # a join reads the member's own live group first (it must lead nothing); default solo
+    client.get_device_group_info = AsyncMock(return_value=MagicMock(role="solo"))
+    client.get_slaves_info = AsyncMock(return_value=[])
     return client
 
 
@@ -1468,3 +1471,79 @@ class TestBatchValidation:
         coordinator, _ = _make_coordinator(me, peer)
 
         assert coordinator.can_group_with(me) == {FOLLOWER_ID}
+
+    async def test_join_fails_closed_when_member_leads_unmanaged_slave(self) -> None:
+        """A member still leading an addressable slave MA cannot resolve is not orphaned."""
+        member_client = _member_client()
+        member_client.join_slave = AsyncMock()
+        member_client.get_device_group_info = AsyncMock(return_value=MagicMock(role="master"))
+        # the slave resolves to no registered player, so it cannot be cleanly dissolved
+        member_client.get_slaves_info = AsyncMock(
+            return_value=[{"uuid": "FFFFFFFFFFFFFFFFFFFFFFFF", "ip": "192.168.1.77"}]
+        )
+        leader = _make_player(
+            LEADER_ID, BACKEND_OFFICIAL, ip="192.168.1.20", command_client=_leader_client([])
+        )
+        member = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=member_client)
+        coordinator, _ = _make_coordinator(leader, member)
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(leader, [FOLLOWER_ID], None)
+        member_client.join_slave.assert_not_called()
+
+    async def test_join_dissolves_follower_gained_since_cache(self) -> None:
+        """A follower discovered only in the member's live read is still dissolved first."""
+        sub_http = "B1B2C3D4E5F6A7B8C9D0E1F2"
+        sub_id = "wiim_uuid:B1B2C3D4-E5F6-A7B8-C9D0-E1F2B1B2C3D4"
+        member_slaves = [sub_http]
+
+        async def _sub_leave() -> None:
+            member_slaves.remove(sub_http)
+
+        sub_client = _member_client()
+        sub_client.leave_group = AsyncMock(side_effect=_sub_leave)
+        sub = _make_player(sub_id, BACKEND_GENERIC, command_client=sub_client)
+        member_client = _leader_client(member_slaves)
+        new_slaves: list[str] = []
+        member_client.join_slave = AsyncMock(
+            side_effect=lambda *_a, **_k: new_slaves.append(FOLLOWER_HTTP_UUID)
+        )
+        member = _make_player(
+            FOLLOWER_ID, BACKEND_GENERIC, ip="192.168.1.40", command_client=member_client
+        )
+        leader = _make_player(
+            LEADER_ID,
+            BACKEND_OFFICIAL,
+            ip="192.168.1.20",
+            command_client=_leader_client(new_slaves),
+        )
+        # NOTE: the coordinator cache is never seeded for the member; only its live read finds sub
+        coordinator, _ = _make_coordinator(leader, member, sub)
+
+        await coordinator.set_members(leader, [FOLLOWER_ID], None)
+
+        sub_client.leave_group.assert_awaited_once()
+        member_client.join_slave.assert_awaited_once()
+
+    async def test_leader_info_read_once_per_batch(self) -> None:
+        """The leader's device info is read once for a batch, not once per added member."""
+        slaves: list[str] = []
+        leader_client = _leader_client(slaves)
+        leader = _make_player(
+            LEADER_ID, BACKEND_GENERIC, ip="192.168.1.30", command_client=leader_client
+        )
+        first_client = _member_client()
+        first_client.join_slave = AsyncMock(
+            side_effect=lambda *_a, **_k: slaves.append(FOLLOWER_HTTP_UUID)
+        )
+        second_client = _member_client()
+        second_client.join_slave = AsyncMock(
+            side_effect=lambda *_a, **_k: slaves.append(SECOND_HTTP_UUID)
+        )
+        first = _make_player(FOLLOWER_ID, BACKEND_GENERIC, command_client=first_client)
+        second = _make_player(SECOND_ID, BACKEND_GENERIC, command_client=second_client)
+        coordinator, _ = _make_coordinator(leader, first, second)
+
+        await coordinator.set_members(leader, [FOLLOWER_ID, SECOND_ID], None)
+
+        assert leader_client.get_device_info_model.await_count == 1
