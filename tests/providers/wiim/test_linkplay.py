@@ -221,6 +221,16 @@ class TestHealthGating:
         player._linkplay_available = False
         assert PlayerFeature.SET_MEMBERS not in player.supported_features
 
+    def test_prefers_native_grouping_when_healthy(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A reachable shell prefers native LinkPlay grouping over a linked protocol."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        assert player.prefer_native_grouping is True
+        player._linkplay_available = False
+        assert player.prefer_native_grouping is False
+
     def test_can_group_with_requires_health(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
@@ -590,17 +600,18 @@ class TestRefreshResilience:
         assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
         assert leader._linkplay_available is True
 
-    async def test_unreachable_api_marks_unhealthy(
+    async def test_unreachable_api_marks_unhealthy_but_keeps_topology(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """When the LinkPlay API is unreachable the shell goes unhealthy and drops members."""
+        """When unreachable the shell goes unhealthy but keeps its last known group."""
         leader = _make_shell(mock_provider, mock_client, mock_upnp_device)
         leader._linkplay_available = True
         leader._attr_group_members = [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
         mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
         await leader._refresh_linkplay()
         assert leader._linkplay_available is False
-        assert leader._attr_group_members == []
+        # last known topology is kept so the reachable side stays locked read-only
+        assert leader._attr_group_members == [EDIFIER_PLAYER_ID, PEER_PLAYER_ID]
 
 
 class TestAddressChange:

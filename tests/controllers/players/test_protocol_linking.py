@@ -10578,3 +10578,72 @@ class TestGroupingLockedPolicy:
         player.refresh_state(signal_event=False)
         assert PlayerFeature.SET_MEMBERS in player.state.supported_features
         assert "peer_2" in player.state.can_group_with
+
+
+class _NativeGroupingMockPlayer(MockPlayer):
+    """A player that runs its own multiroom and prefers native grouping."""
+
+    @property
+    def prefer_native_grouping(self) -> bool:
+        """Prefer native grouping over any linked protocol."""
+        return True
+
+
+class TestPreferNativeGrouping:
+    """A player that prefers native grouping uses it before its preferred output protocol."""
+
+    def test_prefer_native_uses_native_before_child_preferred(self, mock_mass: MagicMock) -> None:
+        """A prefer-native child groups natively even with an explicit protocol preference."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        parent = MockPlayer(provider, "shell_parent", "Parent")
+        child = _NativeGroupingMockPlayer(provider, "shell_child", "Child")
+        # an explicit child output-protocol preference that would otherwise win
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="airplay_child")
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "shell_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        assert native_members == ["shell_child"]
+        assert protocol_members == []
+
+    def test_prefer_native_falls_through_when_incompatible(self, mock_mass: MagicMock) -> None:
+        """When native grouping is not possible (cross-backend), the seam does not force it."""
+        controller = PlayerController(mock_mass)
+        parent_provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        child_provider = MockProvider("other", instance_id="other_instance", mass=mock_mass)
+        parent = MockPlayer(parent_provider, "shell_parent", "Parent")
+        parent._attr_can_group_with = set()  # does not accept the cross-backend child
+        child = _NativeGroupingMockPlayer(child_provider, "other_child", "Child")
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "other_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        # the preferred-native seam did not force a cross-backend native group
+        assert native_members == []
+
+    def test_default_player_keeps_protocol_first_ordering(self, mock_mass: MagicMock) -> None:
+        """An ordinary player (no native preference) is unaffected by the seam."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        parent = MockPlayer(provider, "shell_parent", "Parent")
+        child = MockPlayer(provider, "plain_child", "Child")
+        assert child.prefer_native_grouping is False
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.players = controller
+        controller._players = {"shell_parent": parent, "plain_child": child}
+        native_members: list[str] = []
+        protocol_members: list[str] = []
+        controller._select_grouping_for_member(
+            child, parent, None, None, True, protocol_members, native_members
+        )
+        # with no preferred/active/common protocol, the default player still reaches
+        # native grouping via the normal priority (Priority 3), not the preferred seam
+        assert native_members == ["plain_child"]

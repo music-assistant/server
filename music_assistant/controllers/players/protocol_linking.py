@@ -2473,6 +2473,21 @@ class ProtocolLinkingMixin:
         ):
             return parent_protocol_player, parent_protocol_domain
 
+        # Priority 0.5: a player that runs its own multiroom (e.g. a LinkPlay control shell)
+        # keeps grouping on its native path rather than routing it through a linked protocol
+        # that is merely its preferred playback output. Compatibility still decides whether
+        # native grouping is possible, so an incompatible/cross-backend pair falls through.
+        if child_player.prefer_native_grouping and self._can_use_native_grouping(
+            child_player, parent_player, parent_supports_native_grouping
+        ):
+            native_members.append(child_player.player_id)
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Using native grouping (preferred) for %s",
+                child_player.state.name,
+            )
+            return parent_protocol_player, parent_protocol_domain
+
         # Priority 1: the child's preferred output protocol
         grouped, parent_protocol_player, parent_protocol_domain = (
             self._try_group_via_preferred_protocol(

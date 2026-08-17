@@ -120,6 +120,11 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
         return not self._linkplay_available or self._in_mixed_group
 
     @property
+    def prefer_native_grouping(self) -> bool:
+        """Group compatible generic LinkPlay speakers natively, not via a linked protocol."""
+        return self._linkplay_available
+
+    @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features; native grouping needs a reachable, non-mixed group."""
         features = super().supported_features
@@ -237,7 +242,10 @@ class LinkPlayPlayer(ProtocolBackedPlayer):
                 if self._linkplay_available:
                     self.logger.debug("LinkPlay API unreachable for %s: %s", self.name, err)
                 self._linkplay_available = False
-                self._attr_group_members = []
+                # Keep the last known group members: an unreachable device may still be in a
+                # (possibly mixed) hardware group, and dropping the topology here would let the
+                # still-reachable side re-expose SET_MEMBERS. grouping_locked already blocks
+                # this shell's own commands while unreachable.
                 self.update_state()
                 return
             self._linkplay_available = True

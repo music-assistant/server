@@ -1782,6 +1782,21 @@ class Player(ABC):
         return False
 
     @property
+    def prefer_native_grouping(self) -> bool:
+        """
+        Return whether this player should group natively before any linked protocol.
+
+        A device that runs its own multiroom (e.g. a LinkPlay speaker exposed as a control
+        shell) should keep grouping on its native path rather than route it through a linked
+        AirPlay/DLNA protocol that merely happens to be its preferred playback output. When
+        this is set, grouping selection tries native grouping first; the usual compatibility
+        checks still decide whether native grouping is actually possible, and every other
+        player keeps the default protocol-first ordering. Playback output selection is
+        unaffected.
+        """
+        return False
+
+    @property
     @final
     def underlying_player_id(self) -> str | None:
         """
