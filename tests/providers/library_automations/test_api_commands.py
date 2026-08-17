@@ -22,7 +22,10 @@ async def _make_plugin(tmp_path: Path, max_rules: int | None = None) -> LibraryA
     manifest = MagicMock()
     manifest.domain = "library_automations"
     config = MagicMock()
-    config.get_value.side_effect = lambda key: {CONF_MAX_RULES: max_rules}.get(key)
+    config.values = {}
+    config.get_value.side_effect = lambda key, default=None: (
+        max_rules if key == CONF_MAX_RULES and max_rules is not None else default
+    )
     plugin = LibraryAutomationsProvider(mass, manifest, config, set())
     await plugin.handle_async_init()
     return plugin
@@ -120,7 +123,9 @@ async def test_set_rule_enabled_toggles_flag(tmp_path: Path) -> None:
     plugin = await _make_plugin(tmp_path)
     created = await plugin.create_rule(name="my rule", trigger=_TRIGGER, action=_ACTION)
     await plugin.set_rule_enabled(created["id"], False)
-    assert (await plugin.get_rule(created["id"]))["enabled"] is False
+    updated = await plugin.get_rule(created["id"])
+    assert updated is not None
+    assert updated["enabled"] is False
 
 
 async def test_set_rule_enabled_unknown_id_raises(tmp_path: Path) -> None:

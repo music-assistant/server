@@ -16,7 +16,8 @@ async def _make_plugin(tmp_path: Path) -> LibraryAutomationsProvider:
     manifest = MagicMock()
     manifest.domain = "library_automations"
     config = MagicMock()
-    config.get_value.return_value = None
+    config.values = {}
+    config.get_value.side_effect = lambda _key, default=None: default
     plugin = LibraryAutomationsProvider(mass, manifest, config, set())
     await plugin.handle_async_init()
     return plugin

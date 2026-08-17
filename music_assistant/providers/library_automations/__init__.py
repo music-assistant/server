@@ -29,6 +29,9 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.library_automations import actions, conditions, triggers
 from music_assistant.providers.library_automations.models import (
     RULES_FILENAME,
+    TRIGGER_MEDIA_ITEM_ADDED_TO_LIBRARY,
+    TRIGGER_MEDIA_ITEM_FAVORITED,
+    TRIGGER_MEDIA_ITEM_UNFAVORITED,
     AutomationRule,
     new_rule_id,
     validate_rule_media_types,
@@ -175,56 +178,6 @@ class LibraryAutomationsProvider(PluginProvider):
             if await asyncio.to_thread(os.path.isfile, rules_file):
                 await asyncio.to_thread(os.remove, rules_file)
 
-    # --- event handling ---
-
-    async def _on_media_item_updated(self, event: MassEvent) -> None:
-        """
-        Detect favorite/unfavorite transitions and dispatch matching rules.
-
-        MEDIA_ITEM_UPDATED fires on ANY metadata change to a library item, not just favorite
-        toggles. Only a real True<->False change in our own cache counts as a transition; the
-        first update seen for an item after startup just warms the cache (previous is None) and
-        is deliberately not treated as a trigger, since its prior state is unknown.
-        """
-        item = event.data
-        media_type = getattr(item, "media_type", None)
-        if media_type not in TRACKED_MEDIA_TYPES:
-            return
-        if not str(item.item_id).isdigit():
-            return  # only library items (numeric db id) are tracked
-        key = (media_type, int(item.item_id))
-        previous = self._favorite_cache.get(key)
-        self._favorite_cache[key] = item.favorite
-        if previous is None or previous == item.favorite:
-            return
-        trigger_type = (
-            triggers.TRIGGER_MEDIA_ITEM_UNFAVORITED
-            if previous
-            else triggers.TRIGGER_MEDIA_ITEM_FAVORITED
-        )
-        await self._run_matching_rules(trigger_type, item)
-
-    async def _on_media_item_added(self, event: MassEvent) -> None:
-        """Dispatch rules listening for newly-added library items."""
-        item = event.data
-        media_type = getattr(item, "media_type", None)
-        if media_type not in TRACKED_MEDIA_TYPES:
-            return
-        await self._run_matching_rules(triggers.TRIGGER_MEDIA_ITEM_ADDED_TO_LIBRARY, item)
-
-    async def _run_matching_rules(self, trigger_type: str, item: MediaItemType) -> None:
-        """Evaluate all enabled rules against a fired trigger and run matching actions."""
-        for rule in list(self._rules.values()):
-            if not rule.enabled:
-                continue
-            if not triggers.trigger_matches(rule.trigger, trigger_type, item):
-                continue
-            if not conditions.evaluate_conditions(rule.conditions, rule.condition_logic, item):
-                continue
-            if self.config.get_value(CONF_LOG_MATCHES):
-                self.logger.info("Rule '%s' matched for %s", rule.name, item.uri)
-            await actions.execute_action(self, rule, item)
-
     # --- API commands ---
 
     async def list_rules(self) -> list[dict[str, Any]]:
@@ -259,7 +212,7 @@ class LibraryAutomationsProvider(PluginProvider):
         if not is_safe_name(name):
             msg = f"{name} is not a valid rule name"
             raise InvalidDataError(msg)
-        max_rules = self.config.get_value(CONF_MAX_RULES) or DEFAULT_MAX_RULES
+        max_rules = self.get_config_value(CONF_MAX_RULES, DEFAULT_MAX_RULES, return_type=int)
         if len(self._rules) >= max_rules:
             msg = f"Maximum number of rules ({max_rules}) reached"
             raise InvalidDataError(msg)
@@ -326,6 +279,61 @@ class LibraryAutomationsProvider(PluginProvider):
             for a in actions.ACTION_TYPES.values()
         ]
 
+    # --- persistence ---
+
+    async def persist_rule(self, rule: AutomationRule) -> None:
+        """Store/update a rule in memory and flush all rules to disk."""
+        self._rules[rule.id] = rule
+        await self._flush_rules_to_disk()
+
+    # --- event handling ---
+
+    async def _on_media_item_updated(self, event: MassEvent) -> None:
+        """
+        Detect favorite/unfavorite transitions and dispatch matching rules.
+
+        MEDIA_ITEM_UPDATED fires on ANY metadata change to a library item, not just favorite
+        toggles. Only a real True<->False change in our own cache counts as a transition; the
+        first update seen for an item after startup just warms the cache (previous is None) and
+        is deliberately not treated as a trigger, since its prior state is unknown.
+        """
+        item = event.data
+        media_type = getattr(item, "media_type", None)
+        if media_type not in TRACKED_MEDIA_TYPES:
+            return
+        if not str(item.item_id).isdigit():
+            return  # only library items (numeric db id) are tracked
+        key = (media_type, int(item.item_id))
+        previous = self._favorite_cache.get(key)
+        self._favorite_cache[key] = item.favorite
+        if previous is None or previous == item.favorite:
+            return
+        trigger_type = TRIGGER_MEDIA_ITEM_UNFAVORITED if previous else TRIGGER_MEDIA_ITEM_FAVORITED
+        await self._run_matching_rules(trigger_type, item)
+
+    async def _on_media_item_added(self, event: MassEvent) -> None:
+        """Dispatch rules listening for newly-added library items."""
+        item = event.data
+        media_type = getattr(item, "media_type", None)
+        if media_type not in TRACKED_MEDIA_TYPES:
+            return
+        await self._run_matching_rules(TRIGGER_MEDIA_ITEM_ADDED_TO_LIBRARY, item)
+
+    async def _run_matching_rules(self, trigger_type: str, item: MediaItemType) -> None:
+        """Evaluate all enabled rules against a fired trigger and run matching actions."""
+        for rule in list(self._rules.values()):
+            if not rule.enabled:
+                continue
+            if not triggers.trigger_matches(rule.trigger, trigger_type, item):
+                continue
+            if not await conditions.evaluate_conditions(
+                rule.conditions, rule.condition_logic, item, self
+            ):
+                continue
+            if self.config.get_value(CONF_LOG_MATCHES):
+                self.logger.info("Rule '%s' matched for %s", rule.name, item.uri)
+            await actions.execute_action(self, rule, item)
+
     def _validate_rule(self, rule: AutomationRule) -> None:
         """Raise InvalidDataError if the rule references an unknown trigger/action type."""
         if rule.trigger.type not in triggers.TRIGGER_TYPES:
@@ -341,13 +349,6 @@ class LibraryAutomationsProvider(PluginProvider):
             )
             raise InvalidDataError(msg)
         validate_rule_media_types(rule)
-
-    # --- persistence ---
-
-    async def persist_rule(self, rule: AutomationRule) -> None:
-        """Store/update a rule in memory and flush all rules to disk."""
-        self._rules[rule.id] = rule
-        await self._flush_rules_to_disk()
 
     async def _load_rules_from_disk(self) -> None:
         """Load all persisted rules from disk."""

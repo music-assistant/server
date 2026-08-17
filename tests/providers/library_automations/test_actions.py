@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import MediaType
@@ -149,7 +150,7 @@ async def test_remove_from_playlist_removes_matching_positions() -> None:
     track_to_remove = _make_track("5")
     other_track = _make_track("6")
 
-    async def fake_tracks(_item_id: str, _domain: str):
+    async def fake_tracks(_item_id: str, _domain: str) -> AsyncGenerator[Track]:
         for t in (other_track, track_to_remove, other_track):
             yield t
 
@@ -168,7 +169,7 @@ async def test_remove_from_playlist_noop_when_track_not_present() -> None:
     provider.persist_rule = AsyncMock()
     provider.mass.music.playlists.get_library_item = AsyncMock(return_value=MagicMock())
 
-    async def fake_tracks(_item_id: str, _domain: str):
+    async def fake_tracks(_item_id: str, _domain: str) -> AsyncGenerator[Track]:
         for t in (_make_track("100"),):
             yield t
 

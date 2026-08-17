@@ -12,11 +12,15 @@ built to avoid).
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Album, Track
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 from music_assistant.providers.library_automations import LibraryAutomationsProvider
 from music_assistant.providers.library_automations.models import (
@@ -32,7 +36,8 @@ def _make_plugin() -> LibraryAutomationsProvider:
     manifest = MagicMock()
     manifest.domain = "library_automations"
     config = MagicMock()
-    config.get_value.return_value = None
+    config.values = {}
+    config.get_value.side_effect = lambda _key, default=None: default
     plugin = LibraryAutomationsProvider(mass, manifest, config, set())
     plugin._rules = {}
     plugin._favorite_cache = {}
@@ -52,7 +57,7 @@ def _make_track(item_id: str, favorite: bool) -> Track:
 
 
 async def _dispatch(plugin: LibraryAutomationsProvider, track: Track) -> None:
-    await plugin._on_media_item_updated(SimpleNamespace(data=track))
+    await plugin._on_media_item_updated(cast("MassEvent", SimpleNamespace(data=track)))
 
 
 @pytest.fixture
@@ -163,6 +168,6 @@ async def test_album_and_artist_transitions_are_also_tracked(
         album.media_type = MediaType.ALBUM
         return album
 
-    await plugin._on_media_item_updated(SimpleNamespace(data=make_album(True)))
-    await plugin._on_media_item_updated(SimpleNamespace(data=make_album(False)))
+    await plugin._on_media_item_updated(cast("MassEvent", SimpleNamespace(data=make_album(True))))
+    await plugin._on_media_item_updated(cast("MassEvent", SimpleNamespace(data=make_album(False))))
     assert matching_rule_calls == [("rule-album", "9")]
