@@ -26,6 +26,9 @@ CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 
 CONF_DEFAULT_CLICK_ACTION_ARTIST = "default_click_action_artist"
 CONF_DEFAULT_CLICK_ACTION_ALBUM = "default_click_action_album"
+CONF_DEFAULT_CLICK_ACTION_TRACK = "default_click_action_track"
+CONF_DEFAULT_CLICK_ACTION_GENRE = "default_click_action_genre"
+CONF_DEFAULT_CLICK_ACTION_LIVE_SOURCES = "default_click_action_live_sources"
 CONF_DEFAULT_CLICK_ACTION_PLAYLIST = "default_click_action_playlist"
 
 CLICK_ACTION_BROWSE = "browse"

@@ -227,6 +227,30 @@
         "play": "Play it"
       }
     },
+    "default_click_action_track": {
+      "label": "What clicking a track does.",
+      "description": "Choose whether clicking a track opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_genre": {
+      "label": "What clicking a genre does.",
+      "description": "Choose whether clicking a genre opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_live_sources": {
+      "label": "What clicking a radio or live input item does.",
+      "description": "Choose whether clicking a radio or live input item opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
     "default_click_action_playlist": {
       "label": "What clicking a playlist does.",
       "description": "Choose whether clicking a playlist opens it or starts playing it.",
