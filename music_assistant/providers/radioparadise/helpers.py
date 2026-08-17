@@ -3,6 +3,8 @@
 import time
 from typing import Any
 
+from music_assistant.helpers.compare import compare_strings
+
 
 def get_current_block_position(block_data: dict[str, Any]) -> int:
     """
@@ -40,11 +42,6 @@ def find_current_song(
     return first_song if first_song is not None else None
 
 
-def normalize_stream_title(text: str) -> str:
-    """Casefold and collapse whitespace for stream-title comparison."""
-    return " ".join(text.split()).casefold()
-
-
 def find_song_by_stream_title(
     songs: dict[str, dict[str, Any]], stream_title: str
 ) -> dict[str, Any] | None:
@@ -57,15 +54,14 @@ def find_song_by_stream_title(
     :param songs: Dictionary of songs from Radio Paradise block data.
     :param stream_title: Cleaned in-band stream title.
     """
-    want = normalize_stream_title(stream_title)
-    if not want:
+    if not stream_title.strip():
         return None
     for song in songs.values():
         artist = song.get("artist") or ""
         title = song.get("title") or ""
         if not artist or not title:
             continue
-        if normalize_stream_title(f"{artist} - {title}") == want:
+        if compare_strings(f"{artist} - {title}", stream_title, strict=False):
             return song
     return None
 
