@@ -86,18 +86,23 @@ class SiriusXMStreamingManager:
         try:
             now_playing = await self.provider.client.get_now_playing(streamdetails.item_id)
         except Exception as err:
-            # Never let a metadata refresh interrupt playback.
+            # Deliberately broad: this runs as a background task for the whole
+            # of playback, and no metadata problem is worth surfacing as an
+            # unhandled task error. A failed refresh also says nothing about
+            # what is playing, so the last known metadata stays put.
             self.logger.debug("Could not update now-playing metadata: %s", err)
-            return
-        if now_playing is None:
             return
 
         fallback_image: str | None = None
         if channel := self.provider.channels_by_id.get(streamdetails.item_id):
             fallback_image = channel.image_url("tile", "1x1", THUMB_SIZE)
 
-        if metadata := parse_stream_metadata(now_playing, fallback_image):
-            streamdetails.stream_metadata = metadata
+        # Cleared during ad breaks and between cuts: with no metadata MA falls
+        # back to the channel itself, so the player shows the station rather
+        # than whatever happened to be playing before the break.
+        streamdetails.stream_metadata = (
+            parse_stream_metadata(now_playing, fallback_image) if now_playing else None
+        )
 
     async def _track_stream(self, item_id: str) -> StreamDetails:
         """

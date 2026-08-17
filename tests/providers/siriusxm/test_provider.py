@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import time
+from itertools import count
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aiosxm import ArtistStation, NowPlaying, Talent
 from aiosxm import SearchResults as SxmSearchResults
-from aiosxm import Talent
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.providers.siriusxm.constants import (
@@ -17,12 +19,15 @@ from music_assistant.providers.siriusxm.constants import (
     BROWSE_GENRES,
     BROWSE_LIBRARY,
     BROWSE_XTRA,
+    CACHE_TTL_TRACKS,
 )
 from music_assistant.providers.siriusxm.parsers import queue_item_id, track_item_id
 
-from .conftest import CHANNEL_ID, STATION_ID, make_channel
+from .conftest import CHANNEL_ID, STATION_ID, make_channel, make_track
 
 if TYPE_CHECKING:
+    from aiosxm import Track as SxmTrack
+
     from music_assistant.providers.siriusxm.provider import SiriusXMProvider
 
 BASE = "siriusxm--test123://"
@@ -84,6 +89,11 @@ async def test_get_playlist_resolves_a_station(
 async def test_library_edit_routes_stations(provider: SiriusXMProvider, stub_client: Mock) -> None:
     """Favouriting a station uses its own entity type, not the channel path."""
     item_id = queue_item_id("artist-station", STATION_ID)
+    playlist = await provider.get_playlist(item_id)
+
+    assert await provider.library_add(playlist) is True
+    stub_client.add_to_library.assert_awaited_once_with("artist-station", STATION_ID)
+
     assert await provider.library_remove(item_id, MediaType.PLAYLIST) is True
     stub_client.remove_from_library.assert_awaited_once_with("artist-station", STATION_ID)
 
@@ -116,11 +126,12 @@ async def test_library_add_and_remove(provider: SiriusXMProvider, stub_client: M
     stub_client.remove_from_library.assert_awaited_once_with("channel-linear", CHANNEL_ID)
 
 
-async def test_library_edit_ignores_other_media_types(
+async def test_library_edit_rejects_other_media_types(
     provider: SiriusXMProvider, stub_client: Mock
 ) -> None:
-    """Only radio items are written back."""
-    assert await provider.library_remove("x", MediaType.TRACK) is False
+    """Only channels and stations can be saved to the account."""
+    with pytest.raises(UnsupportedFeaturedException):
+        await provider.library_remove("x", MediaType.TRACK)
     stub_client.remove_from_library.assert_not_awaited()
 
 
@@ -171,13 +182,14 @@ async def test_browse_root(provider: SiriusXMProvider) -> None:
     ]
 
 
-@pytest.mark.usefixtures("stub_client")
-async def test_browse_library_is_one_listing(provider: SiriusXMProvider) -> None:
+async def test_browse_library_is_one_listing(provider: SiriusXMProvider, stub_client: Mock) -> None:
     """Saved channels and stations appear together, sorted, not split by type."""
     items = await provider.browse(f"{BASE}{BROWSE_LIBRARY}")
 
     assert [item.name for item in items] == ["Dean Martin", "SiriusXM Hits 1"]
     assert {item.media_type.value for item in items} == {"playlist", "radio"}
+    # One screen, one library call, not one per listing.
+    stub_client.get_library_channels.assert_awaited_once()
 
 
 @pytest.mark.usefixtures("stub_client")
@@ -260,6 +272,23 @@ async def test_update_stream_metadata_survives_errors(
     assert streamdetails.stream_metadata is before
 
 
+async def test_update_stream_metadata_clears_during_ads(
+    provider: SiriusXMProvider, stub_client: Mock
+) -> None:
+    """An ad break drops the last track, so the player falls back to the channel."""
+    streamdetails = await provider.get_stream_details(CHANNEL_ID, MediaType.RADIO)
+    assert streamdetails.stream_metadata is not None
+    stub_client.get_now_playing = AsyncMock(
+        return_value=NowPlaying(
+            channel_id=CHANNEL_ID, title="Some Advert", artist="Brand", is_ad=True
+        )
+    )
+
+    await provider.streaming_manager.update_stream_metadata(streamdetails, 30)
+
+    assert streamdetails.stream_metadata is None
+
+
 @pytest.mark.usefixtures("stub_client")
 async def test_library_names_are_not_numbered(provider: SiriusXMProvider) -> None:
     """The number prefix is for browsing; library items keep the plain name."""
@@ -326,6 +355,34 @@ async def test_playing_a_track_advances_the_queue(provider: SiriusXMProvider) ->
     ]
 
 
+@pytest.mark.usefixtures("stub_client")
+async def test_cached_tracks_do_not_grow_forever(
+    provider: SiriusXMProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing else empties the track cache, so a long-running server must not climb."""
+    item_id = queue_item_id("artist-station", STATION_ID)
+    batch = count()
+    stream = Mock()
+    stream.tracks = []
+
+    async def next_tracks() -> list[SxmTrack]:
+        n = next(batch)
+        return [make_track(f"g{n}-{i}") for i in range(3)]
+
+    stream.next_tracks = next_tracks
+    provider.client.get_stream = AsyncMock(return_value=stream)  # type: ignore[method-assign]
+
+    now = time.time()
+    monkeypatch.setattr("music_assistant.providers.siriusxm.provider.time.time", lambda: now)
+    for _ in range(20):
+        now += CACHE_TTL_TRACKS / 4
+        provider._upcoming[item_id] = []
+        await provider.get_playlist_tracks(item_id)
+
+    # holds only the batches still inside their signed-url window, not all 60
+    assert len(provider._tracks) == 15
+
+
 async def test_search_resolves_stations_via_matched_artists(
     provider: SiriusXMProvider, stub_client: Mock
 ) -> None:
@@ -349,3 +406,22 @@ async def test_search_resolves_stations_via_matched_artists(
     results = await provider.search("holiday", [MediaType.PLAYLIST], limit=10)
 
     assert sorted(p.name for p in results.playlists) == ["Dean Martin", "Frank Sinatra"]
+
+
+async def test_search_uses_stations_from_the_search_response(
+    provider: SiriusXMProvider, stub_client: Mock
+) -> None:
+    """Stations in the search response are enough on their own."""
+    stub_client.search_all = AsyncMock(
+        return_value=SxmSearchResults(
+            channels=[],
+            artist_stations=[ArtistStation(id="s-dean", title="Dean Martin")],
+            talent=[Talent(id="t1", title="Dean Martin")],
+        )
+    )
+    stub_client.search_artist_stations = AsyncMock(return_value=[])
+
+    results = await provider.search("dean martin", [MediaType.PLAYLIST], limit=1)
+
+    assert [p.name for p in results.playlists] == ["Dean Martin"]
+    stub_client.search_artist_stations.assert_not_awaited()

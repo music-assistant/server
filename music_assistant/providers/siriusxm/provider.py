@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
+import time
 from typing import TYPE_CHECKING
 
-from aiosxm import AuthenticationError, NotEntitledError, SxmClient
+from aiosxm import AuthenticationError, NotEntitledError, SxmClient, SxmError
 from aiosxm.proxy import make_routes
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import (
     Artist,
     ProviderMapping,
@@ -50,7 +54,8 @@ from .streaming import SiriusXMStreamingManager
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
 
-    from aiosxm import ArtistStation, Channel, SxmStream, Talent
+    from aiosxm import ArtistStation, Channel, SxmStream
+    from aiosxm import SearchResults as SxmSearchResults
     from aiosxm import Track as SxmTrack
     from music_assistant_models.media_items import (
         BrowseFolder,
@@ -67,6 +72,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_RADIOS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
 }
 
 
@@ -77,12 +83,15 @@ class SiriusXMProvider(MusicProvider):
     browse_manager: SiriusXMBrowseManager
     streaming_manager: SiriusXMStreamingManager
     channels_by_id: dict[str, Channel]
-    # Resolved queue tracks by MA item id. A SiriusXM track is only addressable
-    # through its parent's tune, so the url has to be kept from when the batch
-    # was built; its CDN signature lasts an hour.
-    _tracks: dict[str, SxmTrack]
+    # Resolved queue tracks by MA item id, with the time each was cached. A
+    # SiriusXM track is only addressable through its parent's tune, so the url
+    # has to be kept from when the batch was built; its CDN signature lasts an
+    # hour, after which the entry is useless and gets dropped.
+    _tracks: dict[str, tuple[float, SxmTrack]]
     # Tuned streams held per station, so the queue cursor advances between
-    # refills instead of restarting at the same three tracks.
+    # refills instead of restarting at the same three tracks. One entry per
+    # station played, and dropping one would rewind that listener's queue, so
+    # these are kept for the life of the provider.
     _streams: dict[str, SxmStream]
     # Tracks fetched but not yet handed to MA, per station.
     _upcoming: dict[str, list[SxmTrack]]
@@ -183,25 +192,27 @@ class SiriusXMProvider(MusicProvider):
         """Return the available genres and how many channels each holds."""
         return await self.client.get_genres()
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio]:
-        """
-        Retrieve the live channels saved to the SiriusXM account.
-
-        Only linear channels are radio; artist stations and Xtra channels are
-        runs of discrete tracks and surface as dynamic playlists instead.
-        """
-        for channel in await self.client.get_library_channels():
+    async def get_library_channels(self) -> list[Channel]:
+        """Return the channels saved to the SiriusXM account."""
+        channels = await self.client.get_library_channels()
+        for channel in channels:
             self.channels_by_id.setdefault(channel.id, channel)
+        return channels
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Retrieve the live channels saved to the SiriusXM account."""
+        # Only linear channels are radio; artist stations and Xtra channels are
+        # runs of discrete tracks and surface as dynamic playlists instead.
+        for channel in await self.get_library_channels():
             if channel.type in TRACK_QUEUE_TYPES:
                 continue
             yield parse_radio(channel, self.instance_id, self.domain)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve the artist stations and Xtra channels saved to the account."""
-        for channel in await self.client.get_library_channels():
+        for channel in await self.get_library_channels():
             if channel.type not in TRACK_QUEUE_TYPES:
                 continue
-            self.channels_by_id.setdefault(channel.id, channel)
             yield parse_xtra_playlist(channel, self.instance_id, self.domain)
         for station in await self.client.get_library_artist_stations():
             yield parse_station(station, self.instance_id, self.domain)
@@ -229,17 +240,15 @@ class SiriusXMProvider(MusicProvider):
         """
         Get the upcoming tracks for a station.
 
-        SiriusXM hands back three tracks at a time behind a cursor it keeps
-        server-side, and asking for more moves that cursor for good. Tracks are
-        therefore buffered here and handed out a batch at a time, and the
-        result is cached: MA bypasses the cache only when it is really filling
-        a queue, so browsing a station shows the tracks that will play rather
-        than quietly using them up.
-
         :param prov_playlist_id: A composite station or Xtra channel id.
         :param page: Pagination; only page 0 yields tracks. A dynamic playlist
             returns one batch and is asked again when the queue runs low.
         """
+        # SiriusXM hands back three tracks at a time behind a cursor it keeps
+        # server-side, and asking for more moves that cursor for good, so tracks
+        # are buffered here. The result is cached because MA bypasses the cache
+        # only when it is really filling a queue: browsing a station then shows
+        # the tracks that will play rather than quietly using them up.
         if page > 0:
             return []
         parsed = split_queue_item_id(prov_playlist_id)
@@ -275,12 +284,11 @@ class SiriusXMProvider(MusicProvider):
         """
         Get artist details by id.
 
-        SiriusXM has no artist entity: a queued track only carries an artist
-        name. MA resolves the ItemMapping on every track lookup, so this
-        returns the name as a minimal artist rather than failing playback.
-
         :param prov_artist_id: The artist name, which doubles as its id.
         """
+        # SiriusXM has no artist entity: a queued track only carries a name.
+        # MA resolves the ItemMapping on every track lookup, so return the name
+        # as a minimal artist rather than failing playback.
         return Artist(
             provider=self.instance_id,
             item_id=prov_artist_id,
@@ -313,57 +321,66 @@ class SiriusXMProvider(MusicProvider):
         """
         Return a queued track by its MA item id.
 
-        Tracks are cached when a batch is built. A player may ask for one after
-        that cache has been cleared (a restart, or a track that aged out), so
-        fall back to re-tuning the parent and looking again.
+        Returns None if the track is no longer available.
 
         :param item_id: A composite ``entity_type|entity_id|track_id`` id.
         """
-        if track := self._tracks.get(item_id):
-            return track
+        if cached := self._tracks.get(item_id):
+            return cached[1]
         parsed = split_track_item_id(item_id)
         if parsed is None:
             return None
         entity_type, entity_id, _ = parsed
+        # Not cached: a restart or an expired batch loses the url, so re-tune
+        # the parent station and look again.
         try:
             stream = await self.client.get_stream(entity_type, entity_id)
-        except Exception as err:
+        except SxmError as err:
             self.logger.debug("Could not re-resolve track %s: %s", item_id, err)
             return None
-        for track in stream.tracks:
-            self._tracks[track_item_id(entity_type, entity_id, track.id)] = track
-        return self._tracks.get(item_id)
+        self._remember_tracks(entity_type, entity_id, stream.tracks)
+        if cached := self._tracks.get(item_id):
+            return cached[1]
+        return None
 
     async def library_add(self, item: MediaItemType) -> bool:
         """
-        Add a channel to the SiriusXM account library.
+        Save a channel or station to the SiriusXM account library.
 
-        :param item: The media item to add (only radio is supported).
+        :param item: The radio channel, artist station or Xtra channel to save.
         """
-        if parsed := split_queue_item_id(item.item_id):
+        if item.media_type == MediaType.RADIO:
+            channel = await self.get_channel(item.item_id)
+            await self.client.add_to_library(channel.type, channel.id)
+            return True
+        if item.media_type == MediaType.PLAYLIST:
+            if (parsed := split_queue_item_id(item.item_id)) is None:
+                raise MediaNotFoundError(f"Not a SiriusXM station: {item.item_id}")
             await self.client.add_to_library(*parsed)
             return True
-        if item.media_type != MediaType.RADIO:
-            return False
-        channel = await self.get_channel(item.item_id)
-        await self.client.add_to_library(channel.type, channel.id)
-        return True
+        raise UnsupportedFeaturedException(
+            f"Unsupported media type for library_add: {item.media_type}"
+        )
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """
-        Remove a channel from the SiriusXM account library.
+        Remove a channel or station from the SiriusXM account library.
 
-        :param prov_item_id: The SiriusXM channel id.
-        :param media_type: The media type (only radio is supported).
+        :param prov_item_id: A channel id, or a composite station id.
+        :param media_type: The media type being removed.
         """
-        if parsed := split_queue_item_id(prov_item_id):
+        if media_type == MediaType.RADIO:
+            channel = await self.get_channel(prov_item_id)
+            await self.client.remove_from_library(channel.type, channel.id)
+            return True
+        if media_type == MediaType.PLAYLIST:
+            if (parsed := split_queue_item_id(prov_item_id)) is None:
+                raise MediaNotFoundError(f"Not a SiriusXM station: {prov_item_id}")
             await self.client.remove_from_library(*parsed)
             return True
-        if media_type != MediaType.RADIO:
-            return False
-        channel = await self.get_channel(prov_item_id)
-        await self.client.remove_from_library(channel.type, channel.id)
-        return True
+        raise UnsupportedFeaturedException(
+            f"Unsupported media type for library_remove: {media_type}"
+        )
 
     async def search(
         self,
@@ -375,9 +392,7 @@ class SiriusXMProvider(MusicProvider):
         Search the SiriusXM catalog.
 
         Live channels come back as radio; Xtra channels and artist stations as
-        dynamic playlists. Artist stations are only reachable this way — there
-        is no browsable catalog of them — so searching an artist's name is how
-        a listener finds their station.
+        dynamic playlists.
 
         :param search_query: The query to search for.
         :param media_types: The media types to include in the results.
@@ -406,7 +421,7 @@ class SiriusXMProvider(MusicProvider):
             # which would otherwise push it past the limit.
             playlists = [
                 parse_station(station, self.instance_id, self.domain)
-                for station in await self._search_stations(search_query, results.talent, limit)
+                for station in await self._search_stations(results, limit)
             ]
             playlists.extend(xtra)
 
@@ -418,7 +433,7 @@ class SiriusXMProvider(MusicProvider):
 
         :param path: The path to browse, (e.g. provider_id://genres).
         """
-        return await self.browse_manager.browse(path, super().browse)
+        return await self.browse_manager.browse(path)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -451,41 +466,40 @@ class SiriusXMProvider(MusicProvider):
                 del upcoming[: index + 1]
                 return
 
-    async def _search_stations(
-        self, search_query: str, talent: list[Talent], limit: int
-    ) -> list[ArtistStation]:
+    async def _search_stations(self, results: SxmSearchResults, limit: int) -> list[ArtistStation]:
         """
         Find the artist stations a query implies.
 
-        A direct station search only matches a station's own name, so a term
-        like "holiday" finds almost nothing. SiriusXM answers the same query
-        with the artists it matched, and each of those has a station, so those
-        are resolved too — that is how a themed search finds anything.
-
-        :param search_query: The query to search for.
-        :param talent: The artists SiriusXM matched for this query.
+        :param results: The search response to draw stations from.
         :param limit: How many results the caller will keep.
         """
         stations: list[ArtistStation] = []
         seen: set[str] = set()
 
-        async def collect(query: str) -> None:
-            try:
-                found = await self.client.search_artist_stations(query)
-            except Exception as err:
-                self.logger.debug("Station search failed for %r: %s", query, err)
-                return
+        def keep(found: list[ArtistStation]) -> None:
             for station in found:
                 if station.id not in seen:
                     seen.add(station.id)
                     stations.append(station)
 
-        await collect(search_query)
-        # Resolving every artist would be a request each; only enough to fill
-        # the caller's limit is worth the round trips.
-        remaining = [t.title for t in talent if t.title][: max(limit, 0)]
-        if remaining and len(stations) < limit:
-            await asyncio.gather(*(collect(name) for name in remaining))
+        keep(results.artist_stations)
+        if len(stations) >= limit:
+            return stations
+
+        # A station only matches on its own name, so a themed query like
+        # "holiday" finds none directly. The artists the query matched each
+        # have one, so resolve those until the limit is filled — a request
+        # apiece, hence one at a time rather than all at once.
+        async def collect(query: str) -> None:
+            try:
+                keep(await self.client.search_artist_stations(query))
+            except SxmError as err:
+                self.logger.debug("Station search failed for %r: %s", query, err)
+
+        for name in (t.title for t in results.talent if t.title):
+            await collect(name)
+            if len(stations) >= limit:
+                break
         return stations
 
     async def _pull_tracks(
@@ -511,10 +525,30 @@ class SiriusXMProvider(MusicProvider):
                     stream = await self.client.get_stream(entity_type, entity_id)
                     self._streams[playlist_id] = stream
                     tracks = stream.tracks
-        except Exception as err:
+        except SxmError as err:
             self.logger.debug("Could not fetch tracks for %s: %s", playlist_id, err)
             return []
         playable = [track for track in tracks if track.url]
-        for track in playable:
-            self._tracks[track_item_id(entity_type, entity_id, track.id)] = track
+        self._remember_tracks(entity_type, entity_id, playable)
         return playable
+
+    def _remember_tracks(self, entity_type: str, entity_id: str, tracks: list[SxmTrack]) -> None:
+        """
+        Hold on to a batch of tracks so they can be streamed by id.
+
+        :param entity_type: The SiriusXM entity type of the parent station.
+        :param entity_id: The SiriusXM entity id of the parent station.
+        :param tracks: The tracks to remember.
+        """
+        # Nothing else empties this, so drop what has outlived its signed url
+        # while writing rather than growing for as long as the server runs.
+        now = time.time()
+        expired = [
+            key
+            for key, (cached_at, _) in self._tracks.items()
+            if now - cached_at > CACHE_TTL_TRACKS
+        ]
+        for key in expired:
+            del self._tracks[key]
+        for track in tracks:
+            self._tracks[track_item_id(entity_type, entity_id, track.id)] = (now, track)

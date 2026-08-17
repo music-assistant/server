@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .constants import CONF_SXM_PASSWORD, CONF_SXM_REGION, CONF_SXM_USERNAME
+from .constants import CONF_SXM_PASSWORD, CONF_SXM_USERNAME
 from .provider import SUPPORTED_FEATURES, SiriusXMProvider
 
 if TYPE_CHECKING:
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONF_SXM_PASSWORD",
-    "CONF_SXM_REGION",
     "CONF_SXM_USERNAME",
     "SiriusXMProvider",
 ]

@@ -123,8 +123,7 @@ def track_item_id(entity_type: str, entity_id: str, track_id: str) -> str:
     """
     Build the MA id for one track of a station's queue.
 
-    A SiriusXM track cannot be tuned on its own — it only exists inside its
-    parent's tune response — so the id carries the parent that owns it.
+    The id carries the parent station, which is needed to resolve the track.
     """
     return f"{entity_type}{ID_SEPARATOR}{entity_id}{ID_SEPARATOR}{track_id}"
 
@@ -141,15 +140,14 @@ def parse_station(station: ArtistStation, instance_id: str, provider_domain: str
     """
     Create a dynamic Playlist from a SiriusXM artist station.
 
-    An artist station is an endless, algorithmically built run of tracks — the
-    same shape as Deezer's Flow — so it is a dynamic playlist rather than radio.
-    Modelling it as radio loses per-track seeking and skipping, because MA only
-    gives those to real track items.
-
     :param station: The artist station to parse.
     :param instance_id: The provider instance id.
     :param provider_domain: The provider domain string.
     """
+    # An artist station is an endless, algorithmically built run of tracks — the
+    # same shape as Deezer's Flow — so it is a dynamic playlist rather than
+    # radio. Modelling it as radio would lose per-track seeking and skipping,
+    # which MA only gives to real track items.
     item_id = queue_item_id("artist-station", station.id)
     playlist = Playlist(
         provider=instance_id,
@@ -178,14 +176,13 @@ def parse_xtra_playlist(
     """
     Create a dynamic Playlist from an Xtra channel.
 
-    Xtra channels are curated music runs, not broadcasts: each tune hands back
-    discrete tracks with their own artwork and durations.
-
     :param channel: The Xtra channel to parse.
     :param instance_id: The provider instance id.
     :param provider_domain: The provider domain string.
     :param number_prefix: Prefix the name with the channel number.
     """
+    # Xtra channels are curated music runs, not broadcasts: each tune hands back
+    # discrete tracks with their own artwork and durations.
     item_id = queue_item_id(channel.type, channel.id)
     name = channel.title
     if number_prefix and channel.channel_number:
@@ -257,11 +254,9 @@ def parse_track(
                 )
             ]
         )
-    # No album mapping: SiriusXM has no album entity to resolve, and MA tries to
-    # fetch any mapping it is given. The name still reaches the UI via the
-    # track's version field.
-    if track.album:
-        mass_track.version = track.album
+    # No album: a queued track carries an album name but SiriusXM has no album
+    # entity behind it, so there is nothing to browse or play. The artwork comes
+    # off the track itself.
     mass_track.metadata = _image_metadata(track.image_url(*THUMB_SIZE), instance_id)
     return mass_track
 
@@ -308,8 +303,3 @@ def parse_stream_metadata(
         album=now_playing.show,
         image_url=now_playing.image_url(*THUMB_SIZE) or fallback_image,
     )
-
-
-def search_result_media_types(media_types: list[MediaType]) -> bool:
-    """Return whether a search request covers anything this provider can answer."""
-    return MediaType.RADIO in media_types

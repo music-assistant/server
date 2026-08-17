@@ -5,9 +5,13 @@ from __future__ import annotations
 from aiosxm import NowPlaying
 from music_assistant_models.enums import ImageType
 
-from music_assistant.providers.siriusxm.parsers import parse_radio, parse_stream_metadata
+from music_assistant.providers.siriusxm.parsers import (
+    parse_radio,
+    parse_stream_metadata,
+    parse_track,
+)
 
-from .conftest import make_channel
+from .conftest import make_channel, make_track
 
 INSTANCE_ID = "siriusxm--test123"
 DOMAIN = "siriusxm"
@@ -37,6 +41,18 @@ def test_parse_radio() -> None:
     }
     # SiriusXM's image service is https-only, so no upgrade step is needed.
     assert all((image.path or "").startswith("https://") for image in radio.metadata.images or [])
+
+
+def test_parse_track() -> None:
+    """A queued track keeps its own artwork and carries no album."""
+    track = parse_track(make_track(), "artist-station", "s1", INSTANCE_ID, DOMAIN)
+
+    assert track.name == "Volare"
+    assert [artist.name for artist in track.artists] == ["Dean Martin"]
+    assert track.album is None
+
+    image_types = {image.type for image in track.metadata.images or []}
+    assert image_types == {ImageType.THUMB, ImageType.LOGO}
 
 
 def test_parse_radio_unavailable_when_off_air() -> None:

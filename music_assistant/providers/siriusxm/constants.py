@@ -5,7 +5,6 @@
 
 CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
-CONF_SXM_REGION = "sxm_region"
 CONF_BITRATE = "bitrate"
 
 # -- Streaming --
@@ -27,12 +26,6 @@ STREAM_EXPIRATION = 300
 
 # How often MA polls us for fresh now-playing data during playback.
 STREAM_METADATA_UPDATE_INTERVAL = 15
-
-# -- Caching --
-
-# The channel catalog costs ~24 sequential requests to walk, and changes
-# rarely; aiosxm caches it internally, this bounds our own lookups too.
-CACHE_TTL_CHANNELS = 3600 * 6
 
 # -- Item ids --
 

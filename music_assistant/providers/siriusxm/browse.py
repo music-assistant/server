@@ -13,10 +13,10 @@ from .constants import (
     BROWSE_XTRA,
     TRACK_QUEUE_TYPES,
 )
-from .parsers import parse_radio, parse_xtra_playlist
+from .parsers import parse_radio, parse_station, parse_xtra_playlist
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterable, Sequence
+    from collections.abc import Iterable, Sequence
 
     from aiosxm import Channel
     from music_assistant_models.media_items import ItemMapping, MediaItemType
@@ -37,19 +37,11 @@ class SiriusXMBrowseManager:
         # the name SiriusXM knows.
         self._genre_slugs: dict[str, str] = {}
 
-    async def browse(
-        self,
-        path: str,
-        base_browse: Callable[
-            [str], Coroutine[None, None, Sequence[MediaItemType | ItemMapping | BrowseFolder]]
-        ],
-    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Browse SiriusXM content.
 
         :param path: The path to browse, e.g. ``siriusxm--xx://genres/Rock``.
-        :param base_browse: The base class browse, which serves the library
-            folders (saved channels and stations).
         """
         subpath, sub_subpath = _split_path(path)
 
@@ -102,15 +94,23 @@ class SiriusXMBrowseManager:
         ]
 
     async def _browse_library(self) -> list[MediaItemType]:
-        """
-        Return everything saved to the account, in one listing.
-
-        Saved channels are radio and saved stations are dynamic playlists, but
-        a listener thinks of them as one list of favourites, so they are not
-        split by type here.
-        """
-        items: list[MediaItemType] = [radio async for radio in self.provider.get_library_radios()]
-        items.extend([playlist async for playlist in self.provider.get_library_playlists()])
+        """Return everything saved to the account, in one listing."""
+        # Saved channels are radio and saved stations are dynamic playlists, but
+        # a listener thinks of them as one list of favourites, so they are not
+        # split by type here.
+        # Both listings come out of the same library call, so it is made once
+        # here rather than once per generator.
+        channels = await self.provider.get_library_channels()
+        items: list[MediaItemType] = [
+            parse_xtra_playlist(channel, self.instance_id, self.domain)
+            if channel.type in TRACK_QUEUE_TYPES
+            else parse_radio(channel, self.instance_id, self.domain)
+            for channel in channels
+        ]
+        items.extend(
+            parse_station(station, self.instance_id, self.domain)
+            for station in await self.provider.client.get_library_artist_stations()
+        )
         return sorted(items, key=lambda item: item.name.lower())
 
     async def _browse_channels(self, linear: bool) -> list[MediaItemType]:
