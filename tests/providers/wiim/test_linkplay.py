@@ -1042,8 +1042,8 @@ class TestDefaultProtocolSelection:
         target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
         assert target is players["ap_x"]
 
-    def test_explicit_auto_falls_back_to_priority(self) -> None:
-        """An explicit "auto" preference skips the default domain and uses plain priority."""
+    def test_explicit_auto_resolves_to_default_domain(self) -> None:
+        """Selecting Auto resolves to the default domain, just like an unset value."""
         links = [
             LinkedOutputProtocol("dlna_x", "dlna", priority=50),
             LinkedOutputProtocol("ap_x", "airplay", priority=10),
@@ -1055,4 +1055,4 @@ class TestDefaultProtocolSelection:
         controller = self._controller(players, preferred="auto")
         player = self._shell_player(links)
         target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
-        assert target is players["ap_x"]
+        assert target is players["dlna_x"]

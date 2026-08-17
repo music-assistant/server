@@ -1799,7 +1799,7 @@ class ProtocolLinkingMixin:
         # The value is only stored while it differs from the entry's default: "native" when a
         # native output is available, otherwise "auto". A player without a native output (e.g. a
         # LinkPlay shell) therefore has no stored preference by default and gets its default
-        # output domain applied in step 4; a directly stored "auto" skips that domain step.
+        # output domain applied in step 4.
         preferred = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
@@ -1837,10 +1837,9 @@ class ProtocolLinkingMixin:
 
         # 4. Use the player's preferred default protocol domain, if it declares one and a
         # matching linked protocol is available (e.g. a LinkPlay shell prefers DLNA). This
-        # never influences grouping; it only steers the default output for playback.
-        # An explicit "auto" preference intentionally skips this step to restore plain
-        # priority-based selection below.
-        if preferred != "auto" and (default_domain := player.default_output_protocol_domain):
+        # never influences grouping; it only steers the default output for playback. "Auto"
+        # is the entry default here, so it consistently resolves to this domain default.
+        if default_domain := player.default_output_protocol_domain:
             for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
                 if linked.protocol_domain != default_domain:
                     continue
