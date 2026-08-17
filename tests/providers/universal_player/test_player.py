@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
@@ -27,7 +29,7 @@ def _make_mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
@@ -49,7 +51,7 @@ def _make_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
     config.instance_id = "universal_player"
     config.name = None
     provider.config = config
-    provider._universal_player_locks = {}
+    provider._lock = asyncio.Lock()
     return provider
 
 
@@ -189,6 +191,46 @@ def test_no_features_without_external_source() -> None:
     )
     universal = _make_universal_player(mass, ["cc_1"])
     assert universal.supported_features == set()
+
+
+def test_native_feature_survives_external_source() -> None:
+    """
+    A protocol-backed subclass keeps its own native features during external playback.
+
+    The neutral base unions this player's native capabilities with the forwardable
+    transport controls of the active external source, so a subclass that owns e.g. native
+    grouping (SET_MEMBERS) still advertises it while a linked protocol plays Spotify.
+    """
+    mass = _make_mock_mass()
+    _make_chromecast_player(
+        mass,
+        "cc_1",
+        active_source="spotify_connect",
+        features={PlayerFeature.PAUSE, PlayerFeature.SEEK, PlayerFeature.VOLUME_SET},
+    )
+    provider = _make_universal_provider(mass)
+    base_cfg = MagicMock()
+    base_cfg.name = None
+    base_cfg.default_name = "Shell"
+    mass.config.get_base_player_config.return_value = base_cfg
+
+    class _NativeShell(ProtocolBackedPlayer):
+        def __init__(self) -> None:
+            super().__init__(provider, "shell_1")
+            self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+
+        def _backing_protocol_player_ids(self) -> list[str]:
+            return ["cc_1"]
+
+    shell = _NativeShell()
+    shell._cache.clear()
+    shell.set_initialized()
+    # native SET_MEMBERS survives, and the external source's forwardable transport is added
+    assert shell.supported_features == {
+        PlayerFeature.SET_MEMBERS,
+        PlayerFeature.PAUSE,
+        PlayerFeature.SEEK,
+    }
 
 
 def test_setup_needed_when_only_protocol_awaits_setup() -> None:

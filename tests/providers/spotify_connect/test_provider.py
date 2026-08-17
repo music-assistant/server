@@ -39,6 +39,7 @@ async def test_daemon_runner_reselects_api_port_when_taken() -> None:
     """An API port taken while the daemon was down is replaced before (re)starting."""
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
+    provider.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     provider.logger = MagicMock()
     provider.config = MagicMock()
     provider.config.name = "Spotify Test"
@@ -75,4 +76,61 @@ async def test_daemon_runner_reselects_api_port_when_taken() -> None:
     port_probe.assert_awaited_once_with(38800, host="127.0.0.1")
     assert provider._api_port == 38801
     assert provider._client.base_url == "http://127.0.0.1:38801"
-    write_config.assert_called_once()
+    # the daemon config pins the advertisement to the player-facing interface
+    write_config.assert_called_once_with("192.168.1.5")
+
+
+def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvider, AsyncMock]:
+    """Build a minimal provider whose linked player reports the given volume."""
+    provider = object.__new__(SpotifyConnectProvider)
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    provider._last_volume_sent = None
+    client = MagicMock()
+    set_volume = AsyncMock()
+    client.set_volume = set_volume
+    provider._client = client
+    player = MagicMock()
+    player.state.volume_level = volume_level
+    provider.mass.players.get_player.return_value = player
+    return provider, set_volume
+
+
+async def test_sync_player_volume_pushes_player_volume_to_daemon() -> None:
+    """The player's volume is pushed to go-librespot and cached for echo dedupe."""
+    provider, set_volume = _volume_sync_provider(50)
+
+    await provider._sync_player_volume_to_spotify("player1")
+
+    set_volume.assert_awaited_once_with(50)
+    assert provider._last_volume_sent == 50
+
+
+async def test_sync_player_volume_pushes_when_cache_matches() -> None:
+    """The push is unconditional: the daemon's volume resets between sessions."""
+    provider, set_volume = _volume_sync_provider(50)
+    provider._last_volume_sent = 50
+
+    await provider._sync_player_volume_to_spotify("player1")
+
+    set_volume.assert_awaited_once_with(50)
+
+
+async def test_sync_player_volume_skips_when_volume_unknown() -> None:
+    """No push happens when the player does not expose a volume level."""
+    provider, set_volume = _volume_sync_provider(None)
+
+    await provider._sync_player_volume_to_spotify("player1")
+
+    set_volume.assert_not_awaited()
+    assert provider._last_volume_sent is None
+
+
+async def test_sync_player_volume_restores_cache_on_failure() -> None:
+    """A failed push restores the dedupe cache so a retry is not wrongly deduped."""
+    provider, set_volume = _volume_sync_provider(50)
+    set_volume.side_effect = OSError("daemon gone")
+
+    await provider._sync_player_volume_to_spotify("player1")
+
+    assert provider._last_volume_sent is None

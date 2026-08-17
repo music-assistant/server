@@ -600,13 +600,14 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
 async def test_play_media_non_queue_sends_broadcast_play(
     player: MSXPlayer,
 ) -> None:
-    """play_media without queue context should use broadcast_play as before."""
+    """play_media without queue context should push the media metadata via broadcast_play."""
     media = Mock(spec=PlayerMedia)
     media.uri = "http://ma-server/stream/12345"
     media.title = "Track 1"
     media.artist = "Artist 1"
-    media.image_url = None
+    media.image_url = "http://ma-server/image.png"
     media.duration = 180
+    media.stream_duration = None
     media.source_id = None
     media.queue_item_id = None
 
@@ -617,7 +618,15 @@ async def test_play_media_non_queue_sends_broadcast_play(
         await player.play_media(media)
 
     mock_playlist.assert_not_called()
-    mock_play.assert_called_once()
+    mock_play.assert_called_once_with(
+        player.player_id,
+        title="Track 1",
+        artist="Artist 1",
+        image_url="http://ma-server/image.png",
+        duration=180,
+        next_action=f"request:interaction:/api/next/{player.player_id}",
+        prev_action=f"request:interaction:/api/previous/{player.player_id}",
+    )
 
 
 async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
@@ -638,6 +647,19 @@ def test_update_position(player: MSXPlayer) -> None:
     assert player._attr_elapsed_time_last_updated is not None
     assert player._last_ws_position is not None
     player.update_state.assert_called()  # type: ignore[attr-defined]
+
+
+def test_update_position_clamps_to_served_stream_duration(player: MSXPlayer) -> None:
+    """Position reports must not exceed the shortened stream served after a seek."""
+    media = Mock(spec=PlayerMedia)
+    media.duration = 300
+    media.stream_duration = 120
+    player._attr_current_media = media
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    player.update_position(150)
+
+    assert player._attr_elapsed_time == 120
 
 
 def test_update_position_ignored_when_paused(player: MSXPlayer) -> None:
@@ -685,6 +707,24 @@ async def test_poll_uses_wall_clock_when_ws_stale(player: MSXPlayer) -> None:
         await player.poll()
 
     assert player._attr_elapsed_time == 35.0  # 30 + (205 - 200)
+
+
+async def test_poll_clamps_to_served_stream_duration(player: MSXPlayer) -> None:
+    """Wall-clock progress must stop at the shortened stream served after a seek."""
+    media = Mock(spec=PlayerMedia)
+    media.duration = 300
+    media.stream_duration = 120
+    player._attr_current_media = media
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 115.0
+    player._attr_elapsed_time_last_updated = 200.0
+    player._last_ws_position = None
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 210.0
+        await player.poll()
+
+    assert player._attr_elapsed_time == 120
 
 
 async def test_poll_ws_staleness_immune_to_wall_clock_jump(player: MSXPlayer) -> None:

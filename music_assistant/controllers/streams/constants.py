@@ -43,6 +43,13 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
+# Time to keep the flow stream response open after the last audio byte of a queue.
+# Players buffer a few seconds ahead of what they actually render; some of them drop
+# that buffer the moment the connection is closed, cutting off the end of the queue.
+# Holding the (idle) connection open gives them time to play it out first. Kept below
+# the webserver shutdown timeout so a lead-out never stalls a restart of the server.
+FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
@@ -93,3 +100,10 @@ DEFAULT_PORT: Final[int] = 8097
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+
+# StreamDetails.data key providers set to opt into the in-band title handoff.
+STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
+# StreamDetails.data key where the streams controller records the in-band (ICY)
+# stream title after an opted-in provider takes ownership of stream_metadata
+# (StreamDetails.stream_title is a derived view whose setter would overwrite it).
+STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"

@@ -10,7 +10,10 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer, _render_qr
+from music_assistant.providers.msx_bridge.http_server import (
+    MSXHTTPServer,
+    _render_qr,
+)
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
@@ -85,6 +88,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.unregister = AsyncMock()
     mass.players.all = Mock(return_value=[])
     mass.players.all_players = Mock(return_value=[])
+    mass.players.iter_players = Mock(return_value=[])
 
     # Image URLs
     mass.metadata.get_image_url = Mock(return_value=None)

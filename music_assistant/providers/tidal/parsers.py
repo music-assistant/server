@@ -55,7 +55,7 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
     # metadata
     if "created" in artist_obj:
         with suppress(ValueError):
-            artist.date_added = datetime.fromisoformat(artist_obj["created"])
+            artist.date_added = datetime.fromisoformat(artist_obj["created"]).replace(microsecond=0)
     if artist_obj_data.get("picture"):
         picture_id = artist_obj_data["picture"].replace("-", "/")
         image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
@@ -139,7 +139,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     # Safely set metadata
     if "created" in album_obj:
         with suppress(ValueError):
-            album.date_added = datetime.fromisoformat(album_obj["created"])
+            album.date_added = datetime.fromisoformat(album_obj["created"]).replace(microsecond=0)
     upc = album_obj_data.get("upc")
     if upc:
         album.external_ids.add((ExternalID.BARCODE, upc))
@@ -217,7 +217,7 @@ def parse_track(
     # metadata
     if "created" in track_obj:
         with suppress(ValueError):
-            track.date_added = datetime.fromisoformat(track_obj["created"])
+            track.date_added = datetime.fromisoformat(track_obj["created"]).replace(microsecond=0)
     track.metadata.explicit = track_obj_data.get("explicit", False)
     track.metadata.popularity = track_obj_data.get("popularity", 0)
     if "copyright" in track_obj_data:
@@ -304,7 +304,9 @@ def parse_playlist(
     # Metadata - different fields based on type
     if "created" in playlist_obj:
         with suppress(ValueError):
-            playlist.date_added = datetime.fromisoformat(playlist_obj["created"])
+            playlist.date_added = datetime.fromisoformat(playlist_obj["created"]).replace(
+                microsecond=0
+            )
     # Add the description from the subtitle for mixes
     if is_mix:
         subtitle = playlist_obj_data.get("subTitle")

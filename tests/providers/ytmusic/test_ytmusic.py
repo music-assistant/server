@@ -1,10 +1,13 @@
 """Test YouTube Music Provider."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientError, ServerDisconnectedError
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import LoginFailed
 
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
 
 
@@ -64,6 +67,31 @@ async def test_verify_po_token_url_transient_failure(
         return_value=_ping_context_manager(exc=exc)
     )
     assert await provider._verify_po_token_url() is False
+
+
+async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:
+    """A library sync that hits an invalid session unloads the provider for re-auth."""
+    provider.available = True
+    provider.unload_with_error = MagicMock()  # type: ignore[method-assign]
+    err = LoginFailed("Your YouTube Music session is no longer valid.")
+    with (
+        patch.object(MusicProvider, "sync_library", AsyncMock(side_effect=err)),
+        pytest.raises(LoginFailed),
+    ):
+        await provider.sync_library(MediaType.PLAYLIST)
+    provider.unload_with_error.assert_called_once_with(err)
+
+
+async def test_sync_library_keeps_other_errors_silent(provider: YoutubeMusicProvider) -> None:
+    """Any other sync failure must not unload the provider."""
+    provider.available = True
+    provider.unload_with_error = MagicMock()  # type: ignore[method-assign]
+    with (
+        patch.object(MusicProvider, "sync_library", AsyncMock(side_effect=KeyError("boom"))),
+        pytest.raises(KeyError),
+    ):
+        await provider.sync_library(MediaType.PLAYLIST)
+    provider.unload_with_error.assert_not_called()
 
 
 def test_parse_owned_playlist_is_editable_without_privacy(

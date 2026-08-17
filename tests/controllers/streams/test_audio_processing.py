@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,6 +20,7 @@ from music_assistant_models.audio_processing import (
 )
 from music_assistant_models.dsp import (
     AudioChannel,
+    ConvolutionFilter,
     DSPConfig,
     DSPState,
     ToneControlFilter,
@@ -29,6 +31,7 @@ from music_assistant_models.enums import (
     MediaType,
     VolumeNormalizationMode,
 )
+from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -40,6 +43,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_normalization_details,
 )
 from music_assistant.controllers.streams.controller import StreamsController
+from music_assistant.helpers.dsp import ComplexFilter
 
 
 def _format(
@@ -550,6 +554,112 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
 
 
+def test_player_output_plan_downmixes_to_mono() -> None:
+    """The mono output mode folds both source channels into a single channel."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    input_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        input_format,
+        output_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=mono|c0=0.5*FL+0.5*FR"]
+    assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+def test_player_output_plan_feeds_every_output_channel() -> None:
+    """A stereo output carries the downmix on both channels instead of being upmixed."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
+    assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
+    """A single channel source has no channels to select, so it is left untouched."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32, channels=1)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == []
+    assert plan.output_details.source_channel is None
+
+
+def test_player_output_plan_pans_for_the_handoff_format() -> None:
+    """The pan follows the format FFmpeg emits, not a later provider side encode."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        pcm_format,
+        _format(ContentType.FLAC, 48000, 16, channels=1),
+        handoff_format=pcm_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
+
+
+def test_mono_downmix_prevents_bit_perfect_claim() -> None:
+    """A mono downmix alters the samples, even when every format stays stereo."""
+    manager, _mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    output_plan.output_details.source_channel = AudioChannel.ALL
+
+    manager.update_output(
+        "player-1",
+        output_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].fidelity.bit_perfect is False
+
+
 def test_player_output_plan_excludes_neutral_filters() -> None:
     """A filter that emits no FFmpeg params is left out of the reported chain."""
     mass = MagicMock()
@@ -572,7 +682,49 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
     )
 
     assert plan.output_details.dsp.filters == []
-    assert not any(param.startswith("equalizer=") for param in plan.filter_params)
+    assert not any(
+        isinstance(param, str) and param.startswith("equalizer=") for param in plan.filter_params
+    )
+
+
+def _convolution_plan(known_ir_ids: list[str]) -> AudioOutputPlan:
+    """Build an output plan for a player convolving with impulse response "abc123"."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.storage_path = "/storage"
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=True,
+        filters=[ConvolutionFilter(enabled=True, ir_id="abc123")],
+    )
+    mass.config.get_dsp_irs.return_value = [{"ir_id": ir_id} for ir_id in known_ir_ids]
+    mass.config.get_raw_player_config_value.return_value = "stereo"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    return audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+
+def test_player_output_plan_drops_convolution_with_unknown_ir() -> None:
+    """An impulse response with no stored record is left out rather than failing ffmpeg."""
+    plan = _convolution_plan(known_ir_ids=["other"])
+
+    assert plan.output_details.dsp.filters == []
+    assert not any(isinstance(param, ComplexFilter) for param in plan.filter_params)
+
+
+def test_player_output_plan_keeps_convolution_with_known_ir() -> None:
+    """An impulse response that is still stored convolves as configured."""
+    plan = _convolution_plan(known_ir_ids=["abc123"])
+
+    assert len(plan.output_details.dsp.filters) == 1
+    complex_filters = [param for param in plan.filter_params if isinstance(param, ComplexFilter)]
+    assert [f.inputs[0].path for f in complex_filters] == ["/storage/dsp_irs/abc123.wav"]
 
 
 def test_player_output_plan_prefers_rendering_player_channels() -> None:
@@ -599,7 +751,7 @@ def test_player_output_plan_prefers_rendering_player_channels() -> None:
     )
 
     assert plan.output_details.source_channel == AudioChannel.FL
-    assert "pan=mono|c0=FL" in plan.filter_params
+    assert "pan=stereo|c0=FL|c1=FL" in plan.filter_params
     # processing attribution still points at the visible parent player
     assert mass.streams.audio_processing.update_output.call_args.args[0] == "parent-1"
 
@@ -776,6 +928,168 @@ async def test_stale_flow_generator_does_not_mutate_active_session() -> None:
 
     assert not queue.flow_mode
     assert queue_data.flow_mode_stream_log == ["current"]
+
+
+@pytest.mark.asyncio
+async def test_flow_source_error_skips_item_without_completing_it() -> None:
+    """An item-stream error skips to the next queue item; the flow itself continues."""
+    mass = MagicMock()
+    streamdetails = SimpleNamespace(
+        fade_in=False,
+        stream_error=False,
+        uri="audiobookshelf://book",
+        seek_position=0,
+        duration=3600,
+    )
+    queue_item = SimpleNamespace(
+        queue_item_id="item-1",
+        name="book",
+        media_type=MediaType.AUDIOBOOK,
+        streamdetails=streamdetails,
+        extra_attributes={},
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item.side_effect = QueueEmpty
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.streams.audio_processing.update_item_context = MagicMock()
+    mass.player_queues.queue_buffer_completed = MagicMock()
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+
+    async def _failed_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        yield b"buffered audio"
+        streamdetails.stream_error = True
+
+    audio.get_queue_item_stream = _failed_stream  # type: ignore[method-assign]
+    stream = audio.get_queue_flow_stream(
+        cast(
+            "Any",
+            SimpleNamespace(
+                queue_id="queue-1",
+                display_name="Queue",
+                flow_mode=False,
+                overlay_enabled=False,
+                overlay_source=None,
+            ),
+        ),
+        cast("Any", queue_item),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks == [b"buffered audio"]
+    # the flow ran to natural completion (next item lookup raised QueueEmpty)
+    mass.player_queues.queue_buffer_completed.assert_called_once()
+    # the play log entry is kept, honest about the partial amount actually sent
+    assert len(queue_data.flow_mode_stream_log) == 1
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed is not None
+    assert entry.seconds_streamed > 0
+
+
+@pytest.mark.asyncio
+async def test_flow_zero_audio_skip_restores_seek_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero-audio item keeps its original seek position when its crossfade is skipped."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    first_streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        fade_in=False,
+        stream_error=False,
+        uri="test://first",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=120,
+    )
+    first_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="first",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=first_streamdetails,
+        extra_attributes={},
+    )
+    raw_seek_position = 12
+    skipped_streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        fade_in=False,
+        stream_error=False,
+        uri="test://skipped",
+        seek_position=raw_seek_position,
+        seconds_streamed=0,
+        duration=120,
+    )
+    skipped_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-2",
+        name="skipped",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=skipped_streamdetails,
+        extra_attributes={},
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[skipped_item, QueueEmpty])
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.get_next_item.return_value = skipped_item
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    mass.streams.audio_processing.update_item_context = MagicMock()
+    mass.player_queues.queue_buffer_completed = MagicMock()
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=2,
+                crossfade_duration=8,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+
+    async def _item_stream(
+        queue_item: SimpleNamespace,
+        *_args: object,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        if queue_item is first_item:
+            yield bytes(pcm_format.pcm_sample_size * 8)
+            yield bytes(pcm_format.pcm_sample_size)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue),
+        cast("Any", first_item),
+        pcm_format,
+        session_id="session-1",
+    )
+
+    async for _ in stream:
+        pass
+
+    build.assert_awaited_once()
+    assert skipped_streamdetails.seek_position == raw_seek_position
 
 
 def _manager_context(

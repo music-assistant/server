@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "mammamiradio",
+  "name": "Mamma Mi Radio",
+  "description": "Two Italian hosts. One very opinionated smart home. Self-hosted radio for Home Assistant: music, banter, and ads, with your home's moments worked into the show.",
+  "codeowners": ["@florianhorner"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/mamma-mi-radio/",
+  "multi_instance": false,
+  "stage": "alpha"
+}

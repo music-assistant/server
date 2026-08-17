@@ -420,7 +420,9 @@ class AudioBuffer:
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
             bit_depth=streamdetails.audio_format.bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # buffer the stereo fold of a surround source, so audio analysis measures
+            # the same audio that is played back rather than the untouched surround mix
+            channels=min(streamdetails.audio_format.channels, 2),
         )
 
         # determine ready threshold: how many seconds of audio must be buffered
@@ -557,10 +559,11 @@ class AudioBuffer:
         """
         async with self._data_available:
             if len(self._chunks) == 0:
-                if self._eof_received or self.cancelled:
-                    raise AudioBufferEOF
+                # Producer errors also set EOF after buffered data; preserve the real failure.
                 if self._producer_error:
                     raise self._producer_error
+                if self._eof_received or self.cancelled:
+                    raise AudioBufferEOF
             if self.cancelled:
                 raise AudioBufferEOF
 
@@ -602,10 +605,11 @@ class AudioBuffer:
 
         buffer_index = chunk_number - self._discarded_chunks
         while buffer_index >= len(self._chunks):
-            if self.cancelled or self._eof_received:
-                raise AudioBufferEOF
+            # Producer errors also set EOF after buffered data; preserve the real failure.
             if self._producer_error:
                 raise self._producer_error
+            if self.cancelled or self._eof_received:
+                raise AudioBufferEOF
             # if the buffer is full and we need a chunk that hasn't arrived yet,
             # the producer is blocked waiting for space — evict to unblock it
             if len(self._chunks) >= self.max_size_seconds:

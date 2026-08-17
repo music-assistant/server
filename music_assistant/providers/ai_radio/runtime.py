@@ -7,24 +7,21 @@ import asyncio
 import datetime
 import logging
 import random
+import time
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
-from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientTimeout
 from music_assistant_models.enums import (
+    EventType,
     ImageType,
     MediaType,
     PlaybackState,
-    ProviderFeature,
-    ProviderType,
-    QueueOption,
-    TaskStatus,
 )
-from music_assistant_models.errors import InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
@@ -32,28 +29,33 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.helpers.datetime import now, utc
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.playlists import (
-    ArtistInfo,
-    ImageInfo,
-    PlaylistItem,
-    ProviderMappingInfo,
-    generate_m3u,
-    media_item_to_playlist_item,
-)
-from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tts_engine
 from music_assistant.helpers.uri import create_uri
-from music_assistant.providers.builtin import CACHE_CATEGORY_MEDIA_INFO
 
 from .constants import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    ATTR_HOST_ID,
+    ATTR_MAX_CHARS,
+    ATTR_PROMPT,
+    ATTR_SESSION_ID,
+    ATTR_STATION_ID,
+    ATTR_WEB_SEARCH_MODE,
+    CONF_AI_ENGINE,
     CONF_TIMEZONE,
+    CONF_TTS_ENGINE,
     CONF_WEATHER_CITY,
     CONF_WEATHER_COUNTRY,
-    DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS,
+    CONF_WEATHER_PROVIDER,
+    CONF_WEATHER_TIMEOUT,
     DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
+    DEFERRED_PLACEHOLDERS,
+    SHOW_START_TIMEOUT_SECONDS,
+    TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
     WEB_SEARCH_MODE_RANK,
 )
@@ -64,34 +66,50 @@ from .helpers import (
     is_empty_section,
     pick_weighted_choice,
     slugify,
-    soft_limit_text,
     track_songinfo,
     utc_now_iso,
 )
 from .models import (
-    AudioSection,
-    GeneratedSection,
     PlannedSection,
     SessionState,
     Slot,
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import PlayableMediaItemType
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.plugin import AIEngine, TTSEngine
+
+
+# the sticky queue DJ re-plans on every queue change, so an uncached forecast lookup would
+# add two HTTP round trips to each one. Weather does not move meaningfully within this window
+WEATHER_TOKENS_CACHE_SECONDS = 300
 
 
 class AIRadioRuntimeMixin:
     """Mixin with all runtime logic for AI Radio runs."""
+
+    # (fetched_at, tokens) of the last weather lookup, shared by the show and DJ paths
+    _weather_tokens_cache: tuple[float, dict[str, str]] | None = None
 
     if TYPE_CHECKING:
         mass: MusicAssistant
         config: ProviderConfig
         logger: logging.Logger
         _sessions: dict[str, SessionState]
+
+        def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+            """Return a value collected by this provider's setup flow."""
+
+        def _schedule_replan(self, queue_id: str) -> None:
+            """Request a replan pass for the given queue."""
+
+        async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+            """Enable, switch or disable the sticky AI DJ on a queue."""
 
     def _set_session_progress(
         self,
@@ -107,38 +125,51 @@ class AIRadioRuntimeMixin:
             **details,
         }
 
-    async def _run_session(self, session_id: str, station: dict[str, Any]) -> None:
+    def _build_program(self, station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
+        """Merge a station and its host into the dict the planner consumes."""
+        sections, missing = self._materialize_sections(list(host.get("section_ids", [])))
+        if missing:
+            raise MusicAssistantError(
+                f"Host references unknown sections: {', '.join(sorted(set(missing)))}"
+            )
+        return {
+            **deepcopy(station),
+            "host_id": str(host.get("id", "")),
+            "instructions": str(host.get("instructions", "")),
+            "tts_engine": str(host.get("tts_engine", "")),
+            "language": str(host.get("language", "")),
+            "options": deepcopy(host.get("options", {})),
+            "sections": sections,
+            "section_order": deepcopy(host.get("section_order", [])),
+            "merge_section_id": str(host.get("merge_section_id", "")),
+        }
+
+    async def _run_session(self, session_id: str, program: dict[str, Any]) -> None:
         """Run one session in the background."""
         session = self._sessions[session_id]
         session.started_at = utc_now_iso()
         self.logger.info(
-            "AI Radio run started: session=%s station=%s mode=%s",
+            "AI Radio run started: session=%s station=%s",
             session.session_id,
             session.station_id,
-            session.mode,
         )
         try:
-            if session.mode == "playlist":
-                result = await self._run_playlist_mode(session, station)
-            else:
-                result = await self._run_dynamic_mode(session, station)
+            result = await self._run_show(session, program)
             session.result = result
             queue_stopped = result.get("ended_reason") == "queue_stopped"
             session.status = "stopped" if queue_stopped else "completed"
             self.logger.info(
-                "AI Radio run %s: session=%s station=%s mode=%s",
+                "AI Radio run %s: session=%s station=%s",
                 session.status,
                 session.session_id,
                 session.station_id,
-                session.mode,
             )
         except asyncio.CancelledError:
             session.status = "stopped"
             self.logger.info(
-                "AI Radio run cancelled: session=%s station=%s mode=%s",
+                "AI Radio run cancelled: session=%s station=%s",
                 session.session_id,
                 session.station_id,
-                session.mode,
             )
             raise
         except Exception as err:
@@ -147,171 +178,48 @@ class AIRadioRuntimeMixin:
             self.logger.exception("AI Radio session failed: %s", err)
         finally:
             session.ended_at = utc_now_iso()
+            # a show session blocks queue DJ replans while it runs, so ending it must
+            # re-arm the DJ itself instead of waiting on the next queue change
+            if session.queue_id:
+                self._schedule_replan(session.queue_id)
 
-    async def _run_playlist_mode(
+    async def _run_show(
         self,
         session: SessionState,
-        station: dict[str, Any],
+        program: dict[str, Any],
     ) -> dict[str, Any]:
-        """Generate one target playlist run."""
-        station = deepcopy(station)
+        """Plan and queue the whole show in one pass, then start playback."""
+        program = deepcopy(program)
         self.logger.debug(
-            "Playlist mode starting for station '%s' (%s)",
-            station.get("name", "AI Radio"),
-            station.get("id", ""),
+            "Show starting for station '%s' (%s)",
+            program.get("name", "AI Radio"),
+            program.get("id", ""),
         )
         self._set_session_progress(session, "fetch_source_tracks")
-        runtime_tokens = await self._prepare_runtime_tokens(station)
-        tracks, playlist_name = await self._fetch_source_tracks(station)
-        tracks = self._apply_source_shuffle(tracks, station)
-        tracks = self._apply_track_duration_limit(tracks, station)
-        if not tracks:
-            raise MusicAssistantError("No source tracks available after applying station limits")
-        self._set_session_progress(
-            session,
-            "planning_sections",
-            source_tracks=len(tracks),
-        )
-
-        planned_sections, _history = self._plan_sections(
-            tracks=tracks,
-            station=station,
-            track_index_offset=0,
-            minute_offset=0.0,
-            history_state={},
-            allowed_slot_when=None,
-            runtime_tokens=runtime_tokens,
-        )
-        self._set_session_progress(
-            session,
-            "generating_llm",
-            source_tracks=len(tracks),
-            sections_planned=len(planned_sections),
-        )
-        generated_sections = await self._generate_sections(station, planned_sections)
-        self._set_session_progress(
-            session,
-            "generating_tts",
-            source_tracks=len(tracks),
-            sections=len(generated_sections),
-        )
-        target_provider = str(station.get("target_playlist_provider") or "builtin")
-        run_id = session.session_id[:8]
-        station_name = str(station.get("name") or "AI Radio").strip()
-        now_local = self._configured_now()
-        date_suffix = f"{now_local.strftime('%a')}. {now_local.strftime('%d.%m.')}"
-        target_playlist_name = f"AI Radio: {station_name} ({date_suffix}) [{run_id}]"
-
-        audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
-        if self._is_builtin_provider_reference(target_provider):
-            playlist_items, track_count = self._compose_builtin_playlist_items(
-                tracks=tracks,
-                sections=audio_sections,
-            )
-            if not playlist_items:
-                raise MusicAssistantError("No playlist entries were generated")
-            self._set_session_progress(
-                session,
-                "publishing_playlist",
-                entries=len(playlist_items),
-                tracks=track_count,
-            )
-            playlist = await self._import_builtin_playlist(
-                target_playlist_name,
-                playlist_items,
-            )
-            entries_added = len(playlist_items)
-        else:
-            entries, _source_positions, track_count = self._compose_entries(
-                tracks=tracks, sections=audio_sections
-            )
-            if not entries:
-                raise MusicAssistantError("No playlist entries were generated")
-            self._set_session_progress(
-                session,
-                "publishing_playlist",
-                entries=len(entries),
-                tracks=track_count,
-            )
-            playlist = await self.mass.music.playlists.create_playlist(
-                target_playlist_name,
-                provider_instance_or_domain=target_provider,
-            )
-            add_task = await self.mass.music.playlists.add_playlist_tracks(
-                int(playlist.item_id), entries
-            )
-            await self._wait_for_background_task_completion(add_task.id, timeout_seconds=120)
-            entries_added = len(entries)
-        self.logger.info(
-            "Playlist mode published '%s' (%s entries, %s generated sections)",
-            target_playlist_name,
-            entries_added,
-            len(audio_sections),
-        )
-        return {
-            "mode": "playlist",
-            "source_playlist_name": playlist_name,
-            "source_tracks": len(tracks),
-            "generated_sections": len(audio_sections),
-            "target_playlist_id": playlist.item_id,
-            "target_playlist_name": target_playlist_name,
-            "entries_added": entries_added,
-        }
-
-    async def _run_dynamic_mode(  # noqa: PLR0915
-        self,
-        session: SessionState,
-        station: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Run dynamic generation mode."""
-        station = deepcopy(station)
-        self.logger.debug(
-            "Dynamic mode starting for station '%s' (%s)",
-            station.get("name", "AI Radio"),
-            station.get("id", ""),
-        )
-        self._set_session_progress(session, "fetch_source_tracks")
-        runtime_tokens = await self._prepare_runtime_tokens(station)
-        player_id = str(station.get("default_player_id") or "").strip()
+        # runtime_tokens only feeds the require_placeholders_present guards below; its
+        # resolved text is discarded here and re-fetched fresh when each clip renders
+        runtime_tokens = await self._prepare_runtime_tokens(program)
+        player_id = str(program.get("default_player_id") or "").strip()
         if not player_id:
-            raise MusicAssistantError("Dynamic mode requires a target player_id")
+            raise MusicAssistantError("AI Radio requires a target player")
         if not self.mass.players.get_player(player_id):
             raise MusicAssistantError(f"Unknown target player: {player_id}")
 
-        tracks, playlist_name = await self._fetch_source_tracks(station)
-        tracks = self._apply_source_shuffle(tracks, station)
-        tracks = self._apply_track_duration_limit(tracks, station)
+        tracks, playlist_name = await self._fetch_source_tracks(program)
+        tracks = self._apply_source_shuffle(tracks, program)
+        tracks = self._apply_track_duration_limit(tracks, program)
         if not tracks:
             raise MusicAssistantError("No source tracks available after applying station limits")
 
-        batch_size = max(1, int(station.get("dynamic_batch_size", 3) or 3))
-        poll_seconds = max(1, int(station.get("dynamic_poll_seconds", 5) or 5))
-        # the trigger must fall inside the current batch, or the next batch starts
-        # generating the instant this one starts playing, leaving no buffer at all
-        prefetch_remaining_tracks = min(
-            max(1, batch_size - 1),
-            max(1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)),
-        )
-        self.logger.debug(
-            "Dynamic runtime settings: batch_size=%d poll_seconds=%d prefetch_remaining_tracks=%d",
-            batch_size,
-            poll_seconds,
-            prefetch_remaining_tracks,
-        )
         # a grouped player plays from the group leader's queue, so resolve the
         # active queue up front and target that one for queueing and polling
         queue_id = player_id
         active_queue = self.mass.player_queues.get_active_queue(player_id)
         if active_queue is not None:
             queue_id = str(active_queue.queue_id)
-        self._set_session_progress(
-            session,
-            "initializing_queue",
-            total_tracks=len(tracks),
-            batch_size=batch_size,
-            prefetch_remaining_tracks=prefetch_remaining_tracks,
-            queue_id=queue_id,
-        )
+        # a queue runs one host at a time; the show is now that host, so any sticky
+        # DJ assignment on the queue is cleared before the show takes it over
+        await self.set_queue_dj(queue_id, None)
         self.mass.player_queues.clear(queue_id)
         session.queue_id = queue_id
 
@@ -326,199 +234,181 @@ class AIRadioRuntimeMixin:
             )
             cumulative_minutes.append(cumulative_minutes[-1] + (seconds / 60.0))
 
-        cursor = 0
-        batch_index = 0
-        total_entries_queued = 0
-        wait_trigger_global_index = -1
-        playback_seen = False
-        queue_stopped = False
-        history_state: dict[str, list[tuple[int, float]]] = {}
+        self._set_session_progress(session, "planning_sections", total_tracks=len(tracks))
+        planned_sections, _history = self._plan_sections(
+            session_id=session.session_id,
+            tracks=tracks,
+            program=program,
+            track_index_offset=0,
+            minute_offset=0.0,
+            history_state={},
+            allowed_slot_when=None,
+            runtime_tokens=runtime_tokens,
+        )
+        queue_items = self._compose_queue_items(
+            queue_id=queue_id,
+            session=session,
+            program=program,
+            tracks=tracks,
+            sections=planned_sections,
+        )
+        if not queue_items:
+            raise MusicAssistantError("No queue entries were generated")
+
+        self._set_session_progress(
+            session,
+            "initializing_queue",
+            total_tracks=len(tracks),
+            queue_entries=len(queue_items),
+            queue_id=queue_id,
+        )
+        # load() stages the items without starting playback, so every clip already carries its
+        # prompt by the time anything can ask for its audio
+        await self.mass.player_queues.load(
+            queue_id,
+            queue_items=queue_items,
+            keep_remaining=False,
+            keep_played=False,
+            shuffle=False,
+        )
+        await self.mass.player_queues.play_index(queue_id, 0)
         self._set_session_progress(
             session,
             "running",
-            queued_tracks=0,
             total_tracks=len(tracks),
-            batch_index=0,
-            queue_entries=0,
+            queue_entries=len(queue_items),
+            queue_id=queue_id,
         )
-
-        while cursor < len(tracks):
-            batch_tracks = tracks[cursor : cursor + batch_size]
-            is_first = cursor == 0
-            is_last = (cursor + len(batch_tracks)) >= len(tracks)
-            lookahead = None if is_last else tracks[cursor + len(batch_tracks)]
-            generation_tracks = [*batch_tracks, lookahead] if lookahead else batch_tracks
-
-            if is_first and is_last:
-                allowed_slot_when = ["start_of_playlist", "between_songs", "end_of_playlist"]
-            elif is_first:
-                allowed_slot_when = ["start_of_playlist", "between_songs"]
-            elif is_last:
-                allowed_slot_when = ["between_songs", "end_of_playlist"]
-            else:
-                allowed_slot_when = ["between_songs"]
-
-            self._set_session_progress(
-                session,
-                "planning_sections",
-                queued_tracks=cursor,
-                total_tracks=len(tracks),
-                batch_index=batch_index + 1,
-            )
-            planned_sections, history_state = self._plan_sections(
-                tracks=generation_tracks,
-                station=station,
-                track_index_offset=cursor,
-                minute_offset=cumulative_minutes[cursor],
-                history_state=history_state,
-                allowed_slot_when=allowed_slot_when,
-                runtime_tokens=runtime_tokens,
-            )
-            filtered_sections = [
-                item
-                for item in planned_sections
-                if item.insert_at_index <= len(batch_tracks)
-                and not (item.when == "start_of_playlist" and not is_first)
-                and not (item.when == "end_of_playlist" and not is_last)
-            ]
-            self._set_session_progress(
-                session,
-                "generating_llm",
-                queued_tracks=cursor,
-                total_tracks=len(tracks),
-                batch_index=batch_index + 1,
-                sections_planned=len(filtered_sections),
-            )
-            generated_sections = await self._generate_sections(station, filtered_sections)
-            self._set_session_progress(
-                session,
-                "generating_tts",
-                queued_tracks=cursor,
-                total_tracks=len(tracks),
-                batch_index=batch_index + 1,
-                sections=len(generated_sections),
-            )
-            audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
-            entries, source_positions, _track_count = self._compose_entries(
-                batch_tracks, audio_sections
-            )
-            if not entries:
-                raise MusicAssistantError("Dynamic batch produced no queue entries")
-
-            self._set_session_progress(
-                session,
-                "queueing_batch",
-                queued_tracks=cursor,
-                total_tracks=len(tracks),
-                batch_index=batch_index + 1,
-                batch_entries=len(entries),
-                queue_entries=total_entries_queued,
-            )
-            section_by_uri = {audio.uri: audio for audio in audio_sections}
-            media_entries: list[Any] = [
-                self._section_to_queue_sound_effect(section_by_uri[entry])
-                if entry in section_by_uri
-                else entry
-                for entry in entries
-            ]
-            option = QueueOption.REPLACE if is_first else QueueOption.ADD
-            await self.mass.player_queues.play_media(
-                queue_id=queue_id,
-                media=media_entries,
-                option=option,
-            )
-            batch_start_global = total_entries_queued
-            total_entries_queued += len(entries)
-            if source_positions:
-                trigger_position = max(0, len(source_positions) - prefetch_remaining_tracks)
-                trigger_track_local_index = source_positions[trigger_position]
-                wait_trigger_global_index = batch_start_global + trigger_track_local_index
-
-            cursor += len(batch_tracks)
-            batch_index += 1
-            self.logger.debug(
-                "Dynamic batch %d queued (%d tracks processed, %d queue entries total)",
-                batch_index,
-                cursor,
-                total_entries_queued,
-            )
-            self._set_session_progress(
-                session,
-                "running",
-                queued_tracks=cursor,
-                total_tracks=len(tracks),
-                batch_index=batch_index,
-                queue_entries=total_entries_queued,
-            )
-
-            if cursor >= len(tracks):
-                break
-            self._set_session_progress(
-                session,
-                "waiting_for_playback",
-                queued_tracks=cursor,
-                total_tracks=len(tracks),
-                batch_index=batch_index,
-                queue_entries=total_entries_queued,
-                wait_trigger_index=wait_trigger_global_index,
-                prefetch_remaining_tracks=prefetch_remaining_tracks,
-            )
-            stall_timeout = DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS
-            inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
-            last_seen_index = -1
-            last_elapsed_time: float | None = None
-            while True:
-                queue = self.mass.player_queues.get(queue_id)
-                current_index = queue.current_index if queue else None
-                playback_alive = False
-                if current_index is not None:
-                    if current_index >= wait_trigger_global_index:
-                        break
-                    if current_index > last_seen_index:
-                        last_seen_index = current_index
-                        playback_alive = True
-                # a long track or a deliberate pause is not a stall: the raw
-                # elapsed_time only moves when the player reports real progress,
-                # while PAUSED means the user intentionally halted playback
-                queue_state = getattr(queue, "state", None)
-                elapsed_time = getattr(queue, "elapsed_time", None)
-                if queue_state == PlaybackState.PAUSED:
-                    playback_alive = True
-                elif elapsed_time is not None and elapsed_time != last_elapsed_time:
-                    last_elapsed_time = elapsed_time
-                    playback_alive = True
-                # elapsed_time also "moves" on the first poll of an idle queue
-                if queue_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                    playback_seen = True
-                if playback_alive:
-                    inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
-                if playback_seen and queue_state == PlaybackState.IDLE:
-                    self.logger.info(
-                        "Queue %s was stopped, ending dynamic run (last_index=%s)",
-                        queue_id,
-                        last_seen_index,
-                    )
-                    queue_stopped = True
-                    break
-                if asyncio.get_running_loop().time() >= inactivity_deadline:
-                    raise MusicAssistantError(
-                        f"Queue {queue_id} stopped advancing for {stall_timeout}s "
-                        f"while waiting for prefetch trigger (last_index={last_seen_index})"
-                    )
-                await asyncio.sleep(poll_seconds)
-
-            if queue_stopped:
-                break
-
+        has_clips = any(ATTR_SESSION_ID in item.extra_attributes for item in queue_items)
+        ended_reason = await self._await_show_end(
+            session, queue_id, len(queue_items) - 1, has_clips=has_clips
+        )
         return {
-            "mode": "dynamic",
-            "ended_reason": "queue_stopped" if queue_stopped else "source_exhausted",
+            "ended_reason": ended_reason,
             "source_playlist_name": playlist_name,
             "source_tracks": len(tracks),
-            "queued_tracks": cursor,
             "queue_id": queue_id,
-            "queue_entries": total_entries_queued,
+            "queue_entries": len(queue_items),
+            "planned_sections": len(planned_sections),
+            "skipped_sections": session.skipped_sections,
         }
+
+    async def _await_show_end(
+        self, session: SessionState, queue_id: str, last_index: int, *, has_clips: bool
+    ) -> str:
+        """
+        Block until this session's show is over and report why it ended.
+
+        :param session: The session whose clips are in the queue.
+        :param queue_id: The queue playing the show.
+        :param last_index: Queue index of the final entry this session enqueued.
+        :param has_clips: Whether this run enqueued any AI Radio clips at all. A clip-free
+            show (every section was skipped by its rules) must not be mistaken for one whose
+            clips were cleared out from under it, so that rule is skipped entirely here.
+        :return: ``"source_exhausted"`` when the show played out, ``"queue_stopped"`` when the
+            queue was stopped or taken over before reaching the end.
+        :raises MusicAssistantError: if playback never starts within
+            :data:`SHOW_START_TIMEOUT_SECONDS`.
+        """
+        finished = asyncio.Event()
+        playback_started = asyncio.Event()
+        # a queue that has not started yet must never be mistaken for a stopped one
+        playback_seen = False
+        ended_reason = "queue_stopped"
+
+        def _check_show_state() -> None:
+            nonlocal playback_seen, ended_reason
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None:
+                finished.set()
+                return
+            if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                playback_seen = True
+                playback_started.set()
+            if has_clips and not self._session_has_clips(queue_id, session.session_id):
+                finished.set()
+                return
+            if not playback_seen or queue.state != PlaybackState.IDLE:
+                return
+            # playing out and being stopped both end IDLE, so position is the discriminator
+            current_index = queue.current_index
+            if current_index is not None and current_index >= last_index:
+                ended_reason = "source_exhausted"
+            self.logger.info(
+                "Queue %s went idle at index %s of %s, ending show (%s)",
+                queue_id,
+                current_index,
+                last_index,
+                ended_reason,
+            )
+            finished.set()
+
+        def _on_queue_event(_event: MassEvent) -> None:
+            _check_show_state()
+
+        unsubscribe = self.mass.subscribe(
+            _on_queue_event,
+            (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+            id_filter=queue_id,
+        )
+        try:
+            # the queue may already have gone away, or (for a show with clips) already lost
+            # them, by the time this subscribes; IDLE-after-playout still needs a fresh event,
+            # since playback_seen is not latched yet
+            _check_show_state()
+            await self._await_playback_start(playback_started, finished)
+            await finished.wait()
+        finally:
+            unsubscribe()
+        return ended_reason
+
+    async def _await_playback_start(
+        self, playback_started: asyncio.Event, finished: asyncio.Event
+    ) -> None:
+        """
+        Wait for the show to either start playing or end before it ever did.
+
+        :param playback_started: Set once the queue is first observed playing or paused.
+        :param finished: Set once the show is over, however that came about.
+        :raises MusicAssistantError: if neither happens within
+            :data:`SHOW_START_TIMEOUT_SECONDS`.
+        """
+        if playback_started.is_set() or finished.is_set():
+            return
+        # a player that never comes online (or whose clips all fail) must not pin this
+        # session's "running" status, and its max-concurrent-runs slot, forever
+        wait_tasks = (
+            asyncio.ensure_future(playback_started.wait()),
+            asyncio.ensure_future(finished.wait()),
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                wait_tasks,
+                timeout=SHOW_START_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in wait_tasks:
+                if not task.done():
+                    task.cancel()
+        if not done:
+            raise MusicAssistantError(
+                f"Playback did not start within {SHOW_START_TIMEOUT_SECONDS}s"
+            )
+
+    def _session_has_clips(self, queue_id: str, session_id: str) -> bool:
+        """Return whether any queue item still belongs to the given session."""
+        page_size = 500
+        offset = 0
+        while True:
+            page = self.mass.player_queues.items(queue_id, limit=page_size, offset=offset)
+            if not page:
+                return False
+            if any(item.extra_attributes.get(ATTR_SESSION_ID) == session_id for item in page):
+                return True
+            if len(page) < page_size:
+                return False
+            offset += page_size
 
     async def _fetch_source_tracks(
         self, station: dict[str, Any]
@@ -547,15 +437,6 @@ class AIRadioRuntimeMixin:
                     track.item_id,
                 )
                 continue
-            try:
-                playlist_item = media_item_to_playlist_item(track)
-            except Exception:
-                self.logger.debug(
-                    "Could not build source playlist metadata for uri=%s",
-                    uri,
-                    exc_info=True,
-                )
-                playlist_item = None
             normalized.append(
                 {
                     "index": len(normalized),
@@ -565,7 +446,7 @@ class AIRadioRuntimeMixin:
                     "songinfo": f"{artist} - {track.name}".strip(" -"),
                     "duration": track.duration,
                     "uri": uri,
-                    "playlist_item": playlist_item,
+                    "media_item": track,
                 }
             )
         return normalized, playlist_name
@@ -636,17 +517,19 @@ class AIRadioRuntimeMixin:
 
     def _plan_sections(  # noqa: PLR0915
         self,
+        session_id: str,
         tracks: list[dict[str, Any]],
-        station: dict[str, Any],
+        program: dict[str, Any],
         track_index_offset: int,
         minute_offset: float,
         history_state: dict[str, list[tuple[int, float]]],
         allowed_slot_when: list[str] | None,
         runtime_tokens: dict[str, str],
+        decided_next_item_ids: set[str] | None = None,
     ) -> tuple[list[PlannedSection], dict[str, list[tuple[int, float]]]]:
         """Evaluate section rules and produce planning entries."""
-        sections = station.get("sections", [])
-        section_order = station.get("section_order", [])
+        sections = program.get("sections", [])
+        section_order = program.get("section_order", [])
         if not isinstance(sections, list) or not sections:
             raise MusicAssistantError("Station has no sections configured")
         if not isinstance(section_order, list) or not section_order:
@@ -662,28 +545,41 @@ class AIRadioRuntimeMixin:
         selected: list[tuple[str, Slot, dict[str, str]]] = []
         rng = random.Random()
 
+        def slot_event(slot: Slot) -> tuple[int, float]:
+            song_local = slot.next_index if slot.next_index is not None else len(tracks)
+            return track_index_offset + song_local, minute_offset + slot.minute_mark
+
         def register_event(section_id: str, slot: Slot) -> None:
             if is_empty_section(section_id):
                 return
-            song_local = slot.next_index if slot.next_index is not None else len(tracks)
-            song_global = track_index_offset + song_local
-            minute_global = minute_offset + slot.minute_mark
-            history.setdefault(section_id, []).append((song_global, minute_global))
+            history.setdefault(section_id, []).append(slot_event(slot))
 
         for slot in slots:
             if allowed_slot_when and slot.when not in allowed_slot_when:
+                continue
+            if (
+                decided_next_item_ids
+                and slot.when == "between_songs"
+                and slot.next_index is not None
+                and str(tracks[slot.next_index].get("item_id", "")) in decided_next_item_ids
+            ):
+                # the caller settled this slot in an earlier run: re-evaluating it would
+                # consume a chance roll and register its event a second time
                 continue
             matching_rules = [
                 rule for rule in section_order if str(rule.get("when", "")).strip() == slot.when
             ]
             if not matching_rules:
                 continue
-            placeholders = self._resolve_placeholders(
-                station=station,
+            static, deferred = self._resolve_placeholders(
+                program=program,
                 tracks=tracks,
                 slot=slot,
                 runtime_tokens=runtime_tokens,
             )
+            # guards may require a deferred token to be present, so they see the merged view;
+            # only the static half is substituted into the stored prompt
+            guard_values = {**deferred, **static}
             for rule in matching_rules:
                 flow = rule.get("flow", [])
                 if not isinstance(flow, list):
@@ -697,7 +593,7 @@ class AIRadioRuntimeMixin:
                             continue
                         if is_empty_section(section_id):
                             continue
-                        selected.append((section_id, slot, placeholders))
+                        selected.append((section_id, slot, static))
                         register_event(section_id, slot)
                         continue
                     if "ALTERNATIVE" in flow_item:
@@ -707,7 +603,7 @@ class AIRadioRuntimeMixin:
                         section_id = pick_weighted_choice(alternative.get("choices", []), rng)
                         if is_empty_section(section_id):
                             continue
-                        selected.append((section_id, slot, placeholders))
+                        selected.append((section_id, slot, static))
                         register_event(section_id, slot)
                         continue
                     if "OPTIONAL" in flow_item:
@@ -728,17 +624,17 @@ class AIRadioRuntimeMixin:
                             history=history,
                             slot=slot,
                             tracks=tracks,
-                            placeholders=placeholders,
+                            placeholders=guard_values,
                             track_index_offset=track_index_offset,
                             minute_offset=minute_offset,
                         ):
                             continue
                         if is_empty_section(section_id):
                             continue
-                        selected.append((section_id, slot, placeholders))
+                        selected.append((section_id, slot, static))
                         register_event(section_id, slot)
 
-        merge_section_id = str(station.get("merge_section_id", "")).strip()
+        merge_section_id = str(program.get("merge_section_id", "")).strip()
         meta_section = section_by_id.get(merge_section_id) if merge_section_id else None
         grouped: dict[str, list[tuple[str, Slot, dict[str, str]]]] = defaultdict(list)
         for item in selected:
@@ -765,6 +661,8 @@ class AIRadioRuntimeMixin:
                     placeholders=placeholders,
                     order=order_index,
                     section_by_id=section_by_id,
+                    session_id=session_id,
+                    history_events=[(item[0], slot_event(item[1])) for item in grouped_items],
                 )
                 planned.append(merged)
                 order_index += 1
@@ -786,6 +684,7 @@ class AIRadioRuntimeMixin:
             planned.append(
                 PlannedSection(
                     order=order_index,
+                    clip_id=f"{session_id}_{order_index:03d}",
                     section_id=section_id,
                     section_name=self._resolve_section_name(section, section_id),
                     when=slot.when,
@@ -793,6 +692,7 @@ class AIRadioRuntimeMixin:
                     prompt=prompt,
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
+                    history_events=[(section_id, slot_event(slot))],
                 )
             )
             order_index += 1
@@ -839,6 +739,8 @@ class AIRadioRuntimeMixin:
         placeholders: dict[str, str],
         order: int,
         section_by_id: dict[str, dict[str, Any]],
+        session_id: str,
+        history_events: list[tuple[str, tuple[int, float]]],
     ) -> PlannedSection:
         """Build a merged ai_meta section for one slot."""
         section_ids = [item[0] for item in grouped_items]
@@ -878,6 +780,7 @@ class AIRadioRuntimeMixin:
         section_name = " + ".join(dict.fromkeys(merged_names))
         return PlannedSection(
             order=order,
+            clip_id=f"{session_id}_{order:03d}",
             section_id=section_id,
             section_name=section_name,
             when=slot.when,
@@ -885,212 +788,63 @@ class AIRadioRuntimeMixin:
             prompt=meta_prompt,
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
+            history_events=history_events,
         )
 
-    async def _generate_sections(
+    def _compose_queue_items(
         self,
-        station: dict[str, Any],
-        planned_sections: list[PlannedSection],
-    ) -> list[GeneratedSection]:
-        """Generate section texts from planning entries."""
-        generated: list[GeneratedSection] = []
-        sorted_sections = sorted(planned_sections, key=lambda section: section.order)
-        self.logger.debug(
-            "LLM generation started: station=%s sections=%d",
-            station.get("id", "unknown"),
-            len(sorted_sections),
-        )
-        for index, item in enumerate(sorted_sections, start=1):
-            started = perf_counter()
-            self.logger.debug(
-                "LLM section %d/%d: section=%s when=%s web_mode=%s",
-                index,
-                len(sorted_sections),
-                item.section_id,
-                item.when,
-                item.web_search_mode,
-            )
-            try:
-                text = await self._generate_text(
-                    station=station,
-                    prompt=item.prompt,
-                    web_mode=item.web_search_mode,
-                )
-            except Exception:
-                self.logger.exception(
-                    "LLM generation failed: section=%s when=%s",
-                    item.section_id,
-                    item.when,
-                )
-                raise
-            if item.max_chars > 0:
-                text = soft_limit_text(text, max_chars=item.max_chars)
-            self.logger.debug(
-                "LLM section done: section=%s chars=%d elapsed=%.2fs",
-                item.section_id,
-                len(text),
-                perf_counter() - started,
-            )
-            generated.append(
-                GeneratedSection(
-                    order=item.order,
-                    section_id=item.section_id,
-                    section_name=item.section_name,
-                    when=item.when,
-                    insert_at_index=item.insert_at_index,
-                    text=text,
-                )
-            )
-        self.logger.debug("LLM generation finished: generated_sections=%d", len(generated))
-        return generated
-
-    async def _synthesize_sections(
-        self,
-        generated_sections: list[GeneratedSection],
-    ) -> list[AudioSection]:
-        """Convert generated section texts to playable TTS URIs."""
-        output: list[AudioSection] = []
-        if not generated_sections:
-            return output
-        self.logger.debug("TTS synthesis started: sections=%d", len(generated_sections))
-        for index, section in enumerate(generated_sections):
-            started = perf_counter()
-            self.logger.debug(
-                "TTS section %d/%d: section=%s chars=%d",
-                index + 1,
-                len(generated_sections),
-                section.section_id,
-                len(section.text),
-            )
-            try:
-                section_uri, section_duration = await self._render_tts(
-                    text=section.text, section_name=section.section_name
-                )
-            except Exception:
-                self.logger.exception(
-                    "TTS synthesis failed: section=%s",
-                    section.section_id,
-                )
-                raise
-            self.logger.debug(
-                "TTS section done: section=%s elapsed=%.2fs uri=%s duration=%ss",
-                section.section_id,
-                perf_counter() - started,
-                section_uri,
-                section_duration,
-            )
-            output.append(
-                AudioSection(
-                    order=section.order,
-                    section_id=section.section_id,
-                    section_name=section.section_name,
-                    insert_at_index=section.insert_at_index,
-                    uri=section_uri,
-                    duration=section_duration,
-                )
-            )
-        self.logger.debug("TTS synthesis finished: sections=%d", len(output))
-        return output
-
-    def _compose_entries(
-        self,
+        queue_id: str,
+        session: SessionState,
+        program: dict[str, Any],
         tracks: list[dict[str, Any]],
-        sections: list[AudioSection],
-    ) -> tuple[list[str], list[int], int]:
-        """Compose final queue/playlist entries with insert positions."""
-        sections_by_index: dict[int, list[AudioSection]] = defaultdict(list)
+        sections: list[PlannedSection],
+    ) -> list[QueueItem]:
+        """
+        Build the queue items for a whole show.
+
+        Clips carry their render state in ``extra_attributes`` from the moment they are built, so
+        a clip is renderable as soon as the queue holds it.
+
+        :param queue_id: The queue the items are built for.
+        :param session: The session that owns the show.
+        :param program: The station+host program being played.
+        :param tracks: The normalized source tracks, in play order.
+        :param sections: The planned sections to interleave between them.
+        """
+        sections_by_index: dict[int, list[PlannedSection]] = defaultdict(list)
         for item in sections:
             sections_by_index[item.insert_at_index].append(item)
-        entries: list[str] = []
-        source_track_positions: list[int] = []
-        track_count = 0
+        items: list[QueueItem] = []
         for index in range(len(tracks) + 1):
             for section in sorted(sections_by_index.get(index, []), key=lambda item: item.order):
-                entries.append(section.uri)
-            if index < len(tracks):
-                track_uri = str(tracks[index].get("uri", "")).strip()
-                if track_uri:
-                    source_track_positions.append(len(entries))
-                    entries.append(track_uri)
-                    track_count += 1
-        return entries, source_track_positions, track_count
+                items.append(
+                    self._section_to_clip_item(queue_id, session.session_id, program, section)
+                )
+            if index < len(tracks) and (media_item := tracks[index].get("media_item")) is not None:
+                items.append(build_queue_item(queue_id, media_item))
+        return items
 
-    def _compose_builtin_playlist_items(
+    def _section_to_clip_item(
         self,
-        tracks: list[dict[str, Any]],
-        sections: list[AudioSection],
-    ) -> tuple[list[PlaylistItem], int]:
-        """Compose builtin playlist items with stable AI Radio section metadata."""
-        sections_by_index: dict[int, list[AudioSection]] = defaultdict(list)
-        for item in sections:
-            sections_by_index[item.insert_at_index].append(item)
-        entries: list[PlaylistItem] = []
-        track_count = 0
-        for index in range(len(tracks) + 1):
-            for section in sorted(sections_by_index.get(index, []), key=lambda item: item.order):
-                entries.append(self._section_to_playlist_item(section))
-            if index < len(tracks):
-                track_item = self._track_to_playlist_item(tracks[index])
-                if track_item:
-                    entries.append(track_item)
-                    track_count += 1
-        return entries, track_count
-
-    def _track_to_playlist_item(self, track: dict[str, Any]) -> PlaylistItem | None:
-        """Return the prebuilt source track playlist item, falling back to URI metadata."""
-        playlist_item = track.get("playlist_item")
-        if isinstance(playlist_item, PlaylistItem):
-            return deepcopy(playlist_item)
-        track_uri = str(track.get("uri", "")).strip()
-        if not track_uri:
-            return None
-        name = str(track.get("name") or track_uri).strip()
-        title = str(track.get("songinfo") or name).strip()
-        return PlaylistItem(
-            path=track_uri,
-            title=title,
-            length=str(track["duration"]) if track.get("duration") else None,
-            metadata={
-                "media_type": MediaType.TRACK.value,
-                "name": name,
-            },
-            providers=self._provider_mapping_infos_from_uri(track_uri),
-        )
-
-    def _section_to_queue_sound_effect(self, section: AudioSection) -> SoundEffect | str:
-        """
-        Build a rich SoundEffect for queueing (dynamic mode).
-
-        Falls back to the raw URI when the URI cannot be split into a builtin
-        provider reference (e.g. unexpected scheme).
-        """
-        uri = str(section.uri).strip()
-        if "://" not in uri:
-            return uri
-        provider_ref, rest = uri.split("://", 1)
-        if "/" not in rest:
-            return uri
-        media_type, item_id = rest.split("/", 1)
-        if not item_id or media_type != MediaType.SOUND_EFFECT.value:
-            return uri
-        provider = self.mass.get_provider(provider_ref)
-        provider_domain = str(getattr(provider, "domain", "") or provider_ref).strip()
-        provider_instance = str(getattr(provider, "instance_id", "") or provider_ref).strip()
-        sound_effect = SoundEffect(
-            item_id=item_id,
-            provider=provider_instance,
+        queue_id: str,
+        session_id: str,
+        program: dict[str, Any],
+        section: PlannedSection,
+    ) -> QueueItem:
+        """Build the queue item for a not-yet-rendered clip."""
+        clip = SoundEffect(
+            item_id=section.clip_id,
+            provider=self.instance_id,
             name=section.section_name,
             provider_mappings={
                 ProviderMapping(
-                    item_id=item_id,
-                    provider_domain=provider_domain,
-                    provider_instance=provider_instance,
+                    item_id=section.clip_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
                 )
             },
         )
-        if section.duration:
-            sound_effect.duration = int(section.duration)
-        sound_effect.metadata.images = UniqueList(
+        clip.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
@@ -1100,139 +854,50 @@ class AIRadioRuntimeMixin:
                 )
             ]
         )
-        return sound_effect
-
-    def _section_to_playlist_item(self, section: AudioSection) -> PlaylistItem:
-        """Create a fully described playlist item for a generated AI Radio section."""
-        uri = str(section.uri).strip()
-        title = section.section_name
-        media_type = self._extract_media_type_from_uri(uri) or MediaType.SOUND_EFFECT.value
-        providers = self._provider_mapping_infos_from_uri(uri)
-        artist_provider_domain = providers[0].domain if providers else "builtin"
-        artist_provider_instance = providers[0].instance_id if providers else "builtin"
-        length = str(int(section.duration)) if section.duration else "-1"
-        return PlaylistItem(
-            path=uri,
-            title=title,
-            length=length,
-            metadata={
-                "media_type": media_type,
-                "name": title,
-            },
-            providers=providers,
-            artists=[
-                ArtistInfo(
-                    name="AI Radio",
-                    provider_domain=artist_provider_domain,
-                    item_id="AI Radio",
-                    provider_instance=artist_provider_instance,
-                )
-            ],
-            images=[self._ai_radio_cover_image_info()],
+        queue_item = build_queue_item(queue_id, clip)
+        # the section name already travels as the item's own name, so it is not duplicated here
+        queue_item.extra_attributes.update(
+            {
+                ATTR_SESSION_ID: session_id,
+                ATTR_STATION_ID: str(program.get("id") or ""),
+                ATTR_HOST_ID: str(program.get("host_id") or ""),
+                ATTR_PROMPT: section.prompt,
+                ATTR_MAX_CHARS: section.max_chars,
+                ATTR_WEB_SEARCH_MODE: section.web_search_mode,
+            }
         )
-
-    async def _import_builtin_playlist(
-        self,
-        playlist_name: str,
-        items: list[PlaylistItem],
-    ) -> Any:
-        """Create a builtin playlist by importing an M3U with preserved metadata."""
-        m3u_data = generate_m3u(
-            playlist_name,
-            items,
-            self._ai_radio_cover_image_path(),
-        )
-        return await self.mass.music.playlists.import_playlist(m3u_data)
-
-    @staticmethod
-    def _extract_media_type_from_uri(uri: str) -> str | None:
-        """Extract MediaType string from an MA URI."""
-        if "://" not in uri:
-            return None
-        _provider, rest = uri.split("://", 1)
-        if "/" not in rest:
-            return None
-        media_type, _item_id = rest.split("/", 1)
-        return media_type or None
+        return queue_item
 
     @staticmethod
     def _ai_radio_cover_image_path() -> str:
         """Return the explicit AI Radio playlist cover image path."""
         return str(Path(__file__).with_name("air.png"))
 
-    def _ai_radio_cover_image_info(self) -> ImageInfo:
-        """Return the AI Radio thumbnail image metadata for M3U entries."""
-        return ImageInfo(
-            type=ImageType.THUMB.value,
-            path=self._ai_radio_cover_image_path(),
-            provider="builtin",
-            remotely_accessible=False,
-        )
-
-    def _provider_mapping_infos_from_uri(self, uri: str) -> list[ProviderMappingInfo]:
-        """Build minimal provider mapping metadata for a Music Assistant URI."""
-        if "://" not in uri:
-            return []
-        provider_ref, rest = uri.split("://", 1)
-        if "/" not in rest:
-            return []
-        _media_type, item_id = rest.split("/", 1)
-        if not item_id:
-            return []
-        provider = self.mass.get_provider(provider_ref)
-        provider_domain = str(getattr(provider, "domain", "") or provider_ref).strip()
-        provider_instance = str(getattr(provider, "instance_id", "") or provider_ref).strip()
-        return [
-            ProviderMappingInfo(
-                domain=provider_domain,
-                item_id=item_id,
-                instance_id=provider_instance,
-            )
-        ]
-
-    async def _wait_for_background_task_completion(
-        self, task_id: str, timeout_seconds: int
-    ) -> None:
-        """Wait for a background task to complete so dependent file operations can run safely."""
-        deadline = asyncio.get_running_loop().time() + max(1, timeout_seconds)
-        while True:
-            try:
-                task = self.mass.tasks.get_task(task_id)
-            except Exception:
-                # If task history is gone, assume it is no longer active.
-                return
-            status = task.status
-            if status in {TaskStatus.SUCCESS, TaskStatus.PARTIAL_SUCCESS, TaskStatus.IDLE}:
-                return
-            if status in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
-                raise MusicAssistantError(
-                    f"Background task {task_id} ended with status '{status.value}' "
-                    "before AI Radio post-processing"
-                )
-            if asyncio.get_running_loop().time() >= deadline:
-                raise MusicAssistantError(
-                    f"Timed out waiting for background task {task_id} (last status={status.value})"
-                )
-            await asyncio.sleep(0.1)
-
-    def _is_builtin_provider_reference(self, provider_ref: str) -> bool:
-        """Return True when provider reference points to builtin provider."""
-        value = str(provider_ref or "").strip()
-        if value == "builtin":
-            return True
-        provider = self.mass.get_provider(value)
-        return str(getattr(provider, "domain", "") or "").strip() == "builtin"
-
-    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+    async def _prepare_runtime_tokens(self, program: dict[str, Any]) -> dict[str, str]:
         """Prepare runtime tokens (including weather placeholders) for one run."""
+        if not self._program_uses_weather_placeholders(program):
+            return {}
+        return await self._prepare_weather_tokens()
+
+    async def _prepare_weather_tokens(self) -> dict[str, str]:
+        """Return the weather placeholder tokens, fetching them at most once per cache window."""
+        cached = self._weather_tokens_cache
+        if cached is not None and (time.monotonic() - cached[0]) < WEATHER_TOKENS_CACHE_SECONDS:
+            return dict(cached[1])
+        tokens = await self._fetch_weather_tokens()
+        # failed and disabled lookups are cached too, so a broken forecast source cannot
+        # put its timeout in front of every replan pass
+        self._weather_tokens_cache = (time.monotonic(), tokens)
+        return dict(tokens)
+
+    async def _fetch_weather_tokens(self) -> dict[str, str]:
+        """Fetch and format weather placeholder tokens from the configured provider."""
         runtime_tokens: dict[str, str] = {}
 
-        if not self._station_uses_weather_placeholders(station):
-            return runtime_tokens
-
-        general = cast("dict[str, Any]", station.get("general", {}))
         weather_provider = (
-            str(general.get("weather_provider") or DEFAULT_WEATHER_PROVIDER).strip().lower()
+            str(self.config.get_value(CONF_WEATHER_PROVIDER) or DEFAULT_WEATHER_PROVIDER)
+            .strip()
+            .lower()
         )
         if weather_provider in {"", "none", "disabled", "off"}:
             return runtime_tokens
@@ -1251,10 +916,8 @@ class AIRadioRuntimeMixin:
             )
             return runtime_tokens
 
-        timeout_seconds = max(
-            5,
-            coerce_int(general.get("weather_timeout_seconds"), DEFAULT_WEATHER_TIMEOUT_SECONDS),
-        )
+        configured_timeout = self.config.get_value(CONF_WEATHER_TIMEOUT)
+        timeout_seconds = max(5, coerce_int(configured_timeout, DEFAULT_WEATHER_TIMEOUT_SECONDS))
         try:
             weather_hourly, weather_daily = await self._fetch_open_meteo_weather(
                 city=city,
@@ -1276,15 +939,15 @@ class AIRadioRuntimeMixin:
             runtime_tokens["<weather_daily>"] = weather_daily
         return runtime_tokens
 
-    def _station_uses_weather_placeholders(self, station: dict[str, Any]) -> bool:
-        """Return whether the station references weather placeholders."""
+    def _program_uses_weather_placeholders(self, program: dict[str, Any]) -> bool:
+        """Return whether the program references weather placeholders."""
         weather_tokens = ("<weather_hourly>", "<weather_daily>")
-        for section in station.get("sections", []):
+        for section in program.get("sections", []):
             prompt = str(section.get("prompt", ""))
             if any(token in prompt for token in weather_tokens):
                 return True
 
-        for rule in station.get("section_order", []):
+        for rule in program.get("section_order", []):
             flow = rule.get("flow", [])
             for item in flow:
                 optional = item.get("OPTIONAL")
@@ -1481,34 +1144,46 @@ class AIRadioRuntimeMixin:
     def _format_number(self, value: Any) -> str:
         """Format weather numeric values compactly for prompts."""
         try:
-            numeric = float(value)
+            # the host reads these out loud, where a decimal place only clutters the line
+            numeric = round(float(value))
         except Exception:
             return str(value)
-        if numeric.is_integer():
-            return str(int(numeric))
-        return f"{numeric:.1f}"
+        return str(numeric)
 
     def _resolve_placeholders(
         self,
-        station: dict[str, Any],
+        program: dict[str, Any],
         tracks: list[dict[str, Any]],
         slot: Slot,
         runtime_tokens: dict[str, str],
-    ) -> dict[str, str]:
-        """Resolve placeholders for one slot."""
-        now_local = self._configured_now()
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """
+        Resolve placeholders for one slot, split by when they are substituted.
 
-        values: dict[str, str] = {str(key): str(value) for key, value in runtime_tokens.items()}
+        :param program: The station+host program being planned.
+        :param tracks: The track list the slot indexes into.
+        :param slot: The insertion slot being filled.
+        :param runtime_tokens: Weather tokens fetched for this run.
+        :return: ``(static, deferred)`` — static values are fixed by the track order and are
+            substituted at plan time; deferred values describe the moment of airing and are
+            substituted at render time.
+        """
         prev_track = tracks[slot.prev_index] if slot.prev_index is not None else None
         next_track = tracks[slot.next_index] if slot.next_index is not None else None
         very_next_track = tracks[slot.very_next_index] if slot.very_next_index is not None else None
-        values["<prev_songinfo>"] = track_songinfo(prev_track)
-        values["<next_songinfo>"] = track_songinfo(next_track)
-        values["<very_next_songinfo>"] = track_songinfo(very_next_track)
-        values["<timestamp>"] = now_local.strftime("%Y-%m-%d %H:%M %Z")
-        values.setdefault("<weather_hourly>", "")
-        values.setdefault("<weather_daily>", "")
-        return values
+        static = {
+            "<prev_songinfo>": track_songinfo(prev_track),
+            "<next_songinfo>": track_songinfo(next_track),
+            "<very_next_songinfo>": track_songinfo(very_next_track),
+        }
+        deferred = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
+        deferred["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
+        for key, value in runtime_tokens.items():
+            if str(key) in DEFERRED_PLACEHOLDERS:
+                deferred[str(key)] = str(value)
+            else:
+                static[str(key)] = str(value)
+        return static, deferred
 
     def _apply_placeholders(self, prompt: str, values: dict[str, str]) -> str:
         """Apply placeholder replacements in a prompt."""
@@ -1532,17 +1207,19 @@ class AIRadioRuntimeMixin:
             )
         return mode
 
-    async def _generate_text(self, station: dict[str, Any], prompt: str, web_mode: str) -> str:
-        """Generate one section text using the configured AI_QUERY plugin feature."""
-        general = cast("dict[str, Any]", station.get("general", {}))
-        instructions = str(general.get("instructions") or DEFAULT_LLM_INSTRUCTIONS).strip()
+    async def _generate_text(
+        self, instructions: str, prompt: str, web_mode: str, language: str | None = None
+    ) -> str:
+        """Generate one section text using the configured AI engine."""
+        instructions = instructions.strip() or DEFAULT_LLM_INSTRUCTIONS
         query_parts: list[str] = []
         if instructions:
             query_parts.append(f"Program instructions:\n{instructions}")
+        query_parts.append(f"Pronunciation rules:\n{TTS_PRONUNCIATION_INSTRUCTIONS}")
         # stated as a default so a station can still ask for another language in its instructions
         query_parts.append(
             "Unless the program instructions ask for another language, write the output "
-            f"in the language matching the locale '{self.mass.metadata.locale}'."
+            f"in the language matching the locale '{language or self.mass.metadata.locale}'."
         )
         if web_mode == "force":
             query_parts.append(
@@ -1556,107 +1233,53 @@ class AIRadioRuntimeMixin:
             f"Task: Write one concise spoken radio section.\n\n{prompt}\n\nReturn plain text only."
         )
         query = "\n\n".join(query_parts)
-        plugin = self._get_ai_plugin()
+        engine = await self._get_ai_engine()
         self.logger.debug(
-            "AI query prepared: plugin=%s web_mode=%s query_chars=%d",
-            plugin.instance_id,
+            "AI query prepared: engine=%s web_mode=%s query_chars=%d",
+            engine.uid,
             web_mode,
             len(query),
         )
         try:
-            response = await plugin.ai_query(query)
+            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                response = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            if isinstance(err, TimeoutError) and query_timeout.expired():
+                raise MusicAssistantError(
+                    f"AI engine '{engine.uid}' did not respond within {AI_QUERY_TIMEOUT_SECONDS}s"
+                ) from err
             error_name = err.__class__.__name__
             error_text = str(err).strip()
             if error_name == "NotConnected":
                 raise MusicAssistantError(
-                    "AI provider "
-                    f"'{plugin.instance_id}' is not connected. Reconnect the provider "
+                    "AI engine "
+                    f"'{engine.uid}' is not connected. Reconnect the provider "
                     "(for example Home Assistant) and retry."
                 ) from err
             details = error_text or error_name
-            raise MusicAssistantError(
-                f"AI provider '{plugin.instance_id}' query failed: {details}"
-            ) from err
+            raise MusicAssistantError(f"AI engine '{engine.uid}' query failed: {details}") from err
         if not response or not str(response).strip():
             raise MusicAssistantError(
-                f"AI provider '{plugin.instance_id}' returned an empty response for section text"
+                f"AI engine '{engine.uid}' returned an empty response for section text"
             )
         text = str(response).strip()
         self.logger.debug(
-            "AI query response received: plugin=%s chars=%d",
-            plugin.instance_id,
+            "AI query response received: engine=%s chars=%d",
+            engine.uid,
             len(text),
         )
         return text
 
-    async def _render_tts(self, text: str, section_name: str) -> tuple[str, int]:
-        """Render text to a playable URI using the configured TTS plugin feature."""
-        plugin = self._get_tts_plugin()
-        self.logger.debug(
-            "TTS render prepared: plugin=%s text_chars=%d", plugin.instance_id, len(text)
+    async def _get_ai_engine(self) -> AIEngine:
+        """Return the engine used for AI_QUERY tasks, honouring the configured selection."""
+        selected = cast("str | None", self.get_setup_value(CONF_AI_ENGINE))
+        if engine := await resolve_ai_engine(self.mass, selected):
+            return engine
+        raise MusicAssistantError(
+            "No AI engine available. Set up a plugin that provides AI (for example Home "
+            "Assistant with an ai_task entity) and select it in the AI Radio settings."
         )
-        stream_details = await plugin.get_tts_message(text)
-        uri = str(getattr(stream_details, "path", "") or "").strip()
-        if not uri:
-            raise MusicAssistantError(
-                f"TTS provider '{plugin.instance_id}' returned no direct stream path "
-                "in StreamDetails.path"
-            )
-        if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-            builtin_provider = self.mass.get_provider("builtin")
-            builtin_instance_id = str(getattr(builtin_provider, "instance_id", "") or "").strip()
-            duration = await self._warm_builtin_duration_cache(builtin_provider, uri, section_name)
-            wrapped = create_uri(MediaType.SOUND_EFFECT, builtin_instance_id or "builtin", uri)
-            return wrapped, duration
-        return uri, 0
-
-    async def _warm_builtin_duration_cache(
-        self, builtin_provider: Any, url: str, section_name: str
-    ) -> int:
-        """
-        Force-decode duration, set a friendly title, prefill builtin's cache.
-
-        Returns the resolved duration in seconds, or 0 if unknown. Without this,
-        ffprobe of HA tts_proxy URLs returns no duration and the builtin provider
-        classifies the item as Radio, breaking auto-advance.
-        """
-        if builtin_provider is None:
-            return 0
-        try:
-            tags = await async_parse_tags(url, require_duration=True)
-        except (InvalidDataError, OSError) as err:
-            self.logger.warning("Could not pre-compute TTS section duration for %s: %s", url, err)
-            return 0
-        format_block = tags.raw.setdefault("format", {})
-        if tags.duration:
-            format_block["duration"] = str(tags.duration)
-        format_tags = format_block.setdefault("tags", {})
-        format_tags.setdefault("title", section_name)
-        format_tags.setdefault("artist", "AI Radio")
-        await self.mass.cache.set(
-            url,
-            tags.raw,
-            provider=str(getattr(builtin_provider, "instance_id", "") or "builtin"),
-            category=CACHE_CATEGORY_MEDIA_INFO,
-        )
-        return int(tags.duration or 0)
-
-    def _get_ai_plugin(self) -> PluginProvider:
-        """Return the plugin used for AI_QUERY tasks."""
-        plugins = cast(
-            "list[PluginProvider]",
-            self.mass.get_providers_supporting_feature(
-                ProviderFeature.AI_QUERY,
-                priority=(ProviderType.PLUGIN,),
-            ),
-        )
-        if not plugins:
-            raise MusicAssistantError(
-                "No AI provider available. Configure a plugin with ProviderFeature.AI_QUERY "
-                "(for example Home Assistant with an ai_task entity)."
-            )
-        return plugins[0]
 
     async def _stop_session_queue(self, session: SessionState) -> None:
         """Stop playback of the queue a run was playing on."""
@@ -1671,18 +1294,20 @@ class AIRadioRuntimeMixin:
         except MusicAssistantError as err:
             self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
-    def _get_tts_plugin(self) -> PluginProvider:
-        """Return the plugin used for TTS tasks."""
-        plugins = cast(
-            "list[PluginProvider]",
-            self.mass.get_providers_supporting_feature(
-                ProviderFeature.TTS,
-                priority=(ProviderType.PLUGIN,),
-            ),
-        )
-        if not plugins:
-            raise MusicAssistantError(
-                "No TTS provider available. Configure a plugin with ProviderFeature.TTS "
-                "(for example Home Assistant with a TTS entity)."
+    async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
+        """Return the engine used for TTS tasks, preferring a host-specific engine_uid."""
+        if engine_uid:
+            if engine := await resolve_tts_engine(self.mass, engine_uid):
+                return engine
+            self.logger.warning(
+                "Host TTS engine %s is unavailable, falling back to the provider default",
+                engine_uid,
             )
-        return plugins[0]
+        selected = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
+        if engine := await resolve_tts_engine(self.mass, selected):
+            return engine
+        raise MusicAssistantError(
+            "No text-to-speech engine available. Set up a plugin that provides text-to-speech "
+            "(for example Home Assistant with a TTS entity) and select it in the AI Radio "
+            "settings."
+        )

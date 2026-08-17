@@ -64,10 +64,12 @@ from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
+    SHUFFLE_INTENT_WINDOW,
 )
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
+    is_dynamic_source,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
@@ -252,6 +254,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
         queue.shuffle_enabled = shuffle_enabled
+        # remember the moment the user asked for shuffle, so media started right after this
+        # keeps it instead of being reset by the "fresh queue plays in order" default. Monotonic
+        # because only the elapsed interval matters, and a host whose clock is corrected while
+        # MA runs (a Pi without an RTC syncing after boot) would otherwise age it wrongly.
+        self._queue_data[queue_id].shuffle_set_at = time.monotonic() if shuffle_enabled else None
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue_items = self._queue_data[queue_id].items
         cur_index = (
@@ -475,6 +482,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         start_item: PlayableMediaItemType | str | None = None,
         sort_by: str | None = None,
         start_from_beginning: bool = False,
+        shuffle: bool | None = None,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -488,13 +496,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_by: Optional sort key to order tracks before applying start_item.
         :param start_from_beginning: Start a podcast episode at position 0, ignoring any
             saved resume position. The stored progress itself is left untouched.
+        :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
+            options that start playing right away (play/replace), and never to a dynamic source
+            (an always-on smart mix). Omit to let the queue decide: it keeps shuffle when the user
+            just switched it on, and plays the media in order otherwise.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
-            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning
+            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning, shuffle
         )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
@@ -579,21 +591,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
-        """Clear all items in the queue."""
-        queue = self._queue_data[queue_id].queue
-        self.mass.streams.audio_processing.clear(queue_id)
-        self.store_sources(queue, [])
-        queue.is_dynamic = False
-        queue.ended = False
-        if queue.state != PlaybackState.IDLE and not skip_stop:
-            self.mass.create_task(self.stop(queue_id))
-        queue.current_index = None
-        queue.current_item = None
-        queue.elapsed_time = 0
-        queue.elapsed_time_last_updated = time.time()
-        queue.index_in_buffer = None
-        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
-        self.update_items(queue_id, [])
+        """Clear all items in the queue, switching shuffle off with them."""
+        self._clear(queue_id, skip_stop)
+        # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
+        # the discarded content must not carry over into whatever is played next
+        self._reset_shuffle(queue_id)
 
     def mark_ended(self, queue_id: str) -> None:
         """
@@ -610,7 +612,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = queue_data.queue
         if not queue_data.items:
             # nothing to replay, so there is nothing to advertise as finished either
-            self.clear(queue_id)
+            self._clear(queue_id)
             return
         self.mass.streams.audio_processing.clear(queue_id)
         queue.ended = True
@@ -862,6 +864,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Can not seek outside of duration range.")
         if queue.current_index is None:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no current index.")
+        # Publish the seek target before rebuilding the stream to prevent progress snapback.
+        queue.elapsed_time = position
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume", required_scope=Scope.QUEUES_CONTROL)
@@ -951,6 +957,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
+            queue_data.flow_queue_exhausted = None
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -968,7 +975,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 and (queue_item := self.get_item(queue_id, index))
                 and (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0))
             ):
-                seek_position = max(0, int((resume_position_ms - 500) / 1000))
+                # the client may have fetched the item before its duration was known
+                await self._restore_probed_duration(queue_item)
+                if queue_item.duration or getattr(queue_item.media_item, "duration", 0):
+                    seek_position = max(0, int((resume_position_ms - 500) / 1000))
+                else:
+                    # seeking needs a duration, which is determined while streaming
+                    self.logger.debug(
+                        "Can not resume %s at %ss: its duration is not known (yet)",
+                        queue_item.name,
+                        int(resume_position_ms / 1000),
+                    )
 
             # restore the persisted playback speed for a freshly queued audiobook/episode
             # (an in-session item already carries its speed in extra_attributes)
@@ -1120,6 +1137,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        # The shuffle intent moves with the flag it was recorded for, or the target would judge the
+        # transferred shuffle against a stamp left over from its own previous content. It is good
+        # for one play, so it is taken off the source rather than copied: the gesture followed the
+        # queue to its new player and must not shuffle whatever is started here next.
+        source_data = self._queue_data[source_queue_id]
+        self._queue_data[target_queue_id].shuffle_set_at = source_data.shuffle_set_at
+        source_data.shuffle_set_at = None
         target_queue.crossfade_enabled = source_queue.crossfade_enabled
         # refresh the derived smart-fades indicator for the target's own config/availability
         target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
@@ -1138,7 +1162,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if source_current_item:
             target_queue.current_item = source_current_item
             target_queue.current_item.queue_id = target_queue_id
-        self.clear(source_queue_id, skip_stop=True)
+        self._clear(source_queue_id, skip_stop=True)
 
         await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
         for item in source_items:
@@ -1273,23 +1297,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"save_queue_cache_{player_id}")
         self._set_transitioning(player_id, False)
         if permanent:
-            # if the player is permanently removed, we also remove the cached queue data
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                )
-            )
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
-                )
-            )
+            self.purge_saved_queue(player_id)
         self._queue_data.pop(player_id, None)
         self._managed_pool.forget(player_id)
+
+    def purge_saved_queue(self, queue_id: str) -> None:
+        """Delete the persisted state and items of the given queue."""
+        for category in (CACHE_CATEGORY_PLAYER_QUEUE_STATE, CACHE_CATEGORY_PLAYER_QUEUE_ITEMS):
+            # a removal runs both the player teardown and the config cleanup, so keep the
+            # delete to one task per category instead of one per caller
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=queue_id,
+                    provider=self.domain,
+                    category=category,
+                ),
+                task_id=f"purge_saved_queue_{queue_id}_{category}",
+            )
 
     async def load_next_queue_item(
         self,
@@ -1370,7 +1394,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if current_index is not None:
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
-    def queue_buffer_completed(self, queue_id: str) -> None:
+    def queue_buffer_completed(self, queue_id: str, queue_exhausted: bool) -> None:
         """
         Call when the flow stream has finished generating all audio data for a queue.
 
@@ -1381,6 +1405,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         items have been added to the queue in the meantime, resuming playback if so.
 
         :param queue_id: The queue ID.
+        :param queue_exhausted: Whether the flow ended because the queue ran out of items,
+            as opposed to ending early to restart on a format change or a live item.
         """
         queue = self.get(queue_id)
         if not queue:
@@ -1393,6 +1419,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # record so player providers can detect flow EOF without an idle report
         if original_session_id is not None:
             queue_data.flow_buffer_completed = original_session_id
+            if queue_exhausted:
+                queue_data.flow_queue_exhausted = original_session_id
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
@@ -1438,6 +1466,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_data is None or queue_data.session_id is None:
             return False
         return queue_data.flow_buffer_completed == queue_data.session_id
+
+    def flow_queue_exhausted(self, queue_id: str, session_id: str) -> bool:
+        """
+        Return whether the given flow stream session played the queue to its end.
+
+        False while a session is still streaming, and for a flow stream that ended early
+        to be restarted (a format change or a live item), where the player is expected to
+        pick up the next stream right away.
+
+        :param queue_id: The queue ID.
+        :param session_id: The stream session to check.
+        """
+        queue_data = self.queue_data_or_none(queue_id)
+        if queue_data is None or queue_data.session_id != session_id:
+            return False
+        return queue_data.flow_queue_exhausted == session_id
 
     # Main queue manipulation methods
 
@@ -1562,6 +1606,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
 
+    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic source (a dynamic playlist or radio station).
+
+        :param item: The dynamic playlist or radio station to fetch the next batch for.
+        """
+        return await self._media_resolver.get_dynamic_source_tracks(item)
+
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
         return self._smart_shuffle.windows()
@@ -1573,12 +1625,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_item: The queue item to create media from.
         """
         queue_data = self._queue_data[queue_item.queue_id]
+        stream_duration: int | None = None
         if queue_item.streamdetails:
             # prefer netto duration
-            # when seeking, the player only receives the remaining duration
             duration = queue_item.streamdetails.duration or queue_item.duration
             if duration and queue_item.streamdetails.seek_position:
-                duration = int(duration - queue_item.streamdetails.seek_position)
+                # the audio handed to the player starts at the seek position, so it is
+                # shorter than the media item itself. seeking to (or past) the end
+                # leaves no stream to describe, so the full length is kept instead.
+                remaining = int(duration - queue_item.streamdetails.seek_position)
+                stream_duration = remaining if remaining > 0 else None
         else:
             duration = queue_item.duration
         if queue_data.session_id is None:
@@ -1589,6 +1645,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             title=queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
+            stream_duration=stream_duration,
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
             custom_data={
@@ -1644,13 +1701,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._queue_data[queue.queue_id].source_items = items
         # keep every occurrence server-side (a source added more than once weights it up in the
         # managed pool), but expose only the distinct container sources on the wire for clients to
-        # show. Individual items (tracks, radio streams, podcast episodes, ...) are omitted; see
+        # show. Individual items (tracks, live radio streams, podcast episodes, ...) are omitted; see
         # `_WIRE_SOURCE_MEDIA_TYPES`. Autoplay/pool refill reads the full `source_items` above, not
         # this projected list, so it is unaffected.
         seen: set[str] = set()
         sources: list[ItemMapping] = []
         for item in items:
-            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES:
+            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES and not is_dynamic_source(item):
                 continue
             mapping = ItemMapping.from_item(item)
             if mapping.uri and mapping.uri in seen:
@@ -1736,3 +1793,87 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
+
+    def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
+        """Drop the queue's items and playback position, leaving user settings untouched."""
+        queue = self._queue_data[queue_id].queue
+        self.mass.streams.audio_processing.clear(queue_id)
+        self.store_sources(queue, [])
+        if queue.is_dynamic:
+            # Dynamic sources impose shuffle, so clearing the source clears that shuffle too.
+            queue.shuffle_enabled = False
+        queue.is_dynamic = False
+        # dropping the dynamic source changes what smart shuffle resolves to, so the derived
+        # flag has to follow or clients keep showing a smart mix on a plain queue
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        queue.ended = False
+        if queue.state != PlaybackState.IDLE and not skip_stop:
+            self.mass.create_task(self.stop(queue_id))
+        queue.current_index = None
+        queue.current_item = None
+        queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
+        queue.index_in_buffer = None
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+        self.update_items(queue_id, [])
+
+    def _reset_shuffle(self, queue_id: str) -> None:
+        """Switch shuffle off and drop any pending shuffle intent."""
+        queue_data = self._queue_data[queue_id]
+        queue_data.shuffle_set_at = None
+        queue = queue_data.queue
+        if not queue.shuffle_enabled:
+            return
+        queue.shuffle_enabled = False
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        self.signal_update(queue_id)
+
+    async def _apply_shuffle_intent(
+        self, queue_id: str, option: QueueOption, shuffle: bool | None
+    ) -> None:
+        """
+        Settle the queue's shuffle state for a play command before its items are resolved.
+
+        :param queue_id: The queue the media is played on.
+        :param option: The enqueue option this command resolved to.
+        :param shuffle: Explicit shuffle request from the caller; None to derive it.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        if option == QueueOption.REPLACE_NEXT and queue.is_dynamic:
+            # The one staging option that replaces the queue's sources, so the smart mix may be on
+            # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
+            # locked), so it must not outlive the source that imposed it. Recorded directly, as in
+            # the still-dynamic case below: the state is provisional until the sources are known,
+            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic. The
+            # intent goes with it, or a play soon after would resurrect a shuffle the queue's own
+            # toggle now reads as off.
+            queue.shuffle_enabled = False
+            queue_data.shuffle_set_at = None
+            return
+        if option not in (QueueOption.PLAY, QueueOption.REPLACE):
+            # only the options that start playing the media right away are a new listening
+            # session; staging items for later leaves the queue's shuffle state alone
+            return
+        if shuffle is None:
+            # Without an explicit request, shuffle only carries over when the user asked for it
+            # moments ago: starting an album is otherwise expected to play it in track order,
+            # regardless of what the previous listening session left switched on.
+            shuffle = (
+                queue_data.shuffle_set_at is not None
+                and (time.monotonic() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
+            )
+        if queue.shuffle_enabled != shuffle:
+            if queue.is_dynamic:
+                # set_shuffle refuses a queue that is still a smart mix, but the media being
+                # started may well replace that dynamic source - and the items are resolved
+                # against this flag. Record the requested state directly: should the queue stay
+                # dynamic, `_enter_dynamic_mode` forces shuffle back on further down.
+                queue.shuffle_enabled = shuffle
+            else:
+                # routed through set_shuffle so switching shuffle off also restores the order of
+                # the items that stay in the queue: a play keeps them, and a tail left in shuffled
+                # order behind a queue that now reads unshuffled would contradict its own flag
+                await self.set_shuffle(queue_id, shuffle)
+        # the intent belongs to this play command alone, whether or not it changed anything
+        queue_data.shuffle_set_at = None

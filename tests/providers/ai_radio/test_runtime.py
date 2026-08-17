@@ -3,30 +3,48 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.enums import (
+    EventType,
     MediaType,
     PlaybackState,
     ProviderFeature,
     ProviderType,
-    TaskStatus,
 )
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import SoundEffect
+from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.helpers.datetime import now as host_now
-from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
-from music_assistant.helpers.uri import create_uri
-from music_assistant.providers.ai_radio.models import AudioSection, SessionState, Slot
+from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
+from music_assistant.providers.ai_radio import runtime as runtime_module
+from music_assistant.providers.ai_radio.constants import (
+    ATTR_HOST_ID,
+    ATTR_MAX_CHARS,
+    ATTR_PROMPT,
+    ATTR_SESSION_ID,
+    ATTR_STATION_ID,
+    ATTR_WEB_SEARCH_MODE,
+    CONF_AI_ENGINE,
+    CONF_TTS_ENGINE,
+    CONF_WEATHER_PROVIDER,
+    TTS_PRONUNCIATION_INSTRUCTIONS,
+)
+from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
+from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
+from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
 class StubConfig:
@@ -44,33 +62,47 @@ class StubConfig:
 class DummyRuntime(AIRadioRuntimeMixin):
     """Minimal runtime harness for testing mixin behavior."""
 
-    def __init__(self) -> None:
+    def __init__(self, setup_values: dict[str, Any] | None = None) -> None:
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
+        self._sections: dict[str, dict[str, Any]] = {}
         self.config = cast("Any", StubConfig())
+        self.instance_id = "ai_radio_test"
+        self.domain = "ai_radio"
+        self._setup_values = setup_values or {}
 
-    async def _run_playlist_mode(
-        self,
-        session: SessionState,
-        station: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Return a successful playlist-mode result."""
-        return {"ok": True}
+    def get_setup_value(self, key: str, default: Any = None) -> Any:
+        """Return the stubbed setup flow value for key, or default when absent."""
+        return self._setup_values.get(key, default)
 
-    async def _run_dynamic_mode(
-        self,
-        session: SessionState,
-        station: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Return a successful dynamic-mode result."""
-        return {"ok": True}
+    def _schedule_replan(self, queue_id: str) -> None:
+        """No-op stand-in for the queue DJ mixin's replan scheduling."""
+
+    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+        """No-op stand-in for the queue DJ mixin's set_queue_dj."""
+        return {}
+
+    def _materialize_sections(
+        self, section_ids: list[str], sections_map: dict[str, dict[str, Any]] | None = None
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Resolve section ids against self._sections, mirroring the storage mixin."""
+        source = self._sections if sections_map is None else sections_map
+        sections: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for section_id in section_ids:
+            section = source.get(section_id)
+            if section is None:
+                missing.append(section_id)
+                continue
+            sections.append(deepcopy(section))
+        return sections, missing
 
 
 class FailingRuntime(DummyRuntime):
-    """Runtime harness that forces playlist execution failure."""
+    """Runtime harness that forces show execution failure."""
 
-    async def _run_playlist_mode(
+    async def _run_show(
         self,
         session: SessionState,
         station: dict[str, Any],
@@ -84,10 +116,61 @@ def _set_runtime_mass(runtime: AIRadioRuntimeMixin, mass: Any) -> None:
     cast("Any", runtime).mass = mass
 
 
+def _create_ai_plugin(instance_id: str, *engine_ids: str) -> MagicMock:
+    """Create a mock plugin provider exposing the given AI engines."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.get_ai_engines = AsyncMock(
+        return_value=[
+            AIEngine(id=engine_id, name=engine_id, provider=provider) for engine_id in engine_ids
+        ]
+    )
+    return provider
+
+
+def _create_tts_plugin(instance_id: str, *engine_ids: str) -> MagicMock:
+    """Create a mock plugin provider exposing the given TTS engines."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.get_tts_engines = AsyncMock(
+        return_value=[
+            TTSEngine(id=engine_id, name=engine_id, provider=provider) for engine_id in engine_ids
+        ]
+    )
+    return provider
+
+
+def _create_engine_mass(feature: ProviderFeature, *providers: Any, **attrs: Any) -> Any:
+    """Create a lightweight mass stand-in serving the given plugins for one feature."""
+
+    class DummyMass:
+        def get_providers_supporting_feature(
+            self,
+            requested: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
+            return list(providers) if requested == feature else []
+
+    mass = DummyMass()
+    for key, value in attrs.items():
+        setattr(mass, key, value)
+    return mass
+
+
 async def test_run_session_sets_completed_and_logs(caplog: Any) -> None:
     """Complete a session and emit start/completion logs."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="s1", station_id="station_a", mode="playlist")
+
+    class SuccessfulRuntime(DummyRuntime):
+        async def _run_show(
+            self,
+            session: SessionState,
+            station: dict[str, Any],
+        ) -> dict[str, Any]:
+            """Return a successful show run result."""
+            return {"ok": True}
+
+    runtime = SuccessfulRuntime()
+    session = SessionState(session_id="s1", station_id="station_a")
     runtime._sessions[session.session_id] = session
 
     with caplog.at_level(logging.INFO):
@@ -102,7 +185,7 @@ async def test_run_session_sets_completed_and_logs(caplog: Any) -> None:
 async def test_run_session_sets_failed_state(caplog: Any) -> None:
     """Fail a session and keep the error message in state."""
     runtime = FailingRuntime()
-    session = SessionState(session_id="s2", station_id="station_b", mode="playlist")
+    session = SessionState(session_id="s2", station_id="station_b")
     runtime._sessions[session.session_id] = session
 
     with caplog.at_level(logging.ERROR):
@@ -119,7 +202,7 @@ async def test_run_session_sets_failed_state_with_empty_exception_message() -> N
         """Exception with empty default message."""
 
     class EmptyFailingRuntime(DummyRuntime):
-        async def _run_playlist_mode(
+        async def _run_show(
             self,
             session: SessionState,
             station: dict[str, Any],
@@ -127,7 +210,7 @@ async def test_run_session_sets_failed_state_with_empty_exception_message() -> N
             raise EmptyError
 
     runtime = EmptyFailingRuntime()
-    session = SessionState(session_id="s2b", station_id="station_b", mode="playlist")
+    session = SessionState(session_id="s2b", station_id="station_b")
     runtime._sessions[session.session_id] = session
 
     await runtime._run_session(session.session_id, {"id": "station_b"})
@@ -140,7 +223,7 @@ async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> No
     """Mark session as stopped when runtime execution is cancelled."""
 
     class CancelledRuntime(DummyRuntime):
-        async def _run_playlist_mode(
+        async def _run_show(
             self,
             session: SessionState,
             station: dict[str, Any],
@@ -148,7 +231,7 @@ async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> No
             raise asyncio.CancelledError
 
     runtime = CancelledRuntime()
-    session = SessionState(session_id="s3", station_id="station_c", mode="playlist")
+    session = SessionState(session_id="s3", station_id="station_c")
     runtime._sessions[session.session_id] = session
 
     with caplog.at_level(logging.INFO), suppress(asyncio.CancelledError):
@@ -156,6 +239,27 @@ async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> No
 
     assert session.status == "stopped"
     assert any("AI Radio run cancelled" in message for message in caplog.messages)
+
+
+async def test_run_session_reschedules_a_replan_for_the_session_queue() -> None:
+    """Re-arm the queue DJ for the session's queue once its show session ends."""
+
+    class ReplanTrackingRuntime(FailingRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.replanned_queue_ids: list[str] = []
+
+        def _schedule_replan(self, queue_id: str) -> None:
+            self.replanned_queue_ids.append(queue_id)
+
+    runtime = ReplanTrackingRuntime()
+    session = SessionState(session_id="s4", station_id="station_d")
+    session.queue_id = "queue_1"
+    runtime._sessions[session.session_id] = session
+
+    await runtime._run_session(session.session_id, {"id": "station_d"})
+
+    assert runtime.replanned_queue_ids == ["queue_1"]
 
 
 async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: Any) -> None:
@@ -170,15 +274,111 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
             }
         ],
         "section_order": [],
-        "general": {"weather_provider": "unsupported_provider"},
     }
-    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    runtime.config = cast(
+        "Any",
+        StubConfig(
+            {
+                "weather_city": "Berlin",
+                "weather_country": "DE",
+                CONF_WEATHER_PROVIDER: "unsupported_provider",
+            }
+        ),
+    )
 
     with caplog.at_level(logging.WARNING):
         tokens = await runtime._prepare_runtime_tokens(station)
 
     assert tokens == {}
     assert any("Unsupported weather provider" in message for message in caplog.messages)
+
+
+def _weather_program() -> dict[str, Any]:
+    """Return a program whose only section references the hourly weather token."""
+    return {
+        "sections": [
+            {
+                "id": "Weather_Short",
+                "type": "ai_text",
+                "prompt": "Forecast: <weather_hourly>",
+            }
+        ],
+        "section_order": [],
+    }
+
+
+def _count_weather_fetches(runtime: DummyRuntime) -> list[str]:
+    """Replace the forecast lookup with a stub and return the list it records into."""
+    fetches: list[str] = []
+
+    async def _fetch(city: str, **_kwargs: Any) -> tuple[str, str]:
+        fetches.append(city)
+        return "12 degrees", "mild"
+
+    runtime._fetch_open_meteo_weather = _fetch  # type: ignore[method-assign, assignment]
+    return fetches
+
+
+async def test_prepare_runtime_tokens_reuses_the_cached_weather_within_the_ttl() -> None:
+    """A second pass inside the cache window reuses the tokens instead of refetching."""
+    runtime = DummyRuntime()
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    fetches = _count_weather_fetches(runtime)
+
+    first = await runtime._prepare_runtime_tokens(_weather_program())
+    second = await runtime._prepare_runtime_tokens(_weather_program())
+
+    assert first == {"<weather_hourly>": "12 degrees", "<weather_daily>": "mild"}
+    assert second == first
+    assert fetches == ["Berlin"]
+
+
+async def test_prepare_runtime_tokens_refetches_the_weather_once_the_ttl_expired() -> None:
+    """An expired cache entry is refetched rather than served stale forever."""
+    runtime = DummyRuntime()
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    fetches = _count_weather_fetches(runtime)
+
+    await runtime._prepare_runtime_tokens(_weather_program())
+    assert runtime._weather_tokens_cache is not None
+    fetched_at, tokens = runtime._weather_tokens_cache
+    runtime._weather_tokens_cache = (
+        fetched_at - runtime_module.WEATHER_TOKENS_CACHE_SECONDS - 1,
+        tokens,
+    )
+    await runtime._prepare_runtime_tokens(_weather_program())
+
+    assert fetches == ["Berlin", "Berlin"]
+
+
+def test_weather_strings_are_rounded_to_whole_numbers() -> None:
+    """A host reads the forecast out loud, so it says 19 degrees and never 19.2."""
+    runtime = DummyRuntime()
+    payload = {
+        "current": {
+            "time": "2026-08-10T09:00",
+            "temperature_2m": 19.2,
+            "apparent_temperature": 18.7,
+        },
+        "hourly": {
+            "time": ["2026-08-10T09:00", "2026-08-10T10:00"],
+            "temperature_2m": [19.2, 20.6],
+            "precipitation_probability": [12.4, 0],
+        },
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_min": [11.4],
+            "temperature_2m_max": [21.49],
+            "precipitation_probability_max": [30.6],
+        },
+    }
+
+    hourly, daily = runtime._format_weather_strings(payload)
+
+    assert hourly == (
+        "now 19C (feels 19C); 2026-08-10 09:00: 19C, rain 12%; 2026-08-10 10:00: 21C, rain 0%"
+    )
+    assert daily == "2026-08-10: 11-21C, rain 31%"
 
 
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
@@ -193,7 +393,6 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
             }
         ],
         "section_order": [],
-        "general": {"weather_provider": "open_meteo"},
     }
     runtime.config = cast("Any", StubConfig({"weather_city": "", "weather_country": "DE"}))
 
@@ -277,8 +476,9 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
     ]
 
     planned, _history = runtime._plan_sections(
+        session_id="sess",
         tracks=tracks,
-        station=station,
+        program=station,
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -289,923 +489,1067 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
     assert planned == []
 
 
-async def test_render_tts_converts_raw_http_path_to_builtin_sound_effect_uri() -> None:
-    """Wrap raw TTS HTTP paths as builtin sound effect URIs for queue progression."""
-
-    class DummyStreamDetails:
-        def __init__(self, path: str) -> None:
-            self.path = path
-
-    class DummyTTSPlugin:
-        instance_id = "hass_1"
-
-        async def get_tts_message(self, message: str) -> DummyStreamDetails:
-            return DummyStreamDetails("http://example.test/api/tts_proxy/abc123.mp3")
-
-    class DummyMass:
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.TTS:
-                return [DummyTTSPlugin()]
-            return []
-
-        def get_provider(self, provider: str) -> Any:
-            if provider == "builtin":
-
-                class DummyBuiltinProvider:
-                    instance_id = "builtin_1"
-
-                return DummyBuiltinProvider()
-            return None
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-    runtime._warm_builtin_duration_cache = AsyncMock(return_value=11)  # type: ignore[method-assign]
-
-    uri, duration = await runtime._render_tts("hello world", "Test Section")
-
-    assert uri == create_uri(
-        MediaType.SOUND_EFFECT,
-        "builtin_1",
-        "http://example.test/api/tts_proxy/abc123.mp3",
-    )
-    assert duration == 11
-    runtime._warm_builtin_duration_cache.assert_awaited_once()
-
-
 async def test_generate_text_wraps_not_connected_error() -> None:
-    """Raise an actionable MusicAssistantError when AI provider is disconnected."""
+    """Raise an actionable MusicAssistantError when the AI engine is disconnected."""
 
     class NotConnected(Exception):
         """Match hass_client NotConnected exception name."""
 
-    class DummyAIPlugin:
-        instance_id = "hass_1"
-
-        async def ai_query(self, query: str) -> str:
-            raise NotConnected
-
-    class DummyMass:
-        metadata = SimpleNamespace(locale="en_US")
-
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.AI_QUERY:
-                return [DummyAIPlugin()]
-            return []
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=NotConnected)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
     assert "not connected" in str(error.value).lower()
-    assert "hass_1" in str(error.value)
+    assert "hass_1/ai_task.default" in str(error.value)
+
+
+async def test_generate_text_fails_the_section_when_the_engine_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled AI engine fails the section instead of hanging the session."""
+    monkeypatch.setattr("music_assistant.providers.ai_radio.runtime.AI_QUERY_TIMEOUT_SECONDS", 0.01)
+
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.sleep(5)
+        return "section text"
+
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=_answers_too_late)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    with pytest.raises(MusicAssistantError) as error:
+        await runtime._generate_text(
+            instructions="test",
+            prompt="test prompt",
+            web_mode="disabled",
+        )
+    assert "did not respond within" in str(error.value)
+
+
+async def test_generate_text_reports_an_engine_side_timeout_as_a_query_failure() -> None:
+    """A timeout raised by the engine itself is reported as a query failure, not our cap."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=TimeoutError)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    with pytest.raises(MusicAssistantError) as error:
+        await runtime._generate_text(
+            instructions="test",
+            prompt="test prompt",
+            web_mode="disabled",
+        )
+    assert "query failed: TimeoutError" in str(error.value)
 
 
 async def test_generate_text_asks_for_the_system_locale_language() -> None:
     """The AI query states the server locale so sections are written in that language."""
-    captured: list[str] = []
-
-    class DummyAIPlugin:
-        instance_id = "hass_1"
-
-        async def ai_query(self, query: str) -> str:
-            captured.append(query)
-            return "section text"
-
-    class DummyMass:
-        metadata = SimpleNamespace(locale="nl_NL")
-
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.AI_QUERY:
-                return [DummyAIPlugin()]
-            return []
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
 
     await runtime._generate_text(
-        station={"general": {"instructions": "test"}},
+        instructions="test",
         prompt="test prompt",
         web_mode="disabled",
     )
 
-    assert "nl_NL" in captured[0]
+    assert "nl_NL" in plugin.ai_query.await_args.args[0]
+    assert plugin.ai_query.await_args.kwargs == {"engine_id": "ai_task.default"}
 
 
-def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
-    """Compose builtin M3U items without relying on provider-side title parsing."""
-
-    class DummyProvider:
-        domain = "builtin"
-        instance_id = "builtin_1"
-
-    class DummyMass:
-        def get_provider(self, provider: str) -> Any:
-            if provider in {"builtin", "builtin_1"}:
-                return DummyProvider()
-            return None
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-    section_url = "http://example.test/api/tts_proxy/section-random-id.mp3"
-    source_item = PlaylistItem(
-        path=create_uri(MediaType.TRACK, "library", "123"),
-        title="Artist - Song",
-        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+async def test_generate_text_prefers_the_hosts_language_over_the_system_locale() -> None:
+    """An explicit host language wins over the server locale in the AI query."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
     )
 
-    items, track_count = runtime._compose_builtin_playlist_items(
-        tracks=[
+    await runtime._generate_text(
+        instructions="test",
+        prompt="test prompt",
+        web_mode="disabled",
+        language="fr_FR",
+    )
+
+    assert "fr_FR" in plugin.ai_query.await_args.args[0]
+    assert "nl_NL" not in plugin.ai_query.await_args.args[0]
+
+
+async def test_generate_text_falls_back_to_the_system_locale_when_language_is_empty() -> None:
+    """An unset host language keeps asking for the server locale, exactly as before."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
+
+    await runtime._generate_text(
+        instructions="test",
+        prompt="test prompt",
+        web_mode="disabled",
+        language="",
+    )
+
+    assert "nl_NL" in plugin.ai_query.await_args.args[0]
+
+
+@pytest.mark.parametrize("general", [{"instructions": "Host personality: minimal DJ."}, {}])
+async def test_generate_text_always_states_the_pronunciation_rules(
+    general: dict[str, Any],
+) -> None:
+    """Every query carries the TTS pronunciation rules, with or without station instructions."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    await runtime._generate_text(
+        instructions=str(general.get("instructions", "")), prompt="test prompt", web_mode="allow"
+    )
+
+    assert TTS_PRONUNCIATION_INSTRUCTIONS in plugin.ai_query.await_args.args[0]
+
+
+def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
+    """Static track placeholders resolve at plan time; time and weather stay deferred."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+    slot = Slot(
+        when="between_songs",
+        at_index=1,
+        prev_index=0,
+        next_index=1,
+        very_next_index=None,
+        minute_mark=3.3,
+    )
+
+    static, deferred = runtime._resolve_placeholders(
+        program={},
+        tracks=tracks,
+        slot=slot,
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert static["<prev_songinfo>"] == "A - One"
+    assert static["<next_songinfo>"] == "B - Two"
+    assert "<timestamp>" not in static
+    assert "<weather_hourly>" not in static
+    assert deferred["<weather_hourly>"] == "12 degrees"
+    assert "<timestamp>" in deferred
+
+
+def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:
+    """A planned section's prompt keeps its deferred tokens verbatim."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
             {
-                "uri": source_item.path,
-                "name": "Song",
-                "songinfo": "Artist - Song",
-                "duration": 180,
-                "playlist_item": source_item,
+                "id": "Weather",
+                "name": "Weather",
+                "prompt": "It is <timestamp>. Weather: <weather_hourly>. Next: <next_songinfo>.",
+                "constraints": {"max_chars": 300},
+                "web_search": "disabled",
             }
         ],
-        sections=[
-            AudioSection(
-                order=1,
-                section_id="intro",
-                section_name="Intro",
-                insert_at_index=0,
-                uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", section_url),
-            )
-        ],
-    )
-
-    assert track_count == 1
-    assert len(items) == 2
-    assert items[0].title == "Intro"
-    assert items[0].metadata == {
-        "media_type": MediaType.SOUND_EFFECT.value,
-        "name": "Intro",
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Weather"}]}],
     }
-    assert items[0].images
-    assert items[0].images[0].path == runtime._ai_radio_cover_image_path()
-    assert items[0].providers
-    assert items[0].providers[0].domain == "builtin"
-    assert items[0].providers[0].instance_id == "builtin_1"
-    assert items[0].providers[0].item_id == section_url
-    assert items[0].artists
-    assert items[0].artists[0].name == "AI Radio"
-    assert items[1] == source_item
-
-
-def test_section_to_queue_sound_effect_preserves_display_data() -> None:
-    """Build a rich SoundEffect for dynamic-mode queue inserts."""
-
-    class DummyProvider:
-        domain = "builtin"
-        instance_id = "builtin_1"
-
-    class DummyMass:
-        def get_provider(self, provider: str) -> Any:
-            if provider in {"builtin", "builtin_1"}:
-                return DummyProvider()
-            return None
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-    section = AudioSection(
-        order=1,
-        section_id="intro",
-        section_name="Intro",
-        insert_at_index=0,
-        uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", "http://example.test/intro.mp3"),
-        duration=12,
-    )
-
-    item = runtime._section_to_queue_sound_effect(section)
-
-    assert isinstance(item, SoundEffect)
-    assert item.name == "Intro"
-    assert item.duration == 12
-    assert item.provider_mappings
-    mapping = next(iter(item.provider_mappings))
-    assert mapping.provider_domain == "builtin"
-    assert mapping.provider_instance == "builtin_1"
-    assert mapping.item_id == "http://example.test/intro.mp3"
-    assert item.metadata.images
-    assert item.metadata.images[0].path == runtime._ai_radio_cover_image_path()
-
-
-async def test_import_builtin_playlist_preserves_m3u_metadata() -> None:
-    """Import builtin playlist from a fully described M3U payload."""
-
-    class DummyPlaylistsController:
-        def __init__(self) -> None:
-            self.m3u_data = ""
-
-        async def import_playlist(self, m3u_data: str) -> dict[str, str]:
-            self.m3u_data = m3u_data
-            return {"item_id": "42", "name": "AI Radio: Test"}
-
-    class DummyMass:
-        def __init__(self) -> None:
-            self.music = type("DummyMusic", (), {})()
-            self.music.playlists = DummyPlaylistsController()
-
-        def get_provider(self, provider: str) -> None:
-            return None
-
-    runtime = DummyRuntime()
-    mass = DummyMass()
-    _set_runtime_mass(runtime, mass)
-    item = runtime._section_to_playlist_item(
-        AudioSection(
-            order=1,
-            section_id="intro",
-            section_name="Intro",
-            insert_at_index=0,
-            uri=create_uri(MediaType.SOUND_EFFECT, "builtin", "http://example.test/intro.mp3"),
-        )
-    )
-
-    playlist = await runtime._import_builtin_playlist("AI Radio: Test", [item])
-
-    assert playlist == {"item_id": "42", "name": "AI Radio: Test"}
-    assert parse_m3u_playlist_image(mass.music.playlists.m3u_data) == (
-        runtime._ai_radio_cover_image_path()
-    )
-    parsed = parse_m3u(mass.music.playlists.m3u_data)
-    assert parsed[0].title == "Intro"
-    assert parsed[0].metadata == {
-        "media_type": MediaType.SOUND_EFFECT.value,
-        "name": "Intro",
-    }
-    assert parsed[0].images[0].path == runtime._ai_radio_cover_image_path()
-    assert parsed[0].artists
-    assert parsed[0].artists[0].name == "AI Radio"
-
-
-async def test_wait_for_background_task_completion_returns_on_success() -> None:
-    """Return immediately when background task is already successful."""
-
-    class DummyTasks:
-        def get_task(self, task_id: str) -> BackgroundTask:
-            return BackgroundTask(name="add", id=task_id, status=TaskStatus.SUCCESS)
-
-    class DummyMass:
-        tasks = DummyTasks()
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-
-    await runtime._wait_for_background_task_completion("task_1", timeout_seconds=1)
-
-
-async def test_wait_for_background_task_completion_waits_until_success() -> None:
-    """Poll task status until completion."""
-    statuses = [TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.SUCCESS]
-
-    class DummyTasks:
-        def __init__(self) -> None:
-            self._index = 0
-
-        def get_task(self, task_id: str) -> BackgroundTask:
-            status = statuses[self._index]
-            if self._index < len(statuses) - 1:
-                self._index += 1
-            return BackgroundTask(name="add", id=task_id, status=status)
-
-    class DummyMass:
-        tasks = DummyTasks()
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-
-    await runtime._wait_for_background_task_completion("task_2", timeout_seconds=1)
-
-
-def test_compose_entries_returns_correct_source_track_positions() -> None:
-    """_compose_entries returns explicit source-track positions, not substring-derived (C1)."""
-    runtime = DummyRuntime()
     tracks = [
-        {
-            "uri": "library://track/1",
-            "name": "T1",
-            "songinfo": "A - T1",
-            "duration": 180,
-            "playlist_item": None,
-            "item_id": "1",
-            "artist": "A",
-            "index": 0,
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert planned
+    prompt = planned[0].prompt
+    assert "<timestamp>" in prompt
+    assert "<weather_hourly>" in prompt
+    assert "B - Two" in prompt
+
+
+def _weather_guarded_station() -> dict[str, Any]:
+    """Return a station whose only section requires the weather-hourly token to be present."""
+    return {
+        "sections": [
+            {
+                "id": "Weather",
+                "name": "Weather",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Current weather: <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Weather",
+                            "chance": 100,
+                            "guards": {"require_placeholders_present": ["<weather_hourly>"]},
+                        }
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_plan_sections_suppresses_section_when_required_placeholder_is_missing() -> None:
+    """A guarded section plans zero entries when its required placeholder never resolved."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=_weather_guarded_station(),
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={},
+    )
+
+    assert planned == []
+
+
+def test_plan_sections_includes_section_when_required_placeholder_is_present() -> None:
+    """The same guarded section plans normally once its required placeholder resolved."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=_weather_guarded_station(),
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].section_id == "Weather"
+
+
+def _stub_track(item_id: str) -> Track:
+    """Build a minimal Track with one available ProviderMapping, for build_queue_item."""
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name=f"Track {item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="library",
+                provider_instance="library",
+            )
         },
-        {
-            "uri": "library://track/2",
-            "name": "T2",
-            "songinfo": "A - T2",
-            "duration": 180,
-            "playlist_item": None,
-            "item_id": "2",
-            "artist": "A",
-            "index": 1,
-        },
+    )
+
+
+def test_compose_queue_items_places_clips_at_planned_indices() -> None:
+    """Clips are interleaved at their planned indices, carrying their render state."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace())
+    tracks = [
+        {"index": 0, "uri": "library://track/1", "media_item": _stub_track("1")},
+        {"index": 1, "uri": "library://track/2", "media_item": _stub_track("2")},
     ]
     sections = [
-        AudioSection(
-            order=1,
-            section_id="intro",
+        PlannedSection(
+            order=0,
+            clip_id="sess_000",
+            section_id="Intro",
             section_name="Intro",
+            when="start_of_playlist",
             insert_at_index=0,
-            uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", "http://x/intro.mp3"),
+            prompt="hello <timestamp>",
+            max_chars=200,
+            web_search_mode="disabled",
         ),
-        AudioSection(
+        PlannedSection(
             order=1,
-            section_id="outro",
-            section_name="Outro",
-            insert_at_index=2,
-            uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", "http://x/outro.mp3"),
+            clip_id="sess_001",
+            section_id="Between",
+            section_name="Between",
+            when="between_songs",
+            insert_at_index=1,
+            prompt="middle <weather_hourly>",
+            max_chars=200,
+            web_search_mode="allow",
         ),
     ]
 
-    entries, source_positions, _track_count = runtime._compose_entries(tracks, sections)
-
-    source_uris = {cast("str", track["uri"]) for track in tracks}
-    expected_source_indices = [i for i, uri in enumerate(entries) if uri in source_uris]
-
-    assert source_positions == expected_source_indices
-    assert source_positions == [1, 2]
-
-
-@pytest.mark.parametrize(
-    "stub_status",
-    [TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.PENDING],
-)
-async def test_wait_for_background_task_completion_raises_on_failure(
-    stub_status: TaskStatus,
-) -> None:
-    """Surface failures, cancellations and timeouts as MusicAssistantError (P4)."""
-
-    class DummyTasks:
-        def get_task(self, task_id: str) -> BackgroundTask:
-            return BackgroundTask(name="add", id=task_id, status=stub_status)
-
-    class DummyMass:
-        tasks = DummyTasks()
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-
-    with pytest.raises(MusicAssistantError):
-        await runtime._wait_for_background_task_completion("task_x", timeout_seconds=1)
-
-
-def test_get_ai_plugin_preserves_priority_order() -> None:
-    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
-
-    class DummyPlugin:
-        def __init__(self, instance_id: str) -> None:
-            self.instance_id = instance_id
-
-    high_priority = DummyPlugin("zz_high")
-    low_priority = DummyPlugin("aa_low")
-
-    class DummyMass:
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.AI_QUERY:
-                return [high_priority, low_priority]
-            return []
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-
-    plugin = runtime._get_ai_plugin()
-
-    assert plugin.instance_id == "zz_high"
-
-
-def test_get_tts_plugin_preserves_priority_order() -> None:
-    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
-
-    class DummyPlugin:
-        def __init__(self, instance_id: str) -> None:
-            self.instance_id = instance_id
-
-    high_priority = DummyPlugin("zz_high")
-    low_priority = DummyPlugin("aa_low")
-
-    class DummyMass:
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.TTS:
-                return [high_priority, low_priority]
-            return []
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-
-    plugin = runtime._get_tts_plugin()
-
-    assert plugin.instance_id == "zz_high"
-
-
-async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Surface stalled dynamic playback (queue not advancing) as MusicAssistantError (P7)."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
+    items = runtime._compose_queue_items(
+        queue_id="player_a",
+        session=SessionState(session_id="sess", station_id="st"),
+        program={"id": "st"},
+        tracks=tracks,
+        sections=sections,
     )
 
-    class StalledRuntime(AIRadioRuntimeMixin):
-        def __init__(self) -> None:
-            self.logger = logging.getLogger("tests.ai_radio.runtime.p7")
-            self._sessions: dict[str, SessionState] = {}
+    assert [item.media_item.item_id for item in items if item.media_item is not None] == [
+        "sess_000",
+        "1",
+        "sess_001",
+        "2",
+    ]
+    intro = items[0]
+    assert intro.media_item is not None
+    assert intro.media_item.media_type == MediaType.SOUND_EFFECT
+    assert intro.extra_attributes[ATTR_PROMPT] == "hello <timestamp>"
+    assert intro.extra_attributes[ATTR_SESSION_ID] == "sess"
+    assert intro.extra_attributes[ATTR_STATION_ID] == "st"
+    assert intro.extra_attributes[ATTR_MAX_CHARS] == 200
+    assert items[2].extra_attributes[ATTR_WEB_SEARCH_MODE] == "allow"
+    # the section name travels as the item's own name, not as an attribute
+    assert intro.name == "Intro"
+    assert "ai_radio_section_name" not in intro.extra_attributes
+    # track items carry no AI Radio state
+    assert items[1].extra_attributes == {}
 
-        async def _fetch_source_tracks(
-            self, station: dict[str, Any]
-        ) -> tuple[list[dict[str, Any]], str]:
-            tracks = [
-                {
-                    "uri": "library://track/1",
-                    "duration": 180,
-                    "name": "T1",
-                    "artist": "A",
-                    "songinfo": "A - T1",
-                    "index": 0,
-                    "playlist_item": None,
-                    "item_id": "1",
-                },
-                {
-                    "uri": "library://track/2",
-                    "duration": 180,
-                    "name": "T2",
-                    "artist": "A",
-                    "songinfo": "A - T2",
-                    "index": 1,
-                    "playlist_item": None,
-                    "item_id": "2",
-                },
-            ]
-            return tracks, "Source"
 
-        def _apply_track_duration_limit(
-            self, tracks: list[dict[str, Any]], station: dict[str, Any]
-        ) -> list[dict[str, Any]]:
-            return tracks
-
-        def _plan_sections(self, *args: Any, **kwargs: Any) -> tuple[list[Any], dict[str, Any]]:
-            return [], {}
-
-        async def _generate_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
-            return []
-
-        async def _synthesize_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
-            return []
-
-        async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
-            return {}
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyQueue:
-        current_index: int | None = None
-
-    class DummyPlayerQueues:
-        def clear(self, queue_id: str) -> None:
-            return None
-
-        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-            return None
-
-        async def play_media(self, **kwargs: Any) -> None:
-            return None
-
-        async def play_index(self, queue_id: str, index: int) -> None:
-            return None
-
-        def get_active_queue(self, player_id: str) -> Any:
-            return None
-
-        def get(self, queue_id: str) -> Any:
-            return DummyQueue()
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = DummyPlayerQueues()
-
-    runtime = StalledRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
+def test_build_program_merges_host_into_station() -> None:
+    """The merged program carries the host's persona, sections and section_order."""
+    runtime = DummyRuntime()
+    runtime._sections = {
+        "Song_Transition": {
+            "id": "Song_Transition",
+            "name": "Song Transition",
+            "type": "ai_text",
+            "prompt": "Prompt",
+            "web_search": "disabled",
+        }
+    }
+    host = {
+        "id": "rick",
+        "name": "Rick",
+        "instructions": "Persona.",
+        "tts_engine": "engine-1",
+        "language": "fr_FR",
+        "section_ids": ["Song_Transition"],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]}],
+        "merge_section_id": "",
+    }
     station = {
-        "id": "st",
-        "name": "Stalled Station",
-        "default_player_id": "living_room",
-        "dynamic_batch_size": 1,
-        "dynamic_poll_seconds": 1,
-        "dynamic_prefetch_remaining_tracks": 1,
-        "general": {"timezone": "UTC"},
-        "sections": [],
-        "section_order": [],
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "p1",
+        "source_playlist_provider": "library",
+        "default_player_id": "",
+        "max_duration_minutes": 0.0,
+        "shuffle_source_tracks": True,
+        "host_id": "rick",
     }
 
-    with pytest.raises(MusicAssistantError, match=r"stall|stopped advancing|watchdog|inactive"):
-        await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=3.0)
+    program = runtime._build_program(station, host)
+
+    assert program["instructions"] == "Persona."
+    assert program["tts_engine"] == "engine-1"
+    assert program["language"] == "fr_FR"
+    assert [s["id"] for s in program["sections"]] == ["Song_Transition"]
+    assert program["section_order"] == host["section_order"]
+    assert program["source_playlist_id"] == "p1"
 
 
-@pytest.mark.parametrize(
-    ("batch_size", "prefetch_config", "expected_prefetch"),
-    [
-        (3, 2, 2),
-        (3, 5, 2),
-        (1, 2, 1),
-        (5, 1, 1),
-    ],
-)
-async def test_run_dynamic_mode_clamps_prefetch_to_batch_size(
-    batch_size: int, prefetch_config: int, expected_prefetch: int
+def test_clip_item_carries_host_id() -> None:
+    """A planned clip's queue item stamps both the station id and the host id."""
+    runtime = DummyRuntime()
+    section = PlannedSection(
+        order=0,
+        clip_id="sess_000",
+        section_id="Song_Transition",
+        section_name="Song Transition",
+        when="between_songs",
+        insert_at_index=1,
+        prompt="p",
+        max_chars=0,
+        web_search_mode="disabled",
+    )
+    program = {"id": "station_a", "host_id": "rick"}
+
+    item = runtime._section_to_clip_item("queue-1", "sess", program, section)
+
+    assert item.extra_attributes[ATTR_HOST_ID] == "rick"
+    assert item.extra_attributes[ATTR_SESSION_ID] == "sess"
+
+
+async def test_get_ai_engine_requires_a_configured_selection() -> None:
+    """Without a stored selection no engine is picked, so the run fails with a clear error."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, _create_ai_plugin("hass_1", "one"))
+    )
+
+    with pytest.raises(MusicAssistantError, match="No AI engine available"):
+        await runtime._get_ai_engine()
+
+
+async def test_get_ai_engine_uses_the_configured_selection() -> None:
+    """A configured engine uid wins over the first available engine."""
+    high_priority = _create_ai_plugin("zz_high", "engine")
+    low_priority = _create_ai_plugin("aa_low", "engine")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, high_priority, low_priority)
+    )
+
+    assert (await runtime._get_ai_engine()).uid == "aa_low/engine"
+
+
+async def test_get_ai_engine_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete AI selection is never silently replaced by another available engine."""
+    runtime = DummyRuntime({CONF_AI_ENGINE: "gone/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, _create_ai_plugin("hass_1", "one"))
+    )
+
+    with pytest.raises(MusicAssistantError, match="No AI engine available"):
+        await runtime._get_ai_engine()
+
+
+async def test_get_tts_engine_uses_the_configured_selection() -> None:
+    """The stored TTS uid selects its engine, whatever order the plugins are served in."""
+    high_priority = _create_tts_plugin("zz_high", "engine")
+    low_priority = _create_tts_plugin("aa_low", "engine")
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, high_priority, low_priority)
+    )
+
+    assert (await runtime._get_tts_engine()).uid == "aa_low/engine"
+
+
+async def test_get_tts_engine_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete TTS selection is never silently replaced by another available engine."""
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "gone/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, _create_tts_plugin("hass_1", "one"))
+    )
+
+    with pytest.raises(MusicAssistantError, match="No text-to-speech engine available"):
+        await runtime._get_tts_engine()
+
+
+async def test_get_tts_engine_falls_back_to_provider_selection_when_host_uid_is_unresolvable(
+    caplog: Any,
 ) -> None:
-    """
-    Clamp dynamic_prefetch_remaining_tracks so the trigger falls inside the batch.
+    """A host engine_uid that no longer resolves falls back to the provider's TTS selection."""
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, _create_tts_plugin("aa_low", "engine"))
+    )
 
-    Only exercises the setup segment of _run_dynamic_mode: the clamped value is
-    captured via the "initializing_queue" progress update, short-circuiting before
-    the batch-queueing loop runs. This does NOT cover trigger_position math further
-    down in the loop, nor the storage-layer normalization clamp in storage.py.
+    with caplog.at_level(logging.WARNING):
+        engine = await runtime._get_tts_engine("gone/engine")
+
+    assert engine.uid == "aa_low/engine"
+    assert any("unavailable" in message for message in caplog.messages)
+
+
+def _show_mass_stub(**handlers: Any) -> SimpleNamespace:
+    """
+    Build a minimal mass stub for exercising _run_show.
+
+    Any player_queues/players/music/metadata handler not passed gets a no-op default.
     """
 
-    class ProbeStop(Exception):
-        """Raised to short-circuit _run_dynamic_mode once the clamp is captured."""
-
-        def __init__(self, prefetch_remaining_tracks: int) -> None:
-            self.prefetch_remaining_tracks = prefetch_remaining_tracks
-
-    class ProbeRuntime(AIRadioRuntimeMixin):
-        def __init__(self) -> None:
-            self.logger = logging.getLogger("tests.ai_radio.runtime.clamp_probe")
-            self._sessions: dict[str, SessionState] = {}
-
-        async def _fetch_source_tracks(
-            self, station: dict[str, Any]
-        ) -> tuple[list[dict[str, Any]], str]:
-            return [{"uri": "library://track/1", "duration": 180}], "Source"
-
-        def _apply_track_duration_limit(
-            self, tracks: list[dict[str, Any]], station: dict[str, Any]
-        ) -> list[dict[str, Any]]:
-            return tracks
-
-        async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
-            return {}
-
-        def _set_session_progress(self, session: SessionState, phase: str, **details: Any) -> None:
-            if phase == "initializing_queue":
-                raise ProbeStop(cast("int", details["prefetch_remaining_tracks"]))
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyPlayerQueues:
-        def get_active_queue(self, player_id: str) -> Any:
-            return None
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = DummyPlayerQueues()
-
-    runtime = ProbeRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-    station = {
-        "id": "st",
-        "name": "Probe Station",
-        "default_player_id": "living_room",
-        "dynamic_batch_size": batch_size,
-        "dynamic_prefetch_remaining_tracks": prefetch_config,
-        "general": {"timezone": "UTC"},
-    }
-
-    with pytest.raises(ProbeStop) as excinfo:
-        await runtime._run_dynamic_mode(session, station)
-
-    assert excinfo.value.prefetch_remaining_tracks == expected_prefetch
-
-
-def _make_watchdog_runtime_classes() -> tuple[type, type]:
-    """Build the reusable dynamic-mode runtime and player-queues test harness."""
-
-    class WatchdogRuntime(AIRadioRuntimeMixin):
-        def __init__(self) -> None:
-            self.logger = logging.getLogger("tests.ai_radio.runtime.watchdog")
-            self._sessions: dict[str, SessionState] = {}
-
-        async def _fetch_source_tracks(
-            self, station: dict[str, Any]
-        ) -> tuple[list[dict[str, Any]], str]:
-            tracks = []
-            for index in (1, 2, 3):
-                tracks.append(
-                    {
-                        "uri": f"library://track/{index}",
-                        "duration": 400,
-                        "name": f"T{index}",
-                        "artist": "A",
-                        "songinfo": f"A - T{index}",
-                        "index": index - 1,
-                        "playlist_item": None,
-                        "item_id": str(index),
-                    }
-                )
-            return tracks, "Source"
-
-        def _apply_track_duration_limit(
-            self, tracks: list[dict[str, Any]], station: dict[str, Any]
-        ) -> list[dict[str, Any]]:
-            return tracks
-
-        def _plan_sections(self, *args: Any, **kwargs: Any) -> tuple[list[Any], dict[str, Any]]:
-            return [], {}
-
-        async def _generate_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
-            return []
-
-        async def _synthesize_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
-            return []
-
-        async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
-            return {}
-
-    class SteppingPlayerQueues:
-        """Player queues stub whose queue reports a scripted playback state."""
-
-        def __init__(self, queue: Any) -> None:
-            self.queue = queue
-
-        def clear(self, queue_id: str) -> None:
-            return None
-
-        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-            return None
-
-        async def play_media(self, **kwargs: Any) -> None:
-            return None
-
-        def get_active_queue(self, player_id: str) -> Any:
-            return None
-
-        def get(self, queue_id: str) -> Any:
-            self.queue.polls += 1
-            return self.queue
-
-    return WatchdogRuntime, SteppingPlayerQueues
-
-
-def _watchdog_station() -> dict[str, Any]:
-    """Return a dynamic-mode station config for watchdog tests."""
-    return {
-        "id": "st",
-        "name": "Watchdog Station",
-        "default_player_id": "living_room",
-        "dynamic_batch_size": 2,
-        "dynamic_poll_seconds": 1,
-        "dynamic_prefetch_remaining_tracks": 1,
-        "general": {"timezone": "UTC"},
-        "sections": [],
-        "section_order": [],
-    }
-
-
-async def test_dynamic_watchdog_tolerates_long_track_while_playing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep waiting while a long track plays and elapsed time keeps advancing."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
-    )
-    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
-
-    class PlayingQueue:
-        """Queue stuck on index 0 (long track) but with advancing elapsed time."""
-
-        polls = 0
-        state = PlaybackState.PLAYING
-
-        @property
-        def current_index(self) -> int:
-            return 0 if self.polls < 4 else 1
-
-        @property
-        def elapsed_time(self) -> float:
-            return float(self.polls * 10)
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = stepping_queues_cls(PlayingQueue())
-
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-
-    result = await asyncio.wait_for(
-        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
-    )
-
-    assert result["queued_tracks"] == 3
-
-
-class RecordingPlayerQueues:
-    """Player queues stub that records queue mutations for assertions."""
-
-    def __init__(self, queue: Any) -> None:
-        """Initialize recorder around one fake queue object."""
-        self.queue = queue
-        self.clear_calls: list[str] = []
-        self.set_shuffle_calls: list[tuple[str, bool]] = []
-        self.play_media_calls: list[tuple[Any, int]] = []
-        self.play_index_calls: list[tuple[str, int]] = []
-        # combined call order across the methods below, for ordering assertions
-        self.call_order: list[str] = []
-
-    def clear(self, queue_id: str) -> None:
-        """Record a queue clear call."""
-        self.clear_calls.append(queue_id)
-        self.call_order.append("clear")
-
-    async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-        """Record a set_shuffle call."""
-        self.set_shuffle_calls.append((queue_id, shuffle_enabled))
-        self.call_order.append("set_shuffle")
-
-    async def play_media(self, **kwargs: Any) -> None:
-        """Record a play_media call with the poll count at call time."""
-        self.play_media_calls.append((kwargs.get("option"), self.queue.polls))
-        self.call_order.append("play_media")
-
-    async def play_index(self, queue_id: str, index: int) -> None:
-        """Record a play_index call and mark the queue as started."""
-        self.play_index_calls.append((queue_id, index))
-        self.queue.started = True
-
-    def get_active_queue(self, player_id: str) -> Any:
-        """Return no active queue to force the direct queue lookup."""
+    async def _noop_async(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    def get(self, queue_id: str) -> Any:
-        """Return the fake queue and count the poll."""
-        self.queue.polls += 1
-        return self.queue
+    def _noop_sync(*_args: Any, **_kwargs: Any) -> None:
+        return None
 
+    def _noop_get_active_queue(_player_id: str) -> Any:
+        return None
 
-async def test_dynamic_mode_targets_active_group_queue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Queue all batches on the active (group) queue when the player is a group member."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
+    def _noop_get_player(_player_id: str) -> Any:
+        return object()
+
+    def _noop_items(_queue_id: str, limit: int = 500, offset: int = 0) -> list[Any]:  # noqa: ARG001
+        return []
+
+    subscribers: list[Callable[[Any], None]] = []
+
+    def _recording_subscribe(
+        cb_func: Callable[[Any], None],
+        event_filter: Any = None,  # noqa: ARG001
+        id_filter: Any = None,  # noqa: ARG001
+    ) -> Callable[[], None]:
+        subscribers.append(cb_func)
+
+        def _unsubscribe() -> None:
+            subscribers.remove(cb_func)
+
+        return _unsubscribe
+
+    def _emit_queue_updated(queue_id: str) -> None:
+        event = MassEvent(event=EventType.QUEUE_UPDATED, object_id=queue_id)
+        for cb_func in subscribers:
+            cb_func(event)
+
+    def _emit_player_removed(player_id: str) -> None:
+        event = MassEvent(event=EventType.PLAYER_REMOVED, object_id=player_id)
+        for cb_func in subscribers:
+            cb_func(event)
+
+    player_queues = SimpleNamespace(
+        clear=handlers.get("clear", _noop_sync),
+        get=handlers.get("get", lambda _queue_id: None),
+        get_active_queue=handlers.get("get_active_queue", _noop_get_active_queue),
+        set_shuffle=handlers.get("set_shuffle", _noop_async),
+        load=handlers.get("load", _noop_async),
+        play_index=handlers.get("play_index", _noop_async),
+        items=handlers.get("items", _noop_items),
+        signal_update=handlers.get("signal_update", _noop_sync),
+        stop=handlers.get("stop", _noop_async),
     )
-    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+    return SimpleNamespace(
+        player_queues=player_queues,
+        players=SimpleNamespace(get_player=handlers.get("get_player", _noop_get_player)),
+        music=SimpleNamespace(playlists=handlers.get("playlists", SimpleNamespace())),
+        metadata=SimpleNamespace(locale=handlers.get("locale", "en_US")),
+        create_task=handlers.get("create_task", _noop_sync),
+        subscribe=handlers.get("subscribe", _recording_subscribe),
+        emit_queue_updated=_emit_queue_updated,
+        emit_player_removed=_emit_player_removed,
+    )
 
-    class GroupQueue:
-        """Group queue owned by the sync-group leader, not the target player."""
 
-        queue_id = "group_1"
-        polls = 0
-        items = 0
-        state = PlaybackState.PLAYING
-        started = False
-        current_index = 4
-        elapsed_time = 10.0
+def _stub_queue(state: PlaybackState, current_index: int | None) -> SimpleNamespace:
+    """Build a mutable queue stand-in exposing the fields _await_show_end reads."""
+    return SimpleNamespace(state=state, current_index=current_index)
 
-    class GroupPlayerQueues:
-        """Player queues stub where the player's active queue is a group queue."""
 
-        def __init__(self, queue: Any) -> None:
-            """Initialize recorder around the fake group queue."""
-            self.queue = queue
-            self.clear_calls: list[str] = []
-            self.play_media_queue_ids: list[str] = []
+def _stub_clip_queue_item(clip_id: str, session_id: str) -> SimpleNamespace:
+    """Build a queue item stand-in whose extra_attributes carry a session id."""
+    return SimpleNamespace(extra_attributes={ATTR_SESSION_ID: session_id}, item_id=clip_id)
 
-        def clear(self, queue_id: str) -> None:
-            """Record a queue clear call."""
-            self.clear_calls.append(queue_id)
 
-        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-            """No-op shuffle toggle for the group queue."""
-            return
+def _recording_set_shuffle(log: list[str]) -> Callable[[str, bool], Awaitable[None]]:
+    """Return an async set_shuffle stub that appends "set_shuffle" to the given call-order log."""
 
-        async def play_media(self, **kwargs: Any) -> None:
-            """Record the queue targeted by a play_media call."""
-            self.play_media_queue_ids.append(kwargs.get("queue_id", ""))
+    async def _set_shuffle(_queue_id: str, _shuffle_enabled: bool) -> None:
+        log.append("set_shuffle")
 
-        async def play_index(self, queue_id: str, index: int) -> None:
-            """Start playback on the fake queue."""
-            self.queue.started = True
+    return _set_shuffle
 
-        def get_active_queue(self, player_id: str) -> Any:
-            """Return the group queue as the player's active queue."""
-            return self.queue
 
-        def get(self, queue_id: str) -> Any:
-            """Return the fake group queue."""
-            self.queue.polls += 1
-            return self.queue
+def _show_station() -> dict[str, Any]:
+    """Return a station config for _run_show tests, whose section_order yields clips."""
+    return {
+        "id": "st",
+        "name": "Show Station",
+        "default_player_id": "living_room",
+        "source_playlist_id": "playlist-1",
+        "source_playlist_provider": "library",
+        "shuffle_source_tracks": False,
+        "general": {"timezone": "UTC"},
+        "sections": [
+            {
+                "id": "Song_Introduction_Start",
+                "name": "Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Welcome, next up is <next_songinfo>.",
+                "constraints": {"max_chars": 200},
+            },
+            {
+                "id": "Song_Transition",
+                "name": "Transition",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "From <prev_songinfo> to <next_songinfo>.",
+                "constraints": {"max_chars": 200},
+            },
+        ],
+        "section_order": [
+            {"when": "start_of_playlist", "flow": [{"MUST": "Song_Introduction_Start"}]},
+            {"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]},
+        ],
+    }
 
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
 
-    player_queues = GroupPlayerQueues(GroupQueue())
+class ShowRuntime(DummyRuntime):
+    """Runtime harness exercising the real _run_show with stubbed track sourcing."""
 
-    class DummyMass:
-        def __init__(self) -> None:
-            self.players = DummyPlayers()
-            self.player_queues = player_queues
+    async def _fetch_source_tracks(
+        self, station: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Return two fixed tracks, each carrying its resolved media item."""
+        return [
+            {"index": 0, "songinfo": "A - One", "duration": 200, "media_item": _stub_track("1")},
+            {"index": 1, "songinfo": "B - Two", "duration": 200, "media_item": _stub_track("2")},
+        ], "Source Playlist"
 
-    mass = DummyMass()
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, mass)
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-    station = _watchdog_station()
+    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+        """Skip the weather lookup; runtime tokens are irrelevant to these tests."""
+        return {}
 
-    result = await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=10.0)
+
+class ShowRuntimeWithDJ(AIRadioQueueDJMixin, AIRadioStorageMixin, ShowRuntime):
+    """ShowRuntime harness that also carries sticky queue DJ state."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Initialize show runtime state plus queue DJ bookkeeping."""
+        super().__init__()
+        self._hosts: dict[str, dict[str, Any]] = {
+            "rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""},
+        }
+        self._dj_queues: dict[str, Any] = {}
+        self._dj_file = tmp_path / "queue_dj.json"
+        self._dj_lock = asyncio.Lock()
+        self._unloading = False
+
+
+def _recording_create_task(scheduled: list[str]) -> Callable[..., None]:
+    """Return a create_task stub that records the task id and discards the coroutine."""
+
+    def _create_task(coro: Any, task_id: str | None = None, **_kwargs: Any) -> None:
+        if task_id:
+            scheduled.append(task_id)
+        coro.close()
+
+    return _create_task
+
+
+async def test_run_show_loads_the_whole_show_then_plays_index_zero() -> None:
+    """The show is loaded in one call, fully stamped, before playback is started."""
+    runtime = ShowRuntime()
+    call_order: list[str] = []
+    loaded: list[tuple[Any, dict[str, Any]]] = []
+
+    async def _load(_queue_id: str, queue_items: list[Any], **kwargs: Any) -> None:
+        call_order.append("load")
+        # snapshot media_item + extra_attributes now: asserting on the live queue_item
+        # objects after _run_show returns would pass even if stamping happened later
+        loaded.extend((item.media_item, dict(item.extra_attributes)) for item in queue_items)
+        assert kwargs["shuffle"] is False
+        assert kwargs["keep_remaining"] is False
+        assert kwargs["keep_played"] is False
+
+    async def _play_index(_queue_id: str, index: int) -> None:
+        call_order.append(f"play_index:{index}")
+
+    _set_runtime_mass(
+        runtime,
+        _show_mass_stub(
+            load=_load,
+            play_index=_play_index,
+            clear=lambda _queue_id: call_order.append("clear"),
+            set_shuffle=_recording_set_shuffle(call_order),
+        ),
+    )
+
+    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
+
+    assert call_order == ["clear", "set_shuffle", "load", "play_index:0"]
+    clips = [
+        (media_item, attrs)
+        for media_item, attrs in loaded
+        if media_item.media_type == MediaType.SOUND_EFFECT
+    ]
+    assert clips
+    # every clip was already fully stamped at the moment load() was called
+    assert all(attrs[ATTR_PROMPT] for _media_item, attrs in clips)
+    assert all(attrs[ATTR_SESSION_ID] == "sess" for _media_item, attrs in clips)
+
+
+async def test_run_show_targets_active_group_queue() -> None:
+    """Queue and start the show on the active (group) queue when the player is grouped."""
+    runtime = ShowRuntime()
+    clear_calls: list[str] = []
+    load_queue_ids: list[str] = []
+    play_index_queue_ids: list[str] = []
+
+    async def _load(queue_id: str, **_kwargs: Any) -> None:
+        load_queue_ids.append(queue_id)
+
+    async def _play_index(queue_id: str, _index: int) -> None:
+        play_index_queue_ids.append(queue_id)
+
+    _set_runtime_mass(
+        runtime,
+        _show_mass_stub(
+            get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1"),
+            clear=clear_calls.append,
+            load=_load,
+            play_index=_play_index,
+        ),
+    )
+    session = SessionState(session_id="s1", station_id="st")
+
+    result = await runtime._run_show(session, _show_station())
 
     assert result["queue_id"] == "group_1"
-    assert player_queues.clear_calls == ["group_1"]
-    assert player_queues.play_media_queue_ids == ["group_1", "group_1"]
+    assert clear_calls == ["group_1"]
+    assert load_queue_ids == ["group_1"]
+    assert play_index_queue_ids == ["group_1"]
+    assert session.queue_id == "group_1"
 
 
-async def test_dynamic_watchdog_tolerates_paused_queue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep waiting while the queue is deliberately paused by the user."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
+async def test_run_show_clears_the_queues_sticky_dj(tmp_path: Path) -> None:
+    """Starting a show drops that queue's existing sticky DJ assignment."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    _set_runtime_mass(runtime, _show_mass_stub())
+    await runtime.set_queue_dj("living_room", "rick")
+    assert "living_room" in runtime._dj_queues
+
+    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
+
+    assert "living_room" not in runtime._dj_queues
+    persisted = json.loads(runtime._dj_file.read_text())
+    assert persisted["queues"] == {}
+
+
+async def test_run_show_clears_the_dj_on_the_resolved_group_queue(tmp_path: Path) -> None:
+    """A grouped player's DJ is cleared on the active (group) queue, not the raw player id."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    _set_runtime_mass(
+        runtime,
+        _show_mass_stub(get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1")),
     )
-    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
+    # a stale assignment on the raw player id must survive untouched: the show never
+    # played there, only on the resolved group queue
+    await runtime.set_queue_dj("living_room", "rick")
+    await runtime.set_queue_dj("group_1", "rick")
 
-    class PausedQueue:
-        """Queue paused on index 0 with frozen elapsed time, resuming later."""
+    await runtime._run_show(SessionState(session_id="s1", station_id="st"), _show_station())
 
-        polls = 0
-        elapsed_time = 42.0
+    assert "group_1" not in runtime._dj_queues
+    assert "living_room" in runtime._dj_queues
 
-        @property
-        def state(self) -> PlaybackState:
-            return PlaybackState.PAUSED if self.polls < 4 else PlaybackState.PLAYING
 
-        @property
-        def current_index(self) -> int:
-            return 0 if self.polls < 4 else 1
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = stepping_queues_cls(PausedQueue())
-
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+async def test_run_session_finally_replans_a_dj_armed_mid_show(tmp_path: Path) -> None:
+    """A DJ armed via the menu while a show plays still gets scheduled once the show ends."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    scheduled: list[str] = []
+    _set_runtime_mass(runtime, _show_mass_stub(create_task=_recording_create_task(scheduled)))
+    session = SessionState(session_id="sess", station_id="st", queue_id="living_room")
     runtime._sessions[session.session_id] = session
 
-    result = await asyncio.wait_for(
-        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
-    )
+    # arming mid-show already requested a pass; that pass would drain against the running-show
+    # guard in _replan_queue and clear replan_pending without planning anything, so reset it
+    # here to isolate the finally block's own request instead of piggybacking on this one
+    await runtime.set_queue_dj("living_room", "rick")
+    runtime._dj_queues["living_room"].replan_pending = False
+    scheduled.clear()
 
-    assert result["queued_tracks"] == 3
+    async def _run_show_stub(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("show over")
+
+    runtime._run_show = _run_show_stub  # type: ignore[method-assign]
+
+    await runtime._run_session(session.session_id, {"id": "st"})
+
+    assert scheduled == ["ai_radio_dj_replan_living_room"]
+    assert runtime._dj_queues["living_room"].ready is True
+
+
+async def test_run_show_ends_as_stopped_when_the_user_stops_the_queue() -> None:
+    """A queue stopped part-way through the show ends the run as a user stop."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=0)
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    queue.state = PlaybackState.IDLE
+    mass.emit_queue_updated("player_a")
+
+    assert await asyncio.wait_for(task, timeout=1) == "queue_stopped"
+
+
+async def test_run_show_ends_as_exhausted_when_the_show_plays_out() -> None:
+    """Reaching the last enqueued entry ends the run as a normal completion."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=5)
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    await asyncio.sleep(0)
+
+    queue.state = PlaybackState.IDLE
+    mass.emit_queue_updated("player_a")
+
+    assert await asyncio.wait_for(task, timeout=1) == "source_exhausted"
+
+
+async def test_run_show_ignores_an_idle_queue_before_playback_starts() -> None:
+    """A queue that has not started yet is not mistaken for a stopped one."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.IDLE, current_index=None)
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    mass.emit_queue_updated("player_a")
+    await asyncio.sleep(0)
+
+    assert not task.done()
+    task.cancel()
+
+
+async def test_run_show_keeps_a_paused_queue_on_air() -> None:
+    """A paused queue keeps the show running."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=1)
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    await asyncio.sleep(0)
+
+    queue.state = PlaybackState.PAUSED
+    mass.emit_queue_updated("player_a")
+    await asyncio.sleep(0)
+
+    assert not task.done()
+    task.cancel()
+
+
+async def test_run_show_ends_when_the_queue_no_longer_holds_its_clips() -> None:
+    """A queue cleared or taken over by other playback ends the run."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=1)
+    queue_items = [_stub_clip_queue_item("sess_000", session_id="sess")]
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: queue_items[offset : offset + limit],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    await asyncio.sleep(0)
+
+    queue_items.clear()
+    mass.emit_queue_updated("player_a")
+
+    assert await asyncio.wait_for(task, timeout=1) == "queue_stopped"
+
+
+async def test_run_show_ends_when_its_player_is_removed() -> None:
+    """Removing the target player must not pin the session's slot forever."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=1)
+    queue_holder: list[Any] = [queue]
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue_holder[0],
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    # on_player_remove pops the queue data before PLAYER_REMOVED is signaled
+    queue_holder[0] = None
+    mass.emit_player_removed("player_a")
+
+    assert await asyncio.wait_for(task, timeout=1) == "queue_stopped"
+
+
+async def test_run_show_keeps_waiting_when_the_show_has_no_clips_to_lose() -> None:
+    """A clip-free show is not mistaken for one whose clips got cleared out."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=0)
+    # track-only queue: no item carries ATTR_SESSION_ID, exactly like a show whose
+    # section rules never selected anything to insert
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            SimpleNamespace(extra_attributes={})
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=False)
+    )
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    queue.current_index = 5
+    queue.state = PlaybackState.IDLE
+    mass.emit_queue_updated("player_a")
+
+    assert await asyncio.wait_for(task, timeout=1) == "source_exhausted"
+
+
+async def test_await_show_end_fails_when_playback_never_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A show whose playback never starts is declared failed instead of waiting forever."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.SHOW_START_TIMEOUT_SECONDS", 0.05
+    )
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.IDLE, current_index=None)
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    with pytest.raises(MusicAssistantError, match="did not start"):
+        await runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+
+
+async def test_await_show_end_does_not_time_out_once_playback_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Playback starting before the start-timeout elapses lets the show proceed as normal."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.SHOW_START_TIMEOUT_SECONDS", 0.2
+    )
+    runtime = DummyRuntime()
+    session = SessionState(session_id="sess", station_id="st")
+    queue = _stub_queue(state=PlaybackState.IDLE, current_index=None)
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="sess")
+        ],
+    )
+    _set_runtime_mass(runtime, mass)
+
+    task = asyncio.create_task(
+        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
+    )
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    queue.state = PlaybackState.PLAYING
+    queue.current_index = 0
+    mass.emit_queue_updated("player_a")
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    queue.current_index = 5
+    queue.state = PlaybackState.IDLE
+    mass.emit_queue_updated("player_a")
+
+    assert await asyncio.wait_for(task, timeout=1) == "source_exhausted"
 
 
 def test_passes_optional_guards_handles_non_numeric_guard_values() -> None:
@@ -1280,6 +1624,8 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     assert playlist_name == "Source Playlist"
     assert [track["item_id"] for track in tracks] == ["1", "3"]
     assert [track["index"] for track in tracks] == [0, 1]
+    # the resolved media item travels on the normalized dict, unchanged
+    assert [track["media_item"] for track in tracks] == [good_track_1, good_track_2]
     assert any("Track Two" in record.message for record in caplog.records)
 
 
@@ -1348,182 +1694,81 @@ def test_apply_track_duration_limit_zero_cap_is_noop() -> None:
     assert result is tracks
 
 
-async def test_dynamic_mode_disables_shuffle_before_first_play_media(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Disable queue shuffle before the first batch is queued, so batches keep their order."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
+async def test_run_show_disables_shuffle_before_load() -> None:
+    """Disable queue shuffle before the items are loaded, so sections keep their planned order."""
+    runtime = ShowRuntime()
+    call_order: list[str] = []
+    set_shuffle_calls: list[tuple[str, bool]] = []
+
+    async def _set_shuffle(queue_id: str, shuffle_enabled: bool) -> None:
+        set_shuffle_calls.append((queue_id, shuffle_enabled))
+        call_order.append("set_shuffle")
+
+    async def _load(_queue_id: str, **_kwargs: Any) -> None:
+        call_order.append("load")
+
+    _set_runtime_mass(runtime, _show_mass_stub(set_shuffle=_set_shuffle, load=_load))
+    session = SessionState(session_id="s1", station_id="st")
+
+    await runtime._run_show(session, _show_station())
+
+    assert set_shuffle_calls == [("living_room", False)]
+    assert call_order.index("set_shuffle") < call_order.index("load")
+
+
+async def test_run_show_stays_running_while_the_queue_plays_and_stop_cancels_it() -> None:
+    """The session stays 'running' for as long as the show plays; a stop cancels it mid-show."""
+    runtime = ShowRuntime()
+    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=0)
+    unsubscribed = False
+
+    def _subscribe(
+        cb_func: Callable[[Any], None],  # noqa: ARG001
+        event_filter: Any = None,  # noqa: ARG001
+        id_filter: Any = None,  # noqa: ARG001
+    ) -> Callable[[], None]:
+        def _unsubscribe() -> None:
+            nonlocal unsubscribed
+            unsubscribed = True
+
+        return _unsubscribe
+
+    mass = _show_mass_stub(
+        get=lambda _queue_id: queue,
+        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
+            _stub_clip_queue_item("sess_000", session_id="s1")
+        ],
+        subscribe=_subscribe,
     )
-    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
-
-    class BusyQueue:
-        """Queue already playing 3 pre-existing items."""
-
-        polls = 0
-        items = 3
-        state = PlaybackState.PLAYING
-        started = False
-
-        @property
-        def current_index(self) -> int:
-            return 2 if self.polls < 4 else 4
-
-        @property
-        def elapsed_time(self) -> float:
-            return float(self.polls * 10)
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    player_queues = RecordingPlayerQueues(BusyQueue())
-
-    class DummyMass:
-        def __init__(self) -> None:
-            self.players = DummyPlayers()
-            self.player_queues = player_queues
-
-    mass = DummyMass()
-    runtime = watchdog_runtime_cls()
     _set_runtime_mass(runtime, mass)
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    session = SessionState(session_id="s1", station_id="st")
     runtime._sessions[session.session_id] = session
 
-    await asyncio.wait_for(runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0)
+    task = asyncio.create_task(runtime._run_session(session.session_id, _show_station()))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
-    assert player_queues.set_shuffle_calls == [("living_room", False)]
-    assert player_queues.call_order.index("set_shuffle") < player_queues.call_order.index(
-        "play_media"
-    )
+    # the show is on air: the session must stay running, exactly like start_run's
+    # max-concurrent-runs and station-already-active guards require
+    assert session.status == "running"
+    assert not task.done()
 
+    # this is what stop_run does to end a run mid-show
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
-async def test_dynamic_mode_ends_run_when_user_stops_the_queue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """End the run right away when the target queue is stopped after playing."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        30.0,
-    )
-    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
-
-    class StoppedQueue:
-        """Queue that plays index 0 and is then stopped by the user."""
-
-        polls = 0
-        elapsed_time = 12.0
-
-        @property
-        def state(self) -> PlaybackState:
-            return PlaybackState.PLAYING if self.polls < 4 else PlaybackState.IDLE
-
-        @property
-        def current_index(self) -> int:
-            return 0
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = stepping_queues_cls(StoppedQueue())
-
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-
-    result = await asyncio.wait_for(
-        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
-    )
-
-    assert result["ended_reason"] == "queue_stopped"
-    # only the first batch was queued; the run did not wait out the stall timeout
-    assert result["queued_tracks"] == 2
+    assert session.status == "stopped"
+    assert unsubscribed
 
 
-async def test_dynamic_mode_ignores_idle_queue_before_playback_starts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Do not treat a not-yet-started queue as a user stop."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        30.0,
-    )
-    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+async def test_run_show_binds_the_session_to_the_target_queue() -> None:
+    """Record the queue a show plays on so stopping the show can stop it."""
+    runtime = ShowRuntime()
+    _set_runtime_mass(runtime, _show_mass_stub())
+    session = SessionState(session_id="s1", station_id="st")
 
-    class SlowStartQueue:
-        """Queue that stays idle for a few polls before playback starts."""
-
-        polls = 0
-        elapsed_time = 0.0
-
-        @property
-        def state(self) -> PlaybackState:
-            return PlaybackState.IDLE if self.polls < 3 else PlaybackState.PLAYING
-
-        @property
-        def current_index(self) -> int | None:
-            return None if self.polls < 3 else 2
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = RecordingPlayerQueues(SlowStartQueue())
-
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-
-    result = await asyncio.wait_for(
-        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
-    )
-
-    assert result["queued_tracks"] == 3
-    assert result["ended_reason"] == "source_exhausted"
-
-
-async def test_dynamic_mode_binds_the_session_to_the_target_queue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Record the queue a dynamic run plays on so stopping the show can stop it."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        30.0,
-    )
-    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
-
-    class PlayingQueue:
-        polls = 0
-        items = 4
-        elapsed_time = 1.0
-        state = PlaybackState.PLAYING
-
-        @property
-        def current_index(self) -> int:
-            return 9
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    class DummyMass:
-        players = DummyPlayers()
-        player_queues = stepping_queues_cls(PlayingQueue())
-
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-
-    await asyncio.wait_for(runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0)
+    await runtime._run_show(session, _show_station())
 
     assert session.queue_id == "living_room"
 
@@ -1536,13 +1781,11 @@ async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
             self.logger = logging.getLogger("tests.ai_radio.runtime.queue_stopped")
             self._sessions: dict[str, SessionState] = {}
 
-        async def _run_dynamic_mode(
-            self, session: SessionState, station: dict[str, Any]
-        ) -> dict[str, Any]:
-            return {"mode": "dynamic", "ended_reason": "queue_stopped"}
+        async def _run_show(self, session: SessionState, station: dict[str, Any]) -> dict[str, Any]:
+            return {"ended_reason": "queue_stopped"}
 
     runtime = QueueStoppedRuntime()
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    session = SessionState(session_id="s1", station_id="st")
     runtime._sessions[session.session_id] = session
 
     await runtime._run_session(session.session_id, {"id": "st"})

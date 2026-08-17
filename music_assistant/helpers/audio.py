@@ -10,6 +10,7 @@ import urllib.parse
 from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import aclosing
 from io import BytesIO
+from math import isfinite
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import (
@@ -253,6 +254,32 @@ def create_wave_header(
 
     # return file.getvalue(), all_chunks_size + 8
     return file.getvalue()
+
+
+def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
+    """
+    Generate a wave header for a stream whose length is not known up front.
+
+    :param audio_format: The PCM format the audio behind the header is in.
+    """
+    channels = audio_format.channels
+    sample_rate = audio_format.sample_rate
+    bits_per_sample = audio_format.bit_depth
+    byte_rate = sample_rate * channels * (bits_per_sample // 8)
+    block_align = channels * (bits_per_sample // 8)
+    # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
+    # length fields don't cut the stream off (create_wave_header hardcodes ~6.7h).
+    return (
+        b"RIFF"
+        + struct.pack("<L", 0xFFFFFFFF)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack(
+            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
+        )
+        + b"data"
+        + struct.pack("<L", 0xFFFFFFFF)
+    )
 
 
 def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
@@ -662,6 +689,52 @@ async def store_content_length_in_cache(
     )
 
 
+PROBED_DURATION_CACHE_CATEGORY = 51
+PROBED_DURATION_CACHE_PROVIDER = "audio"
+PROBED_DURATION_CACHE_EXPIRATION = 365 * 86400  # 1 year
+
+
+async def get_probed_duration(mass: MusicAssistant, uri: str) -> int | None:
+    """
+    Get the duration determined during an earlier playback of the given item, if any.
+
+    Use for items whose provider does not report a duration, such as podcast episodes
+    from a feed without itunes:duration.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media item URI (e.g. "overcast--1://podcast_episode/abc").
+    :return: The duration in seconds, or None if the item was never played.
+    """
+    duration: int | None = await mass.cache.get(
+        uri,
+        provider=PROBED_DURATION_CACHE_PROVIDER,
+        category=PROBED_DURATION_CACHE_CATEGORY,
+    )
+    return duration
+
+
+async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -> None:
+    """
+    Store the duration of an item that was determined while streaming it.
+
+    A duration below a second is ignored.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media item URI (e.g. "overcast--1://podcast_episode/abc").
+    :param duration: The duration in seconds.
+    """
+    if duration < 1:
+        return
+    await mass.cache.set(
+        uri,
+        duration,
+        expiration=PROBED_DURATION_CACHE_EXPIRATION,
+        provider=PROBED_DURATION_CACHE_PROVIDER,
+        category=PROBED_DURATION_CACHE_CATEGORY,
+        persistent=True,
+    )
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
@@ -717,16 +790,24 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
 def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     """Parse Loudness measurement from ffmpeg stderr output."""
     stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
-    if "[Parsed_loudnorm_0 @" not in stderr_data:
+    # the report is the last thing the filter logs, and ffmpeg prints it as a block of its
+    # own below the marker line, so the object is delimited rather than on a known line.
+    # the marker carries the filter's position in the chain, which is only zero when
+    # loudnorm runs on its own
+    marker = stderr_data.rfind("[Parsed_loudnorm_")
+    if marker < 0:
         return None
-    for jsun_chunk in stderr_data.split(" { "):
-        try:
-            stderr_data = "{" + jsun_chunk.rsplit("}")[0].strip() + "}"
-            loudness_data = json_loads(stderr_data)
-            return float(loudness_data["input_i"])
-        except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError, IndexError):
-            continue
-    return None
+    start = stderr_data.find("{", marker)
+    if start < 0 or (end := stderr_data.find("}", start)) < 0:
+        return None
+    try:
+        loudness_data = json_loads(stderr_data[start : end + 1])
+        measurement = float(loudness_data["input_i"])
+    except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError):
+        return None
+    # digital silence reads as -inf, which is a report that the clip has no level rather
+    # than a level to correct against
+    return measurement if isfinite(measurement) else None
 
 
 def get_normalization_mode(

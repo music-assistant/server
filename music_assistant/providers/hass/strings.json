@@ -12,14 +12,6 @@
       "label": "Player Mute Control entities",
       "description": "Specify which Home Assistant entities you like to import as player Mute controls in Music Assistant."
     },
-    "tts_entity": {
-      "label": "Text-to-Speech entity",
-      "description": "Select which Home Assistant TTS entity you like to use for text-to-speech capabilities inside Music Assistant."
-    },
-    "ai_task_entity": {
-      "label": "AI Task entity",
-      "description": "Select which Home Assistant AI Task entity you like to use for AI queries inside Music Assistant."
-    },
     "url": {
       "label": "URL",
       "description": "URL to your Home Assistant instance (e.g. http://192.168.1.1:8123)"

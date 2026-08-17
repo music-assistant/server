@@ -156,6 +156,14 @@ class TestTransitionRenderer:
         assert crossfade.crossfade_samples == 10 * PCM.sample_rate
         assert timing.crossfade_duration == pytest.approx(10.0)
 
+    def test_fadeout_curve_flows_into_the_crossfade_filter(self) -> None:
+        """The plan's fadeout_curve becomes the acrossfade filter's c1 curve."""
+        plan = _plan(fadeout_curve="nofade")
+        filters, _ = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        crossfade = filters[-1]
+        assert isinstance(crossfade, CrossfadeFilter)
+        assert "c1=nofade" in crossfade.apply("[fadein]", "[fadeout]")[0]
+
     def test_stretch_savings_shorten_fadeout_accounting(self) -> None:
         """A speed-up ramp removes time from the rendered fade-out total."""
         plan = _plan(tempo_plan=TempoPlan(steps=[(30.0, 1.0), (35.0, 1.02)]))

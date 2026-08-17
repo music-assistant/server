@@ -32,6 +32,7 @@ from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.errors import PlayerCommandFailed
 from pychromecast.controllers import BaseController
 
+from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
@@ -532,6 +533,7 @@ class SendspinChromecastBridge:
 
     async def _launch_sendspin_app(self) -> None:
         """Launch the Sendspin Cast Receiver app and send the server config."""
+        self.cast_player.cancel_pending_app_quit()
         try:
             # Launch the Sendspin Cast App on the Chromecast.
             # force_launch=True ensures the Cast device kills any running app
@@ -630,12 +632,12 @@ class SendspinChromecastBridge:
         The Cast app uses this info to connect its JS Sendspin client
         back to the server with the same client_id.
         """
-        # The Sendspin server runs on its own port (8927), NOT through
+        # The Sendspin server runs on its own port, NOT through
         # the MA webserver or streams server. Use publish_ip directly.
         publish_ip = self.mass.streams.publish_ip
         # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
         # the WebSocket URL. Send the bare server URL here so it ends up correct.
-        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927"
+        server_url = f"ws://{format_ip_for_url(publish_ip)}:{SENDSPIN_SERVER_PORT}"
         raw_delay = self.mass.config.get_raw_player_config_value(
             self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )

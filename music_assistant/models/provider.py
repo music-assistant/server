@@ -7,7 +7,7 @@ import builtins
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
-from music_assistant_models.config_entries import ConfigValueType
+from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 
@@ -15,7 +15,11 @@ from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGE
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
@@ -34,6 +38,9 @@ class Provider:
     mass: MusicAssistant
     manifest: ProviderManifest
     config: ProviderConfig
+    # set to True in providers that capture a mass.streams address or port while loading,
+    # to have them reloaded onto the new one when the streamserver network changes
+    reload_on_streams_network_change: bool = False
 
     def __init__(
         self,
@@ -50,6 +57,10 @@ class Provider:
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        # set by the controller once teardown of this provider starts, so work that is
+        # already in flight (e.g. a discovery running in a worker thread) can tell a
+        # provider on its way out apart from one that is not loaded yet
+        self.unloading = False
         self.initialized = asyncio.Event()
 
     @property
@@ -62,27 +73,38 @@ class Provider:
         """
         Return the (options) config entries to configure this provider instance.
 
-        Called only for an existing (loaded) instance: read the current values via
-        ``self.config``/``self.get_config_value`` and the capabilities via
-        ``self.supported_features``. One-time setup input is collected by the setup flow
-        (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION`` entries for
-        one-shot buttons and handle their presses in ``handle_config_action``.
+        Resolved on every load - before ``handle_async_init`` - as well as whenever the
+        options page is opened, so this may not read state that async init assigns. Read
+        the current values via ``self.config``/``self.get_config_value`` and the
+        capabilities via ``self.supported_features``. One-time setup input is collected by
+        the setup flow (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION``
+        entries for one-shot buttons and handle their presses in ``handle_config_action``.
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
-        Handle a one-shot action button press from this provider's options and re-render.
+        Run the one-shot side effect for a pressed action button from this provider's options.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        provider declares, then return the (possibly refreshed) config entries to display.
+        provider declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning config entries re-renders the options page
+        with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
         raise ActionUnavailable(f"Unknown action: {action}")
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """
+        Handle async initialization of the provider.
+
+        Runs after ``get_config_entries`` was already resolved, so state assigned here
+        is not available to it.
+        """
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -124,7 +146,9 @@ class Provider:
                 self.domain,
                 self.instance_id,
             )
-            task_id = f"provider_reload_{self.instance_id}"
+            # armed under the load path's task id so any (re)load starting before it fires
+            # cancels it
+            task_id = f"load_provider_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:
@@ -291,6 +315,10 @@ class Provider:
         """
         if (entry := self.config.values.get(key)) is None:
             return self.config.get_value(key, default)
+        if entry.type in UI_ONLY:
+            # a display-only entry holds label text rather than a value, so reading
+            # through it would shadow the caller's default
+            return default
         value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
         if value is None:
             return self.config.get_value(key, default)
@@ -363,12 +391,11 @@ class Provider:
             # async_init completed
             logging_name = self.name
         self.logger = mass_logger.getChild(logging_name)
-        log_level = str(config.get_value(CONF_LOG_LEVEL))
+        # fall back to the entry's own default: a config that reaches us without its
+        # entries resolved must not take the whole provider down over a log level
+        log_level = str(config.get_value(CONF_LOG_LEVEL) or "GLOBAL")
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            # if the root logger's level is higher, we need to adjust that too
-            logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)

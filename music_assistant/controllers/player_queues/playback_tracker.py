@@ -29,7 +29,6 @@ from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
     MediaItemType,
-    Playlist,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -41,6 +40,7 @@ from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     build_queue_item,
+    find_dynamic_source,
     get_current_playback_speed,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -323,13 +323,31 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         played_time = 0.0
         queue_index: int | None = queue.current_index or 0
         track_time = 0.0
-        for play_log_entry in queue_data.flow_mode_stream_log:
+        flow_log = queue_data.flow_mode_stream_log
+        for log_index, play_log_entry in enumerate(flow_log):
             # seconds_streamed is bytes-derived stream-time, so the boundary check
-            # doesn't need a speed factor. Only the still-streaming tail entry has
-            # seconds_streamed=None; we'll break inside it before the sentinel matters.
+            # doesn't need a speed factor. Normally only the still-streaming tail entry
+            # has seconds_streamed=None (we'll break inside it before the sentinel
+            # matters); an abandoned probe entry is the exception, handled below.
             if play_log_entry.seconds_streamed is not None:
                 # NOTE: 'seconds_streamed' can be 0 if there was a stream error
                 entry_stream_duration = play_log_entry.seconds_streamed
+            elif log_index < len(flow_log) - 1:
+                # Some players open the same flow URL several times while probing the
+                # stream. A probe can leave an unfinished entry behind before the
+                # connection that actually plays the audio appends the next entry.
+                # Recover the completed stream duration from the shared QueueItem;
+                # treating this non-tail entry as the active sentinel would pin the
+                # queue to the previous track and let elapsed time overflow its duration.
+                stale_queue_item = self.get_item(queue.queue_id, play_log_entry.queue_item_id)
+                if (
+                    stale_queue_item
+                    and stale_queue_item.streamdetails
+                    and stale_queue_item.streamdetails.seconds_streamed is not None
+                ):
+                    entry_stream_duration = stale_queue_item.streamdetails.seconds_streamed
+                else:
+                    entry_stream_duration = 0
             else:
                 entry_stream_duration = 3600 * 24 * 7
             if elapsed_time_queue_total > (entry_stream_duration + played_time):
@@ -448,27 +466,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         )
                         await self.play_index(queue.queue_id, next_index)
                     return
-            # If the queue was started from a dynamic playlist, fetch fresh tracks and continue.
+            # If the queue was started from a dynamic source, fetch fresh tracks and continue.
             qdata = self._queue_data.get(queue.queue_id)
-            source_items = qdata.source_items if qdata else []
-            dynamic_playlist = next(
-                (
-                    item
-                    for item in reversed(source_items)
-                    if isinstance(item, Playlist) and item.is_dynamic
-                ),
-                None,
-            )
-            if dynamic_playlist is None:
-                dynamic_playlist = next(
-                    (
-                        item
-                        for item in reversed(queue_data.enqueued_media_items)
-                        if isinstance(item, Playlist) and item.is_dynamic
-                    ),
-                    None,
-                )
-            if dynamic_playlist is not None:
+            dynamic_source = find_dynamic_source(qdata) if qdata else None
+            if dynamic_source is not None:
                 try:
                     # Restore the queue owner's user context so provider filters and
                     # per-user logic (e.g. smart playlist dedup) are respected during
@@ -479,8 +480,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         else None
                     )
                     set_current_user(playback_user)
-                    dynamic_tracks = await self._media_resolver.get_playlist_tracks(
-                        dynamic_playlist, start_item=None
+                    dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
+                        dynamic_source
                     )
                     if dynamic_tracks:
                         queue_items = [
@@ -509,8 +510,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                                     return
                 except MusicAssistantError as err:
                     self.logger.warning(
-                        "Failed to refresh dynamic playlist %s for queue %s: %s",
-                        getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                        "Failed to refresh dynamic source %s for queue %s: %s",
+                        getattr(dynamic_source, "name", repr(dynamic_source)),
                         queue.display_name,
                         err,
                     )
@@ -606,6 +607,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
             #  Ignore items that had a stream error
             return
+
+        # a preloaded item is only probed once it actually streams
+        self._apply_probed_duration(item_to_report)
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
