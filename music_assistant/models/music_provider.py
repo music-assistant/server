@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    AudioError,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
@@ -49,6 +51,8 @@ from .provider import Provider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.music.media.base import (
@@ -56,8 +60,31 @@ if TYPE_CHECKING:
         LibraryItemSyncDetails,
         TrackSyncDetails,
     )
+    from music_assistant.mass import MusicAssistant
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
+DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+
+
+class ProviderStreamLimitError(AudioError):
+    """Raised when a music provider has no source-stream slot available."""
+
+    def __init__(self, provider: MusicProvider, wait_timeout: float | None) -> None:
+        """
+        Initialize the provider stream limit error.
+
+        :param provider: Provider instance whose source-stream limit was reached.
+        :param wait_timeout: Seconds spent waiting for a slot, or None for an unbounded wait.
+        """
+        limit = provider.max_concurrent_streams
+        assert limit is not None
+        wait_text = f" after waiting {wait_timeout:g} seconds" if wait_timeout is not None else ""
+        super().__init__(
+            f"{provider.name} has reached its limit of {limit} "
+            f"concurrent source streams{wait_text}."
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = limit
 
 
 class MusicProvider(Provider):
@@ -66,6 +93,67 @@ class MusicProvider(Provider):
 
     Music Provider implementations should inherit from this base model.
     """
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config, supported_features)
+        max_concurrent_streams = self.max_concurrent_streams
+        if max_concurrent_streams is not None and max_concurrent_streams < 1:
+            raise ValueError("max_concurrent_streams must be at least 1 or None")
+        self._stream_semaphore = (
+            asyncio.BoundedSemaphore(max_concurrent_streams)
+            if max_concurrent_streams is not None
+            else None
+        )
+
+    @property
+    def max_concurrent_streams(self) -> int | None:
+        """
+        Return the number of source streams Music Assistant may run against this provider.
+
+        None means no limit is imposed, which is the correct answer for local and
+        self-hosted sources. Streaming providers get a conservative default of five;
+        override with a lower, evidence-backed value where the service enforces one.
+        Plugin providers (exclusive audio sources) manage their own session exclusivity
+        and are not covered by this limit.
+        """
+        return DEFAULT_MAX_CONCURRENT_STREAMS if self.is_streaming_provider else None
+
+    @property
+    def has_available_stream_slot(self) -> bool:
+        """Return whether a source stream can start without waiting."""
+        return self._stream_semaphore is None or not self._stream_semaphore.locked()
+
+    @asynccontextmanager
+    async def acquire_stream_slot(self, wait_timeout: float | None) -> AsyncGenerator[None]:
+        """
+        Acquire one source-stream slot for the duration of the context.
+
+        :param wait_timeout: Maximum seconds to wait, or None to wait without a timeout.
+        :raises ProviderStreamLimitError: If no slot becomes available before the timeout.
+        """
+        semaphore = self._stream_semaphore
+        if semaphore is None:
+            yield
+            return
+        try:
+            if wait_timeout is None:
+                await semaphore.acquire()
+            else:
+                async with asyncio.timeout(wait_timeout):
+                    await semaphore.acquire()
+        except TimeoutError as err:
+            raise ProviderStreamLimitError(self, wait_timeout) from err
+        try:
+            yield
+        finally:
+            semaphore.release()
 
     @property
     def is_streaming_provider(self) -> bool:

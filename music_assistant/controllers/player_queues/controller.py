@@ -80,6 +80,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
@@ -1028,6 +1029,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"
+                    if isinstance(err, ProviderStreamLimitError):
+                        # the requested item is playable, its provider is just at capacity:
+                        # report that instead of silently advancing to another item
+                        self.logger.error("%s", err)
+                        await self.stop(queue_id)
+                        raise
                     # Only MediaNotFoundError (item unreachable) is persistent;
                     # keep AudioError items available so a retry can resurface
                     # the same actionable error.
@@ -1350,6 +1357,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
+            except ProviderStreamLimitError:
+                # transient source capacity, do not burn a playable item over it
+                raise
             except MediaNotFoundError, AudioError:
                 # No stream details found, skip this QueueItem
                 self.logger.warning(

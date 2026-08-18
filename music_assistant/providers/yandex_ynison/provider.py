@@ -7,7 +7,7 @@ import hashlib
 import random
 import time
 from collections.abc import AsyncGenerator, Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     PlayerCommandFailed,
@@ -34,6 +35,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from ya_passport_auth import SecretStr
 from ya_passport_auth.ma import BorrowedCredentialSource
 
+from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
 from music_assistant.models.plugin import PluginProvider
@@ -122,6 +124,10 @@ _MUSIC_TOKEN_CACHE_MAX = 4
 # Used defensively to reject stale/tampered values without raising.
 _VALID_SAMPLE_RATES: frozenset[str] = frozenset({"44100", "48000", "96000"})
 _VALID_BIT_DEPTHS: frozenset[str] = frozenset({"16", "24"})
+
+
+class _StreamOwnerMismatchError(InvalidDataError):
+    """Raised when linked-provider stream details belong to another instance."""
 
 
 @dataclass(frozen=True)
@@ -534,21 +540,27 @@ class YandexYnisonProvider(PluginProvider):
                 last_progress_sync = time.monotonic()
 
                 track_fmt = make_pcm_format(session_params)
-                async for chunk in self._stream_track(
+                track_stream = self._stream_track(
                     track_id, seek_ms=seek_ms, session_params=session_params
-                ):
-                    yield chunk
-                    bytes_yielded += len(chunk)
-                    now_mono = time.monotonic()
-                    if now_mono - last_progress_sync >= _PROGRESS_SYNC_INTERVAL:
-                        last_progress_sync = now_mono
-                        await self._sync_progress(seek_ms, bytes_yielded, player_id, session_fmt)
-                    if (
-                        self._track_changed_event.is_set()
-                        or self._stream_stop_event.is_set()
-                        or (had_claim and self._session_lost(player_id, captured_session_id))
-                    ):
-                        break
+                )
+                # aclosing: breaking out below must finalize the generator right away,
+                # otherwise the linked provider's stream slot stays charged until GC.
+                async with aclosing(track_stream):
+                    async for chunk in track_stream:
+                        yield chunk
+                        bytes_yielded += len(chunk)
+                        now_mono = time.monotonic()
+                        if now_mono - last_progress_sync >= _PROGRESS_SYNC_INTERVAL:
+                            last_progress_sync = now_mono
+                            await self._sync_progress(
+                                seek_ms, bytes_yielded, player_id, session_fmt
+                            )
+                        if (
+                            self._track_changed_event.is_set()
+                            or self._stream_stop_event.is_set()
+                            or (had_claim and self._session_lost(player_id, captured_session_id))
+                        ):
+                            break
 
                 # Align to PCM frame boundary — prevents misalignment in MA's
                 # downstream ffmpeg when a track stream is interrupted mid-chunk.
@@ -733,13 +745,21 @@ class YandexYnisonProvider(PluginProvider):
         ``get_audio_stream()`` session.  Falls back to the current
         ``_normalized_params`` when called outside a session.
         """
+        provider = self._yandex_provider
+        if provider is None:
+            self.logger.warning(
+                "Linked Yandex Music provider unavailable — stopping track %s",
+                track_id,
+            )
+            self._stream_stop_event.set()
+            return
         # In-flight stream fetch outranks unrelated 429 cooldowns:
         # dropping a stream the user is actively trying to play is
         # worse than risking another captcha. Prefetch deliberately
         # stays throttled (see `_prefetch_format_for_track`).
         bypass_token = BYPASS_THROTTLER.set(True)
         try:
-            stream_details = await self._get_stream_details_with_retry(track_id)
+            stream_details = await self._get_stream_details_with_retry(track_id, provider=provider)
         except Exception:
             self.logger.exception("Failed to get stream details for track %s", track_id)
             self._stream_stop_event.set()
@@ -747,20 +767,22 @@ class YandexYnisonProvider(PluginProvider):
         finally:
             BYPASS_THROTTLER.reset(bypass_token)
 
-        # Re-capture the provider after the above await: _yandex_provider may
-        # have flipped to None while we were fetching stream details.  Using
-        # the attribute directly below would race with
-        # _check_yandex_provider_match.
-        provider = self._yandex_provider
-        if provider is None:
+        if not self._linked_provider_is_current(provider):
             self.logger.warning(
-                "Linked Yandex Music provider unloaded mid-stream — stopping track %s",
+                "Linked Yandex Music provider changed mid-stream — stopping track %s",
                 track_id,
             )
             self._stream_stop_event.set()
             return
 
         await self._update_metadata_from_stream(stream_details, seek_ms)
+        if not self._linked_provider_is_current(provider):
+            self.logger.warning(
+                "Linked Yandex Music provider changed while preparing track %s",
+                track_id,
+            )
+            self._stream_stop_event.set()
+            return
 
         # No -re here: MA's realtime pacer is the single pacing authority for
         # AudioSources. Pacing the decode a second time would pin it to realtime
@@ -785,18 +807,38 @@ class YandexYnisonProvider(PluginProvider):
             stream_details.audio_format,
             seek_ms,
         )
-        async for chunk in get_ffmpeg_stream(
-            audio_input=provider.get_audio_stream(stream_details),
-            input_format=stream_details.audio_format,
-            output_format=out_fmt,
-            extra_input_args=extra_input_args,
-        ):
-            yield chunk
+        async with provider.acquire_stream_slot(STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT):
+            if not self._linked_provider_is_current(provider):
+                self.logger.warning(
+                    "Linked Yandex Music provider changed before starting track %s",
+                    track_id,
+                )
+                self._stream_stop_event.set()
+                return
+            raw_stream = provider.get_audio_stream(stream_details)
+            ffmpeg_stream = get_ffmpeg_stream(
+                audio_input=raw_stream,
+                input_format=stream_details.audio_format,
+                output_format=out_fmt,
+                extra_input_args=extra_input_args,
+            )
+            async with aclosing(raw_stream), aclosing(ffmpeg_stream):
+                async for chunk in ffmpeg_stream:
+                    if not self._linked_provider_is_current(provider):
+                        self.logger.warning(
+                            "Linked Yandex Music provider changed while streaming track %s",
+                            track_id,
+                        )
+                        self._stream_stop_event.set()
+                        break
+                    yield chunk
 
     async def _get_stream_details_with_retry(
         self,
         track_id: str,
         media_type: MediaType = MediaType.TRACK,
+        *,
+        provider: YandexMusicProviderLike | None = None,
     ) -> StreamDetails:
         """Fetch stream details with caching, throttling, and retry."""
         # Capture the linked yandex_music provider into a local ref at entry.
@@ -805,21 +847,30 @@ class YandexYnisonProvider(PluginProvider):
         # runs as a background task on provider-loaded/unloaded events).
         # Dereferencing the attribute after an await would raise
         # AttributeError and hard-stop the audio generator.
-        provider = self._yandex_provider
+        provider = provider or self._yandex_provider
         if provider is None:
             raise LoginFailed(
                 "Linked Yandex Music provider is not loaded — cannot fetch stream details"
             )
 
-        cache_key = f"ynison_sd_{track_id}"
+        cache_key = self._stream_details_cache_key(provider.instance_id, track_id)
         cached = await self.mass.cache.get(
             cache_key,
             provider=self.instance_id,
             base_class=StreamDetails,
         )
         if cached is not None:
-            self.logger.debug("Stream details cache hit for %s", track_id)
-            return cast("StreamDetails", cached)
+            cached_streamdetails = cast("StreamDetails", cached)
+            if cached_streamdetails.provider == provider.instance_id:
+                self.logger.debug("Stream details cache hit for %s", track_id)
+                return cached_streamdetails
+            await self.mass.cache.delete(cache_key, provider=self.instance_id)
+            self.logger.warning(
+                "Discarded stream details for %s owned by %s instead of %s",
+                track_id,
+                cached_streamdetails.provider,
+                provider.instance_id,
+            )
 
         backoff = _API_INITIAL_BACKOFF
         last_err: Exception | None = None
@@ -829,6 +880,11 @@ class YandexYnisonProvider(PluginProvider):
                     self.logger.debug("get_stream_details throttled %.1fs", delay)
             try:
                 sd = await provider.get_stream_details(track_id, media_type)
+                if sd.provider != provider.instance_id:
+                    raise _StreamOwnerMismatchError(
+                        f"Stream details for {track_id} belong to {sd.provider}, "
+                        f"expected {provider.instance_id}"
+                    )
                 # StreamDetails.data has serialize="omit", so to_dict()
                 # strips it. Manually include it so cached entries keep
                 # the URL / decryption key needed by get_audio_stream().
@@ -848,6 +904,8 @@ class YandexYnisonProvider(PluginProvider):
                 return sd
             except asyncio.CancelledError:
                 raise
+            except _StreamOwnerMismatchError:
+                raise
             except Exception as err:
                 last_err = err
                 if attempt < _API_MAX_RETRIES - 1:
@@ -864,11 +922,32 @@ class YandexYnisonProvider(PluginProvider):
         msg = f"get_stream_details failed after {_API_MAX_RETRIES} attempts for {track_id}"
         raise RuntimeError(msg) from last_err
 
-    async def _invalidate_stream_cache(self, track_id: str) -> None:
-        """Evict cached stream details for a track so the next fetch is fresh."""
-        cache_key = f"ynison_sd_{track_id}"
+    async def _invalidate_stream_cache(
+        self, track_id: str, provider_instance_id: str | None = None
+    ) -> None:
+        """
+        Evict cached stream details for a track so the next fetch is fresh.
+
+        :param track_id: Track whose cached stream details should be dropped.
+        :param provider_instance_id: Linked provider instance that owns the entry,
+            defaulting to the currently linked one.
+        """
+        if provider_instance_id is None:
+            if self._yandex_provider is None:
+                return
+            provider_instance_id = self._yandex_provider.instance_id
+        cache_key = self._stream_details_cache_key(provider_instance_id, track_id)
         await self.mass.cache.delete(cache_key, provider=self.instance_id)
         self.logger.debug("Invalidated stream cache for %s", track_id)
+
+    @staticmethod
+    def _stream_details_cache_key(provider_instance_id: str, track_id: str) -> str:
+        """Return the cache key for one linked provider instance and track."""
+        return f"ynison_sd_{provider_instance_id}_{track_id}"
+
+    def _linked_provider_is_current(self, provider: YandexMusicProviderLike) -> bool:
+        """Return whether the captured linked provider still owns streaming."""
+        return self._yandex_provider is provider and provider.available
 
     # ------------------------------------------------------------------
     # Token handling

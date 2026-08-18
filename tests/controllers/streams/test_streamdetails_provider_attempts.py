@@ -1,18 +1,19 @@
 """
 Tests that resolving streamdetails asks each provider mapping at most once.
 
-``get_stream_details`` walks the provider mappings twice: the first pass is limited to the
-providers the user's provider filter steers to, the second widens to the rest. Without a
-provider filter every mapping counts as preferred, so both passes cover the same set and a
-mapping that failed would be asked again -- doubling the cost of every failure, which for a
-just-in-time renderer like AI Radio means a second full text-to-speech render.
+``get_stream_details`` builds its candidates once: mappings in quality order, the instances
+that can serve each mapping within it, and the providers the user's filter steers to ahead of
+the rest. Every (instance, item id) pair appears at most once, so a mapping that failed is not
+asked again -- which for a just-in-time renderer like AI Radio would mean a second full
+text-to-speech render.
 
-The mappings below are given distinct qualities wherever order matters, so the pass the
-loop reaches them in is fixed rather than left to the iteration order of a set.
+The mappings below are given distinct qualities wherever order matters, so the order the
+candidates are reached in is fixed rather than left to the iteration order of a set.
 """
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,6 +24,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.music_provider import MusicProvider
 
 INSTANCE = "ai_radio--abc"
 OTHER_INSTANCE = "tidal--xyz"
@@ -89,7 +91,15 @@ def _audio(
         (which makes every mapping on the item count as preferred).
     """
     mass = MagicMock()
-    mass.get_provider.side_effect = lambda instance: providers.get(instance)
+    for instance_id, provider in providers.items():
+        if isinstance(provider, MusicProvider):
+            provider.instance_id = instance_id
+            provider.domain = instance_id.split("--", maxsplit=1)[0]
+            provider.available = True
+            provider.is_streaming_provider = True
+    mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
+    # no other loaded instances to widen a mapping to
+    mass.providers = []
     mass.player_queues.queue_data_or_none.return_value = (
         MagicMock(userid="user1") if provider_filter else None
     )
@@ -174,3 +184,146 @@ async def test_two_mappings_on_one_provider_are_both_attempted() -> None:
 
     assert streamdetails.item_id == "good"
     assert calls == ["bad", "good"]
+
+
+def _music_provider(instance: str, has_slot: bool = True) -> MagicMock:
+    """
+    Build a streaming music provider test double.
+
+    :param instance: The instance id the provider is registered under.
+    :param has_slot: Whether the provider has a free source-stream slot.
+    """
+    provider = MagicMock(spec=MusicProvider)
+    provider.has_available_stream_slot = has_slot
+    provider.get_stream_details = AsyncMock(
+        return_value=_streamdetails(ITEM_ID, MediaType.SOUND_EFFECT, instance)
+    )
+    return provider
+
+
+async def test_mapping_quality_order_is_preserved_when_first_provider_is_busy() -> None:
+    """Capacity does not reorder a higher-quality mapping behind a lower-quality one."""
+    busy_instance = "tidal--busy"
+    available_instance = "tidal--available"
+    busy = _music_provider(busy_instance, has_slot=False)
+    available = _music_provider(available_instance)
+    audio = _audio({busy_instance: busy, available_instance: available})
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(busy_instance, content_type=ContentType.FLAC),
+            _mapping(available_instance),
+        )
+    )
+
+    assert streamdetails.provider == busy_instance
+    busy.get_stream_details.assert_awaited_once()
+    available.get_stream_details.assert_not_awaited()
+
+
+async def test_busy_instance_preserves_playback_user_steering_order() -> None:
+    """A busy steered instance stays first; capacity is handled while acquiring the source."""
+    busy_instance = "tidal--preferred"
+    available_instance = "tidal--fallback"
+    busy = _music_provider(busy_instance, has_slot=False)
+    available = _music_provider(available_instance)
+    audio = _audio(
+        {busy_instance: busy, available_instance: available},
+        provider_filter=[busy_instance],
+    )
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(busy_instance, content_type=ContentType.FLAC),
+            _mapping(available_instance),
+        )
+    )
+
+    assert streamdetails.provider == busy_instance
+    busy.get_stream_details.assert_awaited_once()
+    available.get_stream_details.assert_not_awaited()
+
+
+async def test_excluded_instance_is_skipped_including_its_cached_details() -> None:
+    """An excluded instance is passed over, and its unexpired details are not reused."""
+    excluded_instance = "tidal--busy"
+    available_instance = "tidal--available"
+    excluded = _music_provider(excluded_instance)
+    available = _music_provider(available_instance)
+    queue_item = _queue_item(
+        _mapping(excluded_instance, content_type=ContentType.FLAC),
+        _mapping(available_instance),
+    )
+    queue_item.streamdetails = _streamdetails(ITEM_ID, MediaType.SOUND_EFFECT, excluded_instance)
+    audio = _audio({excluded_instance: excluded, available_instance: available})
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=queue_item,
+        excluded_provider_instances={excluded_instance},
+    )
+
+    assert streamdetails.provider == available_instance
+    excluded.get_stream_details.assert_not_awaited()
+
+
+async def test_mapping_falls_back_to_compatible_streaming_provider_instance() -> None:
+    """The same mapping item ID is retried on another loaded instance of its streaming domain."""
+    primary_instance = "tidal--primary"
+    fallback_instance = "tidal--fallback"
+    primary = _music_provider(primary_instance)
+    fallback = _music_provider(fallback_instance)
+    audio = _audio({primary_instance: primary, fallback_instance: fallback})
+    cast("MagicMock", audio.mass).providers = [primary, fallback]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(_mapping(primary_instance)),
+        excluded_provider_instances={primary_instance},
+    )
+
+    assert streamdetails.provider == fallback_instance
+    primary.get_stream_details.assert_not_awaited()
+    fallback.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
+
+
+async def test_playback_user_steers_compatible_instance_within_mapping() -> None:
+    """Playback-user steering picks its compatible instance without changing mapping order."""
+    primary_instance = "tidal--primary"
+    preferred_instance = "tidal--preferred"
+    primary = _music_provider(primary_instance)
+    preferred = _music_provider(preferred_instance)
+    audio = _audio(
+        {primary_instance: primary, preferred_instance: preferred},
+        provider_filter=[preferred_instance],
+    )
+    cast("MagicMock", audio.mass).providers = [primary, preferred]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(_mapping(primary_instance))
+    )
+
+    assert streamdetails.provider == preferred_instance
+    preferred.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
+    primary.get_stream_details.assert_not_awaited()
+
+
+async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
+    """A lower-quality steered mapping is tried before widening to a higher-quality one."""
+    high_quality_instance = "tidal--high"
+    preferred_instance = "spotify--preferred"
+    high_quality = _music_provider(high_quality_instance)
+    preferred = _music_provider(preferred_instance)
+    audio = _audio(
+        {high_quality_instance: high_quality, preferred_instance: preferred},
+        provider_filter=[preferred_instance],
+    )
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(high_quality_instance, content_type=ContentType.FLAC),
+            _mapping(preferred_instance),
+        )
+    )
+
+    assert streamdetails.provider == preferred_instance
+    preferred.get_stream_details.assert_awaited_once()
+    high_quality.get_stream_details.assert_not_awaited()

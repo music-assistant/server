@@ -46,6 +46,11 @@ if TYPE_CHECKING:
 class RadioParadiseProvider(MusicProvider):
     """Radio Paradise Music Provider for Music Assistant."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         # we (currently) do not have any config entries to set up
