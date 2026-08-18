@@ -28,7 +28,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.compare import compare_album_name, compare_strings
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -371,7 +371,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             and isinstance(track.album, Album)
             # a recording is shared by every release it appears on, so the album id is
             # only ours to take when the matched record is for this album as well
-            and compare_strings(track.album.name, adb_track["strAlbum"], strict=False)
+            and compare_album_name(track.album.name, adb_track["strAlbum"])
         ):
             track.album.add_external_id(
                 ExternalID.MB_RELEASEGROUP, adb_track["strMusicBrainzAlbumID"]

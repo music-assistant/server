@@ -3,6 +3,7 @@
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import AlbumType, ExternalID
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
@@ -45,10 +46,19 @@ async def test_album_backfill_runs_with_images_disabled() -> None:
     cast("AsyncMock", provider.mass.music.artists.update_item_in_library).assert_awaited_once()
 
 
-async def test_track_release_group_written_when_album_matches() -> None:
+@pytest.mark.parametrize(
+    "library_album",
+    [
+        "Nevermind",
+        # the retail suffix Apple Music appends carries no identity of its own
+        "Nevermind - EP",
+    ],
+)
+async def test_track_release_group_written_when_album_matches(library_album: str) -> None:
     """The album gets TheAudioDB's release group id when the matched record is that album."""
-    provider = _provider()
-    track = _track("Nevermind")
+    # images off, so this covers the track backfill not being tied to the images option
+    provider = _provider(images_enabled=False)
+    track = _track(library_album)
     provider._get_data = AsyncMock(  # type: ignore[method-assign]
         return_value={"track": [_adb_track()]}
     )
@@ -60,12 +70,22 @@ async def test_track_release_group_written_when_album_matches() -> None:
     cast("AsyncMock", provider.mass.music.albums.update_item_in_library).assert_awaited_once()
 
 
-async def test_track_release_group_skipped_for_another_release() -> None:
+@pytest.mark.parametrize(
+    ("library_album", "adb_album"),
+    [
+        ("Nirvana: The Best Of", "Nevermind"),
+        # near-identical titles are still separate releases
+        ("Vol. 1", "Vol. 2"),
+    ],
+)
+async def test_track_release_group_skipped_for_another_release(
+    library_album: str, adb_album: str
+) -> None:
     """A recording shared with another release must not stamp its id on our album."""
     provider = _provider()
-    track = _track("Nirvana: The Best Of")
+    track = _track(library_album)
     provider._get_data = AsyncMock(  # type: ignore[method-assign]
-        return_value={"track": [_adb_track()]}
+        return_value={"track": [_adb_track(adb_album)]}
     )
 
     await provider.get_track_metadata(track)
@@ -99,7 +119,7 @@ def _provider(*, images_enabled: bool = True) -> AudioDbMetadataProvider:
 
 def _mappings(item_id: str) -> set[ProviderMapping]:
     """Return a single library provider mapping for the given item id."""
-    return {ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="library")}
+    return {ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")}
 
 
 def _artist(name: str) -> Artist:
@@ -141,11 +161,11 @@ def _adb_album() -> dict[str, Any]:
     }
 
 
-def _adb_track() -> dict[str, Any]:
+def _adb_track(album_name: str = "Nevermind") -> dict[str, Any]:
     """Return a minimal TheAudioDB track record."""
     return {
         "strArtist": "Nirvana",
-        "strAlbum": "Nevermind",
+        "strAlbum": album_name,
         "strTrack": "Come as You Are",
         "strMusicBrainzArtistID": ARTIST_MBID,
         "strMusicBrainzAlbumID": RELEASEGROUP_MBID,
