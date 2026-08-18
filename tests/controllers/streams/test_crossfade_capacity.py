@@ -128,6 +128,7 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
+        buffer=None,
     )
     next_details = SimpleNamespace(
         audio_format=pcm_format,
@@ -215,6 +216,7 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
+        buffer=None,
     )
     next_details = SimpleNamespace(
         audio_format=pcm_format,

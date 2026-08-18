@@ -1878,15 +1878,19 @@ class StreamsAudio:
         # this also accounts for crossfade and silence stripping
         seconds_streamed = bytes_written / pcm_format.pcm_sample_size
         streamdetails.seconds_streamed = seconds_streamed
-        uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
-        # streamdetails.duration is in media-time; seconds_streamed is stream-time
-        # (post-atempo), so we scale by playback_speed to recover media-time.
-        streamdetails.duration = int(
-            streamdetails.seek_position
-            + (seconds_streamed + uncredited_tail_seconds) * playback_speed
-        )
-        # propagate accurate duration to queue_item so UI displays it
-        queue_item.duration = streamdetails.duration
+        # an externally aborted source ends in a clean EOF mid-track, so the
+        # streamed length must not be written back as the item's duration
+        source_buffer = streamdetails.buffer
+        if source_buffer is None or not source_buffer.cancelled:
+            uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
+            # streamdetails.duration is in media-time; seconds_streamed is stream-time
+            # (post-atempo), so we scale by playback_speed to recover media-time.
+            streamdetails.duration = int(
+                streamdetails.seek_position
+                + (seconds_streamed + uncredited_tail_seconds) * playback_speed
+            )
+            # propagate accurate duration to queue_item so UI displays it
+            queue_item.duration = streamdetails.duration
         self.logger.debug(
             "Finished Streaming queue track: %s (%s) on queue %s "
             "- crossfade data prepared for next track: %s",
