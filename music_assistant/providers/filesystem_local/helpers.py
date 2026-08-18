@@ -243,7 +243,7 @@ def get_artist_dir(
     # account for disc or album sublevel by ignoring (max) 2 levels if needed
     matched_dir: str | None = None
     for _ in range(3):
-        dirname = parentdir.rsplit(os.sep)[-1]
+        dirname = Path(parentdir).name
         if compare_strings(artist_name, dirname, False):
             # literal match
             # we keep hunting further down to account for the
@@ -301,7 +301,7 @@ def get_album_dir(track_dir: str, album_name: str) -> str | None:
     parentdir = track_dir
     # account for disc sublevel by ignoring 1 level if needed
     for _ in range(2):
-        dirname = parentdir.rsplit(os.sep)[-1]
+        dirname = Path(parentdir).name
         if compare_strings(album_name, dirname, False):
             # literal match
             return parentdir

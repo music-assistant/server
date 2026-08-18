@@ -8,7 +8,7 @@ import random
 import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
-from datetime import UTC, datetime
+from datetime import MAXYEAR, MINYEAR, UTC, datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
@@ -440,25 +440,33 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         """Retrieve all library artists from Plex Music."""
         artists_obj = await self._run_async(self._plex_library.all)
         for artist in artists_obj:
-            yield await self._parse_artist(artist)
+            parsed = await self._parse_or_skip(self._parse_artist, artist)
+            if parsed is not None:
+                yield parsed
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Plex Music."""
         albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
-            yield await self._parse_album(album)
+            parsed = await self._parse_or_skip(self._parse_album, album)
+            if parsed is not None:
+                yield parsed
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await self._run_async(self._plex_library.playlists)
         for playlist in playlists_obj:
-            yield await self._parse_playlist(playlist)
+            parsed = await self._parse_or_skip(self._parse_playlist, playlist)
+            if parsed is not None:
+                yield parsed
 
         # Import collections as playlists if enabled
         if self.config.get_value(CONF_IMPORT_COLLECTIONS):
             collections_obj = await self._run_async(self._plex_library.collections)
             for collection in collections_obj:
-                yield await self._parse_collection(collection)
+                parsed = await self._parse_or_skip(self._parse_collection, collection)
+                if parsed is not None:
+                    yield parsed
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Plex Music."""
@@ -481,33 +489,25 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             if not batch:
                 break
             for plex_track in batch:
-                yield await self._parse_track(plex_track)
+                parsed = await self._parse_or_skip(self._parse_track, plex_track)
+                if parsed is not None:
+                    yield parsed
             offset += page_size
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve all library audiobooks from the configured Plex audiobook section."""
         if self._get_library_type() != LIBRARY_TYPE_AUDIOBOOKS:
             return
-        try:
-            albums_obj = await self._run_async(self._plex_library.albums)
-        except Exception:
-            self.logger.exception("Failed to list albums from audiobook library")
-            return
+        albums_obj = await self._run_async(self._plex_library.albums)
         self.logger.debug(
             "Found %d albums in audiobook library '%s'",
             len(albums_obj),
             self._plex_library.title,
         )
         for album in albums_obj:
-            try:
-                yield await self._parse_audiobook(album, include_chapters=False)
-            except Exception:
-                self.logger.warning(
-                    "Failed to parse audiobook album '%s' (key=%s); skipping",
-                    getattr(album, "title", "[unknown]"),
-                    getattr(album, "key", "[no key]"),
-                    exc_info=True,
-                )
+            parsed = await self._parse_or_skip(self._parse_audiobook, album)
+            if parsed is not None:
+                yield parsed
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
@@ -530,21 +530,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         """Retrieve all library podcasts from the configured Plex podcast section."""
         if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
             return
-        try:
-            albums_obj = await self._run_async(self._plex_library.albums)
-        except Exception:
-            self.logger.exception("Failed to list albums from podcast library")
-            return
+        albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
-            try:
-                yield await self._parse_podcast(album, include_episodes=False)
-            except Exception:
-                self.logger.warning(
-                    "Failed to parse podcast album '%s' (key=%s); skipping",
-                    getattr(album, "title", "[unknown]"),
-                    getattr(album, "key", "[no key]"),
-                    exc_info=True,
-                )
+            parsed = await self._parse_or_skip(self._parse_podcast, album)
+            if parsed is not None:
+                yield parsed
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -764,10 +754,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for plex_track in await self._run_async(plex_album.tracks):
-            track = await self._parse_track(
-                plex_track,
-            )
-            tracks.append(track)
+            if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
+                tracks.append(track)
         return tracks
 
     @use_cache(3600 * 3)  # Cache for 3 hours
@@ -841,7 +829,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             # Collections can contain tracks, albums, or artists - we only want tracks
             for item in collection_items:
                 if item.type == "track":
-                    if track := await self._parse_track(item):
+                    if (track := await self._parse_or_skip(self._parse_track, item)) is not None:
                         track.position = len(result) + 1
                         result.append(track)
                 elif item.type == "album":
@@ -861,18 +849,18 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             tracks_key = f"{mix_key}&type={plexapi.utils.searchType('track')}"
             plex_tracks = await self._run_async(self._plex_library.fetchItems, tracks_key)
             random.shuffle(plex_tracks)
-            for index, plex_track in enumerate(plex_tracks, 1):
-                if track := await self._parse_track(plex_track):
-                    track.position = index
+            for plex_track in plex_tracks:
+                if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
+                    track.position = len(result) + 1
                     result.append(track)
             return result
 
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
-        for index, plex_track in enumerate(playlist_items, 1):
-            if track := await self._parse_track(plex_track):
-                track.position = index
+        for plex_track in playlist_items:
+            if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
+                track.position = len(result) + 1
                 result.append(track)
         return result
 
@@ -1209,6 +1197,36 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             results.append(task.result())
 
         return results
+
+    async def _parse_or_skip(
+        self,
+        parse_coro: Callable[[PlexObjectT], Coroutine[Any, Any, MediaItemT]],
+        plex_item: PlexObjectT,
+    ) -> MediaItemT | None:
+        """
+        Parse a plex object into a media item, or return None if the item must be skipped.
+
+        :param parse_coro: The parse method to apply to the given plex object.
+        :param plex_item: The plex object to parse.
+        """
+        try:
+            return await parse_coro(plex_item)
+        except InvalidDataError as err:
+            # only an item we can not build a media item from is skippable. anything else
+            # may be a server or connection failure rather than a property of this item,
+            # and we can not tell those apart here, so it has to abort the sync - that is
+            # what holds back the deletion pass that would otherwise drop valid items.
+            #
+            # read the identifiers from the cached payload, so reporting a failed item
+            # can not trigger a reload that fails all over again
+            attrib = plex_item._data.attrib
+            self.logger.warning(
+                "Skipping Plex item '%s' (key=%s): %s",
+                attrib.get("title", "[unknown]"),
+                attrib.get("key", "[no key]"),
+                err,
+            )
+            return None
 
     async def _parse_album(self, plex_album: PlexAlbum) -> Album:
         """Parse a Plex Album response to an Album model object."""
@@ -1561,7 +1579,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             audiobook.authors = UniqueList([author_name])
         if plex_album.summary:
             audiobook.metadata.description = plex_album.summary
-        if plex_album.year:
+        if plex_album.year and MINYEAR <= plex_album.year <= MAXYEAR:
             audiobook.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             audiobook.metadata.images = images
@@ -1624,7 +1642,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.publisher = publisher
         if plex_album.summary:
             podcast.metadata.description = plex_album.summary
-        if plex_album.year:
+        if plex_album.year and MINYEAR <= plex_album.year <= MAXYEAR:
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images

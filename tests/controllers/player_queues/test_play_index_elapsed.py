@@ -12,6 +12,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 QUEUE_ID = "q1"
 STALE_ELAPSED = 43_217.7
@@ -127,3 +128,26 @@ async def test_seek_past_duration_still_raises() -> None:
 
     with pytest.raises(InvalidCommand, match="outside of duration range"):
         await ctrl.seek(QUEUE_ID, 50_001)
+
+
+async def test_play_index_stops_and_reports_a_source_capacity_failure() -> None:
+    """Exhausted source capacity stops the queue instead of skipping to another item."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+    queue_item = ctrl._queue_data[QUEUE_ID].items[1]
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Limited"
+    provider.instance_id = "limited--1"
+    ctrl._load_item = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ProviderStreamLimitError(provider, 15)
+    )
+    # another item is available, so a skip would otherwise be attempted
+    ctrl._get_next_index = Mock(return_value=0)  # type: ignore[method-assign]
+    ctrl.stop = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderStreamLimitError):
+        await ctrl.play_index(QUEUE_ID, 1)
+
+    assert queue_item.available
+    assert ctrl._load_item.await_count == 1
+    ctrl.stop.assert_awaited_once_with(QUEUE_ID)

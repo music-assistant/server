@@ -250,7 +250,7 @@ class LocalFileSystemProvider(MusicProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        return self.base_path.split(os.sep)[-1]
+        return Path(self.base_path).name
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -1040,7 +1040,7 @@ class LocalFileSystemProvider(MusicProvider):
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
+            if Path(absolute_path).is_dir():
                 return FileSystemItem(
                     filename=Path(file_path).name,
                     relative_path=get_relative_path(self.base_path, file_path),
@@ -2265,7 +2265,7 @@ class LocalFileSystemProvider(MusicProvider):
                     track_path,
                     possible_artist_folder,
                 )
-                album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                album_artist_str = Path(possible_artist_folder).name
                 album_artists = UniqueList(
                     [await self._parse_artist(name=album_artist_str, album_dir=album_dir)]
                 )

@@ -1,54 +1,58 @@
 """Tests for the Spotify Connect provider."""
 
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant.providers.spotify_connect import (
+from music_assistant.providers.spotify_connect import SpotifyConnectProvider
+from music_assistant.providers.spotify_connect.backends.go_librespot import (
     API_PORT_RANGE_END,
     API_PORT_RANGE_START,
-    SpotifyConnectProvider,
+    GoLibrespotBackend,
 )
-from music_assistant.providers.spotify_connect.client import GoLibrespotClient
+from music_assistant.providers.spotify_connect.clients.go_librespot import GoLibrespotClient
 
 
-async def test_async_init_probes_api_port_on_ipv4_loopback() -> None:
+async def test_backend_start_probes_api_port_on_ipv4_loopback() -> None:
     """The daemon API port is selected on the address go-librespot binds."""
-    provider = object.__new__(SpotifyConnectProvider)
-    provider.mass = MagicMock()
-    provider.logger = MagicMock()
-    provider.mass.create_task.side_effect = lambda coroutine: coroutine.close()
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.logger = MagicMock()
+    backend.mass.create_task.side_effect = lambda coroutine: coroutine.close()
 
     with (
         patch(
-            "music_assistant.providers.spotify_connect.get_go_librespot_binary",
+            "music_assistant.providers.spotify_connect.backends.go_librespot"
+            ".get_go_librespot_binary",
             return_value="/usr/bin/go-librespot",
         ),
         patch(
-            "music_assistant.providers.spotify_connect.select_free_port",
+            "music_assistant.providers.spotify_connect.backends.go_librespot.select_free_port",
             new=AsyncMock(return_value=38801),
         ) as select_port,
     ):
-        await provider.handle_async_init()
+        await backend.start()
 
     select_port.assert_awaited_once_with(API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1")
-    assert provider._client is not None
-    assert provider._client.base_url == "http://127.0.0.1:38801"
+    assert backend._client is not None
+    assert backend._client.base_url == "http://127.0.0.1:38801"
 
 
-async def test_daemon_runner_reselects_api_port_when_taken() -> None:
+async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> None:
     """An API port taken while the daemon was down is replaced before (re)starting."""
-    provider = object.__new__(SpotifyConnectProvider)
-    provider.mass = MagicMock()
-    provider.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
-    provider.logger = MagicMock()
-    provider.config = MagicMock()
-    provider.config.name = "Spotify Test"
-    provider._binary = "/usr/bin/go-librespot"
-    provider._api_port = 38800
-    provider._client = GoLibrespotClient(provider.mass, "http://127.0.0.1:38800", provider.logger)
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
+    backend.logger = MagicMock()
+    backend.name = "Spotify Test"
+    backend.cache_dir = str(tmp_path)
+    backend._binary = "/usr/bin/go-librespot"
+    backend._api_port = 38800
+    backend._client = GoLibrespotClient(backend.mass, "http://127.0.0.1:38800", backend.logger)
+    backend._event_callback = AsyncMock()
     # exit the supervisor loop after a single iteration
-    provider._stop_called = True
-    provider._restart_error_count = 0
+    backend._stop_called = True
+    backend._restart_error_count = 0
 
     async def _no_stderr() -> AsyncGenerator[str]:
         return
@@ -61,21 +65,24 @@ async def test_daemon_runner_reselects_api_port_when_taken() -> None:
 
     with (
         patch(
-            "music_assistant.providers.spotify_connect.is_port_in_use",
+            "music_assistant.providers.spotify_connect.backends.go_librespot.is_port_in_use",
             new=AsyncMock(return_value=True),
         ) as port_probe,
         patch(
-            "music_assistant.providers.spotify_connect.select_free_port",
+            "music_assistant.providers.spotify_connect.backends.go_librespot.select_free_port",
             new=AsyncMock(return_value=38801),
         ),
-        patch("music_assistant.providers.spotify_connect.AsyncProcess", return_value=proc),
-        patch.object(SpotifyConnectProvider, "_write_config") as write_config,
+        patch(
+            "music_assistant.providers.spotify_connect.backends.go_librespot.AsyncProcess",
+            return_value=proc,
+        ),
+        patch.object(GoLibrespotBackend, "_write_config") as write_config,
     ):
-        await provider._daemon_runner()
+        await backend._daemon_runner()
 
     port_probe.assert_awaited_once_with(38800, host="127.0.0.1")
-    assert provider._api_port == 38801
-    assert provider._client.base_url == "http://127.0.0.1:38801"
+    assert backend._api_port == 38801
+    assert backend._client.base_url == "http://127.0.0.1:38801"
     # the daemon config pins the advertisement to the player-facing interface
     write_config.assert_called_once_with("192.168.1.5")
 
@@ -86,18 +93,18 @@ def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvi
     provider.mass = MagicMock()
     provider.logger = MagicMock()
     provider._last_volume_sent = None
-    client = MagicMock()
+    backend = MagicMock()
     set_volume = AsyncMock()
-    client.set_volume = set_volume
-    provider._client = client
+    backend.set_volume = set_volume
+    provider._backend = backend
     player = MagicMock()
     player.state.volume_level = volume_level
     provider.mass.players.get_player.return_value = player
     return provider, set_volume
 
 
-async def test_sync_player_volume_pushes_player_volume_to_daemon() -> None:
-    """The player's volume is pushed to go-librespot and cached for echo dedupe."""
+async def test_sync_player_volume_pushes_player_volume_to_backend() -> None:
+    """The player's volume is pushed to the backend and cached for echo dedupe."""
     provider, set_volume = _volume_sync_provider(50)
 
     await provider._sync_player_volume_to_spotify("player1")
@@ -107,7 +114,7 @@ async def test_sync_player_volume_pushes_player_volume_to_daemon() -> None:
 
 
 async def test_sync_player_volume_pushes_when_cache_matches() -> None:
-    """The push is unconditional: the daemon's volume resets between sessions."""
+    """The push is unconditional: the backend's volume resets between sessions."""
     provider, set_volume = _volume_sync_provider(50)
     provider._last_volume_sent = 50
 

@@ -624,11 +624,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
+        if prov.type != ProviderType.MUSIC:
+            return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
-        if not self.mass.music.library_supported(prov, self.media_type):
-            # assume library supported also means that this mediatype is supported
+        if self.media_type not in prov.supported_media_types:
             return []
         searchresult = await prov.search(
             search_query,
@@ -800,14 +801,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         external_id: str,
         external_id_type: ExternalID | None = None,
-        limit: int | None = 50,
+        *,
+        limit: int | None,
     ) -> list[ItemCls]:
         """
         Get library items for the given external identifier.
 
         :param external_id: External identifier value to look up.
         :param external_id_type: Optional identifier type.
-        :param limit: Maximum number of library items to return.
+        :param limit: Maximum number of library items to return, or None for all matches.
         """
         if external_id_type:
             lookup_values = external_id_lookup_values(external_id_type, external_id)
@@ -1576,25 +1578,57 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if provider_mappings:
             if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
                 return int(cur_item.item_id)
-        for cur_item in await self.get_library_items_by_external_ids(item.external_ids):
-            # External identifiers may be reused, so verify every candidate.
-            if compare_media_item(item, cur_item):
-                return int(cur_item.item_id)
+        # fetch candidates per external id (best identifier first) and stop at the
+        # first verified match; external identifiers may be reused, so verify
+        # every candidate before accepting it
+        seen_item_ids: set[str] = set()
+        for external_id_type, external_id in sorted(item.external_ids, key=external_id_sort_key):
+            for cur_item in await self.get_library_items_by_external_id(
+                external_id, external_id_type, limit=None
+            ):
+                if cur_item.item_id in seen_item_ids:
+                    continue
+                seen_item_ids.add(cur_item.item_id)
+                if await self._confirm_library_candidate(cur_item, item):
+                    return int(cur_item.item_id)
         # search by normalized exact name match
         query = (
-            f"{self.db_table}.search_name = :search_name "
+            f"{self.db_table}.search_name IN :search_names "
             f"OR {self.db_table}.search_sort_name = :search_sort_name"
         )
         query_params = {
-            "search_name": create_safe_string(item.name, True, True),
+            "search_names": self._library_match_names(item),
             "search_sort_name": create_safe_string(item.sort_name or "", True, True),
         }
         for db_item in await self.get_library_items_by_query(
             extra_query_parts=[query], extra_query_params=query_params
         ):
-            if compare_media_item(db_item, item, True):
+            if await self._confirm_library_candidate(db_item, item):
                 return int(db_item.item_id)
         return None
+
+    def _library_match_names(self, item: ItemCls | ItemMapping) -> list[str]:
+        """
+        Return the normalized names a library row for this item may be stored under.
+
+        Override in a subclass when a media type's title carries formatting that the
+        stored name keeps but its identity comparison ignores.
+        """
+        return [create_safe_string(item.name, True, True)]
+
+    async def _confirm_library_candidate(
+        self, db_item: ItemCls, item: ItemCls | ItemMapping
+    ) -> bool:
+        """
+        Return True if a library candidate is the same item as the one being added.
+
+        Override in a subclass to confirm a candidate that the items' own metadata
+        cannot decide on with additional evidence.
+
+        :param db_item: Existing library item that matched on an external id or name.
+        :param item: The (provider) item that is being added to the library.
+        """
+        return bool(compare_media_item(db_item, item, True))
 
     def _external_ids_query(
         self, media_type: MediaType | None = None, table_alias: str | None = None

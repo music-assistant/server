@@ -9,6 +9,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import aiohttp
@@ -178,6 +179,11 @@ class SpotifyProvider(MusicProvider):
             )
 
     @property
+    def max_concurrent_streams(self) -> int:
+        """Spotify accounts tolerate two concurrent sessions (main + librespot)."""
+        return 2
+
+    @property
     def audiobooks_supported(self) -> bool:
         """Check if audiobooks are supported for this user/region."""
         return self._audiobooks_supported
@@ -252,7 +258,7 @@ class SpotifyProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self._get_all_items("me/tracks"):
-            if item and item["track"]["id"]:
+            if item and item["track"] and item["track"]["id"]:
                 yield parse_track(item["track"], self)
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
@@ -1115,7 +1121,7 @@ class SpotifyProvider(MusicProvider):
     @staticmethod
     def _write_librespot_credentials(cache_dir: str, credentials: str) -> None:
         """Write the stored credential to librespot's cache, replacing any stale one."""
-        os.makedirs(cache_dir, exist_ok=True)
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
         credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
         with open(credentials_file, "w", encoding="utf-8") as fileobj:
             fileobj.write(credentials)

@@ -722,12 +722,17 @@ def parse_title_and_version(
         return title, track_version or ""
 
     # Standard version parsing
-    for parts in (
-        _balanced_bracket_groups(title, "(", ")"),
-        _balanced_bracket_groups(title, "[", "]"),
-        re.findall(r" - .*", title),
+    # each pass extracts from the current title so removals from
+    # earlier passes are taken into account
+    for extract_parts in (
+        lambda t: _balanced_bracket_groups(t, "(", ")"),
+        lambda t: _balanced_bracket_groups(t, "[", "]"),
+        lambda t: re.findall(r" - .*", t),
     ):
-        for title_part in parts:
+        for title_part in extract_parts(title):
+            # skip parts already consumed by an earlier removal in this pass
+            if title_part not in title:
+                continue
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 

@@ -83,7 +83,7 @@ def external_id_lookup_values(external_id_type: ExternalID, value: str) -> tuple
             f"{normalized_value[:2]}-{normalized_value[2:5]}-"
             f"{normalized_value[5:7]}-{normalized_value[7:]}"
         )
-    elif external_id_type.value.startswith(_MUSICBRAINZ_PREFIX) and normalized_value != raw_value:
+    elif external_id_type.value.startswith(_MUSICBRAINZ_PREFIX):
         values.add(f"{{{normalized_value}}}")
 
     return tuple(sorted(values))
@@ -100,6 +100,19 @@ def is_valid_isrc(value: str) -> bool:
     :param value: Identifier value to validate.
     """
     return bool(_ISRC_PATTERN.fullmatch(normalize_external_id(ExternalID.ISRC, value)))
+
+
+def is_valid_barcode(value: str) -> bool:
+    """
+    Return whether a value is a structurally valid (canonical) barcode/GTIN.
+
+    An invalid barcode is still preserved as-is for storage/exact-match lookups, but
+    should be treated as absent by callers that rely on the barcode being a genuine
+    GTIN (e.g. a MusicBrainz release lookup).
+
+    :param value: Identifier value to validate.
+    """
+    return _is_valid_gtin(normalize_external_id(ExternalID.BARCODE, value))
 
 
 def external_id_lookup_values_untyped(value: str) -> tuple[str, ...]:
@@ -151,7 +164,13 @@ def _normalize_barcode(value: str) -> str:
     if not payload or len(payload) > 14:
         return value
     normalized_value = payload.zfill(14)
-    return normalized_value if _is_valid_gtin(normalized_value) else value
+    if _is_valid_gtin(normalized_value):
+        return normalized_value
+    if len(compact_value) == 13:
+        # Qobuz delivers part of its catalogue as a GTIN-14 with the final check digit
+        # chopped off: recover the full value by appending the recomputed check digit
+        return compact_value + _gtin_check_digit(compact_value)
+    return value
 
 
 def _normalize_isrc(value: str) -> str:
@@ -172,8 +191,12 @@ def _is_valid_gtin(value: str) -> bool:
     """Return whether a value is a canonical GTIN-14 with a valid check digit."""
     if len(value) != 14 or not value.isdigit():
         return False
-    body = value[:-1]
+    return value[-1] == _gtin_check_digit(value[:-1])
+
+
+def _gtin_check_digit(body: str) -> str:
+    """Return the GTIN check digit for a numeric identifier body."""
     checksum = sum(
         int(char) * (3 if index % 2 == 0 else 1) for index, char in enumerate(reversed(body))
     )
-    return (10 - checksum % 10) % 10 == int(value[-1])
+    return str((10 - checksum % 10) % 10)

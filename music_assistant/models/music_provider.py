@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    AudioError,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
@@ -49,6 +54,8 @@ from .provider import Provider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.music.media.base import (
@@ -56,8 +63,92 @@ if TYPE_CHECKING:
         LibraryItemSyncDetails,
         TrackSyncDetails,
     )
+    from music_assistant.mass import MusicAssistant
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
+DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+# a provider-wide payload change fails every single item, so only the first failures
+# of a sync run are logged in full to keep the (rotating) log file usable
+MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
+MAX_SYNC_ERROR_DETAIL: Final[int] = 200
+
+LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
+    MediaType.ARTIST: ProviderFeature.LIBRARY_ARTISTS,
+    MediaType.ALBUM: ProviderFeature.LIBRARY_ALBUMS,
+    MediaType.TRACK: ProviderFeature.LIBRARY_TRACKS,
+    MediaType.PLAYLIST: ProviderFeature.LIBRARY_PLAYLISTS,
+    MediaType.RADIO: ProviderFeature.LIBRARY_RADIOS,
+    MediaType.AUDIOBOOK: ProviderFeature.LIBRARY_AUDIOBOOKS,
+    MediaType.PODCAST: ProviderFeature.LIBRARY_PODCASTS,
+}
+
+
+@dataclass
+class SyncRunState:
+    """
+    Failure state of one library sync run.
+
+    :param incomplete: True once the run failed to collect an item, which makes its
+        result set an unsafe basis for deleting anything from the library.
+    :param failures: Number of item failures reported by the run so far.
+    """
+
+    incomplete: bool = False
+    failures: int = 0
+
+
+# scoped per run rather than per provider: a standalone import_album_tracks() is
+# launched as its own task, so it must not consume or inflate a running sync's state
+SYNC_RUN_STATE: Final[ContextVar[SyncRunState | None]] = ContextVar(
+    "music_provider_sync_run", default=None
+)
+
+
+def sync_run_state() -> SyncRunState:
+    """Return the state of the sync run in progress, starting one if there is none."""
+    if (state := SYNC_RUN_STATE.get()) is None:
+        state = SyncRunState()
+        SYNC_RUN_STATE.set(state)
+    return state
+
+
+class ProviderStreamLimitError(AudioError):
+    """Raised when a music provider has no source-stream slot available."""
+
+    translation_key = "provider_stream_limit"
+
+    def __init__(self, provider: MusicProvider, wait_timeout: float | None) -> None:
+        """
+        Initialize the provider stream limit error.
+
+        :param provider: Provider instance whose source-stream limit was reached.
+        :param wait_timeout: Seconds spent waiting for a slot, or None for an unbounded wait.
+        """
+        limit = provider.max_concurrent_streams
+        assert limit is not None
+        wait_text = f" after waiting {wait_timeout:g} seconds" if wait_timeout is not None else ""
+        super().__init__(
+            f"{provider.name} has reached its limit of {limit} "
+            f"concurrent source streams{wait_text}.",
+            translation_args=[provider.name, limit],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = limit
+
+
+def describe_sync_error(err: Exception) -> str:
+    """Return a short description of a sync failure, safe to log and to report to clients."""
+    if isinstance(err, MusicAssistantError):
+        return str(err)
+    # an unexpected error can carry an entire api response as its message, which would end
+    # up in the log and - through the task failure list - in every connected client. report
+    # it by type with a clipped detail and leave the full payload to the debug traceback
+    detail = str(err)
+    if not detail:
+        return type(err).__name__
+    if len(detail) > MAX_SYNC_ERROR_DETAIL:
+        detail = f"{detail[:MAX_SYNC_ERROR_DETAIL]}..."
+    return f"{type(err).__name__}: {detail}"
 
 
 class MusicProvider(Provider):
@@ -66,6 +157,67 @@ class MusicProvider(Provider):
 
     Music Provider implementations should inherit from this base model.
     """
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config, supported_features)
+        max_concurrent_streams = self.max_concurrent_streams
+        if max_concurrent_streams is not None and max_concurrent_streams < 1:
+            raise ValueError("max_concurrent_streams must be at least 1 or None")
+        self._stream_semaphore = (
+            asyncio.BoundedSemaphore(max_concurrent_streams)
+            if max_concurrent_streams is not None
+            else None
+        )
+
+    @property
+    def max_concurrent_streams(self) -> int | None:
+        """
+        Return the number of source streams Music Assistant may run against this provider.
+
+        None means no limit is imposed, which is the correct answer for local and
+        self-hosted sources. Streaming providers get a conservative default of five;
+        override with a lower, evidence-backed value where the service enforces one.
+        Plugin providers (exclusive audio sources) manage their own session exclusivity
+        and are not covered by this limit.
+        """
+        return DEFAULT_MAX_CONCURRENT_STREAMS if self.is_streaming_provider else None
+
+    @property
+    def has_available_stream_slot(self) -> bool:
+        """Return whether a source stream can start without waiting."""
+        return self._stream_semaphore is None or not self._stream_semaphore.locked()
+
+    @asynccontextmanager
+    async def acquire_stream_slot(self, wait_timeout: float | None) -> AsyncGenerator[None]:
+        """
+        Acquire one source-stream slot for the duration of the context.
+
+        :param wait_timeout: Maximum seconds to wait, or None to wait without a timeout.
+        :raises ProviderStreamLimitError: If no slot becomes available before the timeout.
+        """
+        semaphore = self._stream_semaphore
+        if semaphore is None:
+            yield
+            return
+        try:
+            if wait_timeout is None:
+                await semaphore.acquire()
+            else:
+                async with asyncio.timeout(wait_timeout):
+                    await semaphore.acquire()
+        except TimeoutError as err:
+            raise ProviderStreamLimitError(self, wait_timeout) from err
+        try:
+            yield
+        finally:
+            semaphore.release()
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -81,6 +233,33 @@ class MusicProvider(Provider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """
+        Return the media types this provider can serve.
+
+        Defaults to the media types the provider declares library support for.
+        Override for providers that can serve (search/stream) media types they
+        cannot list as library items, so they are eligible for search-based
+        lookups such as cross-provider matching and versions.
+        """
+        return {
+            media_type
+            for media_type, feature in LIBRARY_FEATURE_BY_MEDIA_TYPE.items()
+            if feature in self.supported_features
+        }
+
+    @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """
+        Return the errors a library sync must never treat as a skippable item failure.
+
+        Declare the errors this provider raises to signal something a wrapper around its
+        own methods has to act on, such as an expired token that triggers a reauthenticate
+        and a retry. Anything listed here is re-raised instead of skipping the item.
+        """
+        return ()
 
     @property
     def supported_artist_types(self) -> set[ArtistType]:
@@ -784,12 +963,21 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        token = SYNC_RUN_STATE.set(SyncRunState())
+        try:
+            await self._run_library_sync(media_type)
+        finally:
+            SYNC_RUN_STATE.reset(token)
+
+    async def _run_library_sync(self, media_type: MediaType) -> None:
+        """Sync the given media type into the library and process its deletions."""
         # this reference implementation may be overridden
         # with a provider specific approach if needed
 
         if not self.mass.music.library_supported(self, media_type):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
 
+        sync_state = sync_run_state()
         if media_type == MediaType.ARTIST:
             cur_db_ids = await self._sync_library_artists()
         elif media_type == MediaType.ALBUM:
@@ -811,8 +999,24 @@ class MusicProvider(Provider):
         # process deletions (= no longer in library)
         update_current_task_progress_text("Checking library deletions")
         controller = self.mass.music.get_controller(media_type)
-        if self.library_sync_deletions_enabled():
-            prev_library_items: list[int] | None
+        prev_library_items: list[int] | None
+        if sync_state.incomplete:
+            # a skipped item is missing from cur_db_ids just like a deleted one, but it is
+            # still in the provider's library, so deleting it would throw away valid content
+            if self.library_sync_deletions_enabled():
+                summary = f"{sync_state.failures} item(s) could not be synced"
+                self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
+                report_current_task_failure(f"Deletions skipped: {summary}")
+            # merge this run's id's into the stored ones instead of replacing them: that
+            # keeps both the deletions this run could not tell apart from its own failures
+            # and the items it saw for the first time, so a later complete run finds either
+            if prev_library_items := await self.mass.cache.get(
+                key=media_type.value,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+            ):
+                cur_db_ids.update(prev_library_items)
+        elif self.library_sync_deletions_enabled():
             if prev_library_items := await self.mass.cache.get(
                 key=media_type.value,
                 provider=self.instance_id,
@@ -869,12 +1073,41 @@ class MusicProvider(Provider):
             message = f"{message}: {item_name}"
         update_current_task_progress_text(message)
 
-    def _report_sync_task_failure(
+    def _handle_sync_item_failure(
         self, media_type: MediaType, item_ref: str | None, err: Exception
     ) -> None:
-        """Record a non-fatal sync failure on the active background task."""
+        """
+        Log a non-fatal sync failure and record it on the active background task.
+
+        :raises Exception: If the provider declared this error unskippable, so that its own
+            error handling can act on it instead of the item being skipped.
+        """
+        if isinstance(err, self.unskippable_sync_errors):
+            raise err
+        state = sync_run_state()
+        state.failures += 1
+        error_detail = describe_sync_error(err)
+        if state.failures <= MAX_LOGGED_SYNC_FAILURES:
+            if isinstance(err, MusicAssistantError):
+                self.logger.warning(
+                    "Skipping sync of %s %s - error details: %s",
+                    media_type.value,
+                    item_ref,
+                    error_detail,
+                )
+            else:
+                # not one of our own errors: usually a provider choking on its own api
+                # payload, but the per-item library writes raise the same way, so log the
+                # traceback (on debug) to make the actual origin traceable
+                self.logger.error(
+                    "Skipping sync of %s %s - unexpected error: %s",
+                    media_type.value,
+                    item_ref,
+                    error_detail,
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
         report_current_task_failure(
-            f"Failed to sync {media_type.value} {item_ref or '<unknown>'}: {err}"
+            f"Failed to sync {media_type.value} {item_ref or '<unknown>'}: {error_detail}"
         )
 
     async def _sync_item_genres(
@@ -903,10 +1136,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_artists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
-            sync_details = await self.mass.music.artists.get_library_item_sync_details(
-                prov_item.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.artists.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -925,6 +1158,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.artists.set_favorite(db_id, True)
@@ -939,15 +1173,10 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of artist %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.ARTIST, prov_item.uri, err)
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
         return cur_db_ids
 
     def library_sync_album_tracks_enabled(self) -> bool:
@@ -968,10 +1197,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_albums():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ALBUM, item_count, prov_item.name)
-            sync_details = await self.mass.music.albums.get_library_item_sync_details(
-                prov_item.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.albums.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -990,6 +1219,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.albums.set_favorite(db_id, True)
@@ -1004,18 +1234,18 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
-                # optionally add album tracks to library
-                if sync_album_tracks:
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
+                continue
+            # optionally add album tracks to library. the album is already collected here,
+            # so failing to import its tracks does not make the album result set incomplete
+            if sync_album_tracks:
+                try:
                     await self.import_album_tracks(prov_item.item_id, prov_item.name)
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of album %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.ALBUM, prov_item.uri, err)
+                except Exception as err:
+                    self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
     async def import_album_tracks(self, prov_album_id: str, album_name: str | None = None) -> None:
@@ -1033,10 +1263,10 @@ class MusicProvider(Provider):
             await self.get_album_tracks(prov_album_id), start=1
         ):
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            sync_details = await self.mass.music.tracks.get_library_item_sync_details(
-                prov_track.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.tracks.get_library_item_sync_details(
+                    prov_track.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1065,13 +1295,8 @@ class MusicProvider(Provider):
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of album track %s - error details: %s",
-                    prov_track.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.TRACK, prov_track.uri, err)
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     def _validate_audiobook_author_narrator_types(self, prov_item: Audiobook) -> None:
         """
@@ -1121,13 +1346,13 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_audiobooks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
-            sync_details = cast(
-                "AudiobookSyncDetails | None",
-                await self.mass.music.audiobooks.get_library_item_sync_details(
-                    prov_item.provider_mappings,
-                ),
-            )
             try:
+                sync_details = cast(
+                    "AudiobookSyncDetails | None",
+                    await self.mass.music.audiobooks.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
+                )
                 self._validate_audiobook_author_narrator_types(prov_item)
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
@@ -1171,6 +1396,7 @@ class MusicProvider(Provider):
                             lib_fully_played = sync_details.fully_played
                             lib_resume_position_ms = sync_details.resume_position_ms
 
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.audiobooks.set_favorite(db_id, True)
@@ -1197,15 +1423,10 @@ class MusicProvider(Provider):
                         fallback_genres,
                     )
 
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of audiobook %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
         return cur_db_ids
 
     async def _sync_library_playlists(self) -> set[int]:
@@ -1221,10 +1442,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_playlists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PLAYLIST, item_count, prov_item.name)
-            library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
-            )
             try:
+                library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not library_item:
@@ -1259,24 +1480,25 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
+                    cur_db_ids.add(int(library_item.item_id))
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.playlists.set_favorite(library_item.item_id, True)
-                cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
-                # optionally sync playlist tracks
-                if (
-                    prov_item.name in conf_sync_playlist_tracks
-                    or prov_item.uri in conf_sync_playlist_tracks
-                ):
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
+                continue
+            # optionally sync playlist tracks. the playlist is already collected here, so
+            # failing on its tracks does not make the playlist result set incomplete
+            if (
+                prov_item.name in conf_sync_playlist_tracks
+                or prov_item.uri in conf_sync_playlist_tracks
+            ):
+                try:
                     await self._sync_playlist_tracks(prov_item)
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of playlist %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.PLAYLIST, prov_item.uri, err)
+                except Exception as err:
+                    self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
         return cur_db_ids
 
     async def _sync_playlist_tracks(self, provider_playlist: Playlist) -> None:
@@ -1288,16 +1510,16 @@ class MusicProvider(Provider):
         item_count = 0
         async for _prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
             prov_track: PlaylistPlayableItem | Podcast = _prov_track
-            if isinstance(_prov_track, PodcastEpisode):
-                # In MA, only full podcasts can be synced to the library
-                prov_track = await self.get_podcast(_prov_track.podcast.item_id)
             item_count += 1
-            self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            controller = self.mass.music.get_controller(prov_track.media_type)
-            sync_details = await controller.get_library_item_sync_details(
-                prov_track.provider_mappings,
-            )
             try:
+                if isinstance(_prov_track, PodcastEpisode):
+                    # In MA, only full podcasts can be synced to the library
+                    prov_track = await self.get_podcast(_prov_track.podcast.item_id)
+                self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
+                controller = self.mass.music.get_controller(prov_track.media_type)
+                sync_details = await controller.get_library_item_sync_details(
+                    prov_track.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1327,13 +1549,8 @@ class MusicProvider(Provider):
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of album track %s - error details: %s",
-                    prov_track.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.TRACK, prov_track.uri, err)
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     async def _sync_library_tracks(self) -> set[int]:
         """Sync Library Tracks to Music Assistant library."""
@@ -1343,13 +1560,13 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_tracks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_item.name)
-            sync_details = cast(
-                "TrackSyncDetails | None",
-                await self.mass.music.tracks.get_library_item_sync_details(
-                    prov_item.provider_mappings,
-                ),
-            )
             try:
+                sync_details = cast(
+                    "TrackSyncDetails | None",
+                    await self.mass.music.tracks.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
+                )
                 if not sync_details and not prov_item.available:
                     # skip unavailable tracks
                     # TODO: do we want to search for substitutes at this point ?
@@ -1379,6 +1596,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.tracks.set_favorite(db_id, True)
@@ -1393,15 +1611,10 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of track %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.TRACK, prov_item.uri, err)
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.TRACK, prov_item.uri, err)
         return cur_db_ids
 
     async def _sync_library_podcasts(self) -> set[int]:
@@ -1412,10 +1625,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_podcasts():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PODCAST, item_count, prov_item.name)
-            sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
-                prov_item.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1434,6 +1647,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.podcasts.set_favorite(db_id, True)
@@ -1448,19 +1662,19 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
-
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
+                continue
+            # the podcast is already collected here, so a feed that fails to deliver its
+            # episodes does not make the podcast result set incomplete
+            try:
                 # precache podcast episodes
                 async for _ in self.mass.music.podcasts.episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of podcast %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.PODCAST, prov_item.uri, err)
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
         return cur_db_ids
 
     async def _sync_library_radios(self) -> set[int]:
@@ -1471,10 +1685,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_radios():
             item_count += 1
             self._update_sync_task_item_status(MediaType.RADIO, item_count, prov_item.name)
-            library_item = await self.mass.music.radio.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
-            )
             try:
+                library_item = await self.mass.music.radio.get_library_item_by_prov_mappings(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not library_item:
@@ -1500,19 +1714,15 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )
+                    cur_db_ids.add(int(library_item.item_id))
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.radio.set_favorite(library_item.item_id, True)
-                cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
 
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of Radio %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.RADIO, prov_item.uri, err)
+            except Exception as err:
+                sync_run_state().incomplete = True
+                self._handle_sync_item_failure(MediaType.RADIO, prov_item.uri, err)
         return cur_db_ids
 
     # DO NOT OVERRIDE BELOW
