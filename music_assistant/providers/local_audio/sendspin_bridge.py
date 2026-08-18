@@ -17,7 +17,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.helpers.pulse_capture import volume_pct_to_amplitude
+from music_assistant.helpers.pulse_capture import PAVolumeController, volume_pct_to_amplitude
 from music_assistant.helpers.util import join_task
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
@@ -46,7 +46,6 @@ from .constants import (
 if sys.platform == "linux":
     from .pa_simple import (
         PASimpleStream,
-        PAVolumeController,
         enumerate_alsa_devices,
         enumerate_pa_sinks,
         suspend_resume_sink,

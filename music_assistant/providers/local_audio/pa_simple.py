@@ -7,11 +7,7 @@ import os
 import threading
 from typing import Any, ClassVar, Final, Self
 
-from music_assistant.helpers.pulse_capture import PAVolumeController, get_default_pulse_server
-
-# PAVolumeController moved to helpers.pulse_capture; re-exported here for the
-# existing local_audio/sendspin_bridge call sites.
-__all__ = ["PAVolumeController"]
+from music_assistant.helpers.pulse_capture import get_default_pulse_server
 
 PA_STREAM_PLAYBACK: Final = 1
 

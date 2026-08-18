@@ -368,3 +368,6 @@ def test_get_pulse_capture_server_is_shared(tmp_path: Path) -> None:
     other_mass = Mock()
     other_mass.cache_path = str(tmp_path)
     assert pulse_capture.get_pulse_capture_server(other_mass) is not first
+    # a second mass must not evict the first mass's server (it may hold a
+    # running daemon that would otherwise leak unreferenced)
+    assert pulse_capture.get_pulse_capture_server(mass) is first

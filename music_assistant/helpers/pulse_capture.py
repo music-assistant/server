@@ -22,6 +22,7 @@ import os
 import shutil
 import threading
 import uuid
+import weakref
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final
@@ -153,15 +154,15 @@ def get_default_pulse_server() -> str:
 
 def get_pulse_capture_server(mass: MusicAssistant) -> PulseCaptureServer:
     """
-    Return the process-wide shared PulseCaptureServer instance.
+    Return the shared PulseCaptureServer instance for this MusicAssistant.
 
     All consumers must obtain the server through this function so they share a
     single private daemon, and must pair acquire()/release() around their usage.
     """
-    global _shared_server  # noqa: PLW0603
-    if _shared_server is None or _shared_server._mass is not mass:
-        _shared_server = PulseCaptureServer(mass)
-    return _shared_server
+    if (server := _servers.get(mass)) is None:
+        server = PulseCaptureServer(mass)
+        _servers[mass] = server
+    return server
 
 
 class PulseCaptureServer:
@@ -283,6 +284,11 @@ class PulseCaptureServer:
             f"load-module module-native-protocol-unix socket={self._socket_path} auth-anonymous=1\n"
         )
 
+        # PA's .pa config and module argument parsers are space-delimited with no
+        # escaping; refuse early with a clear error instead of mis-parsing later
+        if " " in str(self._base_dir):
+            raise RuntimeError(f"cache path may not contain spaces: {self._base_dir}")
+
         def _prepare() -> None:
             self._base_dir.mkdir(parents=True, exist_ok=True)
             self._socket_path.unlink(missing_ok=True)
@@ -311,8 +317,16 @@ class PulseCaptureServer:
         try:
             await proc.start()
             await self._wait_ready(proc)
-            # verify the daemon actually accepts connections before declaring ready
-            controller = await asyncio.to_thread(PAVolumeController, self.server_address)
+            # verify the daemon actually accepts connections before declaring
+            # ready; the construction cannot be interrupted mid-flight, so on
+            # cancellation close whatever the worker thread still produced to
+            # avoid leaking a live threaded mainloop
+            ctor = asyncio.ensure_future(asyncio.to_thread(PAVolumeController, self.server_address))
+            try:
+                controller = await asyncio.shield(ctor)
+            except asyncio.CancelledError:
+                ctor.add_done_callback(_close_controller_result)
+                raise
         except BaseException:
             if self._proc is proc:
                 self._proc = None
@@ -334,7 +348,7 @@ class PulseCaptureServer:
         """Wait for the daemon's native socket to appear."""
         try:
             async with asyncio.timeout(_READY_TIMEOUT):
-                while not self._socket_path.exists():
+                while not await asyncio.to_thread(self._socket_path.exists):
                     if proc.returncode is not None:
                         raise RuntimeError(
                             f"pulseaudio exited during startup (code {proc.returncode})"
@@ -444,6 +458,8 @@ class PipeSink:
         module_index = await server._load_module("module-pipe-sink", argument)
         if module_index is None:
             raise RuntimeError(f"Failed to load module-pipe-sink for {sink_name}")
+        # no await between the load and the generation snapshot: an interleaved
+        # daemon restart here would pair the new sink with the wrong generation
         return cls(server, sink_name, fifo_path, module_index, server.generation)
 
     @property
@@ -460,9 +476,15 @@ class PipeSink:
         """
         Set the sink's raw (linear) volume.
 
+        A sink from a previous daemon generation ignores the call (recreate the
+        sink after a restart).
+
         :param volume_pct: 100 is unity gain; values above 100 amplify (e.g. 400
             for reciprocal cubic compensation). Clamped to MAX_RAW_VOLUME_PCT.
         """
+        if self._generation != self._server.generation:
+            LOGGER.debug("Ignoring volume for stale sink %s", self._sink_name)
+            return
         await self._server._set_sink_volume_raw(self._sink_name, volume_pct)
 
     async def suspend(self) -> None:
@@ -489,6 +511,9 @@ class PipeSink:
 
     async def _set_suspended(self, suspended: bool) -> None:
         """Toggle the sink's suspend state via pactl."""
+        if self._generation != self._server.generation:
+            LOGGER.debug("Ignoring suspend toggle for stale sink %s", self._sink_name)
+            return
         returncode, output = await check_output(
             "pactl",
             "--server",
@@ -610,7 +635,7 @@ class PAVolumeController:
         :returns: The loaded module's index, or None on failure/timeout.
         """
         with self._lock:
-            if self._failed.is_set():
+            if self._failed.is_set() or not self._mainloop or not self._context:
                 return None
 
             done = threading.Event()
@@ -637,7 +662,7 @@ class PAVolumeController:
                 self._lib.pa_threaded_mainloop_unlock(self._mainloop)
 
             if not done.wait(timeout=2.0):
-                self._lib.pa_operation_unref(op)
+                self._cancel_operation(op)
                 return None
             self._lib.pa_operation_unref(op)
             idx = result.get("index", PA_INVALID_INDEX)
@@ -651,7 +676,7 @@ class PAVolumeController:
         :returns: True if PA reported success.
         """
         with self._lock:
-            if self._failed.is_set():
+            if self._failed.is_set() or not self._mainloop or not self._context:
                 return False
 
             done = threading.Event()
@@ -674,7 +699,7 @@ class PAVolumeController:
                 self._lib.pa_threaded_mainloop_unlock(self._mainloop)
 
             if not done.wait(timeout=2.0):
-                self._lib.pa_operation_unref(op)
+                self._cancel_operation(op)
                 return False
             self._lib.pa_operation_unref(op)
             return bool(result.get("success", 0))
@@ -691,6 +716,17 @@ class PAVolumeController:
                 self._lib.pa_threaded_mainloop_free(self._mainloop)
                 self._mainloop = None
 
+    def _cancel_operation(self, op: int) -> None:
+        """
+        Detach a timed-out operation's callback before dropping the reference.
+
+        PA may still deliver the response later from the mainloop thread; without
+        the cancel it would invoke the (garbage-collected) ctypes trampoline of a
+        callback that went out of scope — undefined behavior.
+        """
+        self._lib.pa_operation_cancel(op)
+        self._lib.pa_operation_unref(op)
+
     def _apply_sink_volume(self, sink_name: str, pa_volume: int, channels: int) -> bool:
         """
         Send an already-mapped raw PA volume to a named sink.
@@ -698,7 +734,7 @@ class PAVolumeController:
         :returns: True if PA reported success.
         """
         with self._lock:
-            if self._failed.is_set():
+            if self._failed.is_set() or not self._mainloop or not self._context:
                 return False
             cvol = _PACVolume()
             self._lib.pa_cvolume_set(ctypes.byref(cvol), channels, pa_volume)
@@ -727,13 +763,17 @@ class PAVolumeController:
                 self._lib.pa_threaded_mainloop_unlock(self._mainloop)
 
             if not done.wait(timeout=_SET_VOLUME_TIMEOUT):
-                self._lib.pa_operation_unref(op)
+                self._cancel_operation(op)
                 return False
             self._lib.pa_operation_unref(op)
             return bool(result.get("success", 0))
 
 
-_shared_server: PulseCaptureServer | None = None
+# One shared server per MusicAssistant instance; weak keys so a discarded mass
+# (tests) does not pin its server object forever.
+_servers: weakref.WeakKeyDictionary[MusicAssistant, PulseCaptureServer] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 class _PACVolume(ctypes.Structure):
@@ -741,6 +781,12 @@ class _PACVolume(ctypes.Structure):
         ("channels", ctypes.c_uint8),
         ("values", ctypes.c_uint32 * PA_CHANNELS_MAX),
     ]
+
+
+def _close_controller_result(fut: asyncio.Future[PAVolumeController]) -> None:
+    """Close a controller whose awaiting task was cancelled mid-construction."""
+    with suppress(Exception):
+        fut.result().close()
 
 
 def _load_full_lib() -> ctypes.CDLL:
@@ -792,6 +838,7 @@ def _load_full_lib() -> ctypes.CDLL:
         ctypes.c_void_p,
     ]
     lib.pa_operation_unref.argtypes = [ctypes.c_void_p]
+    lib.pa_operation_cancel.argtypes = [ctypes.c_void_p]
 
     lib.pa_context_load_module.restype = ctypes.c_void_p
     lib.pa_context_load_module.argtypes = [

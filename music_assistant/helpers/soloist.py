@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import platform
 import re
@@ -39,6 +38,7 @@ from mashumaro.exceptions import InvalidFieldValue, MissingField
 from yarl import URL
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -345,9 +345,7 @@ class SoloistBinaryManager:
         async with self._lock:
             if await self._installed_returncode() == 0:
                 return self._binary_path
-            if not consent:
-                raise ConsentRequiredError("Downloading the soloist binary requires user consent")
-            await self._download_and_install(arch)
+            await self._install_with_consent(consent, arch)
             return self._binary_path
 
     async def ensure_fresh(self, consent: bool) -> Path:
@@ -374,11 +372,7 @@ class SoloistBinaryManager:
             returncode = await self._installed_returncode()
             if returncode not in (0, EXIT_CODE_BUILD_EXPIRED):
                 # missing or broken install: plain (re)install
-                if not consent:
-                    raise ConsentRequiredError(
-                        "Downloading the soloist binary requires user consent"
-                    )
-                await self._download_and_install(arch)
+                await self._install_with_consent(consent, arch)
                 return self._binary_path
             expired = returncode == EXIT_CODE_BUILD_EXPIRED
             if not expired and (not consent or not self._due_for_update()):
@@ -423,6 +417,12 @@ class SoloistBinaryManager:
             + _BUILD_EXPIRY_SECONDS,
         }
 
+    async def _install_with_consent(self, consent: bool, arch: str) -> None:
+        """Download and install the binary, requiring user consent first."""
+        if not consent:
+            raise ConsentRequiredError("Downloading the soloist binary requires user consent")
+        await self._download_and_install(arch)
+
     async def _installed_returncode(self) -> int | None:
         """Return the ``--version`` exit code of the installed binary, or None if unrunnable."""
         if not self._binary_path.is_file():
@@ -455,21 +455,34 @@ class SoloistBinaryManager:
 
     async def _fetch_remote_etag(self, arch: str) -> str | None:
         """Return the ETag the CDN currently serves for the given architecture, if any."""
-        url = CDN_URL_TEMPLATE.format(arch=arch)
-        async with self.mass.http_session.head(
-            url, allow_redirects=True, timeout=ClientTimeout(total=_HEAD_TIMEOUT)
-        ) as resp:
-            if resp.status != HTTPStatus.OK:
-                return None
-            return resp.headers.get("ETag")
+        current_url = CDN_URL_TEMPLATE.format(arch=arch)
+        # follow redirects manually so every hop passes the same host allowlist
+        # the download path enforces
+        for _ in range(_MAX_REDIRECTS + 1):
+            _validate_download_url(current_url)
+            async with self.mass.http_session.head(
+                current_url, allow_redirects=False, timeout=ClientTimeout(total=_HEAD_TIMEOUT)
+            ) as resp:
+                if resp.status in _REDIRECT_STATUSES:
+                    if not (location := resp.headers.get("Location")):
+                        return None
+                    current_url = str(URL(current_url).join(URL(location)))
+                    continue
+                if resp.status != HTTPStatus.OK:
+                    return None
+                return resp.headers.get("ETag")
+        return None
 
     async def _download_and_install(self, arch: str) -> None:
         """Download, validate and atomically install the binary for the given architecture."""
         url = CDN_URL_TEMPLATE.format(arch=arch)
-        await asyncio.to_thread(self._install_dir.mkdir, parents=True, exist_ok=True)
-        temp_dir = Path(
-            await asyncio.to_thread(tempfile.mkdtemp, prefix=".soloist-", dir=self._install_dir)
-        )
+        try:
+            await asyncio.to_thread(self._install_dir.mkdir, parents=True, exist_ok=True)
+            temp_dir = Path(
+                await asyncio.to_thread(tempfile.mkdtemp, prefix=".soloist-", dir=self._install_dir)
+            )
+        except OSError as err:
+            raise DownloadFailedError(f"cannot prepare the soloist install dir: {err}") from err
         try:
             archive_path = temp_dir / "soloist.tar.gz"
             new_binary = temp_dir / "soloist"
@@ -555,19 +568,29 @@ class SoloistBinaryManager:
         def _commit() -> None:
             self._previous_path.unlink(missing_ok=True)
 
-        await asyncio.to_thread(_swap_in)
+        try:
+            await asyncio.to_thread(_swap_in)
+        except OSError as err:
+            # keep SoloistError semantics so ensure_fresh's keep-the-old-binary
+            # fallback also covers filesystem failures during the swap
+            with suppress(OSError):
+                await asyncio.to_thread(_rollback)
+            raise InvalidArchiveError(f"failed to install the soloist binary: {err}") from err
         try:
             returncode, output = await check_output(
                 str(self._binary_path), "--version", timeout=_VERSION_CMD_TIMEOUT
             )
         except (OSError, TimeoutError) as err:
-            await asyncio.to_thread(_rollback)
+            with suppress(OSError):
+                await asyncio.to_thread(_rollback)
             raise InvalidArchiveError(f"soloist binary failed to run: {err}") from err
         if returncode == EXIT_CODE_BUILD_EXPIRED:
-            await asyncio.to_thread(_rollback)
+            with suppress(OSError):
+                await asyncio.to_thread(_rollback)
             raise BuildExpiredError("the downloaded soloist build has already expired")
         if returncode != 0:
-            await asyncio.to_thread(_rollback)
+            with suppress(OSError):
+                await asyncio.to_thread(_rollback)
             raise InvalidArchiveError(f"soloist --version exited with code {returncode}")
         await asyncio.to_thread(_commit)
         return output.decode("utf-8", errors="replace").strip()
@@ -575,7 +598,7 @@ class SoloistBinaryManager:
     def _read_metadata(self) -> _BinaryMetadata | None:
         """Return the persisted install metadata, if present and readable."""
         try:
-            raw = json.loads(self._metadata_path.read_text(encoding="utf-8"))
+            raw = json_loads(self._metadata_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 return None
             return _BinaryMetadata.from_dict(raw)
@@ -584,7 +607,7 @@ class SoloistBinaryManager:
 
     def _write_metadata(self, metadata: _BinaryMetadata) -> None:
         """Persist install metadata next to the binary."""
-        self._metadata_path.write_text(json.dumps(metadata.to_dict()), encoding="utf-8")
+        self._metadata_path.write_text(json_dumps(metadata.to_dict()), encoding="utf-8")
 
 
 class SoloistClient:
@@ -626,7 +649,7 @@ class SoloistClient:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
-            if self._read_endpoint() is not None:
+            if await asyncio.to_thread(self._read_endpoint) is not None:
                 return True
             if loop.time() >= deadline:
                 return False
@@ -644,10 +667,11 @@ class SoloistClient:
         :param on_event: Coroutine called with a :class:`SoloistEvent` per event.
         :raises SoloistError: The daemon has not published its endpoint (yet).
         """
-        if (endpoint := self._read_endpoint()) is None:
+        if (endpoint := await asyncio.to_thread(self._read_endpoint)) is None:
             raise SoloistError("soloist has not published its WebSocket endpoint (yet)")
         addr, port = endpoint
         host = f"[{addr}]" if ":" in addr else addr
+        ws: ClientWebSocketResponse | None = None
         try:
             async with self.mass.http_session.ws_connect(
                 f"ws://{host}:{port}/", heartbeat=_WS_HEARTBEAT
@@ -662,8 +686,11 @@ class SoloistClient:
                     elif msg.type == WSMsgType.ERROR:
                         raise ws.exception() or ClientError("websocket error")
         finally:
-            self._ws = None
-            self._fail_pending_results()
+            # only tear down our own connection state: a reconnecting caller may
+            # already have a newer listen_events connection registered
+            if ws is not None and self._ws is ws:
+                self._ws = None
+                self._fail_pending_results()
 
     async def play(self, uri: str | None = None, *, await_result: bool = False) -> None:
         """
@@ -672,7 +699,7 @@ class SoloistClient:
         :param uri: Spotify URI (track/album/playlist/...); omit to resume.
         :param await_result: Wait for the daemon's command acknowledgement.
         """
-        fields: dict[str, Any] = {"uri": uri} if uri else {}
+        fields: dict[str, Any] = {"uri": uri} if uri is not None else {}
         await self._send_command("play", await_result=await_result, **fields)
 
     async def resume(self, *, await_result: bool = False) -> None:
@@ -764,6 +791,11 @@ class SoloistClient:
         """
         Send a command frame, optionally waiting for its ``command_result`` ack.
 
+        Acks carry only the command name (no request id), so concurrent calls of
+        the same command resolve in FIFO order with no per-call correlation.
+        Never wait for an ack from inside an ``on_event`` callback: the ack is
+        delivered by the same event loop, so the wait can only time out.
+
         :raises SoloistError: The WebSocket is not connected (or closed while waiting).
         :raises TimeoutError: The acknowledgement did not arrive within the timeout.
         """
@@ -785,7 +817,7 @@ class SoloistClient:
     async def _handle_message(self, raw: str, on_event: EventCallback) -> None:
         """Decode a single WebSocket text frame and dispatch it to the callback."""
         try:
-            payload = json.loads(raw)
+            payload = json_loads(raw)
         except ValueError:
             self.logger.debug("Ignoring non-JSON websocket message: %s", raw)
             return
@@ -801,7 +833,7 @@ class SoloistClient:
                 # the decode error, log it and keep the stream alive
                 self.logger.debug("Ignoring malformed %s event: %s (%s)", event_type, raw, err)
                 return
-            if isinstance(data, SoloistCommandResult):
+            if event_type == "command_result" and isinstance(data, SoloistCommandResult):
                 self._resolve_pending_result(data.command)
         await on_event(SoloistEvent(type=event_type, data=data, raw=payload))
 
