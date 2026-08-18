@@ -6437,7 +6437,7 @@ class TestUniversalPlayerMerging:
             },
             "players/ap_keep": {"enabled": True},
             "players/dlna_live": {"enabled": True},
-            # nested players dict scanned by _repoint_group_memberships
+            # nested players dict scanned by _update_group_memberships
             "players": {
                 "group_1": {
                     "enabled": True,
@@ -7236,7 +7236,7 @@ class TestUniversalPlayerReplacement:
         signaled_events = [call.args[0] for call in mock_mass.signal_event.call_args_list]
         assert EventType.PLAYER_CONFIG_UPDATED in signaled_events
 
-    def test_replace_repoints_group_memberships(self, mock_mass: MagicMock) -> None:
+    async def test_replace_repoints_group_memberships(self, mock_mass: MagicMock) -> None:
         """Replacement re-points group memberships from the wrapper to the native player."""
         config_store: dict[str, Any] = {
             "players/cast_1": {"enabled": True},
@@ -7247,7 +7247,7 @@ class TestUniversalPlayerReplacement:
                 "values": {"linked_protocol_ids": ["ap_live"]},
             },
             "players/ap_live": {"enabled": True},
-            # nested players dict scanned by _repoint_group_memberships
+            # nested players dict scanned by _update_group_memberships
             "players": {
                 "group_1": {
                     "enabled": True,
@@ -7263,20 +7263,24 @@ class TestUniversalPlayerReplacement:
                 },
             },
         }
-        controller, native, _ = self._setup_carry_over_scenario(mock_mass, config_store)
+        controller, native, scheduled_tasks = self._setup_carry_over_scenario(
+            mock_mass, config_store
+        )
         group_1 = MockPlayer(MockProvider("player_group", mass=mock_mass), "group_1", "Group")
         group_1.set_initialized()
         controller._players["group_1"] = group_1
 
         with patch.object(group_1, "refresh_state") as mock_refresh:
             controller._check_replace_universal_player(native)
+            for task in [t for t in scheduled_tasks if "_reload_group_members" in repr(t)]:
+                await task
 
         # the wrapper id is replaced by the native id on both membership keys
         assert config_store["players/group_1/values/group_members"] == ["cast_1", "other"]
         assert config_store["players/group_1/values/allowed_members"] == ["cast_1"]
         # no duplicate when the native id is already a member
         assert config_store["players/group_2/values/group_members"] == ["cast_1", "extra"]
-        # a registered player whose membership changed is refreshed
+        # a registered player whose membership changed re-reads it and is refreshed
         mock_refresh.assert_called()
 
     async def test_replace_stops_playing_universal_before_unregister(
@@ -9593,9 +9597,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players._migrate_universal_player_config.assert_called_once_with(
             universal_id, native_parent_id
         )
-        mock_mass.players._repoint_group_memberships.assert_called_once_with(
-            universal_id, native_parent_id
-        )
         mock_mass.players.delete_player_config.assert_called_once_with(
             universal_id, replacement_player_id=native_parent_id
         )
@@ -9686,7 +9687,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players._migrate_universal_player_config.assert_called_once_with(
             universal_id, shell_id
         )
-        mock_mass.players._repoint_group_memberships.assert_called_once_with(universal_id, shell_id)
         mock_mass.players.delete_player_config.assert_called_once_with(
             universal_id, replacement_player_id=shell_id
         )
@@ -9761,9 +9761,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         # The wrapper's settings are handed to the first claimer, then its
         # config is deleted
         mock_mass.players._migrate_universal_player_config.assert_called_once_with(
-            universal_id, "native_a"
-        )
-        mock_mass.players._repoint_group_memberships.assert_called_once_with(
             universal_id, "native_a"
         )
         mock_mass.players.delete_player_config.assert_called_once_with(
@@ -9992,7 +9989,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         }
         # but the registered wrapper keeps its config and group memberships
         mock_mass.players._migrate_universal_player_config.assert_not_called()
-        mock_mass.players._repoint_group_memberships.assert_not_called()
         mock_mass.players.delete_player_config.assert_not_called()
         mock_mass.player_queues.on_player_remove.assert_not_called()
 

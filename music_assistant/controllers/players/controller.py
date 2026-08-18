@@ -1614,8 +1614,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             self.logger.exception("Error unloading player %s", player.name)
         if permanent:
             # player permanent removal: cleanup protocol links, delete config
-            # and signal PLAYER_REMOVED event
-            await self._cleanup_player_memberships(player_id)
+            # and signal PLAYER_REMOVED event.
+            # No group detach is issued here: the player is already out of the registry,
+            # so it is filtered out of every group's live member list, and its persisted
+            # membership is settled by delete_player_config below.
             self._cleanup_protocol_links(player)
             self.delete_player_config(player_id, replacement_player_id)
             self.logger.info("Player removed: %s", player.name)
@@ -1677,12 +1679,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         returns as a brand new player once it is discovered again. Protocol players that
         are still registered or that already moved to another parent keep their config;
         registered ones are detached from the removed player and re-evaluated.
+        Any group that lists the player as a member follows the replacement, or loses
+        the member when there is none.
 
         :param player_id: Player ID of the player to delete the configuration of.
         :param replacement_player_id: Player ID that takes this player's place, so users
-                                      restricted to it follow the replacement.
+                                      restricted to it and groups it belongs to follow
+                                      the replacement.
         """
         self._detach_protocol_children(player_id)
+        self._update_group_memberships(player_id, replacement_player_id)
         player_ids = [
             protocol_id
             for protocol_id in self.mass.config.get(CONF_PLAYERS, {})
