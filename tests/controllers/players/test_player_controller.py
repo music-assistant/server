@@ -55,7 +55,9 @@ from music_assistant.constants import (
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_OUTPUT_CODEC,
+    CONF_PLAYERS,
     CONF_POWER_CONTROL,
+    CONF_PROTOCOL_PARENT_ID,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
 )
@@ -1236,6 +1238,31 @@ class TestRegisterOrUpdateTypeTransition:
 
         # a parent that keeps the link would still route audio to a player that is
         # now standalone
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
+    async def test_protocol_to_player_unlinks_parent_cleared_ahead(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The parent is released even when the provider already dropped the live link."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+        # Sendspin clears protocol_parent_id before it announces the new type, so only
+        # the persisted link is left to find the parent by
+        cached_key = f"{CONF_PLAYERS}/child/values/{CONF_PROTOCOL_PARENT_ID}"
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: "parent" if key == cached_key else default
+        )
+        assert child.protocol_parent_id is None
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
         assert parent.linked_output_protocols == []
         assert child.protocol_parent_id is None
 

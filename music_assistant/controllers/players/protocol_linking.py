@@ -1601,9 +1601,18 @@ class ProtocolLinkingMixin:
         :param existing: The registered player instance, still reporting its previous type.
         """
         if existing.state.type == PlayerType.PROTOCOL:
-            # the player leaves its parent: unlink it there and drop the persisted
-            # parent id, which would otherwise heal its type back to protocol
+            # a provider may announce the new type with the live parent link already
+            # dropped, so take the persisted one to still reach the parent
+            if not existing.protocol_parent_id and (
+                parent_id := self._get_cached_protocol_parent_id(existing.player_id)
+            ):
+                existing.set_protocol_parent_id(parent_id)
+            # unlink at the parent and drop the persisted parent id, which would
+            # otherwise heal the player's type back to protocol
             self._cleanup_protocol_links(existing)
+            # a player leaving the protocol role has no parent, also when that parent
+            # is not registered (anymore) and only the cached link could be cleaned up
+            existing.set_protocol_parent_id(None)
             return
         # the player becomes a child itself: detach the protocol players it owned so
         # they can find a new parent, and give up their ownership in its (kept) config
