@@ -89,6 +89,19 @@ def external_id_lookup_values(external_id_type: ExternalID, value: str) -> tuple
     return tuple(sorted(values))
 
 
+def is_valid_isrc(value: str) -> bool:
+    """
+    Return whether a value is a structurally valid (canonical) ISRC.
+
+    An invalid ISRC is still preserved as-is for storage/exact-match lookups, but
+    should be treated as absent by callers that rely on the ISRC being a genuine,
+    globally unique recording identifier (e.g. album/track fingerprint comparisons).
+
+    :param value: Identifier value to validate.
+    """
+    return bool(_ISRC_PATTERN.fullmatch(normalize_external_id(ExternalID.ISRC, value)))
+
+
 def external_id_lookup_values_untyped(value: str) -> tuple[str, ...]:
     """
     Return lookup values for an identifier whose type is not known.
