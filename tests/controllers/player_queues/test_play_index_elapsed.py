@@ -5,7 +5,8 @@ from __future__ import annotations
 import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
-from music_assistant_models.errors import MediaNotFoundError
+import pytest
+from music_assistant_models.errors import InvalidCommand, MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -117,3 +118,12 @@ async def test_play_index_retry_fallback_discards_failed_items_seek_position() -
     assert queue.current_item.queue_item_id == "fallback"
     assert queue.elapsed_time == 0
     assert all(elapsed == 0 for item_id, elapsed in signals if item_id == "fallback"), signals
+
+
+async def test_seek_past_duration_still_raises() -> None:
+    """The absolute seek keeps rejecting out-of-range positions (relative skip clamps instead)."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(InvalidCommand, match="outside of duration range"):
+        await ctrl.seek(QUEUE_ID, 50_001)
