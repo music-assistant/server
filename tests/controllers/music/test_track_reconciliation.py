@@ -449,23 +449,35 @@ async def test_no_candidate_pair_is_starved() -> None:
     assert seen == set(pairs)
 
 
-async def test_partial_batch_restarts_the_cursor() -> None:
-    """A partial batch means the table is drained, so the next run starts over."""
+async def test_drained_library_parks_the_cursor_at_the_end() -> None:
+    """Reaching the end leaves the cursor there, so later runs cost next to nothing."""
     ctrl = _bare_controller([{"item_id_1": 7, "item_id_2": 9}])
     ctrl._track_reconciliation_cursor = (5, 6)
 
     with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=True)):
         await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == (0, 0)
+    assert ctrl._track_reconciliation_cursor == (7, 9)
 
 
-async def test_empty_batch_restarts_the_cursor() -> None:
-    """With no candidates left the cursor rewinds so later additions are examined."""
+async def test_empty_batch_leaves_the_cursor_alone() -> None:
+    """With nothing left to examine the cursor stays put rather than rescanning."""
     ctrl = _bare_controller([])
     ctrl._track_reconciliation_cursor = (500, 900)
 
     await ctrl._reconcile_duplicate_tracks()
+
+    assert ctrl._track_reconciliation_cursor == (500, 900)
+
+
+async def test_completed_sync_rewinds_the_cursor() -> None:
+    """New content arrives through a sync, so that is when the library is walked again."""
+    ctrl = _bare_controller([])
+    ctrl._track_reconciliation_cursor = (500, 900)
+    ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
+
+    with patch.object(ctrl, "_queue_database_cleanup_task", Mock()):
+        ctrl._handle_sync_completion_check()
 
     assert ctrl._track_reconciliation_cursor == (0, 0)
 

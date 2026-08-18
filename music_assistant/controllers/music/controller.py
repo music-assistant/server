@@ -2645,6 +2645,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if self.active_sync_tasks:
             return
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
+        # freshly synced content is the only source of new duplicates, so let the
+        # reconciliation pass walk the library again from the start
+        self._track_reconciliation_cursor = (0, 0)
         self._queue_database_cleanup_task()
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
@@ -2717,18 +2720,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             limit=TRACK_RECONCILIATION_BATCH_SIZE,
         )
         if not rows:
-            # start over on the next run so tracks added (or renamed) since the last
-            # full pass are examined too
-            self._track_reconciliation_cursor = (0, 0)
             update_current_task_progress_text("No duplicate tracks found")
             return
         # resume after the exact pair examined last, so candidates this run refused can never
         # starve the ones behind them, not even a further pair of the same track that the batch
-        # boundary cut off; a partial batch means the table has been drained
+        # boundary cut off. The cursor is deliberately left where the library ends: walking off
+        # the end costs nothing, while starting over would rescan the whole table every hour.
+        # A completed sync rewinds it, as that is when new duplicates can appear.
         self._track_reconciliation_cursor = (
-            (int(rows[-1]["item_id_1"]), int(rows[-1]["item_id_2"]))
-            if len(rows) == TRACK_RECONCILIATION_BATCH_SIZE
-            else (0, 0)
+            int(rows[-1]["item_id_1"]),
+            int(rows[-1]["item_id_2"]),
         )
         merged = 0
         for index, row in enumerate(rows, 1):
