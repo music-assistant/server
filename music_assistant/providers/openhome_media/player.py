@@ -15,7 +15,6 @@ from uuid import UUID
 from async_upnp_client.aiohttp import AiohttpNotifyServer
 from async_upnp_client.client import UpnpService, UpnpStateVariable
 
-# from async_upnp_client.event_handler import UpnpEventHandler, UpnpNotifyServer
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError, UpnpActionResponseError
 from async_upnp_client.profiles.ohmedia import (
     InfoState,
@@ -36,7 +35,6 @@ from async_upnp_client.profiles.ohmedia import (
 )
 from async_upnp_client.utils import get_local_ip
 
-from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     IdentifierType,
@@ -51,8 +49,6 @@ from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
-from music_assistant.providers.openhome_media.constants import (CONF_USE_DEVICE_RADIO_AS_SOURCE,
-                                                          CONF_USE_DEVICE_PLAYLIST_AS_QUEUE, )
 
 if TYPE_CHECKING:
     from .provider import OpenHomePlayerProvider
@@ -74,7 +70,7 @@ def catch_request_errors[OpenHomePlayerT: "OpenHomePlayer", **P, R](
                 self.display_name,
             )
         if not self.available:
-            self.logger.warning("Device disappeared when trying to call %s", func.__name__)
+            self.logger.warning("Device disappeared while calling %s", func.__name__)
             return None
         try:
             return await func(self, *args, **kwargs)
@@ -269,7 +265,7 @@ class OpenHomePlayer(Player):
                         case PlaylistState.PROTOCOL_INFO:
                             pass
                         case _:
-                            self.logger.warning("Unknown Playlist State Variable")
+                            self.logger.warning("Unhandled Playlist State Variable %s", sv.name)
             case ServiceId.PRODUCT:
                 self.logger.debug("Product Event: %s", state_variables)
                 for sv in state_variables:
@@ -363,7 +359,7 @@ class OpenHomePlayer(Player):
             case ServiceId.UPDATE:
                 pass
             case _:
-                self.logger.warning("Unhandled Event: %s", service)
+                self.logger.warning("Unhandled event for service id: %s", service.service_id)
 
         self.update_state()
         self.last_seen = time.time()
@@ -650,10 +646,6 @@ class OpenHomePlayer(Player):
 
         Configures metadata and URL and attempts to play the media.
         """
-
-        if self.config.get_value(CONF_USE_DEVICE_PLAYLIST_AS_QUEUE):
-            raise NotImplementedError  # for future expansion
-
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received PLAY_MEDIA command on player %s", self.display_name)
 
@@ -670,29 +662,20 @@ class OpenHomePlayer(Player):
         didl_metadata = create_didl_metadata(media)
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
 
-        logger.warning("play_media - url: %s", url)
-        logger.warning("play_media - didl_metadata: %s", didl_metadata)
-
         self.set_current_media(uri=url, clear_all=True)
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = -1
 
-        logger.warning("CONF_USE_DEVICE_RADIO_AS_SOURCE: %s", self.config.get_value(CONF_USE_DEVICE_RADIO_AS_SOURCE))
-        logger.warning("has_source_type: %s", self.profile.has_source_type(ProductSourceType.RADIO))
-        if self.profile.has_source_type(ProductSourceType.RADIO) and self.config.get_value(
-                CONF_USE_DEVICE_RADIO_AS_SOURCE):
+        if self.profile.has_source_type(ProductSourceType.RADIO):
             # Radio service offers an API to allow arbitrary URLs to be played.
-            # Default to this if available because device Playlist is not altered
-            # Override in advanced config if desired
-            logger.warning("play_media - async_radio_play")
-            # flip source to Playlist to avoid buffering problem
+            # flip source to Playlist to avoid buffering problem with Linn DSM
             await self.profile.async_product_set_source_index(0)
             await self.profile.async_radio_set_channel(url, didl_metadata)
             time.sleep(1)
             await self.profile.async_radio_play()
-        else: # self.profile.has_source_type(ProductSourceType.PLAYLIST):
-            # if not Radio then revert to Playlist
-            logger.warning("play_media - use playlist")
+        else:
+            # if no Radio available (e.g. BubbleUPnPserver) then revert to using Playlist
+            logger.debug("play_media - using playlist")
             last_id = await self.profile.async_playlist_last_id()
             new_id = (await self.profile.async_playlist_insert(last_id, url, didl_metadata)).get("NewId")
             if new_id is not None:
