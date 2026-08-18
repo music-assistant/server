@@ -499,9 +499,13 @@ class MetaDataController(
     async def _reconcile_duplicate_albums(self) -> None:
         """Enrich and re-match a small batch of sparse, unenriched albums."""
         update_current_task_progress_text("Searching for albums needing reconciliation")
+        # albums that are still unknown-typed keep retrying at the normal REFRESH_INTERVAL
+        # cadence (e.g. after a transient provider outage), rather than only ever once
+        refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
-            f"{DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' AND "
-            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL"
+            f"{DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' AND ("
+            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
         )
         albums = await self._get_scan_batch(self.mass.music.albums, DB_TABLE_ALBUMS, query)
         if not albums:

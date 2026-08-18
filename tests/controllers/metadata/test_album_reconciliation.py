@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import time
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import aiohttp
@@ -9,14 +10,24 @@ import pytest
 from music_assistant_models.enums import AlbumType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import set_global_cache_values
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemMetadata,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_ALBUMS
 from music_assistant.controllers.metadata import MetaDataController
-from music_assistant.controllers.metadata.constants import METADATA_SCAN_BATCH_SIZE
+from music_assistant.controllers.metadata.constants import (
+    METADATA_SCAN_BATCH_SIZE,
+    REFRESH_INTERVAL,
+)
 from music_assistant.mass import MusicAssistant
 
 _REPORT_FAILURE = "music_assistant.controllers.metadata.controller.report_current_task_failure"
+_CONTROLLER_TIME = "music_assistant.controllers.metadata.controller.time"
 
 
 def _controller() -> MetaDataController:
@@ -40,22 +51,71 @@ def _album_stub(item_id: str = "1", name: str = "Test Album") -> Mock:
 # --------------------------------------------------------------------------- #
 
 
-async def test_reconcile_duplicate_albums_query_matches_unknown_never_refreshed() -> None:
-    """The candidate query selects unknown-typed albums that were never refreshed."""
+async def test_reconcile_duplicate_albums_query_matches_unknown_stale_or_null_refresh() -> None:
+    """The candidate query selects unknown-typed albums that are stale or never refreshed."""
     ctrl = _controller()
     mass = Mock()
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[])
     ctrl.mass = mass
 
-    await ctrl._reconcile_duplicate_albums()
+    with patch(_CONTROLLER_TIME, return_value=1_700_000_000.0):
+        await ctrl._reconcile_duplicate_albums()
+    refresh_before = int(1_700_000_000.0 - REFRESH_INTERVAL)
 
     _, kwargs = mass.music.albums.get_library_items_by_query.call_args
     assert kwargs["extra_query_parts"] == [
-        f"{DB_TABLE_ALBUMS}.album_type = 'unknown' AND "
-        f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL"
+        f"{DB_TABLE_ALBUMS}.album_type = 'unknown' AND ("
+        f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+        f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
     ]
     assert kwargs["limit"] == METADATA_SCAN_BATCH_SIZE
     assert kwargs["order_by"] == "random"
+
+
+async def test_reconcile_duplicate_albums_retries_stale_but_not_fresh_refresh(
+    mass: MusicAssistant,
+) -> None:
+    """An unknown album retries past REFRESH_INTERVAL; a recently-refreshed one does not."""
+    now = int(time())
+    stale_album = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name="Stale Album",
+            album_type=AlbumType.UNKNOWN,
+            artists=UniqueList(),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="stale-item", provider_domain="qobuz", provider_instance="qobuz_1"
+                )
+            },
+            metadata=MediaItemMetadata(last_refresh=now - REFRESH_INTERVAL - 1),
+        )
+    )
+    await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name="Fresh Album",
+            album_type=AlbumType.UNKNOWN,
+            artists=UniqueList(),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="fresh-item", provider_domain="qobuz", provider_instance="qobuz_1"
+                )
+            },
+            metadata=MediaItemMetadata(last_refresh=now - 1),
+        )
+    )
+
+    with (
+        patch.object(mass.metadata, "_update_album_metadata", AsyncMock()) as update_metadata,
+        patch.object(mass.music.albums, "match_providers", AsyncMock()),
+    ):
+        await mass.metadata._reconcile_duplicate_albums()
+
+    processed_ids = {call.args[0].item_id for call in update_metadata.await_args_list}
+    assert processed_ids == {stale_album.item_id}
 
 
 async def test_reconcile_duplicate_albums_empty_queue_is_a_noop() -> None:
