@@ -860,3 +860,20 @@ def test_parse_build_timestamp_reads_the_real_epoch_format() -> None:
     assert soloist._parse_build_timestamp(raw) == 1787077868.0
     # an unrelated small number is not mistaken for a timestamp
     assert soloist._parse_build_timestamp("soloist 1.2.3 build 42") is None
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_force_refresh_bypasses_verification_cache(tmp_path: Path) -> None:
+    """force=True re-verifies even inside the recently-verified window (exit-10 path)."""
+    archive = _build_archive(tmp_path / "a.tar.gz", {"soloist": _elf_binary("x86_64")})
+    manager, session = _make_manager(tmp_path, _serve_archive(archive))
+    await manager.ensure_fresh(consent=True)
+    # within the cache window a plain call short-circuits...
+    session.requests.clear()
+    await manager.ensure_fresh(consent=True)
+    assert session.requests == []
+    # ...but a forced call re-verifies (the fake install is fresh so no download)
+    calls_before = len(session.requests)
+    await manager.ensure_fresh(consent=True, force=True)
+    assert soloist._last_verified is not None
+    assert len(session.requests) >= calls_before

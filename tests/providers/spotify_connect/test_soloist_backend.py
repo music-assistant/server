@@ -322,9 +322,9 @@ async def test_exit_code_10_refreshes_binary_before_restart(
         def __init__(self, mass: Any) -> None:
             """Accept the mass argument like the real manager."""
 
-        async def ensure_fresh(self, consent: bool) -> Path:
+        async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
             """Serve the replacement build."""
-            refreshed.append(consent)
+            refreshed.append(force)
             return Path("/fake/bin/soloist-v2")
 
     monkeypatch.setattr(soloist_backend, "SoloistBinaryManager", _FakeManager)
@@ -1003,3 +1003,33 @@ async def test_stop_teardown_order_and_idempotency() -> None:
 
     await backend.stop()  # second call must be a no-op
     assert order == ["events", "daemon", "proc", "sink", "server"]
+
+
+async def test_start_failure_releases_capture_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A startup failure after acquiring the capture server releases it again."""
+    backend, _events = _make_backend(base_dir=tmp_path)
+
+    class _FakeManager:
+        def __init__(self, mass: Any) -> None:
+            """Accept the mass argument like the real manager."""
+
+        async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
+            """Hand out a fake binary path."""
+            return Path("/fake/bin/soloist")
+
+    server: Any = _FakeServer()
+    monkeypatch.setattr(soloist_backend, "SoloistBinaryManager", _FakeManager)
+    monkeypatch.setattr(soloist_backend, "get_pulse_capture_server", lambda _mass: server)
+    monkeypatch.setattr(
+        soloist_backend,
+        "PipeSink",
+        SimpleNamespace(create=AsyncMock(side_effect=RuntimeError("sink creation failed"))),
+    )
+
+    with pytest.raises(RuntimeError, match="sink creation failed"):
+        await backend.start()
+
+    # the acquire must be paired with a release despite the aborted startup
+    assert server.released

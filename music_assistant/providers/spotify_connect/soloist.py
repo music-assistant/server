@@ -376,7 +376,7 @@ class SoloistBinaryManager:
             await self._install_with_consent(consent, arch)
             return self._binary_path
 
-    async def ensure_fresh(self, consent: bool) -> Path:
+    async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
         """
         Return a validated soloist binary, refreshing it when it is (close to) expiry.
 
@@ -388,6 +388,8 @@ class SoloistBinaryManager:
         :param consent: Whether the user consented to downloading from Spotify's
             CDN. Without consent a still-valid installed binary is returned
             as-is (no proactive refresh).
+        :param force: Re-verify even when another caller just did — required
+            when the daemon itself reported the build expired (exit code 10).
         :raises ConsentRequiredError: A download is needed but consent was not given.
         :raises UnsupportedPlatformError: No soloist build exists for this platform.
         :raises DownloadFailedError: No usable binary is installed and the download failed.
@@ -401,7 +403,8 @@ class SoloistBinaryManager:
             # provider instances starting together share one shared install;
             # skip re-verifying when another caller just did successfully
             if (
-                _last_verified is not None
+                not force
+                and _last_verified is not None
                 and time.monotonic() - _last_verified < _VERIFY_CACHE_SECONDS
                 and self._binary_path.is_file()
             ):

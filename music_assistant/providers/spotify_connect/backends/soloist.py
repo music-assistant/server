@@ -200,19 +200,26 @@ class SoloistBackend(SpotifyConnectBackend):
         # expired build) propagate so the provider load fails with a clear error
         self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(self._consent)
         self._server = await get_pulse_capture_server(self.mass).acquire()
-        await self._ensure_fresh_sink()
+        try:
+            await self._ensure_fresh_sink()
 
-        def _prepare_dirs() -> None:
-            self._data_dir.mkdir(parents=True, exist_ok=True)
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            def _prepare_dirs() -> None:
+                self._data_dir.mkdir(parents=True, exist_ok=True)
+                self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-        await asyncio.to_thread(_prepare_dirs)
-        self._client = SoloistClient(self.mass, self._data_dir, self.logger)
-        # Two self-healing supervisors: one keeps the daemon process alive, the
-        # other keeps the events websocket connected (reconnecting across daemon
-        # restarts).
-        self._daemon_task = self.mass.create_task(self._daemon_runner())
-        self._events_task = self.mass.create_task(self._events_runner())
+            await asyncio.to_thread(_prepare_dirs)
+            self._client = SoloistClient(self.mass, self._data_dir, self.logger)
+            # Two self-healing supervisors: one keeps the daemon process alive,
+            # the other keeps the events websocket connected (reconnecting
+            # across daemon restarts).
+            self._daemon_task = self.mass.create_task(self._daemon_runner())
+            self._events_task = self.mass.create_task(self._events_runner())
+        except BaseException:
+            # a failed startup aborts the provider load before unload() would
+            # ever run — release everything acquired so far ourselves
+            with suppress(Exception):
+                await self.stop()
+            raise
 
     async def stop(self) -> None:
         """Stop the daemon, its supervisors and the capture resources (idempotent)."""
@@ -473,7 +480,11 @@ class SoloistBackend(SpotifyConnectBackend):
         """
         self.logger.warning("soloist build expired; looking for a replacement build")
         try:
-            self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(self._consent)
+            # force: the daemon itself reported expiry, so the recently-verified
+            # fast path must not hand back the same binary
+            self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(
+                self._consent, force=True
+            )
         except BuildExpiredError:
             await self._event_callback(
                 BackendEvent(
