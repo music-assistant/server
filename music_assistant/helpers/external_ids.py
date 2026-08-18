@@ -89,6 +89,31 @@ def external_id_lookup_values(external_id_type: ExternalID, value: str) -> tuple
     return tuple(sorted(values))
 
 
+def external_id_lookup_values_untyped(value: str) -> tuple[str, ...]:
+    """
+    Return lookup values for an identifier whose type is not known.
+
+    :param value: Identifier value to look up.
+    """
+    values = {value.strip()}
+    for external_id_type in ExternalID:
+        values.update(external_id_lookup_values(external_id_type, value))
+    return tuple(sorted(values))
+
+
+def barcode_to_upc(value: str) -> str:
+    """
+    Return the shortest UPC/EAN representation of a valid barcode.
+
+    :param value: Barcode in a provider or canonical storage format.
+    """
+    normalized_value = normalize_external_id(ExternalID.BARCODE, value)
+    if not _is_valid_gtin(normalized_value):
+        return value
+    payload = normalized_value.lstrip("0")
+    return payload.zfill(12)
+
+
 def external_id_sort_key(external_id: tuple[ExternalID, str]) -> tuple[int, str, str]:
     """
     Return a deterministic preference key for an external identifier.

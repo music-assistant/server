@@ -3,7 +3,9 @@
 from music_assistant_models.enums import ExternalID
 
 from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
     external_id_lookup_values,
+    external_id_lookup_values_untyped,
     normalize_external_id,
     normalize_external_ids,
 )
@@ -33,6 +35,12 @@ def test_legacy_gtin_lookup_values() -> None:
     assert "0724354283857" in values
     assert "00724354283857" in values
     assert "000724354283857" in values
+
+
+def test_untyped_lookup_values_and_itunes_upc() -> None:
+    """Untyped lookups normalize formatted IDs and canonical GTINs convert to UPC."""
+    assert "USRC17607839" in external_id_lookup_values_untyped("US-RC1-76-07839")
+    assert barcode_to_upc("00724354283857") == "724354283857"
 
 
 def test_normalize_isrc_and_mbid() -> None:

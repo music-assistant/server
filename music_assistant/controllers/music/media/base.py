@@ -65,6 +65,7 @@ from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
+    external_id_lookup_values_untyped,
     external_id_sort_key,
     normalize_external_ids,
 )
@@ -276,6 +277,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 # actually add a new item in the library db
                 self.mass.music.match_provider_instances(item)
                 async with self._db_add_lock:
+                    # Another task may have inserted the same item while this task waited.
                     if library_id := await self._get_library_item_by_match(item):
                         await self._update_library_item(
                             library_id, item, overwrite=overwrite_existing
@@ -798,7 +800,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         external_id: str,
         external_id_type: ExternalID | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
     ) -> list[ItemCls]:
         """
         Get library items for the given external identifier.
@@ -807,11 +809,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param external_id_type: Optional identifier type.
         :param limit: Maximum number of library items to return.
         """
-        lookup_values = (
-            external_id_lookup_values(external_id_type, external_id)
-            if external_id_type
-            else (external_id,)
-        )
+        if external_id_type:
+            lookup_values = external_id_lookup_values(external_id_type, external_id)
+        else:
+            lookup_values = external_id_lookup_values_untyped(external_id)
         subquery_parts = [
             "media_type = :ext_id_media_type",
             "external_id IN :external_ids",
@@ -828,12 +829,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"WHERE {' AND '.join(subquery_parts)}"
         )
         query = f"{self.db_table}.item_id IN ({subquery})"
-        items = await self.get_library_items_by_query(
-            limit=limit,
+        if limit is not None:
+            limited_items = await self.get_library_items_by_query(
+                limit=limit,
+                extra_query_parts=[query],
+                extra_query_params=query_params,
+            )
+            return sorted(limited_items, key=lambda item: int(item.item_id))
+
+        all_items: list[ItemCls] = []
+        offset = 0
+        page_size = 500
+        while page := await self.get_library_items_by_query(
+            limit=page_size,
+            offset=offset,
             extra_query_parts=[query],
             extra_query_params=query_params,
-        )
-        return sorted(items, key=lambda item: int(item.item_id))
+        ):
+            all_items.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return sorted(all_items, key=lambda item: int(item.item_id))
 
     @final
     async def get_library_item_by_external_id(
@@ -850,7 +867,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Get all library items matching any of the given external identifiers."""
         result: dict[str, ItemCls] = {}
         for external_id_type, external_id in sorted(external_ids, key=external_id_sort_key):
-            for item in await self.get_library_items_by_external_id(external_id, external_id_type):
+            for item in await self.get_library_items_by_external_id(
+                external_id, external_id_type, limit=None
+            ):
                 result.setdefault(item.item_id, item)
         return list(result.values())
 

@@ -110,6 +110,34 @@ async def test_formatted_isrc_from_two_providers_dedupes(music: MusicController)
 
     assert library_track_1.item_id == library_track_2.item_id
     assert library_track_2.external_ids == {(ExternalID.ISRC, ISRC)}
+    untyped_match = await music.tracks.get_library_item_by_external_id("US-RC1-76-07839")
+    assert untyped_match is not None
+    assert untyped_match.item_id == library_track_1.item_id
+
+
+async def test_matching_checks_more_than_fifty_external_id_candidates(
+    music: MusicController,
+) -> None:
+    """Internal matching paginates every row sharing a non-unique identifier."""
+    for index in range(50):
+        await music.tracks.add_item_to_library(
+            create_track(
+                f"provider{index}_1",
+                f"collision_{index}",
+                name=f"Collision {index}",
+                duration=100 + index * 20,
+            )
+        )
+    expected = await music.tracks.add_item_to_library(
+        create_track("expected_1", "expected", name="Expected", duration=2000)
+    )
+
+    matched = await music.tracks.add_item_to_library(
+        create_track("incoming_1", "incoming", name="Different name", duration=2000)
+    )
+
+    assert matched.item_id == expected.item_id
+    assert await music.tracks.library_count() == 51
 
 
 async def test_non_unique_external_id_candidates_are_all_verified(

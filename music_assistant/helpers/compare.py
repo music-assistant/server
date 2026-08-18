@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.helpers import create_safe_string
@@ -619,6 +620,7 @@ def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> boo
     return None
 
 
+@lru_cache(maxsize=1024)
 def _normalize_version_tokens(value: str) -> tuple[str, ...]:
     """Return meaningful version tokens in stable order."""
     if not value or create_safe_string(value) in _IGNORE_VERSION_KEYS:
