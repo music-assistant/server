@@ -343,8 +343,7 @@ def generate_release_notes(  # noqa: PLR0915
     if frontend_changes and len(frontend_changes) > 0:
         lines.append("### 🎨 Frontend Changes")
         lines.append("")
-        for change in frontend_changes:
-            lines.append(change)
+        lines.extend(frontend_changes)
         lines.append("")
 
     # Add uncategorized PRs if any
