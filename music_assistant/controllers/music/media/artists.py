@@ -202,7 +202,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             played_only=played_only,

@@ -116,7 +116,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             played_only=played_only,
             in_library_only=True,
             summary=summary,
@@ -136,7 +136,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,

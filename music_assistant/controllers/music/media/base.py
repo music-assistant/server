@@ -496,7 +496,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             genre_ids=genre,
             played_only=played_only,
             in_library_only=True,
@@ -1953,6 +1953,30 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return []
         allowed_providers = set(self.mass.music.get_active_provider_instances())
         return [p for p in reachable_via if p in allowed_providers]
+
+    @final
+    def _provider_filter_considering_reachability(
+        self,
+        provider: str | list[str] | None,
+        resolved_reachable_via: list[str] | None,
+    ) -> list[str] | None:
+        """
+        Resolve the `provider` filter, deferring to an active `reachable_via` filter.
+
+        The current user's provider access is already enforced on `resolved_reachable_via`
+        by `_resolve_reachable_via`. So when `reachable_via` is active and no explicit
+        `provider` filter was requested, skip `_ensure_provider_filter`'s implicit
+        injection of the user's provider filter: that would additionally require the
+        item's in-library mapping itself to be on one of those providers, which is
+        stricter than (and redundant with) what `reachable_via` already checks.
+
+        :param provider: The explicit provider filter, as passed to `library_items`.
+        :param resolved_reachable_via: The already-resolved `reachable_via` filter (the
+            return value of `_resolve_reachable_via`), or None if not active.
+        """
+        if resolved_reachable_via is not None and provider is None:
+            return None
+        return self._ensure_provider_filter(provider)
 
     @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:

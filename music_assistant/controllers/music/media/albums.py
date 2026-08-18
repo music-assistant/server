@@ -204,7 +204,7 @@ class AlbumsController(MediaControllerBase[Album]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -236,7 +236,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 search=None,
                 limit=remaining_limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
