@@ -677,7 +677,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
-        available_providers = ("library", *self.get_unique_providers())
+        available_providers = ("library", *self.get_active_provider_instances())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         # user_initiated_only constrains only `media_types`; always_include_media_types are
         # included regardless (e.g. podcasts/audiobooks have no user-initiated container row).
@@ -705,6 +705,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "(CASE WHEN p.provider = 'library' THEN "
                 f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
                 "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
+                f"AND m.available = 1 "
                 f"AND m.provider_instance IN {available_providers_str}{requested_clause}) "
                 f"ELSE (p.provider IN {available_providers_str}{direct_requested_clause}) END)"
             )
@@ -821,7 +822,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         if providers is not None and not providers:
             return []
-        available_providers = ("library", *self.get_unique_providers())
+        available_providers = ("library", *self.get_active_provider_instances())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         params: dict[str, Any] = {}
         requested_clause = ""
@@ -847,6 +848,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "CASE WHEN p.provider = 'library' THEN "
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
+            "AND m.available = 1 "
         )
         if not all_users and (user := get_current_user()):
             filter_for_str = available_providers_str
@@ -1879,6 +1881,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             result.append(provider.instance_id)
             processed_domains.add(provider.domain)
         return result
+
+    def get_active_provider_instances(self) -> list[str]:
+        """
+        Return the instance ids of all currently loaded, available MusicProviders.
+
+        Unlike `get_unique_providers`, this keeps every instance of a streaming
+        provider's domain instead of collapsing to one per domain, so a caller
+        validating a specific requested provider instance id isn't shadowed by
+        another instance of the same domain. Applies the current user's provider
+        filter (via the `providers` property) and excludes providers that are
+        loaded but not currently available.
+        """
+        return [provider.instance_id for provider in self.providers if provider.available]
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""

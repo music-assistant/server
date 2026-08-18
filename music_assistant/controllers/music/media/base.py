@@ -1745,15 +1745,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return the SQL clause that restricts items to those reachable via given providers.
 
-        Unlike `_provider_filter_clause`, this only checks that a mapping to one of
-        the given provider instances exists at all: it does not require that mapping
-        itself to be in that provider's own library. This is used to answer "can this
-        (already in-library) item be played through one of these providers", as opposed
-        to "is this item favorited on one of these providers".
+        Unlike `_provider_filter_clause`, this only checks that an available mapping to
+        one of the given provider instances exists: it does not require that mapping to
+        be in that provider's own library. This is used to answer "can this (already
+        in-library) item be played through one of these providers", as opposed to
+        "is this item favorited on one of these providers".
 
         :param query_params: Query params dict; the clause's bound params are added to it.
-        :param reachable_via: Only match items with a mapping to one of these provider
-            instances.
+        :param reachable_via: Only match items with an available mapping to one of these
+            provider instances.
         """
         query_params["reachable_via_media_type"] = self.media_type.value
         query_params["reachable_via_providers"] = reachable_via
@@ -1761,6 +1761,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} reachable_mappings "
             f"WHERE reachable_mappings.item_id = {self.db_table}.item_id "
             "AND reachable_mappings.media_type = :reachable_via_media_type "
+            "AND reachable_mappings.available = 1 "
             "AND reachable_mappings.provider_instance IN :reachable_via_providers)"
         )
 
@@ -1941,16 +1942,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param reachable_via: Requested provider instance ids, or None for no filter.
         :return: None if no filter should be applied. Otherwise, the subset of
-            `reachable_via` that is currently loaded and allowed for the current user
-            (per `MusicController.get_unique_providers`). An empty list means the
-            filter cannot match anything; callers must then return no items rather
+            `reachable_via` that is currently active and allowed for the current user
+            (per `MusicController.get_active_provider_instances`). An empty list means
+            the filter cannot match anything; callers must then return no items rather
             than issue a query.
         """
         if reachable_via is None:
             return None
         if not reachable_via:
             return []
-        allowed_providers = set(self.mass.music.get_unique_providers())
+        allowed_providers = set(self.mass.music.get_active_provider_instances())
         return [p for p in reachable_via if p in allowed_providers]
 
     @final
