@@ -167,6 +167,11 @@ class _Harness:
     get_provider_item: AsyncMock
     get_provider_album_tracks: AsyncMock
     get_provider: Mock
+    provider: Mock
+
+    async def match(self, db_album: Album, *, strict: bool = True) -> list[ProviderMapping]:
+        """Match against the single (streaming) provider the harness owns."""
+        return await self.ctrl.match_provider(db_album, self.provider, strict)
 
     def album_track_calls(self) -> list[str]:
         """Return the album item ids passed to each provider album-track lookup."""
@@ -216,13 +221,17 @@ def _harness(
         side_effect=lambda item_id, _provider, **_kwargs: provider_items[item_id]
     )
 
-    async def _album_tracks(item_id: str, _provider: str) -> list[Track]:
+    async def _album_tracks(item_id: str, *_rest: object) -> list[Track]:
         result = album_tracks.get(item_id, [])
         if isinstance(result, Exception):
             raise result
         return list(result)
 
+    # a single recorder backs both the base mapping lookup (_get_provider_album_tracks)
+    # and the candidate lookup (provider.get_album_tracks), so their calls stay ordered
     get_provider_album_tracks = AsyncMock(side_effect=_album_tracks)
+    provider = _provider()
+    provider.get_album_tracks = get_provider_album_tracks
     with patch.multiple(
         ctrl,
         search=search,
@@ -230,7 +239,7 @@ def _harness(
         _get_provider_album_tracks=get_provider_album_tracks,
     ):
         yield _Harness(
-            ctrl, search, get_provider_item, get_provider_album_tracks, mass.get_provider
+            ctrl, search, get_provider_item, get_provider_album_tracks, mass.get_provider, provider
         )
 
 
@@ -243,7 +252,7 @@ async def test_clear_no_match_search_result_skips_full_fetch() -> None:
     """A confidently non-matching search result is dropped before any full fetch."""
     other = _album("s1", "spotify_1", name="Takk...")
     with _harness(search_results=[other], provider_items={}) as harness:
-        matches = await harness.ctrl.match_provider(_library_album(), _provider())
+        matches = await harness.match(_library_album())
 
     assert matches == []
     harness.get_provider_item.assert_not_awaited()
@@ -255,7 +264,7 @@ async def test_insufficient_search_result_proceeds_to_one_full_fetch() -> None:
     sparse = _album("s1", "spotify_1", version="Remaster")
     full = _album("s1", "spotify_1", external_ids={(ExternalID.MB_ALBUM, MB_ALBUM_ID)})
     with _harness(search_results=[sparse], provider_items={"s1": full}) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     harness.get_provider_item.assert_awaited_once()
@@ -270,7 +279,7 @@ async def test_full_item_match_uses_no_track_or_musicbrainz_calls() -> None:
     with _harness(
         search_results=[sparse], provider_items={"s1": full}, musicbrainz=musicbrainz
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     harness.get_provider_album_tracks.assert_not_awaited()
@@ -294,7 +303,7 @@ async def test_ambiguous_albums_resolve_via_track_fingerprints() -> None:
         provider_album_tracks={"base-prov": _tracklist(14), "s1": _tracklist(14)},
         musicbrainz=musicbrainz,
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     # base tracklist comes from the existing provider mapping, candidate from the match target
@@ -313,7 +322,7 @@ async def test_different_track_counts_do_not_map() -> None:
         provider_items={"s1": full},
         provider_album_tracks={"base-prov": _tracklist(8), "s1": _tracklist(14)},
     ) as harness:
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_conflicting_isrc_fingerprints_do_not_map() -> None:
@@ -329,7 +338,7 @@ async def test_conflicting_isrc_fingerprints_do_not_map() -> None:
             "s1": _tracklist(14, isrc_prefix="USRC28718"),
         },
     ) as harness:
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_base_tracks_fetched_once_across_candidates() -> None:
@@ -345,7 +354,7 @@ async def test_base_tracks_fetched_once_across_candidates() -> None:
         # every candidate stays ambiguous (no tracks to compare against)
         provider_album_tracks={"base-prov": _tracklist(14)},
     ) as harness:
-        await harness.ctrl.match_provider(base, _provider())
+        await harness.match(base)
 
     # the base mapping is only fetched once, regardless of the number of candidates
     assert harness.album_track_calls().count("base-prov") == 1
@@ -376,7 +385,7 @@ async def test_base_tracks_use_first_trustworthy_loaded_mapping() -> None:
         },
         loaded_instances=("bbb_1", "ccc_1", "tidal_1"),
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     # unloaded "a" skipped before any fetch; "b" fetched but rejected; "c" used
@@ -404,7 +413,7 @@ async def test_base_mapping_not_found_is_skipped() -> None:
         },
         loaded_instances=("aaa_1", "bbb_1"),
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     assert harness.album_track_calls() == ["gone", "ok", "s1"]
@@ -431,7 +440,7 @@ async def test_base_mapping_transient_error_is_skipped() -> None:
         },
         loaded_instances=("aaa_1", "bbb_1"),
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     assert harness.album_track_calls() == ["flaky", "ok", "s1"]
@@ -456,7 +465,7 @@ async def test_base_mapping_skipped_when_exact_instance_not_loaded() -> None:
         # aaa_1 resolves (same-domain fallback) to a different instance, so it must be skipped
         provider_registry={"aaa_1": _loaded_provider("other_1")},
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     # "wrong" is never fetched because its exact instance isn't the one that resolved
@@ -475,7 +484,7 @@ async def test_candidate_tracklist_not_found_falls_through_to_musicbrainz() -> N
         provider_album_tracks={"base-prov": _tracklist(14), "s1": MediaNotFoundError("s1")},
         musicbrainz=musicbrainz,
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     musicbrainz.get_releases_by_barcode.assert_awaited()
@@ -493,10 +502,37 @@ async def test_candidate_tracklist_transient_error_falls_through_to_musicbrainz(
         provider_album_tracks={"base-prov": _tracklist(14), "s1": TimeoutError()},
         musicbrainz=musicbrainz,
     ) as harness:
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     musicbrainz.get_releases_by_barcode.assert_awaited()
+
+
+async def test_candidate_tracklist_uses_matched_provider_not_same_domain_fallback() -> None:
+    """The candidate tracklist is fetched from the matched provider, never a same-domain fallback."""
+    # a second instance of the candidate's domain is registered in the loaded-provider
+    # registry; re-resolving the candidate through it would fingerprint against the wrong
+    # account and reject the correct match
+    fallback = _loaded_provider("spotify_other")
+    fallback.get_album_tracks = AsyncMock(return_value=_tracklist(14, isrc_prefix="USRC28718"))
+    base = _library_album(version="2022 Remaster")
+    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster")
+    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster")
+    with _harness(
+        search_results=[sparse],
+        provider_items={"s1": full},
+        provider_album_tracks={"base-prov": _tracklist(14)},
+        provider_registry={"spotify_1": fallback},
+    ) as harness:
+        # the matched provider itself returns the correct, agreeing tracklist
+        harness.provider.get_album_tracks = AsyncMock(return_value=_tracklist(14))
+        matches = await harness.match(base)
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    harness.provider.get_album_tracks.assert_awaited_once_with("s1")
+    # the same-domain fallback is never consulted and the candidate domain is never re-resolved
+    fallback.get_album_tracks.assert_not_awaited()
+    assert all(call.args[0] != "spotify_1" for call in harness.get_provider.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +565,7 @@ async def test_musicbrainz_shared_single_release_matches() -> None:
     """A barcode resolving to one shared specific release confirms the match."""
     musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
     with _mb_harness(musicbrainz) as (harness, base):
-        matches = await harness.ctrl.match_provider(base, _provider())
+        matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
     # the tracklist is consulted before MusicBrainz is ever asked
@@ -543,7 +579,7 @@ async def test_musicbrainz_multiple_releases_per_barcode_abstains() -> None:
         **{BASE_BARCODE: [_mb_release("rel-1", "rg-1"), _mb_release("rel-2", "rg-1")]}
     )
     with _mb_harness(musicbrainz) as (harness, base):
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_musicbrainz_multiple_barcodes_are_all_considered() -> None:
@@ -552,9 +588,7 @@ async def test_musicbrainz_multiple_barcodes_are_all_considered() -> None:
     with _mb_harness(
         musicbrainz, base_barcodes=(BASE_BARCODE, THIRD_BARCODE), compare_barcodes=(THIRD_BARCODE,)
     ) as (harness, base):
-        assert [
-            mapping.item_id for mapping in await harness.ctrl.match_provider(base, _provider())
-        ] == ["s1"]
+        assert [mapping.item_id for mapping in await harness.match(base)] == ["s1"]
 
 
 async def test_musicbrainz_shared_release_group_alone_does_not_match() -> None:
@@ -566,7 +600,7 @@ async def test_musicbrainz_shared_release_group_alone_does_not_match() -> None:
         }
     )
     with _mb_harness(musicbrainz, compare_barcodes=(OTHER_BARCODE,)) as (harness, base):
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_musicbrainz_disjoint_release_groups_do_not_match() -> None:
@@ -578,13 +612,13 @@ async def test_musicbrainz_disjoint_release_groups_do_not_match() -> None:
         }
     )
     with _mb_harness(musicbrainz, compare_barcodes=(OTHER_BARCODE,)) as (harness, base):
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_musicbrainz_unresolved_barcode_abstains() -> None:
     """A barcode MusicBrainz cannot resolve abstains instead of guessing."""
     with _mb_harness(_mb()) as (harness, base):
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_musicbrainz_transport_error_abstains() -> None:
@@ -592,13 +626,13 @@ async def test_musicbrainz_transport_error_abstains() -> None:
     musicbrainz = Mock()
     musicbrainz.get_releases_by_barcode = AsyncMock(side_effect=TimeoutError())
     with _mb_harness(musicbrainz) as (harness, base):
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 async def test_musicbrainz_skipped_without_a_configured_provider() -> None:
     """With no MusicBrainz provider configured the match simply abstains."""
     with _mb_harness(None) as (harness, base):
-        assert await harness.ctrl.match_provider(base, _provider()) == []
+        assert await harness.match(base) == []
 
 
 def _mb_evidence_ctrl(musicbrainz: Mock) -> AlbumsController:

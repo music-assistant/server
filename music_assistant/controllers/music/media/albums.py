@@ -696,7 +696,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 fallback=search_result_item,
             )
             evidence = await self._resolve_album_evidence(
-                db_album, prov_album, strict, base_tracks_memo
+                db_album, prov_album, provider, strict, base_tracks_memo
             )
             if evidence == AlbumMatchEvidence.MATCH:
                 matches.extend(prov_album.provider_mappings)
@@ -712,6 +712,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         db_album: Album,
         prov_album: Album,
+        provider: MusicProvider,
         strict: bool,
         base_tracks_memo: _BaseTracksMemo,
     ) -> AlbumMatchEvidence:
@@ -720,6 +721,10 @@ class AlbumsController(MediaControllerBase[Album]):
 
         An ambiguous album is escalated to ordered track fingerprints and, only if those
         stay inconclusive, to MusicBrainz; a mapping is accepted only on a MATCH.
+
+        :param provider: The exact provider instance the candidate album was matched on;
+            its tracklist is fetched directly so a same-domain fallback can never
+            fingerprint the candidate against a different account/server.
         """
         evidence = compare_album_evidence(db_album, prov_album, strict=strict)
         if evidence != AlbumMatchEvidence.INSUFFICIENT:
@@ -727,15 +732,13 @@ class AlbumsController(MediaControllerBase[Album]):
         # ambiguous metadata: resolve conservatively with ordered track fingerprints
         base_tracks = await self._resolve_base_album_tracks(db_album, base_tracks_memo)
         try:
-            compare_tracks = await self._get_provider_album_tracks(
-                prov_album.item_id, prov_album.provider
-            )
+            compare_tracks = await provider.get_album_tracks(prov_album.item_id)
         except _ALBUM_TRACK_LOOKUP_ERRORS as err:
             # the candidate tracklist is unavailable: treat it as absent and let MusicBrainz decide
             self.logger.debug(
                 "Album tracks unavailable for %s on %s: %s",
                 prov_album.item_id,
-                prov_album.provider,
+                provider.instance_id,
                 err,
             )
             compare_tracks = []
