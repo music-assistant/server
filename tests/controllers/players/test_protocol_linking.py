@@ -8739,6 +8739,355 @@ class TestCachedProtocolLinkRecovery:
         controller._recover_cached_protocol_links(heos_player)
         mock_mass.players.trigger_player_update.assert_called_once_with("heos_player")
 
+    def test_protocol_owned_by_another_parent_is_not_recovered(self, mock_mass: MagicMock) -> None:
+        """A cached protocol that another parent owns stays out of this parent's outputs."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "cast_owner"},
+                },
+                "heos_player": {
+                    "provider": "heos--y",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+                "cast_owner": {
+                    "provider": "chromecast--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "AVR (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay.set_protocol_parent_id("cast_owner")
+        owner = MockPlayer(MockProvider("chromecast", mass=mock_mass), "cast_owner", "AVR (Cast)")
+        owner.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="ap_shared", protocol_domain="airplay")]
+        )
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {
+            "ap_shared": airplay,
+            "cast_owner": owner,
+            "heos_player": heos_player,
+        }
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        assert heos_player.linked_output_protocols == []
+        # the domain slot stays free for this parent's own AirPlay endpoint
+        assert not controller._parent_has_active_protocol_from_domain(heos_player, "airplay")
+        assert airplay.protocol_parent_id == "cast_owner"
+
+    def test_unowned_and_own_cached_protocols_are_still_recovered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A disabled protocol without a live parent is still recovered for its parent."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_disabled": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "heos_player"},
+                },
+                "dlna_own": {
+                    "provider": "dlna--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "heos_player"},
+                },
+                "heos_player": {
+                    "provider": "heos--y",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_disabled", "dlna_own"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        # registered but not owned by anyone (e.g. freshly detached)
+        dlna = MockPlayer(
+            MockProvider("dlna", mass=mock_mass),
+            "dlna_own",
+            "AVR (DLNA)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {"dlna_own": dlna, "heos_player": heos_player}
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        recovered = {link.output_protocol_id for link in heos_player.linked_output_protocols}
+        # ap_disabled is not registered at all, dlna_own is registered without a parent
+        assert recovered == {"ap_disabled", "dlna_own"}
+
+    def test_protocol_waiting_for_its_owner_is_not_recovered(self, mock_mass: MagicMock) -> None:
+        """A protocol whose owner has not registered yet is left to that owner."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "cast_owner"},
+                },
+                "heos_player": {
+                    "provider": "heos--y",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+                "cast_owner": {
+                    "provider": "chromecast--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        # the protocol is registered but still unparented: its owner is not registered yet
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "AVR (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {"ap_shared": airplay, "heos_player": heos_player}
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        assert airplay.protocol_parent_id is None
+        assert heos_player.linked_output_protocols == []
+        assert not controller._parent_has_active_protocol_from_domain(heos_player, "airplay")
+
+    def test_bridge_owned_by_wrapper_leaves_native_domain_slot_free(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A bridge that stayed with its wrapper is not recovered onto a native player.
+
+        A native player may carry a stale cached id for a bridge whose underlying
+        connection it could not claim. The bridge follows that connection, so the
+        native player must leave the domain slot free for its own bridge.
+        """
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "cast_base": {
+                    "provider": "chromecast--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: STORED_UNIVERSAL_ID},
+                },
+                "spb_bridge": {
+                    "provider": "sendspin--y",
+                    "player_type": "protocol",
+                    "values": {
+                        CONF_PROTOCOL_PARENT_ID: "heos_player",
+                        CONF_UNDERLYING_PLAYER_ID: "cast_base",
+                    },
+                },
+                STORED_UNIVERSAL_ID: {
+                    "provider": "universal_player",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["cast_base"]},
+                },
+                "heos_player": {
+                    "provider": "heos--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["spb_bridge"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        wrapper = _create_universal_player(
+            mock_mass, STORED_UNIVERSAL_ID, "AVR (wrapper)", ["cast_base"]
+        )
+        base = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_base",
+            "AVR (Cast 2)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        base.set_protocol_parent_id(STORED_UNIVERSAL_ID)
+        wrapper.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="cast_base", protocol_domain="chromecast")]
+        )
+        bridge = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_bridge",
+            "AVR (Bridge)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge._attr_underlying_player_id = "cast_base"
+        bridge.set_initialized()
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {
+            STORED_UNIVERSAL_ID: wrapper,
+            "cast_base": base,
+            "spb_bridge": bridge,
+            "heos_player": heos_player,
+        }
+
+        # the bridge resolves via its underlying connection, so it joins the wrapper
+        controller._try_link_protocol_to_native(bridge)
+        assert bridge.protocol_parent_id == STORED_UNIVERSAL_ID
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        assert heos_player.linked_output_protocols == []
+        assert not controller._parent_has_active_protocol_from_domain(heos_player, "sendspin")
+
+    def test_claiming_a_protocol_clears_it_from_its_previous_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A parent loses its output entry for a protocol that another parent claims.
+
+        A bridge that registers before the connection it runs on has no owner to
+        compare against yet, so a stale cached id still recovers it onto a native
+        player. Once the connection registers and takes the bridge along, the native
+        player must give up its entry instead of listing the bridge as well.
+        """
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "cast_base": {
+                    "provider": "chromecast--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: STORED_UNIVERSAL_ID},
+                },
+                "spb_bridge": {
+                    "provider": "sendspin--y",
+                    "player_type": "protocol",
+                    "values": {
+                        CONF_PROTOCOL_PARENT_ID: "heos_player",
+                        CONF_UNDERLYING_PLAYER_ID: "cast_base",
+                    },
+                },
+                STORED_UNIVERSAL_ID: {
+                    "provider": "universal_player",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["cast_base"]},
+                },
+                "heos_player": {
+                    "provider": "heos--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["spb_bridge"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        wrapper = _create_universal_player(
+            mock_mass, STORED_UNIVERSAL_ID, "AVR (wrapper)", ["cast_base"]
+        )
+        bridge = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_bridge",
+            "AVR (Bridge)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge._attr_underlying_player_id = "cast_base"
+        bridge.set_initialized()
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {
+            STORED_UNIVERSAL_ID: wrapper,
+            "spb_bridge": bridge,
+            "heos_player": heos_player,
+        }
+
+        # the bridge has no owner yet, so the cached id recovers it onto the native player
+        controller._recover_cached_protocol_links(heos_player)
+        assert [link.output_protocol_id for link in heos_player.linked_output_protocols] == [
+            "spb_bridge"
+        ]
+
+        # the connection registers and joins the wrapper, taking the bridge with it
+        base = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_base",
+            "AVR (Cast 2)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        controller._players["cast_base"] = base
+        controller._try_link_protocol_to_native(base)
+
+        assert bridge.protocol_parent_id == STORED_UNIVERSAL_ID
+        assert heos_player.linked_output_protocols == []
+        assert not controller._parent_has_active_protocol_from_domain(heos_player, "sendspin")
+        # the stale cached id is gone too, so the bridge is not offered here as disabled
+        assert store[CONF_PLAYERS]["heos_player"]["values"]["linked_protocol_ids"] == []
+
+    def test_claiming_a_protocol_clears_universal_membership(self, mock_mass: MagicMock) -> None:
+        """A wrapper that loses a protocol also gives up its stored membership."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: STORED_UNIVERSAL_ID},
+                },
+                STORED_UNIVERSAL_ID: {
+                    "provider": "universal_player",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+                "heos_player": {
+                    "provider": "heos--z",
+                    "player_type": "player",
+                    "values": {},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        wrapper = _create_universal_player(
+            mock_mass, STORED_UNIVERSAL_ID, "AVR (wrapper)", ["ap_shared"]
+        )
+        wrapper.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="ap_shared", protocol_domain="airplay")]
+        )
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "AVR (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay.set_protocol_parent_id(STORED_UNIVERSAL_ID)
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {
+            STORED_UNIVERSAL_ID: wrapper,
+            "ap_shared": airplay,
+            "heos_player": heos_player,
+        }
+
+        controller._add_protocol_link(heos_player, airplay, "airplay")
+
+        assert airplay.protocol_parent_id == "heos_player"
+        assert wrapper.linked_output_protocols == []
+        # the wrapper's stored membership is authoritative and gets written back on save,
+        # so it has to give up the protocol there as well
+        assert wrapper._protocol_player_ids == []
+        assert store[CONF_PLAYERS][STORED_UNIVERSAL_ID]["values"]["linked_protocol_ids"] == []
+
 
 class TestMultiMACMatching:
     """Tests for multi-MAC matching (reported MAC vs ARP MAC)."""
