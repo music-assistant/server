@@ -926,6 +926,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         Try to find match on (streaming) provider for the provided (database) artist.
 
         This is used to link objects of different providers/qualities together.
+
+        :param strict: How strictly the candidate artist itself must match; the reference
+            track/album only ever has to corroborate it, never match exactly.
         """
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist

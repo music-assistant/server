@@ -195,6 +195,32 @@ def test_compare_artist() -> None:
     assert compare.compare_artist(artist_a, artist_b) is False
 
 
+def test_compare_artist_name_normalization() -> None:
+    """An accent difference in an artist name does not block a strict match."""
+    artist_a = media_items.Artist(
+        item_id="1",
+        provider="test1",
+        name="Bj\u00f6rk",
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="1", provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+    artist_b = media_items.Artist(
+        item_id="2",
+        provider="test2",
+        name="Bjork",
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="2", provider_domain="test", provider_instance="test2"
+            )
+        },
+    )
+
+    assert compare.compare_artist(artist_a, artist_b) is True
+
+
 def test_compare_album() -> None:
     """Test album comparison."""
     album_a = media_items.Album(
@@ -1036,6 +1062,34 @@ def test_compare_track_missing_disc_number_assumes_disc_one() -> None:
     disc_two = _albumtrack("3", "test2", disc_number=2)
     disc_two.duration = 320
     assert compare.compare_track(untagged, disc_two) is False
+
+
+def test_compare_strings_accent_drift_matches() -> None:
+    """Diacritics do not distinguish two otherwise identical names."""
+    assert compare.compare_strings("Sigur R\u00f3s", "Sigur Ros") is True
+    assert compare.compare_strings("C\u00e9line Dion", "Celine Dion") is True
+    assert compare.compare_strings("Bj\u00f6rk", "Bjork") is True
+
+
+def test_compare_strings_punctuation_and_spacing_drift_matches() -> None:
+    """Apostrophe, punctuation and spacing drift does not distinguish two names."""
+    assert compare.compare_strings("Jane's Addiction", "Jane\u2019s Addiction") is True
+    assert compare.compare_strings("A.C. Newman", "AC Newman") is True
+    assert compare.compare_strings("All-4-One", "All4One") is True
+
+
+def test_compare_strings_symbol_only_names_stay_distinct() -> None:
+    """Names that normalize to nothing are compared raw, so only real duplicates match."""
+    assert compare.compare_strings("!!!", "...") is False
+    # spacing drift within such a name is still the same name
+    assert compare.compare_strings("( )", "()") is True
+    # a name that normalizes to nothing is never the same as one that doesn't
+    assert compare.compare_strings("!!!", "Chk Chk Chk") is False
+
+
+def test_compare_strings_normalization_does_not_leak_into_fuzzy() -> None:
+    """The non-strict path keeps its own (more lenient) verdicts."""
+    assert compare.compare_strings("!!!", "...", strict=False) is True
 
 
 def test_compare_strings_case_insensitive_fuzzy() -> None:
