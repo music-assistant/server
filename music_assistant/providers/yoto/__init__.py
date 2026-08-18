@@ -16,6 +16,8 @@ from music_assistant_models.errors import (
     InvalidProviderID,
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -31,7 +33,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 from yoto_api import Card as YotoCard
 from yoto_api import Chapter as YotoChapter
-from yoto_api import YotoClient, YotoError
+from yoto_api import YotoAPIError, YotoClient, YotoError
 
 from music_assistant.models.music_provider import MusicProvider
 
@@ -91,7 +93,7 @@ class YotoProvider(MusicProvider):
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
-        await self.client.update_library()
+        await self._update_library()
         for card in self.client.library.values():
             yield self._parse_album(card)
 
@@ -105,7 +107,7 @@ class YotoProvider(MusicProvider):
         if prov_album_id in self.client.library:
             card = self.client.library[prov_album_id]
         else:
-            await self.client.update_card_detail(prov_album_id)
+            await self._update_card_detail(prov_album_id)
             card = self.client.library.get(prov_album_id)
         if not card:
             raise MediaNotFoundError(f"Card {prov_album_id} not found")
@@ -136,7 +138,7 @@ class YotoProvider(MusicProvider):
 
         :param prov_album_id: Provider's album ID.
         """
-        await self.client.update_card_detail(prov_album_id)
+        await self._update_card_detail(prov_album_id)
         card = self.client.library.get(prov_album_id)
         if not card:
             raise MediaNotFoundError(f"Card {prov_album_id} not found")
@@ -172,7 +174,7 @@ class YotoProvider(MusicProvider):
         if ":" not in item_id:
             raise InvalidProviderID(f"Invalid track ID format: {item_id}")
         card_id, chapter_key = item_id.split(":", 1)
-        await self.client.update_card_detail(card_id)
+        await self._update_card_detail(card_id)
         card = self.client.library.get(card_id)
         if not card:
             raise MediaNotFoundError(f"Card {card_id} not found")
@@ -205,6 +207,84 @@ class YotoProvider(MusicProvider):
             allow_seek=True,
             can_seek=True,
         )
+
+    async def _update_library(self) -> None:
+        """Update the library from the Yoto API and handle the yoto-api package errors."""
+        assert self.client.token
+        refresh_token = self.client.token.refresh_token
+        try:
+            await self.client.update_library()
+        except YotoAPIError as err:
+            if err.status_code is not None:
+                match err.status_code:
+                    case 403:
+                        raise PermissionError(
+                            "failed to fetch card library: Forbidden (403)"
+                        ) from err
+                    case 404:
+                        raise MediaNotFoundError(
+                            "failed to fetch card library: Not Found (404)"
+                        ) from err
+                    case 429:
+                        raise RateLimited("too many requests to Yoto API") from err
+                    case code:
+                        raise ResourceTemporarilyUnavailable(
+                            f"error returned by Yoto API. HTTP error code {code}"
+                        ) from err
+            else:
+                raise ResourceTemporarilyUnavailable(
+                    f"error returned by Yoto API - no HTTP code available: {err}"
+                ) from err
+        except YotoError as err:
+            raise ResourceTemporarilyUnavailable(
+                f"error returned from yoto provider: {err}"
+            ) from err
+        except TimeoutError:
+            raise ResourceTemporarilyUnavailable("yoto API operation timed out")
+        finally:
+            if refresh_token != self.client.token.refresh_token:
+                self._update_setup_data(CONF_REFRESH_TOKEN, self.client.token.refresh_token)
+
+    async def _update_card_detail(self, card_id: str) -> None:
+        """
+        Update a card from the Yoto API and handle the yoto-api package errors.
+
+        :param card_id: provider ID of the card.
+        """
+        assert self.client.token
+        refresh_token = self.client.token.refresh_token
+        try:
+            await self.client.update_card_detail(card_id)
+        except YotoAPIError as err:
+            if err.status_code is not None:
+                match err.status_code:
+                    case 403:
+                        raise PermissionError(
+                            "failed to fetch card library: Forbidden (403)"
+                        ) from err
+                    case 404:
+                        raise MediaNotFoundError(
+                            "failed to fetch card library: Not Found (404)"
+                        ) from err
+                    case 429:
+                        raise RateLimited("too many requests to Yoto API") from err
+                    case code:
+                        raise ResourceTemporarilyUnavailable(
+                            f"error returned by Yoto API. HTTP error code {code}"
+                        ) from err
+            else:
+                raise ResourceTemporarilyUnavailable(
+                    f"error returned by Yoto API - no HTTP code available: {err}"
+                ) from err
+        except YotoError as err:
+            raise ResourceTemporarilyUnavailable(
+                f"error returned from yoto provider: {err}"
+            ) from err
+        except TimeoutError:
+            raise ResourceTemporarilyUnavailable("yoto API operation timed out")
+        finally:
+            if refresh_token != self.client.token.refresh_token:
+                self._update_setup_data(CONF_REFRESH_TOKEN, self.client.token.refresh_token)
 
     def _parse_album(self, card: YotoCard) -> Album:
         """
