@@ -145,10 +145,12 @@ class RecentPlayedTrack(NamedTuple):
 # Selects pairs of library track rows that are likely the same recording held twice,
 # once per music provider. Both rows must carry the same normalized title, share a track
 # artist and sit within a few seconds of each other. The album term is the decisive one:
-# both rows must appear on an album with the same normalized title at the same position,
+# both rows must appear at the same position on an album with the same normalized title,
 # so the merge always rests on two providers agreeing on where the track belongs rather
-# than on title and duration alone. Rows that already share a provider are skipped, as a
-# provider listing the same recording twice is a separate (and far riskier) case.
+# than on title and duration alone. Titles that normalize to nothing (symbol-only album
+# names) are excluded there, as they would match every other such album. Rows that already
+# share a provider are skipped, as a provider listing the same recording twice is a
+# separate (and far riskier) case.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
 SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
 FROM {DB_TABLE_TRACKS} t1
@@ -170,7 +172,10 @@ WHERE (t1.item_id > :cursor_item_id_1
     JOIN {DB_TABLE_ALBUMS} al2
       ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
     WHERE at1.track_id = t1.item_id
-      AND coalesce(at1.disc_number, 1) = coalesce(at2.disc_number, 1)
+      AND al1.search_name != ''
+      -- a disc number of 0 means the provider did not report one: assume disc 1,
+      -- matching how compare_track reads it for local files without a disc tag
+      AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
       AND at1.track_number = at2.track_number)
   AND NOT EXISTS (
     SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm1
@@ -2693,6 +2698,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     async def _reconcile_duplicate_tracks(self) -> None:
         """Merge a small batch of library tracks that are held twice across providers."""
+        if self.active_sync_tasks:
+            # a sync is still filling in albums and mappings, so hold off rather than
+            # judge duplicates against a half-populated library
+            update_current_task_progress_text("Waiting for music sync completion")
+            return
         update_current_task_progress_text("Searching for duplicate tracks")
         cursor_item_id_1, cursor_item_id_2 = self._track_reconciliation_cursor
         rows = await self.database.get_rows_from_query(
@@ -2743,11 +2753,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
 
     async def _merge_duplicate_track_pair(self, item_id_1: int, item_id_2: int) -> bool:
-        """Merge two candidate rows if they are confirmed to be the same track."""
+        """
+        Merge two candidate rows if they are confirmed to be the same track.
+
+        :param item_id_1: Library ID of the lower-numbered candidate row.
+        :param item_id_2: Library ID of the higher-numbered candidate row.
+        :return: True when the rows were merged, False when they were left alone.
+        """
         track_1 = await self.tracks.get_library_item(item_id_1)
         track_2 = await self.tracks.get_library_item(item_id_2)
-        # the candidate query already established that both rows sit on the same album at
-        # the same position, which is the album agreement strict mode looks for, so the
+        # the candidate query already established that both rows sit at the same position on
+        # an equally titled album, which is the album agreement strict mode looks for, so the
         # remaining check is run in non-strict mode. Its version check is reinstated here
         # explicitly: without it a remaster, remix or radio edit of equal length would be
         # accepted as the original.

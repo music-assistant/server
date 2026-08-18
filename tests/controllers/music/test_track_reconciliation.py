@@ -5,18 +5,24 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID
+from music_assistant_models.enums import AlbumType, ExternalID, TaskStatus
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    MediaItemMetadata,
     ProviderMapping,
     Track,
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_TRACKS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_TRACKS,
+)
 from music_assistant.controllers.music.constants import TRACK_RECONCILIATION_BATCH_SIZE
 from music_assistant.controllers.music.controller import MusicController
 from music_assistant.mass import MusicAssistant
@@ -75,6 +81,7 @@ async def _add_track(
     duration: int = 200,
     version: str = "",
     track_number: int = 1,
+    explicit: bool | None = None,
 ) -> Track:
     """Create a fixture track under a unique name, so it is stored as its own row."""
     return await mass.music.tracks.add_item_to_library(
@@ -84,6 +91,7 @@ async def _add_track(
             name=name,
             version=version,
             duration=duration,
+            metadata=MediaItemMetadata(explicit=explicit),
             provider_mappings={
                 _mapping(
                     provider_instance,
@@ -117,6 +125,13 @@ async def _rename_to_duplicate(mass: MusicAssistant, track: Track) -> None:
     )
 
 
+async def _set_track_title(mass: MusicAssistant, track: Track, name: str) -> None:
+    """Give a track row a raw title, leaving its normalized title untouched."""
+    await mass.music.database.update(
+        DB_TABLE_TRACKS, {"item_id": int(track.item_id)}, {"name": name}
+    )
+
+
 async def _build_duplicate_pair(
     mass: MusicAssistant,
     *,
@@ -125,11 +140,15 @@ async def _build_duplicate_pair(
     second_version: str = "",
     second_track_number: int = 1,
     second_album_name: str = "Shared Album",
+    first_explicit: bool | None = None,
+    second_explicit: bool | None = None,
 ) -> tuple[Track, Track]:
     """Create two same-titled library tracks that differ only as the parameters say."""
     artist_1 = await _add_artist(mass, "spotify_instance")
     album_1 = await _add_album(mass, "spotify_instance", artist_1)
-    track_1 = await _add_track(mass, "spotify_instance", artist_1, album_1, name="First Title")
+    track_1 = await _add_track(
+        mass, "spotify_instance", artist_1, album_1, name="First Title", explicit=first_explicit
+    )
     album_2 = await _add_album(mass, second_provider, artist_1, name=second_album_name)
     track_2 = await _add_track(
         mass,
@@ -140,6 +159,7 @@ async def _build_duplicate_pair(
         duration=second_duration,
         version=second_version,
         track_number=second_track_number,
+        explicit=second_explicit,
     )
     await _rename_to_duplicate(mass, track_1)
     await _rename_to_duplicate(mass, track_2)
@@ -152,6 +172,7 @@ def _bare_controller(candidate_rows: list[dict[str, int]]) -> MusicController:
     ctrl._track_reconciliation_cursor = (0, 0)
     ctrl.logger = Mock()
     ctrl._database = Mock(get_rows_from_query=AsyncMock(return_value=candidate_rows))
+    ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
     return ctrl
 
 
@@ -178,6 +199,92 @@ async def test_merges_cross_provider_duplicate_tracks(mass: MusicAssistant) -> N
 async def test_keeps_different_versions_apart(mass: MusicAssistant) -> None:
     """A remaster is never merged into the original recording."""
     track_1, track_2 = await _build_duplicate_pair(mass, second_version="Remastered 2011")
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_merges_despite_disagreement_on_the_explicit_flag(mass: MusicAssistant) -> None:
+    """Providers routinely disagree on the explicit flag; that alone must not block a merge."""
+    track_1, track_2 = await _build_duplicate_pair(mass, first_explicit=False, second_explicit=True)
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_keeps_differently_titled_tracks_apart(mass: MusicAssistant) -> None:
+    """Titles that only look alike once normalized still have to survive the full compare."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    # both normalize to the same search_name, so the candidate query pairs them up
+    await _set_track_title(mass, track_1, "Song, One")
+    await _set_track_title(mass, track_2, "Song One!")
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_keeps_tracks_with_different_artists_apart(mass: MusicAssistant) -> None:
+    """A shared title and album slot is not enough when the track artists differ."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    other_artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Different Artist",
+            provider_mappings={_mapping("qobuz_instance", "qobuz-other-artist")},
+        )
+    )
+    await mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": int(track_2.item_id)})
+    await mass.music.database.insert(
+        DB_TABLE_TRACK_ARTISTS,
+        {"track_id": int(track_2.item_id), "artist_id": int(other_artist.item_id)},
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_treats_an_unreported_disc_number_as_disc_one(mass: MusicAssistant) -> None:
+    """A provider that reports no disc number still matches a track tagged as disc 1."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    await mass.music.database.update(
+        DB_TABLE_ALBUM_TRACKS, {"track_id": int(track_2.item_id)}, {"disc_number": 0}
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+
+
+async def test_ignores_albums_whose_title_normalizes_to_nothing(mass: MusicAssistant) -> None:
+    """Symbol-only album titles are not treated as agreement, they match everything."""
+    track_1, track_2 = await _build_duplicate_pair(mass, second_album_name="+")
+    for track in (track_1, track_2):
+        album_id = (
+            await mass.music.database.get_rows(
+                DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}
+            )
+        )[0]["album_id"]
+        await mass.music.database.update(
+            DB_TABLE_ALBUMS, {"item_id": album_id}, {"name": "÷", "search_name": ""}
+        )
 
     await mass.music._reconcile_duplicate_tracks()
 
@@ -281,6 +388,21 @@ async def test_full_batch_resumes_within_the_same_track() -> None:
 
     # resuming at (10, ...) rather than past track 10 keeps its remaining pairs reachable
     assert ctrl._track_reconciliation_cursor == (10, 19 + TRACK_RECONCILIATION_BATCH_SIZE)
+
+
+async def test_defers_while_a_library_sync_is_running() -> None:
+    """Duplicates are judged against a settled library, never a half-synced one."""
+    ctrl = _bare_controller([{"item_id_1": 1, "item_id_2": 2}])
+    candidate_query = AsyncMock(return_value=[{"item_id_1": 1, "item_id_2": 2}])
+    ctrl._database = Mock(get_rows_from_query=candidate_query)
+    running = Mock(status=TaskStatus.RUNNING)
+    ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[running])))
+
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock()) as merge:
+        await ctrl._reconcile_duplicate_tracks()
+
+    assert not merge.called
+    assert not candidate_query.called
 
 
 async def test_no_candidate_pair_is_starved() -> None:
