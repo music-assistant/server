@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
-    from music_assistant.providers.musicbrainz.models import MusicBrainzRelease
+    from music_assistant.providers.musicbrainz.models import MusicBrainzBarcodeRelease
 
 
 @dataclass
@@ -763,8 +763,14 @@ class AlbumsController(MediaControllerBase[Album]):
         ):
             if not mapping.available:
                 continue
-            if self.mass.get_provider(mapping.provider_instance) is None:
-                # only trust a currently-loaded exact provider instance
+            provider = self.mass.get_provider(mapping.provider_instance, return_unavailable=True)
+            if (
+                provider is None
+                or provider.instance_id != mapping.provider_instance
+                or not provider.available
+            ):
+                # only trust the exact, currently-available provider instance and never a
+                # same-domain fallback pointing at a different account/server
                 continue
             try:
                 provider_tracks = await self._get_provider_album_tracks(
@@ -796,7 +802,7 @@ class AlbumsController(MediaControllerBase[Album]):
         if musicbrainz is None:
             return AlbumMatchEvidence.INSUFFICIENT
         musicbrainz = cast("MusicbrainzProvider", musicbrainz)
-        releases_by_barcode: dict[str, list[MusicBrainzRelease]] = {}
+        releases_by_barcode: dict[str, list[MusicBrainzBarcodeRelease]] = {}
         try:
             for barcode in sorted(base_barcodes | compare_barcodes):
                 releases_by_barcode[barcode] = await musicbrainz.get_releases_by_barcode(barcode)
@@ -812,9 +818,13 @@ class AlbumsController(MediaControllerBase[Album]):
         if base_release_ids & compare_release_ids:
             # both albums carry a barcode that names the same single specific release
             return AlbumMatchEvidence.MATCH
+        if not all(releases_by_barcode[barcode] for barcode in base_barcodes | compare_barcodes):
+            # an unresolved barcode leaves the release-group sets incomplete, so a disjoint
+            # comparison could wrongly reject regional equivalents: abstain instead
+            return AlbumMatchEvidence.INSUFFICIENT
         base_group_ids = _release_group_ids(base_barcodes, releases_by_barcode)
         compare_group_ids = _release_group_ids(compare_barcodes, releases_by_barcode)
-        if base_group_ids and compare_group_ids and base_group_ids.isdisjoint(compare_group_ids):
+        if base_group_ids.isdisjoint(compare_group_ids):
             # the barcodes belong to entirely different release groups: different albums
             return AlbumMatchEvidence.NO_MATCH
         # a shared release group alone (or an ambiguous barcode) never identifies an edition
@@ -903,7 +913,7 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
 
 
 def _unambiguous_release_ids(
-    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzRelease]]
+    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzBarcodeRelease]]
 ) -> set[str]:
     """Return release ids that at least one of the barcodes resolves to unambiguously."""
     release_ids: set[str] = set()
@@ -916,7 +926,7 @@ def _unambiguous_release_ids(
 
 
 def _release_group_ids(
-    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzRelease]]
+    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzBarcodeRelease]]
 ) -> set[str]:
     """Return every release-group id the barcodes resolve to."""
     return {

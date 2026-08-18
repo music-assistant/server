@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.errors import RateLimited
+import pytest
+from music_assistant_models.errors import InvalidDataError, RateLimited
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
@@ -645,7 +646,12 @@ async def test_release_year_by_track_name_escapes_lucene_specials() -> None:
 
 
 def _barcode_release(release_id: str, release_group_id: str, barcode: str) -> dict[str, Any]:
-    """Return one release stub as returned by a barcode search."""
+    """
+    Return one release stub as a barcode search actually returns it.
+
+    Includes the summary ``media`` object (format/track-count, no tracklist) that the
+    full release model cannot parse, so the slim search model is exercised realistically.
+    """
     return {
         "id": release_id,
         "status-id": "status-id",
@@ -654,12 +660,14 @@ def _barcode_release(release_id: str, release_group_id: str, barcode: str) -> di
         "status": "Official",
         "barcode": barcode,
         "artist-credit": [_credit("Sigur Rós", "artist-1")],
-        "release-group": {"id": release_group_id, "title": "( )"},
+        "release-group": {"id": release_group_id, "title": "( )", "primary-type": "Album"},
+        "media": [{"format": "CD", "disc-count": 1, "track-count": 14}],
+        "track-count": 14,
     }
 
 
 async def test_releases_by_barcode_parses_releases() -> None:
-    """Return every release MusicBrainz has on file for a barcode."""
+    """Return every release MusicBrainz has on file for a barcode (summary media and all)."""
     response = {
         "count": 2,
         "releases": [
@@ -706,8 +714,8 @@ async def test_releases_by_barcode_is_empty_when_not_found() -> None:
     assert await provider.get_releases_by_barcode("888072439412") == []
 
 
-async def test_releases_by_barcode_skips_a_malformed_entry() -> None:
-    """A single malformed release does not sink the ones that parse."""
+async def test_releases_by_barcode_abstains_on_malformed_entry() -> None:
+    """One unparsable release makes the whole lookup abstain rather than look complete."""
     response = {
         "releases": [
             {"id": "broken"},
@@ -716,6 +724,17 @@ async def test_releases_by_barcode_skips_a_malformed_entry() -> None:
     }
     provider, _ = _provider(response)
 
-    releases = await provider.get_releases_by_barcode("888072439412")
+    with pytest.raises(InvalidDataError):
+        await provider.get_releases_by_barcode("888072439412")
 
-    assert [release.id for release in releases] == ["rel-2"]
+
+async def test_releases_by_barcode_abstains_on_truncated_result() -> None:
+    """A truncated page abstains rather than treating a partial set as complete."""
+    response = {
+        "count": 5,
+        "releases": [_barcode_release("rel-1", "rg-1", "0888072439412")],
+    }
+    provider, _ = _provider(response)
+
+    with pytest.raises(InvalidDataError):
+        await provider.get_releases_by_barcode("888072439412")

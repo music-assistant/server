@@ -6,7 +6,7 @@ import re
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from mashumaro.exceptions import MissingField
+from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ArtistEntityType, ConfigEntryType, ExternalID, LinkType
 from music_assistant_models.errors import InvalidDataError
@@ -30,6 +30,7 @@ from .constants import (
 )
 from .models import (
     MusicBrainzArtist,
+    MusicBrainzBarcodeRelease,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
@@ -336,9 +337,13 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz Album ID provided"
         raise InvalidDataError(msg)
 
-    async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzRelease]:
+    async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzBarcodeRelease]:
         """
         Get the releases MusicBrainz has on file for a barcode/UPC.
+
+        The result is complete: a truncated page or a release entry that cannot be parsed
+        raises :class:`InvalidDataError` so the caller abstains instead of mistaking a
+        partial release/group set for the whole set.
 
         :param barcode: Album barcode (UPC/EAN/GTIN), with or without separators.
         :return: Releases carrying this barcode, or an empty list if none are found.
@@ -354,15 +359,22 @@ class MusicbrainzProvider(MetadataProvider):
         ]
         query = " OR ".join(f"barcode:{value}" for value in barcodes)
         # a barcode identifies a single physical product, so one generously-sized page
-        # returns every release carrying it (no pagination needed)
+        # returns every release carrying it
         result = await self._api_client.get_data("release", query=query, limit="100")
         if not result or not (releases := result.get("releases")):
             return []
-        parsed: list[MusicBrainzRelease] = []
+        if result.get("count", len(releases)) > len(releases):
+            msg = "MusicBrainz barcode result is truncated"
+            raise InvalidDataError(msg)
+        parsed: list[MusicBrainzBarcodeRelease] = []
         for release in releases:
-            # a single malformed entry should not sink the releases we did parse
-            with suppress(MissingField):
-                parsed.append(MusicBrainzRelease.from_raw(release))
+            try:
+                parsed.append(MusicBrainzBarcodeRelease.from_raw(release))
+            except (MissingField, InvalidFieldValue) as err:
+                # dropping a malformed row would make the release/group set look complete
+                # when it is not, so the whole lookup is treated as unusable
+                msg = "MusicBrainz barcode result has an unparsable release"
+                raise InvalidDataError(msg) from err
         return parsed
 
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:

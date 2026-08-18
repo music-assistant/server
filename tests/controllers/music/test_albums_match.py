@@ -20,6 +20,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music.media.albums import AlbumsController
+from music_assistant.helpers.compare import AlbumMatchEvidence
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -149,6 +150,14 @@ def _mb(**releases_by_barcode: list[SimpleNamespace]) -> Mock:
     return musicbrainz
 
 
+def _loaded_provider(instance_id: str, *, available: bool = True) -> Mock:
+    """Return a mock provider instance for the loaded-provider registry."""
+    provider = Mock()
+    provider.instance_id = instance_id
+    provider.available = available
+    return provider
+
+
 @dataclass
 class _Harness:
     """A controller under test together with its mocked IO boundaries."""
@@ -172,6 +181,7 @@ def _harness(
     provider_album_tracks: dict[str, list[Track] | MediaNotFoundError] | None = None,
     musicbrainz: Mock | None = None,
     loaded_instances: Sequence[str] = ("tidal_1",),
+    provider_registry: dict[str, Mock] | None = None,
 ) -> Iterator[_Harness]:
     """
     Yield an AlbumsController with every IO boundary mocked.
@@ -181,14 +191,20 @@ def _harness(
     :param provider_album_tracks: Provider album tracks (or an error to raise) keyed by
         album item id; the base album's mapping ids resolve here too.
     :param musicbrainz: Optional mock MusicBrainz provider.
-    :param loaded_instances: Provider instance ids considered currently loaded.
+    :param loaded_instances: Provider instance ids considered currently loaded and available.
+    :param provider_registry: Explicit instance-id -> provider mock overrides.
     """
     album_tracks = provider_album_tracks or {}
+    registry = {instance: _loaded_provider(instance) for instance in loaded_instances}
+    registry.update(provider_registry or {})
 
-    def _get_provider(domain: str) -> object | None:
+    def _get_provider(domain: str, return_unavailable: bool = False) -> object | None:
         if domain == "musicbrainz":
             return musicbrainz
-        return object() if domain in loaded_instances else None
+        provider = registry.get(domain)
+        if provider is None:
+            return None
+        return provider if (return_unavailable or provider.available) else None
 
     mass = Mock()
     mass.get_provider = Mock(side_effect=_get_provider)
@@ -394,6 +410,32 @@ async def test_base_mapping_not_found_is_skipped() -> None:
     assert harness.album_track_calls() == ["gone", "ok", "s1"]
 
 
+async def test_base_mapping_skipped_when_exact_instance_not_loaded() -> None:
+    """A mapping whose exact instance is not loaded is skipped, never a same-domain fallback."""
+    base = _library_album(
+        version="2022 Remaster",
+        mappings=[
+            ProviderMapping(item_id="wrong", provider_domain="aaa", provider_instance="aaa_1"),
+            ProviderMapping(item_id="ok", provider_domain="bbb", provider_instance="bbb_1"),
+        ],
+    )
+    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster")
+    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster")
+    with _harness(
+        search_results=[sparse],
+        provider_items={"s1": full},
+        provider_album_tracks={"wrong": _tracklist(14), "ok": _tracklist(14), "s1": _tracklist(14)},
+        loaded_instances=("bbb_1",),
+        # aaa_1 resolves (same-domain fallback) to a different instance, so it must be skipped
+        provider_registry={"aaa_1": _loaded_provider("other_1")},
+    ) as harness:
+        matches = await harness.ctrl.match_provider(base, _provider())
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    # "wrong" is never fetched because its exact instance isn't the one that resolved
+    assert harness.album_track_calls() == ["ok", "s1"]
+
+
 async def test_candidate_tracklist_not_found_falls_through_to_musicbrainz() -> None:
     """A candidate tracklist that 404s is treated as absent so MusicBrainz can decide."""
     musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
@@ -512,6 +554,49 @@ async def test_musicbrainz_skipped_without_a_configured_provider() -> None:
     """With no MusicBrainz provider configured the match simply abstains."""
     with _mb_harness(None) as (harness, base):
         assert await harness.ctrl.match_provider(base, _provider()) == []
+
+
+def _mb_evidence_ctrl(musicbrainz: Mock) -> AlbumsController:
+    """Return a bare controller wired to a mock MusicBrainz provider."""
+    mass = Mock()
+    mass.get_provider = Mock(
+        side_effect=lambda domain: musicbrainz if domain == "musicbrainz" else None
+    )
+    ctrl = AlbumsController.__new__(AlbumsController)
+    ctrl.logger = logging.getLogger("test.albums.mb")
+    ctrl.mass = mass
+    return ctrl
+
+
+async def test_musicbrainz_evidence_all_resolved_disjoint_groups_reject() -> None:
+    """Disjoint release groups are negative evidence when every barcode resolved."""
+    musicbrainz = _mb(
+        **{
+            BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+            OTHER_BARCODE: [_mb_release("rel-2", "rg-2")],
+        }
+    )
+    ctrl = _mb_evidence_ctrl(musicbrainz)
+    base = _library_album(barcodes=(BASE_BARCODE,))
+    compare = _album("s1", "spotify_1", barcodes=(OTHER_BARCODE,))
+
+    assert await ctrl._musicbrainz_album_evidence(base, compare) == AlbumMatchEvidence.NO_MATCH
+
+
+async def test_musicbrainz_evidence_unresolved_barcode_blocks_disjoint_rejection() -> None:
+    """An unresolved barcode leaves the group sets incomplete, so it cannot reject."""
+    musicbrainz = _mb(
+        **{
+            # BASE_BARCODE stays unresolved ([]); THIRD_BARCODE resolves to a distinct group
+            THIRD_BARCODE: [_mb_release("rel-1", "rg-1")],
+            OTHER_BARCODE: [_mb_release("rel-2", "rg-2")],
+        }
+    )
+    ctrl = _mb_evidence_ctrl(musicbrainz)
+    base = _library_album(barcodes=(BASE_BARCODE, THIRD_BARCODE))
+    compare = _album("s1", "spotify_1", barcodes=(OTHER_BARCODE,))
+
+    assert await ctrl._musicbrainz_album_evidence(base, compare) == AlbumMatchEvidence.INSUFFICIENT
 
 
 # ---------------------------------------------------------------------------
