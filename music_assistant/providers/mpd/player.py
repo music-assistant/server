@@ -204,6 +204,11 @@ class MPDPlayer(Player):
     async def _disconnect(self) -> None:
         """Cancel any pending reconnect, stop the idle loop and disconnect both MPD clients."""
         self.mass.cancel_timer(self._reconnect_task_id)
+        # connecting has no timeout, so an attempt may still be in flight and would
+        # otherwise arm a new reconnect after this teardown
+        reconnect_task = self.mass.get_task(self._reconnect_task_id)
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            self.mass.cancel_task(self._reconnect_task_id)
         if self._idle_task:
             self._idle_task.cancel()
             self._idle_task = None

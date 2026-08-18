@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -66,7 +67,35 @@ async def test_disconnect_cancels_a_pending_reconnect(
 ) -> None:
     """Unloading a player must not leave a reconnect attempt armed."""
     player = make_mpd_player()
+    cast("MagicMock", player.mass.get_task).return_value = None
 
     await player._disconnect()
 
     cast("MagicMock", player.mass.cancel_timer).assert_called_once_with(player._reconnect_task_id)
+    cast("MagicMock", player.mass.cancel_task).assert_not_called()
+
+
+async def test_disconnect_stops_a_connect_attempt_in_flight(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """A connect attempt that already started must not outlive the teardown."""
+    player = make_mpd_player()
+    in_flight = asyncio.create_task(asyncio.sleep(30))
+    cast("MagicMock", player.mass.get_task).return_value = in_flight
+
+    await player._disconnect()
+
+    cast("MagicMock", player.mass.cancel_task).assert_called_once_with(player._reconnect_task_id)
+    in_flight.cancel()
+
+
+async def test_disconnect_never_cancels_its_own_connect_attempt(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """The teardown at the start of a connect attempt must not cancel that attempt."""
+    player = make_mpd_player()
+    cast("MagicMock", player.mass.get_task).return_value = asyncio.current_task()
+
+    await player._disconnect()
+
+    cast("MagicMock", player.mass.cancel_task).assert_not_called()
