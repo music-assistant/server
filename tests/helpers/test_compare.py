@@ -455,6 +455,46 @@ def test_compare_album_evidence_name_retail_suffix_stripped() -> None:
         ), suffix
 
 
+def test_compare_album_evidence_trailing_symbol_marks_a_different_release() -> None:
+    """A bonus edition marked by a trailing symbol is a release of its own."""
+    album_a = _album(name="MOTOMAMI", year=2022)
+    album_b = _album(item_id="2", provider="test2", name="MOTOMAMI +", year=2022)
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+    assert compare.compare_album(album_a, album_b) is False
+
+
+def test_compare_album_evidence_symbol_only_titles_identify_their_own_album() -> None:
+    """A symbol-titled album (Ed Sheeran's '+', '=', '÷') matches only its own spelling."""
+    for name in ("+", "=", "÷"):
+        assert (
+            compare.compare_album_evidence(
+                _album(name=name), _album(item_id="2", provider="test2", name=f"{name} ")
+            )
+            == compare.AlbumMatchEvidence.MATCH
+        ), name
+    for base_name, compare_name in (("+", "="), ("+", "÷"), ("=", "÷")):
+        assert (
+            compare.compare_album_evidence(
+                _album(name=base_name), _album(item_id="2", provider="test2", name=compare_name)
+            )
+            == compare.AlbumMatchEvidence.NO_MATCH
+        ), (base_name, compare_name)
+
+
+def test_compare_album_evidence_standalone_separator_between_words_is_drift() -> None:
+    """A symbol standing between words is a separator, so it never blocks a match."""
+    album_a = _album(name="HIStory - PAST, PRESENT AND FUTURE - BOOK I", year=1995)
+    album_b = _album(
+        item_id="2",
+        provider="test2",
+        name="HIStory: Past, Present and Future, Book I",
+        year=1995,
+    )
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
 def test_compare_album_evidence_punctuation_only_title_whitespace_drift_matches() -> None:
     """Whitespace drift within a punctuation-only title does not block a match."""
     album_a = _album(name="( )")

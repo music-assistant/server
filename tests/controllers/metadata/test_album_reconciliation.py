@@ -286,6 +286,35 @@ async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
 
 
+async def test_reconcile_duplicate_albums_selects_spelled_out_retail_suffix_sibling(
+    mass: MusicAssistant,
+) -> None:
+    """A leftover 'X - EP' row is paired with its plain-title sibling, which now stores it."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Kygo",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    plain = await _add_album(mass, "Stargazing", artist, provider_instance="spotify_1")
+    suffixed = await _add_album(
+        mass,
+        "Stargazing - EP",
+        artist,
+        album_type=AlbumType.SINGLE,
+        provider_instance="apple_music_1",
+    )
+    assert plain.item_id != suffixed.item_id
+
+    assert plain.item_id in await _reconciled_ids(mass)
+
+
 async def test_reconcile_duplicate_albums_ignores_other_albums_by_the_same_artist(
     mass: MusicAssistant,
 ) -> None:

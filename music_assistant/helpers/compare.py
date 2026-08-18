@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 from enum import Enum
 from functools import lru_cache
+from typing import Final
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.helpers import create_safe_string
@@ -64,8 +66,18 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "session",
 }
 
-# trailing " - EP" / " - Single" retail suffix (any dash style), as appended by Apple Music
-_ALBUM_SUFFIX_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+(?:EP|Single)\s*$", re.IGNORECASE)
+# retail suffixes a provider (notably Apple Music) appends to an EP/single title
+_ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
+# the trailing retail suffix (any dash style) as it appears in a raw album title
+_ALBUM_SUFFIX_PATTERN = re.compile(
+    rf"\s+[-\u2013\u2014]\s+(?:{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$", re.IGNORECASE
+)
+# normalizing a title drops the separator, so the suffix survives as a plain trailing
+# fragment of the name key ("Foo - EP" -> "fooep"): appending one of these to a key
+# yields the key the same album is stored under when a provider spells out the suffix
+ALBUM_RETAIL_SUFFIX_KEYS: Final = tuple(
+    create_safe_string(suffix, True, True) for suffix in _ALBUM_RETAIL_SUFFIXES
+)
 
 # duration tolerances (seconds) for track comparisons: an external-id corroborated
 # match allows more duration drift than a bare title/version fallback
@@ -737,12 +749,16 @@ def compare_version(base_version: str, compare_version: str) -> bool:
 
 def compare_album_name(base_name: str, compare_name: str) -> bool:
     """Return True if two album titles are the same identity, ignoring formatting drift."""
-    # the retail suffix carries no identity information: Apple Music appends it to
-    # EP/single titles while already setting album_type
     return compare_strings(
-        _ALBUM_SUFFIX_PATTERN.sub("", base_name),
-        _ALBUM_SUFFIX_PATTERN.sub("", compare_name),
+        strip_album_retail_suffix(base_name), strip_album_retail_suffix(compare_name)
     )
+
+
+def strip_album_retail_suffix(name: str) -> str:
+    """Return an album title without its retail suffix ("Foo - EP" -> "Foo")."""
+    # the suffix carries no identity information: Apple Music appends it to EP/single
+    # titles while already setting album_type
+    return _ALBUM_SUFFIX_PATTERN.sub("", name)
 
 
 def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> bool | None:
@@ -814,7 +830,26 @@ def _compare_safe_strings(base: str, compare: str) -> bool:
 @lru_cache(maxsize=1024)
 def _normalize_name(name: str) -> str:
     """Return a punctuation/diacritic/whitespace-insensitive name for identity checks."""
-    return create_safe_string(name, True, True)
+    core = create_safe_string(name, True, True)
+    tokens = name.split()
+    if not tokens:
+        return core
+    # a standalone symbol is part of the title where it sits at an edge ("MOTOMAMI +"),
+    # but only a separator between words ("HIStory - Past, Present and Future")
+    lead = _symbol_token(tokens[0])
+    trail = _symbol_token(tokens[-1]) if len(tokens) > 1 else ""
+    return f"{lead}{core}{trail}"
+
+
+def _symbol_token(token: str) -> str:
+    """Return the identity form of a token that is a bare symbol, else an empty string."""
+    if create_safe_string(token, True, True):
+        # the token has alphanumeric content, so it is already part of the normalized name
+        return ""
+    if not any(unicodedata.category(char).startswith("S") for char in token):
+        # punctuation only (e.g. "!!!" or "( )"): formatting drift rather than identity
+        return ""
+    return token.casefold()
 
 
 def _track_positions(tracks: Sequence[Track]) -> dict[tuple[int, int], Track]:

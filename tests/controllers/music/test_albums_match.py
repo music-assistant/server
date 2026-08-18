@@ -25,6 +25,8 @@ from music_assistant.helpers.compare import AlbumMatchEvidence
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from music_assistant.mass import MusicAssistant
+
 MB_ALBUM_ID = "11111111-1111-1111-1111-111111111111"
 BASE_BARCODE = "888072439412"
 OTHER_BARCODE = "075678643224"
@@ -735,6 +737,7 @@ class _InsertHarness:
     ctrl: AlbumsController
     get_provider: Mock
     get_provider_album_tracks: AsyncMock
+    get_library_items_by_query: AsyncMock
 
     def album_track_calls(self) -> list[str]:
         """Return the album item ids passed to each provider album-track lookup."""
@@ -779,6 +782,7 @@ def _insert_harness(
     # a single recorder backs both the base mapping lookup (_get_provider_album_tracks)
     # and the candidate lookup (provider.get_album_tracks), so their calls stay ordered
     get_provider_album_tracks = AsyncMock(side_effect=_album_tracks)
+    get_library_items_by_query = AsyncMock(return_value=list(candidates))
     incoming_provider = _loaded_provider(incoming_instance)
     incoming_provider.get_album_tracks = get_provider_album_tracks
     registry = {"tidal_1": _loaded_provider("tidal_1"), "spotify_1": incoming_provider}
@@ -799,13 +803,15 @@ def _insert_harness(
         get_library_item_by_prov_id=AsyncMock(return_value=None),
         get_library_item_by_prov_mappings=AsyncMock(return_value=None),
         get_library_items_by_external_id=AsyncMock(return_value=[]),
-        get_library_items_by_query=AsyncMock(return_value=list(candidates)),
+        get_library_items_by_query=get_library_items_by_query,
         _get_provider_album_tracks=get_provider_album_tracks,
         # the insert path resolves an album from the library, it never searches a provider
         search=AsyncMock(side_effect=AssertionError("search during insert")),
         get_provider_item=AsyncMock(side_effect=AssertionError("provider fetch during insert")),
     ):
-        yield _InsertHarness(ctrl, mass.get_provider, get_provider_album_tracks)
+        yield _InsertHarness(
+            ctrl, mass.get_provider, get_provider_album_tracks, get_library_items_by_query
+        )
 
 
 async def test_insert_match_is_io_free_without_candidates() -> None:
@@ -817,6 +823,67 @@ async def test_insert_match_is_io_free_without_candidates() -> None:
 
     harness.get_provider.assert_not_called()
     assert harness.album_track_calls() == []
+
+
+async def test_insert_match_looks_up_every_retail_suffix_spelling() -> None:
+    """An album is looked up under its plain title and both spelled-out retail suffixes."""
+    with _insert_harness(candidates=[]) as harness:
+        item = _album("a1", "spotify_1", name="Stargazing - EP")
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+    query_params = harness.get_library_items_by_query.await_args_list[-1].kwargs[
+        "extra_query_params"
+    ]
+    assert query_params["search_names"] == ["stargazing", "stargazingep", "stargazingsingle"]
+
+
+async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
+    mass: MusicAssistant,
+) -> None:
+    """An 'X - EP' from one provider joins the existing 'X' row instead of duplicating it."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Kygo",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="spotify", provider_instance="spotify_1"
+                )
+            },
+        )
+    )
+    plain = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name="Stargazing",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="plain", provider_domain="spotify", provider_instance="spotify_1"
+                )
+            },
+        )
+    )
+    suffixed = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="suffixed",
+            provider="apple_music_1",
+            name="Stargazing - EP",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="suffixed",
+                    provider_domain="apple_music",
+                    provider_instance="apple_music_1",
+                )
+            },
+        )
+    )
+
+    assert suffixed.item_id == plain.item_id
 
 
 async def test_insert_match_does_not_escalate_an_unambiguous_candidate() -> None:
