@@ -882,15 +882,21 @@ async def test_insert_match_escalates_each_candidate_against_its_own_tracklist()
     assert harness.album_track_calls() == ["other-prov", "a1", "base-prov", "a1"]
 
 
-async def test_insert_match_adds_album_when_arbitration_raises() -> None:
-    """An unforeseen provider error costs the album its link but never the sync."""
+async def test_insert_match_falls_through_to_musicbrainz_on_transient_error() -> None:
+    """A tracklist that is temporarily unavailable leaves the decision to MusicBrainz."""
     with _insert_harness(
-        candidates=[_library_candidate()],
-        provider_album_tracks={"base-prov": ValueError("malformed provider payload")},
+        candidates=[_library_candidate(barcodes=(BASE_BARCODE,))],
+        provider_album_tracks={"base-prov": RetriesExhausted("provider unreachable")},
+        musicbrainz=_mb(
+            **{
+                BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+                OTHER_BARCODE: [_mb_release("rel-1", "rg-1")],
+            }
+        ),
     ) as harness:
-        item = _album("a1", "spotify_1", year=2023)
+        item = _album("a1", "spotify_1", year=2023, barcodes=(OTHER_BARCODE,))
 
-        assert await harness.ctrl._get_library_item_by_match(item) is None
+        assert await harness.ctrl._get_library_item_by_match(item) == 1
 
 
 async def test_insert_match_abstains_when_musicbrainz_is_not_loaded() -> None:

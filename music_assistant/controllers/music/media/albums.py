@@ -685,21 +685,9 @@ class AlbumsController(MediaControllerBase[Album]):
             # only the exact provider instance the album came from may be fingerprinted,
             # never a same-domain fallback pointing at a different account/server
             return False
-        try:
-            evidence = await self._resolve_album_evidence(
-                db_item, item, provider, True, _BaseTracksMemo()
-            )
-        except Exception as err:
-            # arbitration runs for every album a sync adds, so a provider raising something
-            # unforeseen may cost this album its link but must never abort the whole sync
-            self.logger.debug(
-                "Could not arbitrate album %s against library album %s: %s",
-                item.uri,
-                db_item.item_id,
-                err,
-                exc_info=err if self.logger.isEnabledFor(10) else None,
-            )
-            return False
+        evidence = await self._resolve_album_evidence(
+            db_item, item, provider, True, _BaseTracksMemo()
+        )
         return evidence == AlbumMatchEvidence.MATCH
 
     async def _match_provider(
