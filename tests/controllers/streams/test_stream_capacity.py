@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -172,13 +176,14 @@ async def test_all_candidates_busy_ends_in_one_blocking_pass_on_the_best_one(
 
     assert result is expected_buffer
     assert get_buffer.await_count == 3
-    # probe the first while an alternative is left, then wait out the budget on each
+    # every saturated candidate is only probed, so the budget survives for the final pass
     waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
     assert waits[0] == 0
-    assert waits[1] > 0
+    assert waits[1] == 0
     assert waits[2] > 0
-    # the final pass returns to the highest quality mapping instead of the last one tried
-    assert get_buffer.await_args_list[2].kwargs["streamdetails"].provider == BUSY_INSTANCE
+    # the single blocking wait is spent on the highest quality mapping, not the last tried
+    probed = [call.kwargs["streamdetails"].provider for call in get_buffer.await_args_list]
+    assert probed == [BUSY_INSTANCE, FALLBACK_INSTANCE, BUSY_INSTANCE]
 
 
 async def test_exhausted_budget_raises_typed_error_and_keeps_the_item_playable(
@@ -264,6 +269,76 @@ async def test_a_failed_reselection_spends_the_budget_on_the_blocked_provider(
     assert get_buffer.await_args_list[0].kwargs["source_wait_timeout"] == 0
     assert get_buffer.await_args_list[1].kwargs["source_wait_timeout"] > 0
     assert get_buffer.await_args_list[1].kwargs["streamdetails"] is busy_details
+    assert queue_item.streamdetails is busy_details
+
+
+async def test_a_broken_alternate_falls_back_to_the_capacity_blocked_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing alternate source must not turn a transient capacity miss into a hard failure."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    busy_details = _streamdetails(BUSY_INSTANCE)
+    queue_item.streamdetails = busy_details
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
+    }
+    audio = StreamsAudio(_mass(providers))
+    audio.get_stream_details = AsyncMock(return_value=_streamdetails(FALLBACK_INSTANCE))  # type: ignore[method-assign]
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(
+        side_effect=[
+            _limit_error(BUSY_INSTANCE),
+            AudioError("alternate source is broken"),
+            expected_buffer,
+        ]
+    )
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert get_buffer.await_count == 3
+    # the budget is returned to the blocked source instead of surfacing the alternate's error
+    assert get_buffer.await_args_list[2].kwargs["streamdetails"] is busy_details
+    assert get_buffer.await_args_list[2].kwargs["source_wait_timeout"] > 0
+    assert queue_item.streamdetails is busy_details
+
+
+async def test_the_final_pass_surfaces_the_blocked_sources_own_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the budget is spent on the preferred source, its real failure is the answer."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    busy_details = _streamdetails(BUSY_INSTANCE)
+    queue_item.streamdetails = busy_details
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
+    }
+    audio = StreamsAudio(_mass(providers))
+    audio.get_stream_details = AsyncMock(return_value=_streamdetails(FALLBACK_INSTANCE))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        AudioBuffer,
+        "get_buffer",
+        AsyncMock(
+            side_effect=[
+                _limit_error(BUSY_INSTANCE),
+                AudioError("alternate source is broken"),
+                AudioError("preferred source is broken"),
+            ]
+        ),
+    )
+
+    with pytest.raises(AudioError, match="preferred source is broken"):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
     assert queue_item.streamdetails is busy_details
 
 

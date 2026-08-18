@@ -80,6 +80,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 )
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
+            except asyncio.CancelledError:
+                # a replacement prepare aborted this one: release the half-filled source
+                # so its slot is not pinned until the inactivity sweep
+                if (sd := next_item.streamdetails) and (buf := sd.buffer) and buf.is_buffering:
+                    await asyncio.shield(buf.clear())
+                raise
 
         self.mass.create_task(
             _do_prepare,

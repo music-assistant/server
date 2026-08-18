@@ -155,6 +155,39 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("is_buffering", "expect_cleared"),
+    [(True, True), (False, False)],
+    ids=["still_filling", "completed"],
+)
+async def test_an_aborted_prepare_releases_its_half_filled_source(
+    is_buffering: bool, expect_cleared: bool
+) -> None:
+    """Aborting a prewarm must free its slot instead of pinning it until the inactivity sweep."""
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    buffer.is_buffering = is_buffering
+    buffer.clear = AsyncMock()
+    started = asyncio.Event()
+
+    async def _hang(*_args: object, **_kwargs: object) -> None:
+        # the producer is already running and owns a source slot at this point
+        next_item.streamdetails.buffer = buffer
+        started.set()
+        await asyncio.Event().wait()
+
+    mass.streams.audio.get_audio_buffer = _hang
+
+    controller.prepare_next_audio_buffer("queue-1")
+    prepare_task = asyncio.create_task(mass.create_task.call_args.args[0]())
+    await started.wait()
+    prepare_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await prepare_task
+
+    assert buffer.clear.await_count == (1 if expect_cleared else 0)
+
+
 async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     """A speculative source-capacity miss leaves the next item playable."""
     controller, next_item, mass = _controller_with_next_item()

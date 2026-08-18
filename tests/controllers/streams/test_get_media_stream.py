@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
@@ -246,7 +246,10 @@ def _limited_provider() -> _LimitedProvider:
     config.name = "Limited"
     config.instance_id = "limited--1"
     config.get_value.return_value = "GLOBAL"
-    return _LimitedProvider(mass, manifest, config)
+    provider = _LimitedProvider(mass, manifest, config)
+    # a provider that can serve a stream is a loaded one
+    provider.available = True
+    return provider
 
 
 def _provider_http_streamdetails(provider: MusicProvider) -> StreamDetails:
@@ -592,6 +595,62 @@ async def test_music_provider_without_free_slot_reports_stream_limit() -> None:
 
     await active_stream.aclose()
     assert provider.has_available_stream_slot
+
+
+def _unavailable_owner_with_sibling() -> tuple[_LimitedProvider, MagicMock, MagicMock]:
+    """Return an unavailable owner, a same-domain sibling, and a real get_provider double."""
+    owner = _limited_provider()
+    owner.available = False
+    sibling = MagicMock()
+    sibling.instance_id = "limited--2"
+
+    def _get_provider(_instance: str, return_unavailable: bool = False, **_kwargs: Any) -> Any:
+        # mirrors mass.get_provider: an unavailable streaming instance falls back to its domain
+        return owner if return_unavailable else sibling
+
+    lookup = MagicMock(side_effect=_get_provider)
+    return owner, sibling, lookup
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("patch_ffmpeg")
+async def test_custom_source_never_streams_from_a_sibling_of_the_charged_instance() -> None:
+    """The slot is charged to the instance that issued the details, so it must serve them too."""
+    owner, sibling, lookup = _unavailable_owner_with_sibling()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider = lookup
+    streamdetails = StreamDetails(
+        provider=owner.instance_id,
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.CUSTOM,
+    )
+
+    with pytest.raises(ProviderUnavailableError):
+        await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    sibling.get_audio_stream.assert_not_called()
+    assert owner.has_available_stream_slot
+
+
+def test_audio_source_generator_never_opens_a_sibling_of_the_charged_instance() -> None:
+    """The AudioSource entry point pins the same instance as the regular source path."""
+    owner, sibling, lookup = _unavailable_owner_with_sibling()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider = lookup
+    streamdetails = StreamDetails(
+        provider=owner.instance_id,
+        item_id="source-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.AUDIO_SOURCE,
+        stream_type=StreamType.CUSTOM,
+    )
+
+    with pytest.raises(ProviderUnavailableError):
+        audio._open_audio_source_generator(streamdetails)
+
+    sibling.get_audio_stream.assert_not_called()
 
 
 @pytest.mark.asyncio

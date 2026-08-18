@@ -2814,10 +2814,13 @@ class StreamsAudio:
             provider_busy = (
                 isinstance(provider, MusicProvider) and not provider.has_available_stream_slot
             )
-            # probe (0s) while other candidates remain untried, so a saturated provider is
-            # swapped out instead of waited on; otherwise block for the remaining budget
+            # probe (0s) whenever a reselection can still follow: either a candidate is
+            # untried, or a final pass can still return to the best one. Blocking here would
+            # spend the budget on whichever source came last instead of the preferred one.
             source_wait = (
-                0.0 if (provider_busy and alternatives_left and not final_pass) else remaining
+                0.0
+                if (provider_busy and not final_pass and (alternatives_left or busy_instances))
+                else remaining
             )
             try:
                 return await AudioBuffer.get_buffer(
@@ -2839,6 +2842,13 @@ class StreamsAudio:
                     busy_instances.clear()
                     final_pass = True
                 queue_item.streamdetails = None
+            except AudioError:
+                if last_capacity_error is None or final_pass:
+                    raise
+                # a broken alternate must not turn a transient capacity miss into a hard
+                # failure: restore the blocked details and spend the rest of the budget there
+                queue_item.streamdetails = last_failed_streamdetails
+                final_pass = True
 
     def _get_streamdetail_candidates(
         self,
@@ -3186,9 +3196,11 @@ class StreamsAudio:
         """
         stream_type = streamdetails.stream_type
         if stream_type == StreamType.CUSTOM:
-            # MusicProvider and PluginProvider both expose get_audio_stream with the same shape
-            provider = self.mass.get_provider(streamdetails.provider)
-            if provider is None:
+            # MusicProvider and PluginProvider both expose get_audio_stream with the same shape.
+            # Pin the exact instance: a domain fallback would stream from a sibling account
+            # while the source-stream slot is charged to the instance that issued the details.
+            provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+            if provider is None or not provider.available:
                 raise ProviderUnavailableError(
                     f"Provider {streamdetails.provider} for stream is no longer available"
                 )
@@ -3262,8 +3274,9 @@ class StreamsAudio:
     def _open_audio_source_generator(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
         """Open the raw PCM generator for an AudioSource (CUSTOM or NAMED_PIPE)."""
         if streamdetails.stream_type == StreamType.CUSTOM:
-            provider = self.mass.get_provider(streamdetails.provider)
-            if provider is None:
+            # pin the exact instance, see _resolve_media_stream_source
+            provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+            if provider is None or not provider.available:
                 raise ProviderUnavailableError(
                     f"Provider {streamdetails.provider} for stream is no longer available"
                 )
