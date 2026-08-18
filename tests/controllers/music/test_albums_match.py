@@ -670,6 +670,28 @@ def _mb_evidence_ctrl(musicbrainz: Mock) -> AlbumsController:
     return ctrl
 
 
+async def test_musicbrainz_evidence_shared_single_release_matches() -> None:
+    """A shared barcode resolving to exactly one specific release is positive evidence."""
+    musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
+    ctrl = _mb_evidence_ctrl(musicbrainz)
+    base = _library_album(barcodes=(BASE_BARCODE,))
+    compare = _album("s1", "spotify_1", barcodes=(BASE_BARCODE,))
+
+    assert await ctrl._musicbrainz_album_evidence(base, compare) == AlbumMatchEvidence.MATCH
+
+
+async def test_musicbrainz_evidence_ambiguous_barcode_is_not_release_identity() -> None:
+    """A shared barcode resolving to several releases never identifies a specific release."""
+    musicbrainz = _mb(
+        **{BASE_BARCODE: [_mb_release("rel-1", "rg-1"), _mb_release("rel-2", "rg-1")]}
+    )
+    ctrl = _mb_evidence_ctrl(musicbrainz)
+    base = _library_album(barcodes=(BASE_BARCODE,))
+    compare = _album("s1", "spotify_1", barcodes=(BASE_BARCODE,))
+
+    assert await ctrl._musicbrainz_album_evidence(base, compare) == AlbumMatchEvidence.INSUFFICIENT
+
+
 async def test_musicbrainz_evidence_all_resolved_disjoint_groups_reject() -> None:
     """Disjoint release groups are negative evidence when every barcode resolved."""
     musicbrainz = _mb(

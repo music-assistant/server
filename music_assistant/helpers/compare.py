@@ -216,7 +216,8 @@ def compare_album_evidence(
     ambiguous = version_evidence == AlbumMatchEvidence.INSUFFICIENT
     if ambiguous and secondary_external_id_match:
         # a shared barcode/ASIN identifies the same retail product, which resolves an
-        # ambiguous edition wording; a conflicting tracklist fingerprint still overrides
+        # ambiguous edition wording; when the caller supplies tracklists, a conflicting
+        # fingerprint still overrides
         ambiguous = False
     if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
         return _finalize_album_evidence(ambiguous, base_tracks, compare_tracks)
