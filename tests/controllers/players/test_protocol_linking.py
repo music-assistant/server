@@ -10657,6 +10657,90 @@ class TestDerivedProtocolLinking:
         assert {link.output_protocol_id for link in native.linked_output_protocols} == {"cc_1"}
         assert "spb_2" not in (config_store.get("players/native/values/linked_protocol_ids") or [])
 
+    def test_base_stays_with_refused_derived_on_replacement(self, mock_mass: MagicMock) -> None:
+        """
+        Keep a base protocol with its derived protocol when the derived link is refused.
+
+        The native player already serves the sendspin domain, so the universal player's
+        sendspin bridge cannot move. The cast protocol it rides on must stay behind with
+        it instead of moving on its own.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        config_store: dict[str, Any] = {
+            f"players/{player_id}": {"enabled": True}
+            for player_id in ("native", "up_b", "cc_2", "spb_2", "spb_native")
+        }
+        mock_mass.config.get = MagicMock(side_effect=config_store.get)
+        mock_mass.config.set = MagicMock(side_effect=config_store.__setitem__)
+        mock_mass.config.remove = MagicMock(side_effect=lambda key: config_store.pop(key, None))
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock()
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        identifiers = {IdentifierType.MAC_ADDRESS: mac}
+        universal = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_b",
+            name="Soundbar (Universal)",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["cc_2", "spb_2"],
+        )
+        universal._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+        universal._cache.clear()
+        universal.update_state(signal_event=False)
+        universal.set_initialized()
+
+        native = MockPlayer(
+            MockProvider("linkplay", mass=mock_mass), "native", "Soundbar", identifiers=identifiers
+        )
+        native.set_initialized()
+        cast_player = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cc_2",
+            "Cast",
+            player_type=PlayerType.PROTOCOL,
+            identifiers=identifiers,
+        )
+        cast_player.set_initialized()
+        derived = self._make_derived_player(mock_mass, "spb_2", "cc_2")
+        sendspin_native = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_native",
+            "Soundbar (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers=identifiers,
+        )
+        sendspin_native.set_initialized()
+
+        controller._players = {
+            "up_b": universal,
+            "native": native,
+            "cc_2": cast_player,
+            "spb_2": derived,
+            "spb_native": sendspin_native,
+        }
+        controller._add_protocol_link(universal, cast_player, "chromecast")
+        controller._add_protocol_link(universal, derived, "sendspin")
+        controller._add_protocol_link(native, sendspin_native, "sendspin")
+
+        controller._check_replace_universal_player(native)
+
+        # the bridge could not move, so the cast protocol it rides on stays with it
+        assert derived.protocol_parent_id == "up_b"
+        assert cast_player.protocol_parent_id == "up_b"
+        assert {link.output_protocol_id for link in universal.linked_output_protocols} == {
+            "cc_2",
+            "spb_2",
+        }
+        assert {link.output_protocol_id for link in native.linked_output_protocols} == {
+            "spb_native"
+        }
+
     def test_save_underlying_player_id_persists_and_clears(self, mock_mass: MagicMock) -> None:
         """Test the derived edge is persisted, cleared when revoked and skipped otherwise."""
         controller = PlayerController(mock_mass)
