@@ -162,6 +162,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist_type: ArtistType | None = None,
         *,
         summary: bool = True,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -178,7 +179,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param artist_type: The artist's type
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if artist_type:
@@ -201,6 +208,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            reachable_via=reachable_via,
         )
 
     async def tracks(

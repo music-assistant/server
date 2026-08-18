@@ -214,31 +214,34 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.RECENTLY_ADDED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="timestamp_added_desc", provider=providers
+                    limit=10, order_by="timestamp_added_desc", reachable_via=providers
                 )
             case LibraryRowID.RECENTLY_ADDED_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="timestamp_added_desc", provider=providers
+                    limit=10, order_by="timestamp_added_desc", reachable_via=providers
                 )
             case LibraryRowID.RANDOM_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, order_by="random_play_count", provider=providers
+                    limit=10, order_by="random_play_count", reachable_via=providers
                 )
             case LibraryRowID.RANDOM_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="random_play_count", provider=providers
+                    limit=10, order_by="random_play_count", reachable_via=providers
                 )
             case LibraryRowID.RECENT_FAVORITE_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    favorite=True, limit=10, order_by="timestamp_modified_desc", provider=providers
+                    favorite=True,
+                    limit=10,
+                    order_by="timestamp_modified_desc",
+                    reachable_via=providers,
                 )
             case LibraryRowID.FAVORITE_PLAYLISTS:
                 items = await self.mass.music.playlists.library_items(
-                    favorite=True, limit=10, order_by="random", provider=providers
+                    favorite=True, limit=10, order_by="random", reachable_via=providers
                 )
             case LibraryRowID.FAVORITE_RADIO:
                 items = await self.mass.music.radio.library_items(
-                    favorite=True, limit=10, order_by="play_count_desc", provider=providers
+                    favorite=True, limit=10, order_by="play_count_desc", reachable_via=providers
                 )
             case LibraryRowID.RECENT_ARTISTS:
                 items = await self.mass.music.recently_played(
@@ -256,23 +259,23 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.FORGOTTEN_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="last_played", played_only=True, provider=providers
+                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
                 )
             case LibraryRowID.FORGOTTEN_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="last_played", played_only=True, provider=providers
+                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
                 )
             case LibraryRowID.FORGOTTEN_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, order_by="last_played", played_only=True, provider=providers
+                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
                 )
             case LibraryRowID.MOST_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="play_count_desc", provider=providers
+                    limit=10, order_by="play_count_desc", reachable_via=providers
                 )
             case LibraryRowID.NEVER_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="play_count", provider=providers
+                    limit=10, order_by="play_count", reachable_via=providers
                 )
             case _:
                 items = []
@@ -295,6 +298,5 @@ def _folder(
         icon=icon,
         enabled_by_default=enabled_by_default,
         uri=f"library://folder/{item_id.value}",
-        # every default library row supports the optional provider filter
         supports_provider_filter=True,
     )

@@ -161,6 +161,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             *,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[Audiobook]: ...
 
@@ -178,6 +179,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             *,
             summary: bool = True,
             collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
@@ -195,10 +197,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             *,
             summary: bool = True,
             collapse_collections: bool,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -211,6 +214,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         *,
         summary: bool = True,
         collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
@@ -227,7 +231,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
             be returned individually.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         result = await self.get_library_items_by_query(
@@ -244,6 +254,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             in_library_only=True,
             summary=summary,
             collapse_collections=collapse_collections,
+            reachable_via=reachable_via,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -263,6 +274,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 in_library_only=True,
                 summary=summary,
                 collapse_collections=collapse_collections,
+                reachable_via=reachable_via,
             )
         return result
 
