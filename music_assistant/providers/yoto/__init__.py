@@ -357,11 +357,6 @@ class YotoProvider(MusicProvider):
                 t.duration for t in chapter.tracks.values() if isinstance(t.duration, (int, float))
             )
 
-        album_cover = (
-            album.metadata.images[0].path if (album.metadata and album.metadata.images) else None
-        )
-        track_cover = album_cover if album_cover else chapter.icon
-
         format_str = None
         if chapter.tracks:
             first_tr = next(iter(chapter.tracks.values()))
@@ -395,13 +390,13 @@ class YotoProvider(MusicProvider):
                     [
                         MediaItemImage(
                             type=ImageType.THUMB,
-                            path=track_cover,
+                            path=album.metadata.images[0].path,
                             provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     ]
                 )
-                if track_cover
+                if (album.metadata and album.metadata.images)
                 else None,
             ),
         )
