@@ -210,7 +210,7 @@ def compare_album_evidence(
     if version_evidence == AlbumMatchEvidence.NO_MATCH:
         return AlbumMatchEvidence.NO_MATCH
     # compare name
-    if not _compare_album_name(base_item.name, compare_item.name):
+    if not compare_album_name(base_item.name, compare_item.name):
         return AlbumMatchEvidence.NO_MATCH
 
     ambiguous = version_evidence == AlbumMatchEvidence.INSUFFICIENT
@@ -712,7 +712,9 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     str1_lower = str1.lower()
     str2_lower = str2.lower()
     if strict:
-        return str1_lower == str2_lower
+        # fall back to the same normalization the (search_name) candidate lookup uses,
+        # so an item that selection surfaces is never rejected here on formatting alone
+        return str1_lower == str2_lower or _compare_safe_strings(str1, str2)
     # return early if total length mismatch
     if abs(len(str1) - len(str2)) > 4:
         return False
@@ -731,6 +733,16 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
 def compare_version(base_version: str, compare_version: str) -> bool:
     """Compare version string."""
     return _normalize_version_tokens(base_version) == _normalize_version_tokens(compare_version)
+
+
+def compare_album_name(base_name: str, compare_name: str) -> bool:
+    """Return True if two album titles are the same identity, ignoring formatting drift."""
+    # the retail suffix carries no identity information: Apple Music appends it to
+    # EP/single titles while already setting album_type
+    return compare_strings(
+        _ALBUM_SUFFIX_PATTERN.sub("", base_name),
+        _ALBUM_SUFFIX_PATTERN.sub("", compare_name),
+    )
 
 
 def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> bool | None:
@@ -785,28 +797,23 @@ def _compare_album_version(base_version: str, compare_version: str) -> AlbumMatc
     return AlbumMatchEvidence.NO_MATCH
 
 
-def _compare_album_name(base_name: str, compare_name: str) -> bool:
-    """Return True if two album titles are the same identity, ignoring formatting drift."""
-    base_safe = _normalize_album_name(base_name)
-    compare_safe = _normalize_album_name(compare_name)
+def _compare_safe_strings(base: str, compare: str) -> bool:
+    """Return True if two names are equal ignoring case, diacritics, punctuation and spacing."""
+    base_safe = _normalize_name(base)
+    compare_safe = _normalize_name(compare)
     if base_safe and compare_safe:
         return base_safe == compare_safe
     if base_safe or compare_safe:
         return False
-    # both titles collapse to nothing under normalization (e.g. pure punctuation):
-    # fall back to a raw comparison with all whitespace removed, so spacing drift
-    # ("( )" vs "()") still matches while unrelated titles don't; the retail suffix
-    # is stripped here as well so "... - EP" still matches "..."
-    base_raw = _ALBUM_SUFFIX_PATTERN.sub("", base_name)
-    compare_raw = _ALBUM_SUFFIX_PATTERN.sub("", compare_name)
-    return "".join(base_raw.split()).casefold() == "".join(compare_raw.split()).casefold()
+    # both names collapse to nothing under normalization (e.g. the band "!!!"): fall back
+    # to a raw comparison with all whitespace removed, so spacing drift ("( )" vs "()")
+    # still matches while unrelated symbol-only names don't
+    return "".join(base.split()).casefold() == "".join(compare.split()).casefold()
 
 
-def _normalize_album_name(name: str) -> str:
-    """Return a punctuation/diacritic/whitespace-insensitive album title for identity checks."""
-    # the retail suffix carries no identity information: Apple Music appends it to
-    # EP/single titles while already setting album_type
-    name = _ALBUM_SUFFIX_PATTERN.sub("", name)
+@lru_cache(maxsize=1024)
+def _normalize_name(name: str) -> str:
+    """Return a punctuation/diacritic/whitespace-insensitive name for identity checks."""
     return create_safe_string(name, True, True)
 
 
