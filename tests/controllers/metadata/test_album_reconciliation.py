@@ -213,6 +213,30 @@ async def test_reconcile_duplicate_albums_ignores_distinct_editions(
     assert await _reconciled_ids(mass) == set()
 
 
+async def test_reconcile_duplicate_albums_selects_missing_version_against_named_edition(
+    mass: MusicAssistant,
+) -> None:
+    """A sibling that omits the edition entirely stays a candidate for the tracklist check."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Amy Winehouse",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    untagged = await _add_album(mass, "Back To Black", artist, provider_instance="qobuz_1")
+    tagged = await _add_album(
+        mass, "Back To Black", artist, version="Deluxe Edition", provider_instance="spotify_1"
+    )
+
+    assert await _reconciled_ids(mass) == {untagged.item_id, tagged.item_id}
+
+
 async def test_reconcile_duplicate_albums_selects_subset_version_wording(
     mass: MusicAssistant,
 ) -> None:
