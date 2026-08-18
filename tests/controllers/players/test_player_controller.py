@@ -5333,6 +5333,77 @@ class TestDeletePlayerConfigUserFilters:
         mock_mass.webserver.auth.remove_from_user_filters.assert_not_called()
 
 
+class TestDeletePlayerConfigGroupMemberships:
+    """Test how a deleted player config is reflected in the stored group member lists."""
+
+    @staticmethod
+    def _config_store(mock_mass: MagicMock) -> dict[str, Any]:
+        """Back the mocked config with a store holding a group that lists sonos_1."""
+        config_store: dict[str, Any] = {
+            "players": {
+                "group_1": {
+                    "values": {
+                        "group_members": ["sonos_1", "sonos_2"],
+                        "allowed_members": ["sonos_1"],
+                    }
+                },
+            },
+        }
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: config_store.get(key, default)
+        )
+        mock_mass.config.set = MagicMock(
+            side_effect=lambda key, value: config_store.__setitem__(key, value)
+        )
+        return config_store
+
+    def test_removal_drops_the_player_from_the_member_lists(self, mock_mass: MagicMock) -> None:
+        """A removed player is dropped from the member lists of every group."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+
+        controller.delete_player_config("sonos_1")
+
+        assert config_store["players/group_1/values/group_members"] == ["sonos_2"]
+        assert config_store["players/group_1/values/allowed_members"] == []
+
+    def test_replacement_hands_the_membership_to_the_new_player(self, mock_mass: MagicMock) -> None:
+        """A replaced player hands its group memberships over to its replacement."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+
+        controller.delete_player_config("sonos_1", replacement_player_id="sonos_3")
+
+        assert config_store["players/group_1/values/group_members"] == ["sonos_3", "sonos_2"]
+        assert config_store["players/group_1/values/allowed_members"] == ["sonos_3"]
+
+    async def test_permanent_unregister_drops_the_membership(self, mock_mass: MagicMock) -> None:
+        """A permanently removed player does not linger in a group's stored member list."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        controller._players = {"sonos_1": MockPlayer(provider, "sonos_1", "Sonos 1")}
+
+        await controller.unregister("sonos_1", permanent=True)
+
+        assert config_store["players/group_1/values/group_members"] == ["sonos_2"]
+
+    async def test_temporary_unregister_keeps_the_membership(self, mock_mass: MagicMock) -> None:
+        """A player that is only temporarily gone keeps its spot in the group."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        controller._players = {"sonos_1": MockPlayer(provider, "sonos_1", "Sonos 1")}
+
+        await controller.unregister("sonos_1")
+
+        assert "players/group_1/values/group_members" not in config_store
+
+
 class TestConfigChangeRestartsPlayback:
     """Test that a changed player setting which needs a reload restarts playback."""
 

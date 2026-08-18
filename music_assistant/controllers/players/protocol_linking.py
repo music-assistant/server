@@ -885,7 +885,7 @@ class ProtocolLinkingMixin:
         # Carry over the user's configuration and re-point group memberships
         # before the permanent removal below deletes the losing wrapper's config
         self._migrate_universal_player_config(remove.player_id, keep.player_id)
-        self._repoint_group_memberships(remove.player_id, keep.player_id)
+        self._update_group_memberships(remove.player_id, keep.player_id)
 
         # Stop playback and remove the obsolete player
         self.mass.create_task(self._stop_and_unregister(remove, keep.player_id))
@@ -1094,7 +1094,7 @@ class ProtocolLinkingMixin:
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the universal player's config
             self._migrate_universal_player_config(player.player_id, native_player.player_id)
-            self._repoint_group_memberships(player.player_id, native_player.player_id)
+            self._update_group_memberships(player.player_id, native_player.player_id)
 
             # Stop playback and remove the now-obsolete universal player
             self.mass.create_task(self._stop_and_unregister(player, native_player.player_id))
@@ -1247,18 +1247,19 @@ class ProtocolLinkingMixin:
         player.update_state()
         self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
 
-    def _repoint_group_memberships(self, old_player_id: str, new_player_id: str) -> None:
+    def _update_group_memberships(self, old_player_id: str, new_player_id: str | None) -> None:
         """
-        Re-point group memberships from a removed player to its successor.
+        Hand a removed player's group memberships over to its successor, or drop them.
 
-        When a universal player is replaced by a native player or merged into
-        another universal player, other players that list the removed player as
-        a group member (or allowed member) must follow its successor so those
-        memberships are not silently lost. Updates the persisted config and keeps
-        any registered player whose membership changed in sync.
+        Other players that list the removed player as a group member (or allowed
+        member) must follow its successor so those memberships are not silently
+        lost. Without a successor the player is gone for good and its id is dropped
+        instead, so it can not linger in a group and pull a device that returns
+        under the same id back in. Updates the persisted config and keeps any
+        registered player whose membership changed in sync.
 
         :param old_player_id: Player id that is being removed.
-        :param new_player_id: Player id that replaces it.
+        :param new_player_id: Player id that replaces it, or None if there is none.
         """
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         if not isinstance(all_player_configs, dict):
@@ -1276,7 +1277,7 @@ class ProtocolLinkingMixin:
                 new_members: list[str] = []
                 for member_id in members:
                     resolved = new_player_id if member_id == old_player_id else member_id
-                    if resolved not in new_members:
+                    if resolved is not None and resolved not in new_members:
                         new_members.append(resolved)
                 self.mass.config.set(f"{CONF_PLAYERS}/{other_id}/values/{key}", new_members)
                 # keep a registered player's in-place config copy and state in sync

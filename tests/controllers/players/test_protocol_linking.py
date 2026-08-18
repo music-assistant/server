@@ -6437,7 +6437,7 @@ class TestUniversalPlayerMerging:
             },
             "players/ap_keep": {"enabled": True},
             "players/dlna_live": {"enabled": True},
-            # nested players dict scanned by _repoint_group_memberships
+            # nested players dict scanned by _update_group_memberships
             "players": {
                 "group_1": {
                     "enabled": True,
@@ -7247,7 +7247,7 @@ class TestUniversalPlayerReplacement:
                 "values": {"linked_protocol_ids": ["ap_live"]},
             },
             "players/ap_live": {"enabled": True},
-            # nested players dict scanned by _repoint_group_memberships
+            # nested players dict scanned by _update_group_memberships
             "players": {
                 "group_1": {
                     "enabled": True,
@@ -9593,9 +9593,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players._migrate_universal_player_config.assert_called_once_with(
             universal_id, native_parent_id
         )
-        mock_mass.players._repoint_group_memberships.assert_called_once_with(
-            universal_id, native_parent_id
-        )
         mock_mass.players.delete_player_config.assert_called_once_with(
             universal_id, replacement_player_id=native_parent_id
         )
@@ -9686,7 +9683,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players._migrate_universal_player_config.assert_called_once_with(
             universal_id, shell_id
         )
-        mock_mass.players._repoint_group_memberships.assert_called_once_with(universal_id, shell_id)
         mock_mass.players.delete_player_config.assert_called_once_with(
             universal_id, replacement_player_id=shell_id
         )
@@ -9761,9 +9757,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         # The wrapper's settings are handed to the first claimer, then its
         # config is deleted
         mock_mass.players._migrate_universal_player_config.assert_called_once_with(
-            universal_id, "native_a"
-        )
-        mock_mass.players._repoint_group_memberships.assert_called_once_with(
             universal_id, "native_a"
         )
         mock_mass.players.delete_player_config.assert_called_once_with(
@@ -9992,7 +9985,6 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         }
         # but the registered wrapper keeps its config and group memberships
         mock_mass.players._migrate_universal_player_config.assert_not_called()
-        mock_mass.players._repoint_group_memberships.assert_not_called()
         mock_mass.players.delete_player_config.assert_not_called()
         mock_mass.player_queues.on_player_remove.assert_not_called()
 
