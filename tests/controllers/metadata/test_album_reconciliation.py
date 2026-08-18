@@ -24,6 +24,7 @@ from music_assistant.controllers.metadata.constants import (
     METADATA_SCAN_BATCH_SIZE,
     REFRESH_INTERVAL,
 )
+from music_assistant.controllers.metadata.controller import _duplicate_album_sibling_guard
 from music_assistant.mass import MusicAssistant
 
 _REPORT_FAILURE = "music_assistant.controllers.metadata.controller.report_current_task_failure"
@@ -51,8 +52,8 @@ def _album_stub(item_id: str = "1", name: str = "Test Album") -> Mock:
 # --------------------------------------------------------------------------- #
 
 
-async def test_reconcile_duplicate_albums_query_matches_unknown_stale_or_null_refresh() -> None:
-    """The candidate query selects unknown-typed albums that are stale or never refreshed."""
+async def test_reconcile_duplicate_albums_query_matches_unknown_or_duplicate_and_stale() -> None:
+    """The candidate query selects unknown-typed or possibly-duplicated stale albums."""
     ctrl = _controller()
     mass = Mock()
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[])
@@ -64,7 +65,8 @@ async def test_reconcile_duplicate_albums_query_matches_unknown_stale_or_null_re
 
     _, kwargs = mass.music.albums.get_library_items_by_query.call_args
     assert kwargs["extra_query_parts"] == [
-        f"{DB_TABLE_ALBUMS}.album_type = 'unknown' AND ("
+        f"({DB_TABLE_ALBUMS}.album_type = 'unknown' "
+        f"OR {_duplicate_album_sibling_guard()}) AND ("
         f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
         f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
     ]
@@ -116,6 +118,243 @@ async def test_reconcile_duplicate_albums_retries_stale_but_not_fresh_refresh(
 
     processed_ids = {call.args[0].item_id for call in update_metadata.await_args_list}
     assert processed_ids == {stale_album.item_id}
+
+
+async def _add_album(
+    mass: MusicAssistant,
+    name: str,
+    artist: Artist,
+    *,
+    version: str = "",
+    album_type: AlbumType = AlbumType.ALBUM,
+    provider_instance: str = "qobuz_1",
+) -> Album:
+    """Add a never-refreshed library album for the given artist."""
+    return await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name=name,
+            version=version,
+            album_type=album_type,
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=f"{provider_instance}-{name}-{version}",
+                    provider_domain=provider_instance.rsplit("_", 1)[0],
+                    provider_instance=provider_instance,
+                )
+            },
+        )
+    )
+
+
+async def _reconciled_ids(mass: MusicAssistant) -> set[str]:
+    """Run the reconciliation task and return the item ids it picked up."""
+    with (
+        patch.object(mass.metadata, "_update_album_metadata", AsyncMock()) as update_metadata,
+        patch.object(mass.music.albums, "match_providers", AsyncMock()),
+    ):
+        await mass.metadata._reconcile_duplicate_albums()
+    return {call.args[0].item_id for call in update_metadata.await_args_list}
+
+
+async def test_reconcile_duplicate_albums_selects_typed_album_with_duplicate_sibling(
+    mass: MusicAssistant,
+) -> None:
+    """A fully-typed album is reconciled when another row shares its name, artist and version."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Phil Collins",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    first = await _add_album(
+        mass, "...But Seriously", artist, version="2016 Remaster", provider_instance="spotify_1"
+    )
+    second = await _add_album(
+        mass, "...But Seriously", artist, version="2016 Remaster", provider_instance="qobuz_1"
+    )
+    # neither row is unknown-typed, so only the duplicate-sibling clause can select them
+    assert first.item_id != second.item_id
+
+    assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+async def test_reconcile_duplicate_albums_skips_row_merged_away_earlier_in_the_batch() -> None:
+    """A row already merged into its duplicate is skipped silently, not reported as a failure."""
+    ctrl = _controller()
+    mass = Mock()
+    merged_away = _album_stub("1", "Merged Away")
+    healthy = _album_stub("2", "Healthy Album")
+    reloaded_healthy = _album_stub("2", "Healthy Album")
+    mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[merged_away, healthy])
+    mass.music.albums.get_library_item = AsyncMock(return_value=reloaded_healthy)
+    mass.music.albums.match_providers = AsyncMock()
+    ctrl.mass = mass
+    ctrl._update_album_metadata = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[MediaNotFoundError("album not found in library: 1"), None]
+    )
+
+    with patch(_REPORT_FAILURE) as report_failure:
+        await ctrl._reconcile_duplicate_albums()
+
+    report_failure.assert_not_called()
+    mass.music.albums.match_providers.assert_awaited_once_with(reloaded_healthy)
+
+
+async def test_reconcile_duplicate_albums_reports_match_providers_not_found() -> None:
+    """A not-found raised by a provider search is reported, not mistaken for a merged row."""
+    ctrl = _controller()
+    mass = Mock()
+    album = _album_stub("1", "Searched Album")
+    mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
+    mass.music.albums.get_library_item = AsyncMock(return_value=album)
+    mass.music.albums.match_providers = AsyncMock(
+        side_effect=MediaNotFoundError("No results for Bandcamp search")
+    )
+    ctrl.mass = mass
+    ctrl._update_album_metadata = AsyncMock()  # type: ignore[method-assign]
+
+    with patch(_REPORT_FAILURE) as report_failure:
+        await ctrl._reconcile_duplicate_albums()
+
+    report_failure.assert_called_once_with("Searched Album: No results for Bandcamp search")
+
+
+@pytest.mark.parametrize(
+    ("first_version", "second_version"),
+    [
+        ("", ""),
+        ("", "Deluxe Edition"),
+        ("2011 Remaster", "Deluxe Edition 2011 Remaster"),
+        ("Remixes Pt. 1", "Remixes Pt. 2"),
+    ],
+)
+async def test_reconcile_duplicate_albums_selects_siblings_whatever_the_edition(
+    mass: MusicAssistant, first_version: str, second_version: str
+) -> None:
+    """Candidate selection is identity-only; deciding the edition is the matcher's job."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Queen",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    first = await _add_album(
+        mass, "Innuendo", artist, version=first_version, provider_instance="spotify_1"
+    )
+    second = await _add_album(
+        mass, "Innuendo", artist, version=second_version, provider_instance="qobuz_1"
+    )
+
+    assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+@pytest.mark.parametrize(("first_title", "second_title"), [("!!!", "!!!"), ("( )", "()")])
+async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the_same(
+    mass: MusicAssistant, first_title: str, second_title: str
+) -> None:
+    """Titles that normalize to nothing pair up on their raw spelling, ignoring spacing."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="!!!",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    first = await _add_album(mass, first_title, artist, provider_instance="spotify_1")
+    second = await _add_album(mass, second_title, artist, provider_instance="qobuz_1")
+
+    assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+async def test_reconcile_duplicate_albums_ignores_other_albums_by_the_same_artist(
+    mass: MusicAssistant,
+) -> None:
+    """Sharing an artist is not enough; the titles have to match too."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Radiohead",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    await _add_album(mass, "Kid A", artist, provider_instance="spotify_1")
+    await _add_album(mass, "Amnesiac", artist, provider_instance="qobuz_1")
+
+    assert await _reconciled_ids(mass) == set()
+
+
+async def test_reconcile_duplicate_albums_ignores_same_title_by_other_artist(
+    mass: MusicAssistant,
+) -> None:
+    """Same-titled albums by unrelated artists are not treated as duplicates."""
+    artists = [
+        await mass.music.artists.add_item_to_library(
+            Artist(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f"artist-{name}",
+                        provider_domain="test",
+                        provider_instance="library",
+                    )
+                },
+            )
+        )
+        for name in ("Tracy Chapman", "Chase & Status")
+    ]
+    for index, artist in enumerate(artists):
+        await _add_album(mass, "The Collection", artist, provider_instance=f"qobuz_{index}")
+
+    assert await _reconciled_ids(mass) == set()
+
+
+async def test_reconcile_duplicate_albums_ignores_titles_that_normalize_to_nothing(
+    mass: MusicAssistant,
+) -> None:
+    """Symbol-only titles all normalize to an empty search name and must not pair up."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Ed Sheeran",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    for index, title in enumerate(("+", "=", "÷")):
+        await _add_album(mass, title, artist, provider_instance=f"qobuz_{index}")
+
+    assert await _reconciled_ids(mass) == set()
 
 
 async def test_reconcile_duplicate_albums_empty_queue_is_a_noop() -> None:
