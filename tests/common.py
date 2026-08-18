@@ -172,6 +172,19 @@ def suppress_auto_loaded_providers() -> Iterator[None]:
         yield
 
 
+@contextlib.contextmanager
+def suppress_initial_library_sync() -> Iterator[None]:
+    """
+    Stop a fixture boot from arming the first library sync of its music providers.
+
+    A booted instance runs that sync a few seconds later, so on a loaded machine it lands
+    in the middle of whatever test is running by then and rewrites the library and emits
+    sync and task events into it. Tests that want a sync call ``start_sync()`` themselves.
+    """
+    with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
+        yield
+
+
 async def _create_builtin_provider_config_hermetic(
     self: ProviderConfigMixin, provider_domain: str
 ) -> None:
