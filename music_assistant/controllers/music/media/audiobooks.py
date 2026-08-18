@@ -481,7 +481,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         return ItemMapping.from_item(db_artist)
 
     async def _update_library_item(
-        self, item_id: str | int, update: Audiobook, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Audiobook,
+        overwrite: bool = False,
+        *,
+        set_playlog: bool = True,
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
@@ -535,8 +540,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-        await self._set_playlog(db_id, update)
+        if set_playlog:
+            await self._set_playlog(db_id, update)
         await self._set_artist_mappings(update, db_id)
+
+    async def _update_library_item_for_merge(self, item_id: int, update: Audiobook) -> None:
+        """Merge audiobook model state without applying a source resume position."""
+        await self._update_library_item(item_id, update, set_playlog=False)
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
