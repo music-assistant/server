@@ -28,6 +28,53 @@
     "port": {
       "label": "Network Port",
       "description": "TCP port this player is advertised and reachable on in Plex apps. Leave empty to auto-assign a free port and remember it for this instance."
+    },
+    "plextv_divider": {
+      "label": ""
+    },
+    "plextv_link_intro": {
+      "label": "If this player does not show up in the Plexamp mobile apps (iOS/Android), link it with your Plex account to register it on plex.tv. On some networks the mobile apps only list players registered on plex.tv, while desktop and web apps discover this player on the local network without linking."
+    },
+    "plextv_linked": {
+      "label": "Linked with plex.tv. This player appears in the cast menu of the Plexamp mobile apps."
+    },
+    "plextv_link_code": {
+      "label": "Open https://plex.tv/link (signed in to your Plex account) and enter code: {0}"
+    },
+    "plextv_link_status": {
+      "label": "plex.tv link status"
+    },
+    "plextv_status_no_pin": {
+      "label": "Request a link code first."
+    },
+    "plextv_status_not_confirmed": {
+      "label": "The code was not confirmed yet - enter it at https://plex.tv/link and try again."
+    },
+    "plextv_status_expired": {
+      "label": "The link code has expired - request a new code."
+    },
+    "plextv_status_unreachable": {
+      "label": "Could not reach plex.tv: {0}"
+    },
+    "start_link": {
+      "label": "Link with plex.tv",
+      "description": "Requests a link code from plex.tv. Enter the code at plex.tv/link (while signed in to your Plex account) to register this player.",
+      "action_label": "Get plex.tv link code"
+    },
+    "start_link_new": {
+      "label": "Request a new link code",
+      "description": "Discards the current code and requests a fresh one from plex.tv.",
+      "action_label": "Get a new plex.tv code"
+    },
+    "complete_link": {
+      "label": "Complete linking",
+      "description": "Click this after entering the code at plex.tv/link to finish registering this player.",
+      "action_label": "I have entered the code"
+    },
+    "unlink": {
+      "label": "Unlink from plex.tv",
+      "description": "Forget the plex.tv device token for this player. The device entry can also be removed from your Plex account's authorized devices.",
+      "action_label": "Unlink from plex.tv"
     }
   },
   "setup_flow": {
