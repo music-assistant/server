@@ -1113,6 +1113,110 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
     mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
 
 
+class TestRegisterFailureRollback:
+    """Test registration that fails while setting the player up."""
+
+    @staticmethod
+    def _stub_register_calls(mock_mass: MagicMock) -> None:
+        """Stub the awaited mass calls made during register."""
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.cache.get = AsyncMock(return_value=None)
+        mock_mass.config.get_player_config = AsyncMock(return_value=create_mock_config("Player 1"))
+        mock_mass.player_queues.on_player_register = AsyncMock()
+        mock_mass.player_queues.on_player_remove = MagicMock()
+
+    async def test_failed_config_load_leaves_no_stale_registration(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player whose config fails to load can be registered again afterwards."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        mock_mass.config.get_player_config = AsyncMock(side_effect=KeyError("no config"))
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            pytest.raises(KeyError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+        # the provider retries with a fresh player object once the device reappears
+        self._stub_register_calls(mock_mass)
+        retried = MockPlayer(provider, "player_1", "Player 1")
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            await controller.register(retried)
+
+        assert controller._players["player_1"] is retried
+        assert retried.initialized.is_set()
+
+    async def test_failed_config_hook_leaves_no_stale_registration(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player whose on_config_updated hook fails can be registered again afterwards."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(
+                player, "on_config_updated", AsyncMock(side_effect=BrokenPipeError("device gone"))
+            ),
+            pytest.raises(BrokenPipeError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+        retried = MockPlayer(provider, "player_1", "Player 1")
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            await controller.register(retried)
+
+        assert controller._players["player_1"] is retried
+        assert retried.initialized.is_set()
+
+    async def test_failed_setup_after_unregister_reports_the_real_error(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The setup error survives an unregister that already dropped the player."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_then_fail() -> None:
+            await controller.unregister("player_1")
+            raise BrokenPipeError("device gone")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", AsyncMock(side_effect=_unregister_then_fail)),
+            pytest.raises(BrokenPipeError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+
 class TestRegisterOrUpdateTypeTransition:
     """Tests for a registered player moving in or out of the protocol role."""
 
