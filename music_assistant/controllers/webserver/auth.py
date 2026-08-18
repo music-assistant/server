@@ -1249,6 +1249,9 @@ class AuthenticationManager:
 
         if updates:
             await self.database.update("users", {"user_id": target_user.user_id}, updates)
+            self.webserver.update_active_user_filters(
+                target_user.user_id, player_filter=player_filter, provider_filter=provider_filter
+            )
             # Refresh target user to get updated filters
             refreshed_user = await self.get_user(target_user.user_id)
             if not refreshed_user:
@@ -1291,8 +1294,10 @@ class AuthenticationManager:
         ending up with access to every player.
 
         :param old_player_id: ID of the player that is replaced.
-        :param new_player_id: ID of the player that takes its place.
-        :param removed_player_ids: IDs of the players that are removed along with it.
+        :param new_player_id: ID of the player that takes its place, must not be one of
+            the removed players.
+        :param removed_player_ids: IDs of all players whose config is removed, which
+            normally includes the replaced player itself.
         """
         await self._rewrite_user_filters(
             keep_provider=None,

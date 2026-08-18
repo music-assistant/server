@@ -2494,6 +2494,26 @@ async def test_remove_from_user_filters_in_parallel(auth_manager: Authentication
     assert await _get_filters(auth_manager, user.user_id) == ([], [])
 
 
+async def test_update_user_filters_updates_live_sessions(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that an admin restricting a user takes effect on their connected sessions.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    user = await auth_manager.create_user(username="unrestricted")
+    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
+    mass_minimal.webserver.clients.add(session)
+
+    await auth_manager.update_user_filters(user, ["kitchen"], None)
+
+    assert session._authenticated_user.player_filter == ["kitchen"]
+    # a filter that was not part of the update must be left alone
+    assert session._authenticated_user.provider_filter == []
+
+
 async def test_replace_player_in_user_filters(auth_manager: AuthenticationManager) -> None:
     """
     Test that a replaced player is swapped for its replacement in the access filters.
