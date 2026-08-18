@@ -144,7 +144,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
                 "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
             )
             await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
-            await wait_for_boot_to_settle()
+            await wait_for_boot_to_settle(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot, or the half-started server's open database

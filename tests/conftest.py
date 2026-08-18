@@ -154,7 +154,7 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     ):
         try:
             await mass_instance.start()
-            await wait_for_boot_to_settle()
+            await wait_for_boot_to_settle(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot: pytest holds on to the setup traceback,

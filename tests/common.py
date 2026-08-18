@@ -173,16 +173,20 @@ def suppress_auto_loaded_providers() -> Iterator[None]:
         yield
 
 
-async def wait_for_boot_to_settle() -> None:
+async def wait_for_boot_to_settle(mass: MusicAssistant) -> None:
     """
     Wait out the events a fixture boot leaves in flight.
 
-    Registering a background task emits a debounced task list, and a boot keeps
-    registering them until just after ``start()`` returns, so without this a test can
-    start watching for events in time to catch the tail of its own fixture's boot.
+    A provider finishes loading in a detached task that registers background tasks, and
+    registering one emits a debounced task list, so without this a test can start watching
+    for events in time to catch the tail of its own fixture's boot.
+
+    :param mass: The started instance to settle.
     """
-    # one debounce window for what the boot itself armed, one for the provider
-    # registrations that land in detached tasks just after it returns
+    for provider in mass.providers:
+        await provider.initialized.wait()
+    # twice the window: the debounce a registration already armed, plus the tail of the
+    # post-load work that runs after a provider marks itself initialized
     await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
 
 
