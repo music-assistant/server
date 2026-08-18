@@ -6,6 +6,87 @@ from music_assistant_models.enums import ExternalID
 from music_assistant.helpers import compare
 
 
+def _album(
+    item_id: str = "1",
+    provider: str = "test1",
+    name: str = "Album A",
+    version: str = "",
+    year: int | None = None,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> media_items.Album:
+    """Build a minimal Album for evidence comparisons."""
+    return media_items.Album(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        version=version,
+        year=year,
+        external_ids=external_ids or set(),
+        artists=media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id="artist",
+                    provider=provider,
+                    name="Artist A",
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id="artist", provider_domain="test", provider_instance=provider
+                        )
+                    },
+                )
+            ]
+        ),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id=item_id, provider_domain="test", provider_instance=provider
+            )
+        },
+    )
+
+
+def _track(
+    item_id: str,
+    disc_number: int = 1,
+    track_number: int = 1,
+    name: str = "Track",
+    version: str = "",
+    duration: int = 200,
+    isrc: str | None = None,
+) -> media_items.Track:
+    """Build a minimal Track for album-track fingerprint comparisons."""
+    return media_items.Track(
+        item_id=item_id,
+        provider="test1",
+        name=name,
+        version=version,
+        duration=duration,
+        disc_number=disc_number,
+        track_number=track_number,
+        external_ids={(ExternalID.ISRC, isrc)} if isrc else set(),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id=item_id, provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+
+
+def _tracklist(
+    count: int, *, isrc_prefix: str = "USRC17607", duration: int = 200
+) -> list[media_items.Track]:
+    """Build an ordered list of distinct tracks sharing a common ISRC/duration scheme."""
+    return [
+        _track(
+            item_id=str(number),
+            track_number=number,
+            name=f"Track {number}",
+            duration=duration,
+            isrc=f"{isrc_prefix}{number:03d}",
+        )
+        for number in range(1, count + 1)
+    ]
+
+
 def test_compare_version() -> None:
     """Test the version compare helper."""
     assert compare.compare_version("Remaster", "remaster") is True
@@ -278,6 +359,145 @@ def test_compare_album_barcode_requires_corroboration() -> None:
     album_b.name = album_a.name
     album_b.artists[0].name = "Different Artist"
     assert compare.compare_album(album_a, album_b) is False
+
+
+def test_compare_album_evidence_barcode_never_matches_unrelated_titles() -> None:
+    """A shared canonical barcode alone must never match unrelated title/artist data."""
+    barcode = {(ExternalID.BARCODE, "0724354283857")}
+    album_a = _album(name="Album A", external_ids=barcode)
+    album_b = _album(item_id="2", provider="test2", name="Completely Different Album", year=1999)
+    album_b.external_ids = barcode
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+    assert compare.compare_album(album_a, album_b) is False
+
+
+def test_compare_album_evidence_mb_releasegroup_not_sufficient_alone() -> None:
+    """A shared MusicBrainz release-group is family evidence only, never sufficient identity."""
+    releasegroup = {(ExternalID.MB_RELEASEGROUP, "11111111-1111-1111-1111-111111111111")}
+    original = _album(name="Album A", version="", external_ids=releasegroup)
+    remaster = _album(item_id="2", provider="test2", name="Album A", version="Live")
+    remaster.external_ids = releasegroup
+
+    # a genuine edition conflict (studio vs. live) must not auto-merge on releasegroup alone
+    assert compare.compare_album_evidence(original, remaster) == compare.AlbumMatchEvidence.NO_MATCH
+    assert compare.compare_album(original, remaster) is False
+
+
+def test_compare_album_evidence_ambiguous_version_without_tracks_is_insufficient() -> None:
+    """An ambiguous subset/superset edition wording without tracklists stays undecided."""
+    base_item = _album(version="2022 Remaster")
+    compare_item = _album(item_id="2", provider="test2", version="Deluxe 2022 Remaster")
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
+    # the compatibility wrapper stays conservative and does not merge on insufficient evidence
+    assert compare.compare_album(base_item, compare_item) is False
+
+
+def test_compare_album_evidence_resolves_with_matching_fingerprint() -> None:
+    """Ambiguous edition wording resolves to MATCH once track fingerprints agree."""
+    base_item = _album(version="2022 Remaster")
+    compare_item = _album(item_id="2", provider="test2", version="Deluxe 2022 Remaster")
+    base_tracks = _tracklist(14)
+    compare_tracks = _tracklist(14)
+
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=base_tracks, compare_tracks=compare_tracks
+        )
+        == compare.AlbumMatchEvidence.MATCH
+    )
+
+
+def test_compare_album_evidence_resolves_with_conflicting_fingerprint() -> None:
+    """Ambiguous edition wording resolves to NO_MATCH once track fingerprints disagree."""
+    base_item = _album(version="2022 Remaster")
+    compare_item = _album(item_id="2", provider="test2", version="Deluxe 2022 Remaster")
+    base_tracks = _tracklist(14, isrc_prefix="USRC17607")
+    compare_tracks = _tracklist(14, isrc_prefix="USRC28718")
+
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=base_tracks, compare_tracks=compare_tracks
+        )
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+
+
+def test_compare_album_evidence_ordinary_and_deluxe_track_counts_stay_distinct() -> None:
+    """An ordinary 8-track album and a 14-track edition must not be merged via fingerprints."""
+    base_item = _album(version="2022 Remaster")
+    compare_item = _album(item_id="2", provider="test2", version="Deluxe 2022 Remaster")
+    base_tracks = _tracklist(8)
+    compare_tracks = _tracklist(14)
+
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=base_tracks, compare_tracks=compare_tracks
+        )
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+
+
+def test_compare_album_track_fingerprint_matching_isrc_and_duration() -> None:
+    """Equal ISRC, title and duration at every position is a confident match."""
+    base_tracks = _tracklist(3)
+    compare_tracks = _tracklist(3)
+
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.MATCH
+    )
+
+
+def test_compare_album_track_fingerprint_conflicting_isrc() -> None:
+    """Conflicting ISRCs at the same position indicate a different recording/remaster."""
+    base_tracks = [_track("1", track_number=1, isrc="USRC17607839")]
+    compare_tracks = [_track("2", track_number=1, isrc="USRC28718001")]
+
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+
+
+def test_compare_album_track_fingerprint_title_duration_fallback() -> None:
+    """Without ISRCs, matching normalized title/version and a tight duration match."""
+    base_tracks = [_track("1", track_number=1, name="Track One", duration=200)]
+    compare_tracks = [_track("2", track_number=1, name="Track One", duration=201)]
+
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.MATCH
+    )
+    # a genuine duration conflict without ISRCs cannot be treated as the same recording
+    compare_tracks = [_track("2", track_number=1, name="Track One", duration=260)]
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+
+
+def test_compare_album_track_fingerprint_sparse_tracks_are_insufficient() -> None:
+    """Tracks with no ISRC, title, or duration cannot support a confident decision."""
+    base_tracks = [_track("1", track_number=1, name="", duration=0)]
+    compare_tracks = [_track("2", track_number=1, name="", duration=0)]
+
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
+    # no tracklists supplied at all is equally undecided
+    assert (
+        compare.compare_album_track_fingerprint(None, None)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
+    assert (
+        compare.compare_album_track_fingerprint([], []) == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
 
 
 def test_compare_external_ids_checks_all_unique_values() -> None:

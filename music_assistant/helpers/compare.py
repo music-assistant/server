@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from difflib import SequenceMatcher
+from enum import Enum
 from functools import lru_cache
 
 from music_assistant_models.enums import ExternalID, MediaType
@@ -43,6 +45,18 @@ _VERSION_WORD_ALIASES = {
     "remastered": "remaster",
 }
 _IGNORE_VERSION_KEYS = {create_safe_string(value) for value in IGNORE_VERSIONS}
+
+# duration tolerances (seconds) for the album-track fingerprint comparison
+_ISRC_DURATION_TOLERANCE = 8
+_FALLBACK_DURATION_TOLERANCE = 2
+
+
+class AlbumMatchEvidence(Enum):
+    """Confidence level for an album identity comparison."""
+
+    MATCH = "match"
+    NO_MATCH = "no_match"
+    INSUFFICIENT = "insufficient"
 
 
 def compare_media_item(
@@ -120,9 +134,32 @@ def compare_album(
     strict: bool = True,
 ) -> bool | None:
     """Compare two album items and return True if they match."""
+    return compare_album_evidence(base_item, compare_item, strict) == AlbumMatchEvidence.MATCH
+
+
+def compare_album_evidence(
+    base_item: Album | ItemMapping,
+    compare_item: Album | ItemMapping,
+    strict: bool = True,
+    base_tracks: Sequence[Track] | None = None,
+    compare_tracks: Sequence[Track] | None = None,
+) -> AlbumMatchEvidence:
+    """
+    Return the match evidence for two album items.
+
+    Unlike `compare_album`, this distinguishes a confident non-match from
+    insufficient metadata (e.g. an edition difference that cannot be resolved from
+    the album's own fields), so a caller that can fetch tracklists knows when doing
+    so may still resolve the comparison. If `base_tracks`/`compare_tracks` are
+    supplied, an ordered track fingerprint comparison is used to resolve that
+    remaining ambiguity.
+
+    :param base_tracks: Ordered tracklist for base_item, if already available to the caller.
+    :param compare_tracks: Ordered tracklist for compare_item, if already available.
+    """
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
-        return True
+        return AlbumMatchEvidence.MATCH
 
     # return early on (un)matched authoritative external id
     for ext_id in (
@@ -134,37 +171,85 @@ def compare_album(
             base_item.external_ids, compare_item.external_ids, ext_id
         )
         if external_id_match is not None:
-            return external_id_match
+            return AlbumMatchEvidence.MATCH if external_id_match else AlbumMatchEvidence.NO_MATCH
 
+    # barcode/ASIN are shared across pressings and are non-unique corroboration only,
+    # so they are never used on their own, only to corroborate a year mismatch below
     secondary_external_id_match = any(
         compare_external_ids(base_item.external_ids, compare_item.external_ids, ext_id) is True
         for ext_id in (ExternalID.ASIN, ExternalID.BARCODE)
     )
 
-    # compare version
-    if not compare_version(base_item.version, compare_item.version):
-        return False
+    # a real edition conflict (e.g. deluxe vs. live) is decisive, an ambiguous
+    # subset/superset wording (e.g. "2022 Remaster" vs "Deluxe 2022 Remaster") is not
+    version_evidence = _compare_album_version(base_item.version, compare_item.version)
+    if version_evidence == AlbumMatchEvidence.NO_MATCH:
+        return AlbumMatchEvidence.NO_MATCH
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
-        return False
+        return AlbumMatchEvidence.NO_MATCH
+
+    ambiguous = version_evidence == AlbumMatchEvidence.INSUFFICIENT
     if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
-        return True
+        if not ambiguous:
+            return AlbumMatchEvidence.MATCH
+        return compare_album_track_fingerprint(base_tracks, compare_tracks)
     # for strict matching we REQUIRE both items to be a real album object
     assert isinstance(base_item, Album)
     assert isinstance(compare_item, Album)
-    # compare year
+    # compare year: without corroboration this is provider drift, not proof either way
     if (
         base_item.year
         and compare_item.year
         and base_item.year != compare_item.year
         and not secondary_external_id_match
     ):
-        return False
+        ambiguous = True
     # compare explicitness
     if compare_explicit(base_item.metadata, compare_item.metadata) is False:
-        return False
+        return AlbumMatchEvidence.NO_MATCH
     # compare album artist(s)
-    return compare_artists(base_item.artists, compare_item.artists, not strict)
+    if not compare_artists(base_item.artists, compare_item.artists, not strict):
+        return AlbumMatchEvidence.NO_MATCH
+    if not ambiguous:
+        return AlbumMatchEvidence.MATCH
+    return compare_album_track_fingerprint(base_tracks, compare_tracks)
+
+
+def compare_album_track_fingerprint(
+    base_tracks: Sequence[Track] | None,
+    compare_tracks: Sequence[Track] | None,
+) -> AlbumMatchEvidence:
+    """
+    Compare two album tracklists position-by-position and return match evidence.
+
+    Requires an identical disc/track shape to consider two tracklists the same
+    edition. At each position, a shared (normalized) ISRC with a compatible duration
+    is preferred as identity evidence; conflicting ISRCs indicate a different
+    recording/remaster. Positions without a usable ISRC on either side fall back to
+    a normalized title/version match with a tight duration tolerance.
+
+    :param base_tracks: Ordered tracklist for the base album.
+    :param compare_tracks: Ordered tracklist for the album being compared.
+    """
+    if not base_tracks or not compare_tracks:
+        return AlbumMatchEvidence.INSUFFICIENT
+    base_positions = _track_positions(base_tracks)
+    compare_positions = _track_positions(compare_tracks)
+    if not base_positions or not compare_positions:
+        return AlbumMatchEvidence.INSUFFICIENT
+    if base_positions.keys() != compare_positions.keys():
+        # different disc/track shape (e.g. a bonus disc or missing tracks): different edition
+        return AlbumMatchEvidence.NO_MATCH
+
+    evidence = AlbumMatchEvidence.MATCH
+    for position, base_track in base_positions.items():
+        position_evidence = _compare_track_fingerprint(base_track, compare_positions[position])
+        if position_evidence == AlbumMatchEvidence.NO_MATCH:
+            return AlbumMatchEvidence.NO_MATCH
+        if position_evidence == AlbumMatchEvidence.INSUFFICIENT:
+            evidence = AlbumMatchEvidence.INSUFFICIENT
+    return evidence
 
 
 def compare_track(
@@ -635,3 +720,76 @@ def _normalize_version_tokens(value: str) -> tuple[str, ...]:
 def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:
     """Return True if the item is a dynamic radio station."""
     return isinstance(item, Radio) and item.is_dynamic
+
+
+def _compare_album_version(base_version: str, compare_version: str) -> AlbumMatchEvidence:
+    """Return match evidence for an album version/edition comparison."""
+    base_tokens = set(_normalize_version_tokens(base_version))
+    compare_tokens = set(_normalize_version_tokens(compare_version))
+    if base_tokens == compare_tokens:
+        return AlbumMatchEvidence.MATCH
+    if not base_tokens or not compare_tokens:
+        # providers normally tag deluxe/live/remaster editions explicitly, so a blank
+        # version next to a real one is treated as a genuine edition conflict
+        return AlbumMatchEvidence.NO_MATCH
+    if base_tokens < compare_tokens or compare_tokens < base_tokens:
+        # one version's wording is a strict subset of the other's (e.g. "2022 Remaster"
+        # vs. "Deluxe 2022 Remaster"): could be the same or a genuinely different edition
+        return AlbumMatchEvidence.INSUFFICIENT
+    return AlbumMatchEvidence.NO_MATCH
+
+
+def _track_positions(tracks: Sequence[Track]) -> dict[tuple[int, int], Track]:
+    """Return tracks keyed by their (disc_number, track_number) position."""
+    positions: dict[tuple[int, int], Track] = {}
+    for track in tracks:
+        if not track.track_number:
+            return {}
+        key = (track.disc_number or 1, track.track_number)
+        if key in positions:
+            # duplicate position: the tracklist shape cannot be trusted
+            return {}
+        positions[key] = track
+    return positions
+
+
+def _compare_track_fingerprint(base_track: Track, compare_track: Track) -> AlbumMatchEvidence:
+    """Return match evidence for a single album-track position."""
+    base_isrcs = _normalized_external_ids(base_track.external_ids, ExternalID.ISRC)
+    compare_isrcs = _normalized_external_ids(compare_track.external_ids, ExternalID.ISRC)
+    if base_isrcs and compare_isrcs:
+        if base_isrcs.isdisjoint(compare_isrcs):
+            # both sides tagged an ISRC and they disagree: a different recording/remaster
+            return AlbumMatchEvidence.NO_MATCH
+        if _duration_close(base_track.duration, compare_track.duration, _ISRC_DURATION_TOLERANCE):
+            return AlbumMatchEvidence.MATCH
+        return AlbumMatchEvidence.INSUFFICIENT
+
+    # no usable ISRC on (at least) one side: fall back to title/version + duration
+    if not base_track.name or not compare_track.name:
+        return AlbumMatchEvidence.INSUFFICIENT
+    if not compare_strings(base_track.name, compare_track.name, strict=True):
+        return AlbumMatchEvidence.NO_MATCH
+    if not compare_version(base_track.version, compare_track.version):
+        return AlbumMatchEvidence.NO_MATCH
+    if not base_track.duration or not compare_track.duration:
+        return AlbumMatchEvidence.INSUFFICIENT
+    if _duration_close(base_track.duration, compare_track.duration, _FALLBACK_DURATION_TOLERANCE):
+        return AlbumMatchEvidence.MATCH
+    return AlbumMatchEvidence.NO_MATCH
+
+
+def _normalized_external_ids(
+    external_ids: set[tuple[ExternalID, str]], external_id_type: ExternalID
+) -> set[str]:
+    """Return the normalized values of a specific external id type."""
+    return {
+        normalize_external_id(external_id_type, value)
+        for current_type, value in external_ids
+        if current_type == external_id_type
+    }
+
+
+def _duration_close(base_duration: int, compare_duration: int, tolerance: int) -> bool:
+    """Return True if two track durations (in seconds) are within tolerance."""
+    return abs(base_duration - compare_duration) <= tolerance
