@@ -667,6 +667,29 @@ class AlbumsController(MediaControllerBase[Album]):
             return await prov.get_album_tracks(item_id)
         return []
 
+    async def _confirm_library_candidate(self, db_item: Album, item: Album | ItemMapping) -> bool:
+        """
+        Return True if a library album is the same album as the one being added.
+
+        An edition that cannot be decided on the albums' own metadata is escalated to
+        tracklists and MusicBrainz, so an ambiguous album is linked to the album it
+        belongs to instead of becoming a second library entry.
+        """
+        if not isinstance(item, Album):
+            return await super()._confirm_library_candidate(db_item, item)
+        evidence = compare_album_evidence(db_item, item, strict=True)
+        if evidence != AlbumMatchEvidence.INSUFFICIENT:
+            return evidence == AlbumMatchEvidence.MATCH
+        provider = self.mass.get_provider(item.provider, provider_type=MusicProvider)
+        if provider is None or provider.instance_id != item.provider:
+            # only the exact provider instance the album came from may be fingerprinted,
+            # never a same-domain fallback pointing at a different account/server
+            return False
+        evidence = await self._resolve_album_evidence(
+            db_item, item, provider, True, _BaseTracksMemo()
+        )
+        return evidence == AlbumMatchEvidence.MATCH
+
     async def _match_provider(
         self,
         db_album: Album,

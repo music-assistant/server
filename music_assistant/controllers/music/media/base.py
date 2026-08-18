@@ -1588,7 +1588,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if cur_item.item_id in seen_item_ids:
                     continue
                 seen_item_ids.add(cur_item.item_id)
-                if compare_media_item(item, cur_item):
+                if await self._confirm_library_candidate(cur_item, item):
                     return int(cur_item.item_id)
         # search by normalized exact name match
         query = (
@@ -1602,9 +1602,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         for db_item in await self.get_library_items_by_query(
             extra_query_parts=[query], extra_query_params=query_params
         ):
-            if compare_media_item(db_item, item, True):
+            if await self._confirm_library_candidate(db_item, item):
                 return int(db_item.item_id)
         return None
+
+    async def _confirm_library_candidate(
+        self, db_item: ItemCls, item: ItemCls | ItemMapping
+    ) -> bool:
+        """
+        Return True if a library candidate is the same item as the one being added.
+
+        Override in a subclass to confirm a candidate that the items' own metadata
+        cannot decide on with additional evidence.
+
+        :param db_item: Existing library item that matched on an external id or name.
+        :param item: The (provider) item that is being added to the library.
+        """
+        return bool(compare_media_item(db_item, item, True))
 
     def _external_ids_query(
         self, media_type: MediaType | None = None, table_alias: str | None = None
