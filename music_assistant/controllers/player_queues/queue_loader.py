@@ -666,6 +666,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """Handle play media without acquiring the queue lock."""
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        self._clear_pending_skip(queue_id)
         self._set_transitioning(queue_id, False)
         # we use a contextvar to bypass the throttler for this asyncio task/context
         # this makes sure that playback has priority over other requests that may be

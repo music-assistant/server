@@ -35,6 +35,18 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues")
 _VOLATILE_CACHE_FIELDS = ("elapsed_time", "elapsed_time_last_updated", "playback_speed")
 
 
+@dataclass(slots=True, frozen=True)
+class PendingSkip:
+    """The accumulated target of a burst of relative skip commands, awaiting its stream restart."""
+
+    # the item the target was calculated against; a target for any other item is stale
+    queue_item_id: str
+    # target position in seconds
+    target: float
+    # when the target was set, so one left behind by a cancelled burst is not composed onto
+    set_at: float
+
+
 @dataclass(slots=True)
 class PlayerQueueData:
     """The complete server-side record for a queue: the wire `PlayerQueue` plus all server-only state."""
@@ -59,6 +71,8 @@ class PlayerQueueData:
     # the user plays next (see PlayerQueuesController._apply_shuffle_intent).
     shuffle_set_at: float | None = None
     transitioning: bool = False
+    # target of a debounced relative skip, applied once the burst settles
+    pending_skip: PendingSkip | None = None
     play_action_refcount: int = 0
     last_counted_play: str | None = None
     # session_id whose flow stream was fully generated
