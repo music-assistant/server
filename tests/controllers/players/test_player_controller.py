@@ -40,7 +40,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
@@ -68,6 +68,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import curren
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.universal_player.player import UniversalPlayer
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
 
@@ -1289,29 +1290,41 @@ class TestRegisterOrUpdateTypeTransition:
         # a leftover parent id makes the startup repair pass heal the type back to protocol
         mock_mass.config.set.assert_any_call(parent_key, None)
 
-    async def test_universal_parent_is_left_to_the_link_evaluation(
+    async def test_universal_parent_hands_over_to_the_promoted_player(
         self, mock_mass: MagicMock
     ) -> None:
-        """A universal parent is replaced wholesale instead of being unlinked here."""
+        """A universal parent hands its config to the player that replaces it."""
         controller = self._prepare(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
         universal_provider = MockProvider(
             "universal_player", instance_id="universal_player", mass=mock_mass
         )
-        parent = self._register(controller, universal_provider, "parent", PlayerType.PLAYER)
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("Universal")
+        universal = UniversalPlayer(
+            cast("Any", universal_provider), "universal_1", "Universal", DeviceInfo(), ["child"]
+        )
+        universal.set_initialized()
+        controller._players["universal_1"] = universal
+        universal.update_state(signal_event=False)
         child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
-        child.set_protocol_parent_id("parent")
-        parent.set_linked_output_protocols(
+        child.set_protocol_parent_id("universal_1")
+        universal.set_linked_output_protocols(
             [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
         )
+        migrated: list[tuple[str, str]] = []
 
-        child._attr_type = PlayerType.PLAYER
-        await controller.register_or_update(child)
+        with patch.object(
+            controller,
+            "_migrate_universal_player_config",
+            side_effect=lambda old, new: migrated.append((old, new)),
+        ):
+            child._attr_type = PlayerType.PLAYER
+            await controller.register_or_update(child)
 
-        # unlinking here would strand the universal player before its config and group
-        # memberships are carried over to the player that replaces it
-        assert parent.linked_output_protocols != []
-        assert "parent" in controller._players
+        # a leftover active link makes the wrapper refuse the handover to the player it
+        # is being replaced by, stranding the user's settings on a player on its way out
+        assert migrated == [("universal_1", "child")]
+        assert child.protocol_parent_id is None
 
     async def test_player_to_protocol_detaches_its_children(self, mock_mass: MagicMock) -> None:
         """A player that becomes a protocol child releases the protocols it owned."""
