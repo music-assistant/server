@@ -624,6 +624,57 @@ async def test_the_next_pass_starts_once_the_walk_reaches_the_end() -> None:
     assert not ctrl._track_reconciliation_rescan_due
 
 
+def _persisting_mass(stored: dict[str, object]) -> Mock:
+    """Build a mass stand-in whose raw core config survives being read back."""
+    return Mock(
+        tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])),
+        config=Mock(
+            set_raw_core_config_value=lambda _domain, key, value: stored.__setitem__(key, value),
+            get_raw_core_config_value=lambda _domain, key, default=None: stored.get(key, default),
+        ),
+    )
+
+
+async def test_the_walk_resumes_after_a_restart() -> None:
+    """Progress is kept across restarts, so a long run of refusals is only crossed once."""
+    stored: dict[str, object] = {}
+    ctrl = _bare_controller([])
+    ctrl.mass = _persisting_mass(stored)
+    ctrl._set_track_reconciliation_state((42, 99), True)
+
+    restarted = _bare_controller([])
+    restarted.mass = _persisting_mass(stored)
+    restarted._restore_track_reconciliation_state()
+
+    assert restarted._track_reconciliation_cursor == (42, 99)
+    assert restarted._track_reconciliation_rescan_due
+
+
+async def test_a_finished_walk_stays_finished_after_a_restart() -> None:
+    """A library with nothing left to do does not start scanning again on every boot."""
+    stored: dict[str, object] = {}
+    ctrl = _bare_controller([])
+    ctrl.mass = _persisting_mass(stored)
+    ctrl._set_track_reconciliation_state(None, False)
+
+    restarted = _bare_controller([])
+    restarted.mass = _persisting_mass(stored)
+    restarted._restore_track_reconciliation_state()
+
+    assert restarted._track_reconciliation_cursor is None
+
+
+async def test_a_first_run_starts_at_the_beginning() -> None:
+    """With nothing stored yet the walk starts at the top of the library."""
+    ctrl = _bare_controller([])
+    ctrl.mass = _persisting_mass({})
+
+    ctrl._restore_track_reconciliation_state()
+
+    assert ctrl._track_reconciliation_cursor == (0, 0)
+    assert not ctrl._track_reconciliation_rescan_due
+
+
 async def test_no_candidate_survives_a_sync_driven_rewind() -> None:
     """Repeated syncs must not keep a later candidate permanently out of reach."""
     pairs = [(index, 900 + index) for index in range(1, TRACK_RECONCILIATION_BATCH_SIZE * 3)]

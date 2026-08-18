@@ -67,6 +67,8 @@ from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
+    CONF_TRACK_RECONCILIATION_CURSOR,
+    CONF_TRACK_RECONCILIATION_RESCAN_DUE,
     DATABASE_CLEANUP_TASK_ID,
     DB_SCHEMA_VERSION,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
@@ -212,6 +214,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     domain: str = "music"
     config: CoreConfig
+    # where the duplicate track walk stands; restored from config on startup
+    _track_reconciliation_cursor: tuple[int, int] | None = (0, 0)
+    _track_reconciliation_rescan_due: bool = False
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -229,8 +234,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
-        self._track_reconciliation_cursor: tuple[int, int] | None = (0, 0)
-        self._track_reconciliation_rescan_due = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -282,6 +285,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Handle logic after all core controllers have been set up."""
         self._register_database_cleanup_task()
         self._register_provider_mapping_correction_task()
+        self._restore_track_reconciliation_state()
         self._register_track_reconciliation_task()
         self.genres.register_scheduled_scan_task()
 
@@ -2667,7 +2671,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # freshly synced content is the only source of new duplicates, so the reconciliation
         # pass owes the library another walk; it starts once the current one reaches the end,
         # since rewinding right now would keep re-examining the same prefix forever
-        self._track_reconciliation_rescan_due = True
+        self._set_track_reconciliation_state(self._track_reconciliation_cursor, True)
         self._queue_database_cleanup_task()
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
@@ -2745,16 +2749,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             limit=TRACK_RECONCILIATION_BATCH_SIZE,
         )
         if not rows:
-            self._track_reconciliation_cursor = None
+            self._set_track_reconciliation_state(None, self._track_reconciliation_rescan_due)
             update_current_task_progress_text("No duplicate tracks found")
             return
         # resume after the exact pair examined last, so candidates this run refused can never
         # starve the ones behind them, not even a further pair of the same track that the batch
         # boundary cut off; a short batch means the walk has reached the end of the library
-        self._track_reconciliation_cursor = (
+        self._set_track_reconciliation_state(
             (int(rows[-1]["item_id_1"]), int(rows[-1]["item_id_2"]))
             if len(rows) == TRACK_RECONCILIATION_BATCH_SIZE
-            else None
+            else None,
+            self._track_reconciliation_rescan_due,
         )
         merged = 0
         for index, row in enumerate(rows, 1):
@@ -2780,6 +2785,38 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
 
+    def _restore_track_reconciliation_state(self) -> None:
+        """Pick the duplicate track walk back up where the previous run left it."""
+        cursor = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_TRACK_RECONCILIATION_CURSOR, [0, 0]
+        )
+        self._track_reconciliation_cursor = (
+            (int(cursor[0]), int(cursor[1])) if len(cursor) == 2 else None
+        )
+        self._track_reconciliation_rescan_due = bool(
+            self.mass.config.get_raw_core_config_value(
+                self.domain, CONF_TRACK_RECONCILIATION_RESCAN_DUE, False
+            )
+        )
+
+    def _set_track_reconciliation_state(
+        self, cursor: tuple[int, int] | None, rescan_due: bool
+    ) -> None:
+        """
+        Record how far the duplicate track walk has come, surviving a restart.
+
+        :param cursor: The pair examined last, or None once the walk reached the end.
+        :param rescan_due: Whether a completed sync still owes the library another pass.
+        """
+        self._track_reconciliation_cursor = cursor
+        self._track_reconciliation_rescan_due = rescan_due
+        self.mass.config.set_raw_core_config_value(
+            self.domain, CONF_TRACK_RECONCILIATION_CURSOR, list(cursor) if cursor else []
+        )
+        self.mass.config.set_raw_core_config_value(
+            self.domain, CONF_TRACK_RECONCILIATION_RESCAN_DUE, rescan_due
+        )
+
     def _start_next_pass_if_due(self) -> None:
         """Rewind the duplicate track walk if a sync has added content and the walk is done."""
         # rewinding a walk still in progress would keep re-examining the same first
@@ -2788,8 +2825,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return
         if self._track_reconciliation_cursor is not None:
             return
-        self._track_reconciliation_cursor = (0, 0)
-        self._track_reconciliation_rescan_due = False
+        self._set_track_reconciliation_state((0, 0), False)
 
     async def _albums_agree_on_edition(self, item_id_1: int, item_id_2: int) -> bool:
         """
