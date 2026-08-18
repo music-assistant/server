@@ -225,6 +225,17 @@ class MusicProvider(Provider):
         return True
 
     @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """
+        Return the errors a library sync must never treat as a skippable item failure.
+
+        Declare the errors this provider raises to signal something a wrapper around its
+        own methods has to act on, such as an expired token that triggers a reauthenticate
+        and a retry. Anything listed here is re-raised instead of skipping the item.
+        """
+        return ()
+
+    @property
     def supported_artist_types(self) -> set[ArtistType]:
         """
         Return all supported artist types by this provider.
@@ -1039,7 +1050,14 @@ class MusicProvider(Provider):
     def _handle_sync_item_failure(
         self, media_type: MediaType, item_ref: str | None, err: Exception
     ) -> None:
-        """Log a non-fatal sync failure and record it on the active background task."""
+        """
+        Log a non-fatal sync failure and record it on the active background task.
+
+        :raises Exception: If the provider declared this error unskippable, so that its own
+            error handling can act on it instead of the item being skipped.
+        """
+        if isinstance(err, self.unskippable_sync_errors):
+            raise err
         state = sync_run_state()
         state.failures += 1
         error_detail = describe_sync_error(err)

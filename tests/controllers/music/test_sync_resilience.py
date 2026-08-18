@@ -61,7 +61,11 @@ class FailingAlbumProvider(MusicProvider):
 
 
 def _build_provider(
-    mass: MagicMock, *, sync_album_tracks: bool = False, sync_deletions: bool = True
+    mass: MagicMock,
+    *,
+    sync_album_tracks: bool = False,
+    sync_deletions: bool = True,
+    cls: type[FailingAlbumProvider] = FailingAlbumProvider,
 ) -> FailingAlbumProvider:
     """Return a provider instance wired to the given (mocked) mass."""
     manifest = MagicMock()
@@ -76,7 +80,7 @@ def _build_provider(
         CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key: sync_deletions,
     }
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
-    return FailingAlbumProvider(mass, manifest, config)
+    return cls(mass, manifest, config)
 
 
 def _build_mass(prev_library_ids: list[int] | None = None) -> MagicMock:
@@ -364,3 +368,34 @@ async def test_standalone_import_keeps_its_own_failure_state(
 
     # the second import reports its failures just like the first one did
     assert len(caplog.records) == MAX_LOGGED_SYNC_FAILURES
+
+
+class _AuthSignal(Exception):
+    """Stands in for a provider error a wrapper around sync_library has to act on."""
+
+
+class AuthSignallingProvider(FailingAlbumProvider):
+    """Provider that declares its auth signal unskippable."""
+
+    @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """Return the errors a library sync must not swallow as an item failure."""
+        return (_AuthSignal,)
+
+
+async def test_declared_unskippable_error_is_not_swallowed() -> None:
+    """
+    An error the provider declared unskippable escapes instead of skipping the item.
+
+    Providers use these to signal something their own wrapper must handle, such as an
+    expired token that needs a reauthenticate and a retry.
+    """
+    mass = _build_mass()
+    provider = _build_provider(mass, cls=AuthSignallingProvider)
+    mass.music.albums.add_item_to_library = AsyncMock(side_effect=_AuthSignal("token expired"))
+
+    with pytest.raises(_AuthSignal):
+        await provider.sync_library(MediaType.ALBUM)
+
+    # the run aborted, so nothing was recorded as a completed sync
+    mass.cache.set.assert_not_called()
