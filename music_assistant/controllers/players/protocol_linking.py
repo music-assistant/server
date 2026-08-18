@@ -1033,9 +1033,7 @@ class ProtocolLinkingMixin:
                 continue
 
             known_protocol_ids = set(self._get_known_protocol_ids(player))
-            active_protocol_ids = {
-                link.output_protocol_id for link in player.linked_output_protocols
-            }
+            refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
             # Transfer all protocol links from universal player to native player
@@ -1044,34 +1042,35 @@ class ProtocolLinkingMixin:
                     protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
-                    if protocol_player.protocol_parent_id == native_player.player_id:
-                        moved_protocol_ids.add(protocol_player.player_id)
-                        protocol_player.refresh_state()
-                    else:
+                    if protocol_player.protocol_parent_id != native_player.player_id:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
+                        refused_protocol_ids.add(protocol_player.player_id)
+                        continue
+                    protocol_player.refresh_state()
+                    moved_protocol_ids.add(protocol_player.player_id)
 
-            if active_protocol_ids - moved_protocol_ids:
-                # A link was refused, keep the universal player and hand over only
-                # what moved so the refused protocols are not orphaned.
-                self._migrate_protocol_ids_to_parent(native_player, moved_protocol_ids)
-                self._remove_protocol_ids_from_parent(player, moved_protocol_ids)
-                native_player.refresh_state()
-                continue
-
-            cached_only_ids = known_protocol_ids - active_protocol_ids
-            preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            # A refused link leaves the universal player in charge, so only hand over what
+            # actually moved: ownership that exists in config alone stays with it, which
+            # keeps a protocol derived from a refused one with the parent it will link to.
+            migrated_protocol_ids = (
+                moved_protocol_ids if refused_protocol_ids else known_protocol_ids
+            )
             # A device that kept its id across a type change lists itself here.
             # It must never become its own protocol, and it must also be dropped
             # from the obsolete universal player so the permanent cleanup below
             # doesn't treat it as an orphaned protocol (which would re-wrap the
             # native player in a fresh universal player).
-            preserved_protocol_ids.discard(native_player.player_id)
-            self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
+            migrated_protocol_ids.discard(native_player.player_id)
+            self._migrate_protocol_ids_to_parent(native_player, migrated_protocol_ids)
             self._remove_protocol_ids_from_parent(
-                player, preserved_protocol_ids | {native_player.player_id}
+                player, migrated_protocol_ids | {native_player.player_id}
             )
             native_player.refresh_state()
+
+            if refused_protocol_ids:
+                # Registered protocols that the native player refused remain on the wrapper.
+                continue
 
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the universal player's config
