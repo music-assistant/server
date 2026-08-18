@@ -189,7 +189,8 @@ class PulseCaptureServer:
         :param mass: MusicAssistant instance, used for the private runtime dir
             under its cache path.
         """
-        self._mass = mass
+        # only the cache path is kept: holding mass itself would pin the
+        # WeakKeyDictionary registry entry (value -> key) forever
         self._base_dir = Path(mass.cache_path) / "pulse_capture"
         self._socket_path = self._base_dir / "native"
         self._config_path = self._base_dir / "pulse_capture.pa"
@@ -260,6 +261,7 @@ class PulseCaptureServer:
         """Start the daemon and its supervisor. Called with the lock held."""
         await self._launch_daemon()
         self._supervisor_task = asyncio.create_task(self._supervise())
+        self._supervisor_task.add_done_callback(_log_supervisor_exit)
 
     async def _stop(self) -> None:
         """Stop supervisor and daemon, clean the private dir. Called with the lock held."""
@@ -296,6 +298,9 @@ class PulseCaptureServer:
 
         def _prepare() -> None:
             self._base_dir.mkdir(parents=True, exist_ok=True)
+            # the daemon accepts anonymous connections on its socket, so the
+            # private dir must never be accessible to other local users
+            self._base_dir.chmod(0o700)
             self._socket_path.unlink(missing_ok=True)
             self._config_path.write_text(config_text, encoding="utf-8")
 
@@ -793,6 +798,12 @@ class _PACVolume(ctypes.Structure):
         ("channels", ctypes.c_uint8),
         ("values", ctypes.c_uint32 * PA_CHANNELS_MAX),
     ]
+
+
+def _log_supervisor_exit(task: asyncio.Task[None]) -> None:
+    """Surface a supervisor that died on an unexpected error (restarts stop with it)."""
+    if not task.cancelled() and task.exception() is not None:
+        LOGGER.error("PulseAudio capture supervisor died unexpectedly: %s", task.exception())
 
 
 def _close_controller_result(fut: asyncio.Future[PAVolumeController]) -> None:

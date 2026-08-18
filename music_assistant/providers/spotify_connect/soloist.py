@@ -446,10 +446,13 @@ class SoloistBinaryManager:
 
         Defense in depth next to the exit-code check: whether ``--version``
         itself reports expiry is not documented, so an expired-by-timestamp
-        build is refused even when the binary still runs.
+        build is refused even when the binary still runs. The install time is
+        the fallback anchor — the build is at least as old as its install.
         """
         metadata = self._read_metadata()
-        return metadata is not None and _build_expired(metadata.build_timestamp)
+        return metadata is not None and _build_expired(
+            metadata.build_timestamp or metadata.installed_at
+        )
 
     def _due_for_update(self) -> bool:
         """Return whether the installed build is old enough to look for an update."""
@@ -467,7 +470,14 @@ class SoloistBinaryManager:
         except (ClientError, TimeoutError, OSError) as err:
             LOGGER.warning("Unable to check for a soloist update: %s", err)
             return False
-        return remote_etag is not None and (metadata is None or metadata.etag != remote_etag)
+        if remote_etag is None:
+            # CDN unreachable/erroring: keep the current build
+            return False
+        if not remote_etag:
+            # reachable but no validator offered: assume an update exists and
+            # let the validated download path decide
+            return True
+        return metadata is None or metadata.etag != remote_etag
 
     async def _fetch_remote_etag(self, arch: str) -> str | None:
         """Return the ETag the CDN currently serves for the given architecture, if any."""
@@ -486,7 +496,8 @@ class SoloistBinaryManager:
                     continue
                 if resp.status != HTTPStatus.OK:
                     return None
-                return resp.headers.get("ETag")
+                # empty string = reachable but no validator offered
+                return resp.headers.get("ETag", "")
         return None
 
     async def _download_and_install(self, arch: str) -> None:
@@ -577,9 +588,13 @@ class SoloistBinaryManager:
         try:
             return await asyncio.shield(inner)
         except asyncio.CancelledError:
-            # the inner install continues to a consistent end state (committed
-            # or rolled back); consume its late result so nothing goes unlogged
-            inner.add_done_callback(_consume_install_result)
+            # wait for the shielded install to reach its consistent end state
+            # (committed or rolled back) so the install lock and temp dir stay
+            # held until the shared install is no longer being mutated
+            while not inner.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.shield(inner)
+            _consume_install_result(inner)
             raise
 
     async def _swap_in_and_validate_inner(self, new_binary: Path) -> str:

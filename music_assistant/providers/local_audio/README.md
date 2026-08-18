@@ -106,11 +106,11 @@ Giving up covers the remainder of that stream only. The reopen budget is per wri
 
 ### Volume Control
 
-The MA volume slider (0-100) is mapped to an amplitude scale factor via an exponential "audio taper" curve (`volume_pct_to_amplitude` in `constants.py`, based on the [dr-lex taper](https://www.dr-lex.be/info-stuff/volumecontrols.html)): a constant dB change per slider step from 10% to 100%, with a linear ramp to true silence below 10%. This avoids the classic "linear volume slider" problem where the bottom of the range is wildly more sensitive than the top and the top barely changes the loudness at all. The same taper is used for both the hardware and software volume paths below, so a given slider position sounds the same regardless of which path is active.
+The MA volume slider (0-100) is mapped to an amplitude scale factor via an exponential "audio taper" curve (`volume_pct_to_amplitude` in `music_assistant/helpers/pulse_capture.py`, based on the [dr-lex taper](https://www.dr-lex.be/info-stuff/volumecontrols.html)): a constant dB change per slider step from 10% to 100%, with a linear ramp to true silence below 10%. This avoids the classic "linear volume slider" problem where the bottom of the range is wildly more sensitive than the top and the top barely changes the loudness at all. The same taper is used for both the hardware and software volume paths below, so a given slider position sounds the same regardless of which path is active.
 
 The taper's dynamic range is configurable via `_TAPER_A` in `constants.py` — the default is **40dB** (`_TAPER_A = 0.01`), suited for receiver-driven and outdoor speaker setups (MA 70% ≈ -12dB). A 60dB range (`_TAPER_A = 0.001`) is more appropriate for headphones or desktop speakers. See `constants.py` for a reference table of common options.
 
-**Linux PulseAudio/PipeWire backend**: Volume and mute are applied as native PulseAudio sink volume, via a shared `libpulse` connection (`PAVolumeController`). The taper's output amplitude is converted to a PA volume percentage via a cube root — PA's own volume percentage represents `amplitude**3` on its internal cubic curve, so the cube root is the inverse step needed to make PA apply the *taper's* amplitude rather than its own.
+**Linux PulseAudio/PipeWire backend**: Volume and mute are applied as native PulseAudio sink volume, via a shared `libpulse` connection (`PAVolumeController` from `music_assistant/helpers/pulse_capture.py`). The taper's output amplitude is converted to a PA volume percentage via a cube root — PA's own volume percentage represents `amplitude**3` on its internal cubic curve, so the cube root is the inverse step needed to make PA apply the *taper's* amplitude rather than its own.
 
 Each sink — including each `module-remap-sink` zone sink on multi-channel cards — has its own independent hardware volume that does not affect its master sink or sibling sinks. This means each zone of a 5.1/7.1 card (front, rear, side, center/LFE, and the full-channel "multichannel stereo" passthrough) gets its own independent volume control in MA.
 
@@ -140,9 +140,9 @@ The ALSA direct backend always uses 16-bit int PCM (PortAudio `int16` dtype) reg
 | `__init__.py` | Provider entry point, config entries (backend selector on Linux), and setup |
 | `provider.py` | `LocalAudioProvider` class |
 | `sendspin_bridge.py` | Bridge manager and per-device bridge (PA on Linux PulseAudio, sounddevice on Linux ALSA and macOS); also owns remap-sink topology lifecycle |
-| `pa_simple.py` | ctypes wrapper around `libpulse-simple`/`libpulse` for direct PCM output, PA sink/module hardware volume control, and module load/unload; PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio; `suspend_resume_sink()` workaround in case a sound card stalls *(Linux only)* |
+| `pa_simple.py` | ctypes wrapper around `libpulse-simple` for direct PCM output (hardware volume/module control lives in `music_assistant/helpers/pulse_capture.py`); PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio; `suspend_resume_sink()` workaround in case a sound card stalls *(Linux only)* |
 | `remap_topology.py` | Computes the per-zone and full-channel passthrough `module-remap-sink` topology for multi-channel cards *(Linux PulseAudio only)* |
-| `constants.py` | Shared constants (UUID namespace, buffer sizes, backend selector values) and the `volume_pct_to_amplitude` audio taper used by both the hardware and software volume paths; taper range is configurable via `_TAPER_A` (default 40dB, suited for receiver/outdoor setups) |
+| `constants.py` | Shared constants (UUID namespace, buffer sizes, backend selector values); the `volume_pct_to_amplitude` audio taper lives in `music_assistant/helpers/pulse_capture.py` (range configurable via `_TAPER_A`, default 40dB) |
 | `manifest.json` | Provider metadata and dependencies |
 | `strings.json` | Localized config entry labels/descriptions (audio backend selector and its options) |
 
