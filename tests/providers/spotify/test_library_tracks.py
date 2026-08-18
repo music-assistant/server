@@ -41,7 +41,13 @@ async def test_library_tracks_skips_entry_without_track() -> None:
     otherwise abort the whole track sync.
     """
     provider = _make_provider()
-    items: list[Any] = [_saved_track("track1"), {"added_at": "x", "track": None}, None]
+    # a valid track after the empty ones, so stopping at an empty entry fails this test
+    items: list[Any] = [
+        _saved_track("track1"),
+        {"added_at": "2026-01-01T00:00:00Z", "track": None},
+        None,
+        _saved_track("track2"),
+    ]
 
     async def _iter_items() -> AsyncGenerator[Any]:
         for item in items:
@@ -51,4 +57,4 @@ async def test_library_tracks_skips_entry_without_track() -> None:
 
     tracks = [track async for track in provider.get_library_tracks()]
 
-    assert [track.item_id for track in tracks] == ["track1"]
+    assert [track.item_id for track in tracks] == ["track1", "track2"]
