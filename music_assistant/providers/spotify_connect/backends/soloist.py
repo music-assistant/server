@@ -227,6 +227,9 @@ class SoloistBackend(SpotifyConnectBackend):
 
             def _prepare_dirs() -> None:
                 self._data_dir.mkdir(parents=True, exist_ok=True)
+                # the data dir persists the Spotify device identity and login
+                # session; keep it readable by the MA user only
+                self._data_dir.chmod(0o700)
                 self._cache_dir.mkdir(parents=True, exist_ok=True)
 
             await asyncio.to_thread(_prepare_dirs)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import stat
 from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -253,6 +254,8 @@ async def test_start_wires_binary_capture_and_supervisors(
     assert backend._client is not None
     assert backend._client.data_dir == backend._data_dir
     assert backend._data_dir.is_dir()
+    # the data dir holds the Spotify device identity/session: owner-only
+    assert stat.S_IMODE(backend._data_dir.stat().st_mode) == 0o700
     assert backend._cache_dir.is_dir()
     assert tasks == [
         "_daemon_runner",
