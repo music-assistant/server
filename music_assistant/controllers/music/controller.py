@@ -156,7 +156,8 @@ JOIN {DB_TABLE_TRACKS} t2
   ON t2.search_name = t1.search_name
  AND t2.item_id > t1.item_id
  AND abs(t2.duration - t1.duration) <= :max_duration_delta
-WHERE t1.item_id > :cursor
+WHERE (t1.item_id > :cursor_item_id_1
+       OR (t1.item_id = :cursor_item_id_1 AND t2.item_id > :cursor_item_id_2))
   AND EXISTS (
     SELECT 1 FROM {DB_TABLE_TRACK_ARTISTS} ta1
     JOIN {DB_TABLE_TRACK_ARTISTS} ta2
@@ -177,7 +178,7 @@ WHERE t1.item_id > :cursor
       ON pm2.provider_domain = pm1.provider_domain
      AND pm2.media_type = 'track' AND pm2.item_id = t2.item_id
     WHERE pm1.media_type = 'track' AND pm1.item_id = t1.item_id)
-ORDER BY t1.item_id
+ORDER BY t1.item_id, t2.item_id
 """
 
 
@@ -203,7 +204,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
-        self._track_reconciliation_cursor = 0
+        self._track_reconciliation_cursor: tuple[int, int] = (0, 0)
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -2693,24 +2694,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def _reconcile_duplicate_tracks(self) -> None:
         """Merge a small batch of library tracks that are held twice across providers."""
         update_current_task_progress_text("Searching for duplicate tracks")
+        cursor_item_id_1, cursor_item_id_2 = self._track_reconciliation_cursor
         rows = await self.database.get_rows_from_query(
             _DUPLICATE_TRACK_CANDIDATES_QUERY,
             {
                 "max_duration_delta": TRACK_RECONCILIATION_MAX_DURATION_DELTA,
-                "cursor": self._track_reconciliation_cursor,
+                "cursor_item_id_1": cursor_item_id_1,
+                "cursor_item_id_2": cursor_item_id_2,
             },
             limit=TRACK_RECONCILIATION_BATCH_SIZE,
         )
         if not rows:
             # start over on the next run so tracks added (or renamed) since the last
             # full pass are examined too
-            self._track_reconciliation_cursor = 0
+            self._track_reconciliation_cursor = (0, 0)
             update_current_task_progress_text("No duplicate tracks found")
             return
-        # resume after the last examined row so candidates this run refused can never
-        # starve the ones behind them; a partial batch means the table has been drained
+        # resume after the exact pair examined last, so candidates this run refused can never
+        # starve the ones behind them, not even a further pair of the same track that the batch
+        # boundary cut off; a partial batch means the table has been drained
         self._track_reconciliation_cursor = (
-            int(rows[-1]["item_id_1"]) if len(rows) == TRACK_RECONCILIATION_BATCH_SIZE else 0
+            (int(rows[-1]["item_id_1"]), int(rows[-1]["item_id_2"]))
+            if len(rows) == TRACK_RECONCILIATION_BATCH_SIZE
+            else (0, 0)
         )
         merged = 0
         for index, row in enumerate(rows, 1):

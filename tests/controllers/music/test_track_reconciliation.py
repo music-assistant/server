@@ -149,7 +149,7 @@ async def _build_duplicate_pair(
 def _bare_controller(candidate_rows: list[dict[str, int]]) -> MusicController:
     """Create a bare MusicController whose candidate query returns the given rows."""
     ctrl = MusicController.__new__(MusicController)
-    ctrl._track_reconciliation_cursor = 0
+    ctrl._track_reconciliation_cursor = (0, 0)
     ctrl.logger = Mock()
     ctrl._database = Mock(get_rows_from_query=AsyncMock(return_value=candidate_rows))
     return ctrl
@@ -260,29 +260,78 @@ async def test_full_batch_advances_the_cursor() -> None:
     with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=True)) as merge:
         await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == TRACK_RECONCILIATION_BATCH_SIZE
+    assert ctrl._track_reconciliation_cursor == (
+        TRACK_RECONCILIATION_BATCH_SIZE,
+        1000 + TRACK_RECONCILIATION_BATCH_SIZE,
+    )
     assert merge.await_count == TRACK_RECONCILIATION_BATCH_SIZE
+
+
+async def test_full_batch_resumes_within_the_same_track() -> None:
+    """A batch boundary between two pairs of one track resumes at that exact pair."""
+    ctrl = _bare_controller(
+        [
+            {"item_id_1": 10, "item_id_2": 20 + offset}
+            for offset in range(TRACK_RECONCILIATION_BATCH_SIZE)
+        ]
+    )
+
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=False)):
+        await ctrl._reconcile_duplicate_tracks()
+
+    # resuming at (10, ...) rather than past track 10 keeps its remaining pairs reachable
+    assert ctrl._track_reconciliation_cursor == (10, 19 + TRACK_RECONCILIATION_BATCH_SIZE)
+
+
+async def test_no_candidate_pair_is_starved() -> None:
+    """Repeated runs reach every candidate, including pairs a batch boundary cut off."""
+    # one track with more duplicate partners than fit in a single batch, so the boundary
+    # falls in the middle of its pairs, followed by candidates that must stay reachable
+    pairs = [(10, 20 + offset) for offset in range(TRACK_RECONCILIATION_BATCH_SIZE + 3)]
+    pairs += [(11, 40), (12, 50)]
+    seen: set[tuple[int, int]] = set()
+
+    async def _candidates(_sql: str, params: dict[str, int], limit: int) -> list[dict[str, int]]:
+        cursor = (params["cursor_item_id_1"], params["cursor_item_id_2"])
+        return [
+            {"item_id_1": item_id_1, "item_id_2": item_id_2}
+            for item_id_1, item_id_2 in [pair for pair in pairs if pair > cursor][:limit]
+        ]
+
+    async def _refuse(item_id_1: int, item_id_2: int) -> bool:
+        # refusing every pair keeps the candidate set intact, so a starved pair stays starved
+        seen.add((item_id_1, item_id_2))
+        return False
+
+    ctrl = _bare_controller([])
+    ctrl._database = Mock(get_rows_from_query=AsyncMock(side_effect=_candidates))
+
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(side_effect=_refuse)):
+        for _ in range(4):
+            await ctrl._reconcile_duplicate_tracks()
+
+    assert seen == set(pairs)
 
 
 async def test_partial_batch_restarts_the_cursor() -> None:
     """A partial batch means the table is drained, so the next run starts over."""
     ctrl = _bare_controller([{"item_id_1": 7, "item_id_2": 9}])
-    ctrl._track_reconciliation_cursor = 5
+    ctrl._track_reconciliation_cursor = (5, 6)
 
     with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=True)):
         await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == 0
+    assert ctrl._track_reconciliation_cursor == (0, 0)
 
 
 async def test_empty_batch_restarts_the_cursor() -> None:
     """With no candidates left the cursor rewinds so later additions are examined."""
     ctrl = _bare_controller([])
-    ctrl._track_reconciliation_cursor = 500
+    ctrl._track_reconciliation_cursor = (500, 900)
 
     await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == 0
+    assert ctrl._track_reconciliation_cursor == (0, 0)
 
 
 async def test_batch_continues_quietly_after_an_already_merged_row() -> None:
