@@ -1033,9 +1033,7 @@ class ProtocolLinkingMixin:
                 continue
 
             known_protocol_ids = set(self._get_known_protocol_ids(player))
-            active_protocol_ids = {
-                link.output_protocol_id for link in player.linked_output_protocols
-            }
+            refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
             # Transfer all protocol links from universal player to native player
@@ -1044,34 +1042,35 @@ class ProtocolLinkingMixin:
                     protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
-                    if protocol_player.protocol_parent_id == native_player.player_id:
-                        moved_protocol_ids.add(protocol_player.player_id)
-                        protocol_player.refresh_state()
-                    else:
+                    if protocol_player.protocol_parent_id != native_player.player_id:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
+                        refused_protocol_ids.add(protocol_player.player_id)
+                        continue
+                    protocol_player.refresh_state()
+                    moved_protocol_ids.add(protocol_player.player_id)
 
-            if active_protocol_ids - moved_protocol_ids:
-                # A link was refused, keep the universal player and hand over only
-                # what moved so the refused protocols are not orphaned.
-                self._migrate_protocol_ids_to_parent(native_player, moved_protocol_ids)
-                self._remove_protocol_ids_from_parent(player, moved_protocol_ids)
-                native_player.refresh_state()
-                continue
-
-            cached_only_ids = known_protocol_ids - active_protocol_ids
-            preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            # A refused link leaves the universal player in charge, so only hand over what
+            # actually moved: ownership that exists in config alone stays with it, which
+            # keeps a protocol derived from a refused one with the parent it will link to.
+            migrated_protocol_ids = (
+                moved_protocol_ids if refused_protocol_ids else known_protocol_ids
+            )
             # A device that kept its id across a type change lists itself here.
             # It must never become its own protocol, and it must also be dropped
             # from the obsolete universal player so the permanent cleanup below
             # doesn't treat it as an orphaned protocol (which would re-wrap the
             # native player in a fresh universal player).
-            preserved_protocol_ids.discard(native_player.player_id)
-            self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
+            migrated_protocol_ids.discard(native_player.player_id)
+            self._migrate_protocol_ids_to_parent(native_player, migrated_protocol_ids)
             self._remove_protocol_ids_from_parent(
-                player, preserved_protocol_ids | {native_player.player_id}
+                player, migrated_protocol_ids | {native_player.player_id}
             )
             native_player.refresh_state()
+
+            if refused_protocol_ids:
+                # Registered protocols that the native player refused remain on the wrapper.
+                continue
 
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the universal player's config
@@ -1594,6 +1593,42 @@ class ProtocolLinkingMixin:
                         player.player_id,
                         protocol_id,
                     )
+
+    def _cleanup_player_type_transition(self, existing: Player) -> None:
+        """
+        Release the protocol topology a player owned before its type changed.
+
+        :param existing: The registered player instance, still reporting its previous type.
+        """
+        if existing.state.type == PlayerType.PROTOCOL:
+            # a provider may announce the new type with the live parent link already
+            # dropped, so fall back to the persisted one to still reach the parent
+            parent_id = existing.protocol_parent_id or self._get_cached_protocol_parent_id(
+                existing.player_id
+            )
+            if not parent_id:
+                return
+            parent = self.get_player(parent_id)
+            if parent is not None and parent.provider.domain == "universal_player":
+                # drop only the active edge and leave the rest to the link evaluation,
+                # which replaces the wrapper with this player: a leftover edge makes it
+                # hand the player over to itself, which it refuses, abandoning the swap
+                self._remove_protocol_link(parent, existing.player_id)
+                return
+            existing.set_protocol_parent_id(parent_id)
+            # unlink at the parent and drop the persisted parent id, which would
+            # otherwise heal the player's type back to protocol
+            self._cleanup_protocol_links(existing)
+            # a player leaving the protocol role has no parent, also when that parent
+            # is not registered (anymore) and only the cached link could be cleaned up
+            existing.set_protocol_parent_id(None)
+            return
+        # the player becomes a child itself: detach the protocol players it owned so they
+        # can find a new parent, then give up their ownership in its (kept) config - the
+        # reverse of the removal path, which drops the ownership before the detach
+        protocol_ids = set(self._get_known_protocol_ids(existing))
+        self._cleanup_protocol_links(existing)
+        self._remove_protocol_ids_from_parent(existing, protocol_ids)
 
     def _detach_protocol_children(self, parent_id: str) -> None:
         """
