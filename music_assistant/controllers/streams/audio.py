@@ -2810,21 +2810,15 @@ class StreamsAudio:
                         queue_item.streamdetails = last_failed_streamdetails
             streamdetails = queue_item.streamdetails
             assert streamdetails is not None  # for type checking
-            provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
             remaining = max(deadline - loop.time(), 0)
             alternatives_left = bool(
                 all_candidate_instances - busy_instances - {streamdetails.provider}
             )
-            provider_busy = (
-                isinstance(provider, MusicProvider) and not provider.has_available_stream_slot
-            )
-            # probe (0s) whenever a reselection can still follow: either a candidate is
-            # untried, or a final pass can still return to the best one. Blocking here would
-            # spend the budget on whichever source came last instead of the preferred one.
+            # probe (0s) whenever a reselection can still follow: a free slot is still
+            # acquired instantly, while a busy one fails fast instead of spending the
+            # whole budget on this candidate. Block only on the last resort.
             source_wait = (
-                0.0
-                if (provider_busy and not final_pass and (alternatives_left or busy_instances))
-                else remaining
+                0.0 if (not final_pass and (alternatives_left or busy_instances)) else remaining
             )
             try:
                 return await AudioBuffer.get_buffer(

@@ -142,9 +142,10 @@ async def test_falls_back_to_a_compatible_instance_of_the_same_mapping(
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
     assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
-    # a saturated provider with alternatives left is probed, not waited on
+    # every candidate is probed (0s) while a reselection can still follow; a slot
+    # snapshot is never trusted, so a free fallback still acquires instantly
     assert get_buffer.await_args_list[0].kwargs["source_wait_timeout"] == 0
-    assert get_buffer.await_args_list[1].kwargs["source_wait_timeout"] > 0
+    assert get_buffer.await_args_list[1].kwargs["source_wait_timeout"] == 0
     fallback.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
 
 
