@@ -607,33 +607,25 @@ class MetaDataController(
 
 def _duplicate_album_sibling_guard() -> str:
     """Return a query part that selects albums which may be a duplicate of another library row."""
-    own_version = f"LOWER(TRIM(COALESCE({DB_TABLE_ALBUMS}.version,'')))"
-    dup_version = "LOWER(TRIM(COALESCE(dup.version,'')))"
-    # approximates the cases the album comparison does not already rule out: a missing
-    # version on either side (providers often omit the edition of a remaster), and
-    # wording that is a whole-word subset of the other's ("2011 Remaster" vs "Deluxe
-    # Edition 2011 Remaster"). Both leave the editions undecided, which is what the
-    # comparison escalates to a tracklist and barcode check. Independently worded
-    # versions ("Remixes Pt. 1" vs "Remixes Pt. 2") mark a genuinely different edition.
-    # Both sides are space-padded so a version cannot match inside a longer word.
-    compatible_version = (
-        f"({own_version} = '' OR {dup_version} = '' OR "
-        f"INSTR(' ' || {own_version} || ' ', ' ' || {dup_version} || ' ') > 0 OR "
-        f"INSTR(' ' || {dup_version} || ' ', ' ' || {own_version} || ' ') > 0)"
-    )
     shares_artist = (
         f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} own "
         f"JOIN {DB_TABLE_ALBUM_ARTISTS} other ON other.artist_id = own.artist_id "
         f"WHERE own.album_id = {DB_TABLE_ALBUMS}.item_id AND other.album_id = dup.item_id)"
     )
-    # titles that normalize to nothing (e.g. Ed Sheeran's '+', '=' and '÷')
-    # would otherwise all collapse onto each other
+    # a title that normalizes to nothing (e.g. Ed Sheeran's '+', '=' and '÷') matches every
+    # other such title, so those fall back to their raw spelling like the album comparison does
+    same_title = (
+        f"({DB_TABLE_ALBUMS}.search_name != '' OR "
+        f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
+    )
+    # deliberately an identity-only pre-filter: which editions may be merged is decided by
+    # the album comparison, which escalates an ambiguous edition to tracklists and
+    # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright
     return (
-        f"({DB_TABLE_ALBUMS}.search_name != '' AND EXISTS ("
-        f"SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
         f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
         f"AND dup.search_name = {DB_TABLE_ALBUMS}.search_name "
-        f"AND {compatible_version} AND {shares_artist}))"
+        f"AND {same_title} AND {shares_artist})"
     )
 
 

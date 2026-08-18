@@ -187,86 +187,6 @@ async def test_reconcile_duplicate_albums_selects_typed_album_with_duplicate_sib
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
 
 
-async def test_reconcile_duplicate_albums_ignores_distinct_editions(
-    mass: MusicAssistant,
-) -> None:
-    """Rows whose version wording differs are separate editions and are left alone."""
-    artist = await mass.music.artists.add_item_to_library(
-        Artist(
-            item_id="0",
-            provider="library",
-            name="Antoine Clamaran",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="artist", provider_domain="test", provider_instance="library"
-                )
-            },
-        )
-    )
-    await _add_album(
-        mass, "200 Years", artist, version="Remixes Pt. 1", provider_instance="spotify_1"
-    )
-    await _add_album(
-        mass, "200 Years", artist, version="Remixes Pt. 2", provider_instance="qobuz_1"
-    )
-
-    assert await _reconciled_ids(mass) == set()
-
-
-async def test_reconcile_duplicate_albums_selects_missing_version_against_named_edition(
-    mass: MusicAssistant,
-) -> None:
-    """A sibling that omits the edition entirely stays a candidate for the tracklist check."""
-    artist = await mass.music.artists.add_item_to_library(
-        Artist(
-            item_id="0",
-            provider="library",
-            name="Amy Winehouse",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="artist", provider_domain="test", provider_instance="library"
-                )
-            },
-        )
-    )
-    untagged = await _add_album(mass, "Back To Black", artist, provider_instance="qobuz_1")
-    tagged = await _add_album(
-        mass, "Back To Black", artist, version="Deluxe Edition", provider_instance="spotify_1"
-    )
-
-    assert await _reconciled_ids(mass) == {untagged.item_id, tagged.item_id}
-
-
-async def test_reconcile_duplicate_albums_selects_subset_version_wording(
-    mass: MusicAssistant,
-) -> None:
-    """A version whose wording is a whole-word subset of its sibling's stays a candidate."""
-    artist = await mass.music.artists.add_item_to_library(
-        Artist(
-            item_id="0",
-            provider="library",
-            name="Queen",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="artist", provider_domain="test", provider_instance="library"
-                )
-            },
-        )
-    )
-    plain = await _add_album(
-        mass, "Innuendo", artist, version="2011 Remaster", provider_instance="spotify_1"
-    )
-    deluxe = await _add_album(
-        mass,
-        "Innuendo",
-        artist,
-        version="Deluxe Edition 2011 Remaster",
-        provider_instance="qobuz_1",
-    )
-
-    assert await _reconciled_ids(mass) == {plain.item_id, deluxe.item_id}
-
-
 async def test_reconcile_duplicate_albums_skips_row_merged_away_earlier_in_the_batch() -> None:
     """A row already merged into its duplicate is skipped silently, not reported as a failure."""
     ctrl = _controller()
@@ -306,6 +226,63 @@ async def test_reconcile_duplicate_albums_reports_match_providers_not_found() ->
         await ctrl._reconcile_duplicate_albums()
 
     report_failure.assert_called_once_with("Searched Album: No results for Bandcamp search")
+
+
+@pytest.mark.parametrize(
+    ("first_version", "second_version"),
+    [
+        ("", ""),
+        ("", "Deluxe Edition"),
+        ("2011 Remaster", "Deluxe Edition 2011 Remaster"),
+        ("Remixes Pt. 1", "Remixes Pt. 2"),
+    ],
+)
+async def test_reconcile_duplicate_albums_selects_siblings_whatever_the_edition(
+    mass: MusicAssistant, first_version: str, second_version: str
+) -> None:
+    """Candidate selection is identity-only; deciding the edition is the matcher's job."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Queen",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    first = await _add_album(
+        mass, "Innuendo", artist, version=first_version, provider_instance="spotify_1"
+    )
+    second = await _add_album(
+        mass, "Innuendo", artist, version=second_version, provider_instance="qobuz_1"
+    )
+
+    assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the_same(
+    mass: MusicAssistant,
+) -> None:
+    """Titles that normalize to nothing still pair up when their raw spelling matches."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="!!!",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    first = await _add_album(mass, "!!!", artist, provider_instance="spotify_1")
+    second = await _add_album(mass, "!!!", artist, provider_instance="qobuz_1")
+
+    assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
 
 
 async def test_reconcile_duplicate_albums_ignores_same_title_by_other_artist(
@@ -353,28 +330,6 @@ async def test_reconcile_duplicate_albums_ignores_titles_that_normalize_to_nothi
     )
     for index, title in enumerate(("+", "=", "÷")):
         await _add_album(mass, title, artist, provider_instance=f"qobuz_{index}")
-
-    assert await _reconciled_ids(mass) == set()
-
-
-async def test_reconcile_duplicate_albums_ignores_version_matching_inside_a_word(
-    mass: MusicAssistant,
-) -> None:
-    """A version only matches whole words, so "Mix" is not a subset of "Remix"."""
-    artist = await mass.music.artists.add_item_to_library(
-        Artist(
-            item_id="0",
-            provider="library",
-            name="Daddy Yankee",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="artist", provider_domain="test", provider_instance="library"
-                )
-            },
-        )
-    )
-    await _add_album(mass, "Dura", artist, version="Mix", provider_instance="spotify_1")
-    await _add_album(mass, "Dura", artist, version="Remix", provider_instance="qobuz_1")
 
     assert await _reconciled_ids(mass) == set()
 
