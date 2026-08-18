@@ -46,7 +46,8 @@ async def test_search(media_manager: TidalMediaManager, provider_mock: Mock) -> 
     assert first_playlist.is_editable is False
 
     provider_mock.api.get_jsonapi.assert_called_with(
-        "searchResults/lukas%20graham",
+        "searchResults",
+        params={"filter[query]": "lukas graham"},
         include=[
             "tracks.artists",
             "tracks.albums.coverArt",
@@ -57,17 +58,17 @@ async def test_search(media_manager: TidalMediaManager, provider_mock: Mock) -> 
     )
 
 
-async def test_search_single_type_and_query_encoding(
+async def test_search_single_type_passes_query_verbatim(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test search requests only the includes for the wanted types and encodes the query."""
+    """Test search requests only the includes for the wanted types, query as a filter."""
     provider_mock.api.get_jsonapi.return_value = _load_doc("search.json")
 
     results = await media_manager.search("AC/DC", [MediaType.ARTIST])
 
     assert results.tracks == []
     provider_mock.api.get_jsonapi.assert_called_with(
-        "searchResults/AC%2FDC", include=["artists.profileArt"]
+        "searchResults", params={"filter[query]": "AC/DC"}, include=["artists.profileArt"]
     )
 
 
