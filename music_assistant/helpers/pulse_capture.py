@@ -310,6 +310,10 @@ class PulseCaptureServer:
             # private dir must never be accessible to other local users
             self._base_dir.chmod(0o700)
             self._socket_path.unlink(missing_ok=True)
+            # a hard shutdown skips sink cleanup; sweep leftover FIFOs from
+            # previous runs (a fresh daemon has no modules yet)
+            for stale_fifo in self._base_dir.glob("*.pcm"):
+                stale_fifo.unlink(missing_ok=True)
             self._config_path.write_text(config_text, encoding="utf-8")
 
         await asyncio.to_thread(_prepare)
