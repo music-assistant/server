@@ -358,7 +358,7 @@ async def test_exit_code_10_with_failed_refresh_is_fatal(
         def __init__(self, mass: Any) -> None:
             """Accept the mass argument like the real manager."""
 
-        async def ensure_fresh(self, consent: bool) -> Path:
+        async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
             """Fail the refresh."""
             raise BuildExpiredError("expired")
 
