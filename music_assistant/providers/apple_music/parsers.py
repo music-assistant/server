@@ -196,7 +196,7 @@ def parse_album(
     if record_label := attributes.get("recordLabel"):
         album.metadata.label = record_label
     if upc := attributes.get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + upc))
+        album.external_ids.add((ExternalID.BARCODE, upc))
     if notes := attributes.get("editorialNotes"):
         album.metadata.description = notes.get("standard") or notes.get("short")
     if content_rating := attributes.get("contentRating"):

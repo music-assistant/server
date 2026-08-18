@@ -58,6 +58,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.helpers.playlists import (
     ImageInfo,
     IsHLSPlaylist,
@@ -896,11 +897,15 @@ class BuiltinProvider(MusicProvider):
         # exact ID matches (cross-provider definitive match)
         if isrc:
             candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
-            if candidate_isrc and candidate_isrc.upper() == isrc.upper():
+            if candidate_isrc and normalize_external_id(
+                ExternalID.ISRC, candidate_isrc
+            ) == normalize_external_id(ExternalID.ISRC, isrc):
                 return 10
         if mbid:
             candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
-            if candidate_mbid and candidate_mbid.lower() == mbid.lower():
+            if candidate_mbid and normalize_external_id(
+                ExternalID.MB_RECORDING, candidate_mbid
+            ) == normalize_external_id(ExternalID.MB_RECORDING, mbid):
                 return 10
 
         # media type gate

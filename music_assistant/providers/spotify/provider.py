@@ -9,6 +9,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import aiohttp
@@ -1115,7 +1116,7 @@ class SpotifyProvider(MusicProvider):
     @staticmethod
     def _write_librespot_credentials(cache_dir: str, credentials: str) -> None:
         """Write the stored credential to librespot's cache, replacing any stale one."""
-        os.makedirs(cache_dir, exist_ok=True)
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
         credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
         with open(credentials_file, "w", encoding="utf-8") as fileobj:
             fileobj.write(credentials)

@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from collections import defaultdict
+from pathlib import Path
 
 import yaml
 from github import Github, GithubException
@@ -17,7 +18,7 @@ from github import Github, GithubException
 def load_config():
     """Load the release-notes-config.yml configuration."""
     config_path = ".github/release-notes-config.yml"
-    if not os.path.exists(config_path):
+    if not Path(config_path).exists():
         print(f"Error: {config_path} not found")  # noqa: T201
         sys.exit(1)
 

@@ -656,7 +656,7 @@ class TracksController(MediaControllerBase[Track]):
                     fallback=search_result_item,
                 )
                 if compare_track(base_track, prov_track, strict=strict, track_albums=ref_albums):
-                    matches.extend(search_result_item.provider_mappings)
+                    matches.extend(prov_track.provider_mappings)
 
         if not matches:
             self.logger.debug(

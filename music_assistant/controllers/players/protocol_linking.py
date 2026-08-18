@@ -118,7 +118,10 @@ class ProtocolLinkingMixin:
         def get_player(self, player_id: str) -> Player | None: ...  # noqa: D102
 
         def unregister(  # noqa: D102
-            self, player_id: str, permanent: bool = False
+            self,
+            player_id: str,
+            permanent: bool = False,
+            replacement_player_id: str | None = None,
         ) -> Coroutine[Any, Any, None]: ...
 
     def _is_protocol_player(self, player: Player) -> bool:
@@ -885,7 +888,7 @@ class ProtocolLinkingMixin:
         self._repoint_group_memberships(remove.player_id, keep.player_id)
 
         # Stop playback and remove the obsolete player
-        self.mass.create_task(self._stop_and_unregister(remove))
+        self.mass.create_task(self._stop_and_unregister(remove, keep.player_id))
 
     def _link_protocols_to_universal(
         self, universal_player: Player, protocol_players: list[Player]
@@ -1033,45 +1036,60 @@ class ProtocolLinkingMixin:
                 continue
 
             known_protocol_ids = set(self._get_known_protocol_ids(player))
-            active_protocol_ids = {
-                link.output_protocol_id for link in player.linked_output_protocols
-            }
+            refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
-            # Transfer all protocol links from universal player to native player
-            for linked in list(player.linked_output_protocols):
-                if protocol_player := self.get_player(linked.output_protocol_id):
+            # Transfer the protocol links from the universal player to the native player.
+            # A derived protocol rides on another output, so a base and everything riding
+            # on it can only move together: refusing one of them holds back the group.
+            for group in self._group_protocol_links(player):
+                domains = {
+                    protocol_player.player_id: linked.protocol_domain
+                    or protocol_player.provider.domain
+                    for linked, protocol_player in group
+                }
+                if any(
+                    self._parent_has_active_protocol_from_domain(
+                        native_player, domain, exclude_player_id=protocol_id
+                    )
+                    for protocol_id, domain in domains.items()
+                ):
+                    refused_protocol_ids.update(domains.keys())
+                    continue
+                for _, protocol_player in group:
                     protocol_player.set_protocol_parent_id(None)
-                    domain = linked.protocol_domain or protocol_player.provider.domain
-                    self._add_protocol_link(native_player, protocol_player, domain)
-                    if protocol_player.protocol_parent_id == native_player.player_id:
-                        moved_protocol_ids.add(protocol_player.player_id)
-                        protocol_player.refresh_state()
-                    else:
+                    self._add_protocol_link(
+                        native_player, protocol_player, domains[protocol_player.player_id]
+                    )
+                    if protocol_player.protocol_parent_id != native_player.player_id:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
+                        refused_protocol_ids.add(protocol_player.player_id)
+                        continue
+                    protocol_player.refresh_state()
+                    moved_protocol_ids.add(protocol_player.player_id)
 
-            if active_protocol_ids - moved_protocol_ids:
-                # A link was refused, keep the universal player and hand over only
-                # what moved so the refused protocols are not orphaned.
-                self._migrate_protocol_ids_to_parent(native_player, moved_protocol_ids)
-                self._remove_protocol_ids_from_parent(player, moved_protocol_ids)
-                native_player.refresh_state()
-                continue
-
-            cached_only_ids = known_protocol_ids - active_protocol_ids
-            preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            # A refused link leaves the universal player in charge, so only hand over what
+            # actually moved: ownership that exists in config alone stays with it, which
+            # keeps a protocol derived from a refused one with the parent it will link to.
+            migrated_protocol_ids = (
+                moved_protocol_ids if refused_protocol_ids else known_protocol_ids
+            )
             # A device that kept its id across a type change lists itself here.
             # It must never become its own protocol, and it must also be dropped
             # from the obsolete universal player so the permanent cleanup below
             # doesn't treat it as an orphaned protocol (which would re-wrap the
             # native player in a fresh universal player).
-            preserved_protocol_ids.discard(native_player.player_id)
-            self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
+            migrated_protocol_ids.discard(native_player.player_id)
+            self._migrate_protocol_ids_to_parent(native_player, migrated_protocol_ids)
             self._remove_protocol_ids_from_parent(
-                player, preserved_protocol_ids | {native_player.player_id}
+                player, migrated_protocol_ids | {native_player.player_id}
             )
             native_player.refresh_state()
+
+            if refused_protocol_ids:
+                # Registered protocols that the native player refused remain on the wrapper.
+                continue
 
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the universal player's config
@@ -1079,7 +1097,46 @@ class ProtocolLinkingMixin:
             self._repoint_group_memberships(player.player_id, native_player.player_id)
 
             # Stop playback and remove the now-obsolete universal player
-            self.mass.create_task(self._stop_and_unregister(player))
+            self.mass.create_task(self._stop_and_unregister(player, native_player.player_id))
+
+    def _group_protocol_links(
+        self, parent: Player
+    ) -> list[list[tuple[LinkedOutputProtocol, Player]]]:
+        """
+        Group a parent's registered protocol links with the protocols riding on them.
+
+        Each group holds one base protocol followed by the derived protocols that ride
+        on it. A protocol whose underlying player is not one of the parent's own links
+        forms a group of its own.
+
+        :param parent: The parent player whose protocol links should be grouped.
+        """
+        registered = [
+            (linked, protocol_player)
+            for linked in parent.linked_output_protocols
+            if (protocol_player := self.get_player(linked.output_protocol_id))
+        ]
+        link_ids = {protocol_player.player_id for _, protocol_player in registered}
+        riders: dict[str, list[tuple[LinkedOutputProtocol, Player]]] = {}
+        bases: list[tuple[LinkedOutputProtocol, Player]] = []
+        for linked, protocol_player in registered:
+            underlying_id = protocol_player.underlying_player_id
+            if underlying_id and underlying_id in link_ids:
+                riders.setdefault(underlying_id, []).append((linked, protocol_player))
+            else:
+                bases.append((linked, protocol_player))
+
+        groups = [
+            [(linked, protocol_player), *riders.get(protocol_player.player_id, [])]
+            for linked, protocol_player in bases
+        ]
+        # A derived protocol riding on another derived protocol has no base group here,
+        # so it moves on its own rather than being dropped from the transfer.
+        grouped_ids = {
+            protocol_player.player_id for group in groups for _, protocol_player in group
+        }
+        groups.extend([entry] for entry in registered if entry[1].player_id not in grouped_ids)
+        return groups
 
     def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """
@@ -1228,7 +1285,7 @@ class ProtocolLinkingMixin:
                         entry.value = new_members
                     other_player.refresh_state()
 
-    async def _stop_and_unregister(self, player: Player) -> None:
+    async def _stop_and_unregister(self, player: Player, replacement_player_id: str) -> None:
         """
         Stop active playback on a player and then permanently unregister it.
 
@@ -1238,11 +1295,14 @@ class ProtocolLinkingMixin:
         intentionally not transferred.
 
         :param player: The obsolete player to stop and permanently remove.
+        :param replacement_player_id: Player ID that takes the obsolete player's place.
         """
         if player.playback_state != PlaybackState.IDLE:
             with suppress(PlayerCommandFailed, PlayerUnavailableError):
                 await self.mass.player_queues.stop(player.player_id)
-        await self.unregister(player.player_id, permanent=True)
+        await self.unregister(
+            player.player_id, permanent=True, replacement_player_id=replacement_player_id
+        )
 
     def _parent_has_active_protocol_from_domain(
         self, parent: Player, domain: str, exclude_player_id: str | None = None
@@ -1539,61 +1599,103 @@ class ProtocolLinkingMixin:
     def _cleanup_protocol_links(self, player: Player) -> None:
         """Clean up protocol links when a player is permanently removed."""
         if player.state.type == PlayerType.PROTOCOL:
-            # Protocol player being removed: remove link from parent
-            if parent_id := player.protocol_parent_id:
-                if parent_player := self.get_player(parent_id):
-                    # Use permanent=True to also remove from cached protocol IDs
-                    self._remove_protocol_link(parent_player, player.player_id, permanent=True)
-                    if (
-                        parent_player.provider.domain == "universal_player"
-                        and len(parent_player.linked_output_protocols) == 0
-                    ):
-                        # No protocols left - the universal player has nothing to play
-                        # on. Its config is deliberately kept: the player id is opaque
-                        # and cannot be recreated, so deleting it here would orphan the
-                        # entities API consumers bound to it. Only an explicit removal
-                        # by the user deletes a universal player for good.
-                        self.logger.info(
-                            "Universal player %s has no protocols left",
-                            parent_id,
-                        )
-                        self.mass.create_task(
-                            self.mass.players.unregister(parent_id, permanent=False)
-                        )
-                    else:
-                        parent_player.refresh_state()
-                else:
-                    # Parent not registered yet — still purge the cached id
-                    self._remove_protocol_id_from_cache(parent_id, player.player_id)
-        else:
-            # Native/universal player being removed: handle all linked protocol players.
-            # Collect all known protocol IDs from both active links and cached state,
-            # since disabled/inactive protocols may only exist in the cached parent data.
-            all_protocol_ids = set(self._get_known_protocol_ids(player))
-            for protocol_id in all_protocol_ids:
-                if protocol_player := self.get_player(protocol_id):
-                    # Protocol player is available: clear parent and schedule re-evaluation
-                    # so it can be matched to a new parent or a new universal player
-                    self.logger.debug(
-                        "Player %s removed - scheduling evaluation for protocol %s",
-                        player.player_id,
-                        protocol_id,
+            self._unlink_from_protocol_parent(player)
+            return
+        self._detach_owned_protocols(player)
+
+    def _unlink_from_protocol_parent(self, player: Player) -> None:
+        """Release a protocol player from the parent it is attached to."""
+        if parent_id := player.protocol_parent_id:
+            if parent_player := self.get_player(parent_id):
+                # Use permanent=True to also remove from cached protocol IDs
+                self._remove_protocol_link(parent_player, player.player_id, permanent=True)
+                if (
+                    parent_player.provider.domain == "universal_player"
+                    and len(parent_player.linked_output_protocols) == 0
+                ):
+                    # No protocols left - the universal player has nothing to play
+                    # on. Its config is deliberately kept: the player id is opaque
+                    # and cannot be recreated, so deleting it here would orphan the
+                    # entities API consumers bound to it. Only an explicit removal
+                    # by the user deletes a universal player for good.
+                    self.logger.info(
+                        "Universal player %s has no protocols left",
+                        parent_id,
                     )
-                    self._detach_protocol_child(protocol_player)
+                    self.mass.create_task(self.mass.players.unregister(parent_id, permanent=False))
                 else:
-                    # Clear cached parent ID in config so protocol won't try to
-                    # restore a link to the deleted player on next restart
-                    self._clear_protocol_parent_id(protocol_id)
-                    # Protocol player is not registered yet — it may still be
-                    # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
-                    # its config as that would cause a KeyError when it finishes
-                    # registering. Stale configs are harmless and get cleaned up
-                    # naturally on subsequent restarts.
-                    self.logger.debug(
-                        "Player %s removed - protocol %s not registered, skipping cleanup",
-                        player.player_id,
-                        protocol_id,
-                    )
+                    parent_player.refresh_state()
+            else:
+                # Parent not registered yet — still purge the cached id
+                self._remove_protocol_id_from_cache(parent_id, player.player_id)
+
+    def _detach_owned_protocols(self, player: Player) -> None:
+        """Detach the protocol players a parent owns so they can find a new parent."""
+        # collect the ids from both the active links and the cached state, since
+        # disabled/inactive protocols may only exist in the cached parent data
+        all_protocol_ids = set(self._get_known_protocol_ids(player))
+        for protocol_id in all_protocol_ids:
+            if protocol_player := self.get_player(protocol_id):
+                # Protocol player is available: clear parent and schedule re-evaluation
+                # so it can be matched to a new parent or a new universal player
+                self.logger.debug(
+                    "Player %s no longer owns protocol %s - scheduling evaluation",
+                    player.player_id,
+                    protocol_id,
+                )
+                self._detach_protocol_child(protocol_player)
+            else:
+                # Clear cached parent ID in config so protocol won't try to
+                # restore a link to its former parent on next restart
+                self._clear_protocol_parent_id(protocol_id)
+                # Protocol player is not registered yet — it may still be
+                # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
+                # its config as that would cause a KeyError when it finishes
+                # registering. Stale configs are harmless and get cleaned up
+                # naturally on subsequent restarts.
+                self.logger.debug(
+                    "Player %s no longer owns protocol %s - not registered, skipping cleanup",
+                    player.player_id,
+                    protocol_id,
+                )
+
+    def _cleanup_player_type_transition(self, existing: Player, *, becomes_protocol: bool) -> None:
+        """
+        Release the protocol topology a player owned before its type changed.
+
+        :param existing: The registered player instance for the changed player.
+        :param becomes_protocol: True if the player moves into the protocol role,
+            False if it leaves it.
+        """
+        if not becomes_protocol:
+            # a provider may announce the new type with the live parent link already
+            # dropped, so fall back to the persisted one to still reach the parent
+            parent_id = existing.protocol_parent_id or self._get_cached_protocol_parent_id(
+                existing.player_id
+            )
+            if not parent_id:
+                return
+            parent = self.get_player(parent_id)
+            if parent is not None and parent.provider.domain == "universal_player":
+                # drop only the active edge and leave the rest to the link evaluation,
+                # which replaces the wrapper with this player: a leftover edge makes it
+                # hand the player over to itself, which it refuses, abandoning the swap
+                self._remove_protocol_link(parent, existing.player_id)
+                return
+            existing.set_protocol_parent_id(parent_id)
+            # unlink at the parent and drop the persisted parent id, which would
+            # otherwise heal the player's type back to protocol
+            self._unlink_from_protocol_parent(existing)
+            # a player leaving the protocol role has no parent, also when that parent
+            # is not registered (anymore) and only the cached link could be cleaned up
+            existing.set_protocol_parent_id(None)
+            return
+        # the player becomes a child itself: detach the protocol players it owned so they
+        # can find a new parent, then give up their ownership in its (kept) config - the
+        # reverse of the removal path, which drops the ownership before the detach
+        protocol_ids = set(self._get_known_protocol_ids(existing))
+        self._detach_owned_protocols(existing)
+        self._remove_protocol_ids_from_parent(existing, protocol_ids)
 
     def _detach_protocol_children(self, parent_id: str) -> None:
         """

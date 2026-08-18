@@ -639,6 +639,7 @@
   "core.discovery.manifest.description": "Handles mDNS/Zeroconf, SSDP/UPnP discovery and Music Assistant network broadcast.",
   "core.discovery.manifest.name": "Discovery",
   "core.metadata.background_task.cleanup_thumbnail_cache": "Cleanup thumbnail cache",
+  "core.metadata.background_task.reconcile_duplicate_albums": "Reconcile duplicate albums",
   "core.metadata.background_task.refresh_playlist_metadata": "Refresh playlist metadata",
   "core.metadata.background_task.scan_missing_artist_metadata": "Scan missing artist metadata",
   "core.metadata.background_task.update_metadata": "Update metadata for {0}",

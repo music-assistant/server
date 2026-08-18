@@ -25,7 +25,8 @@
     "update_metadata": "Update metadata for {0}",
     "scan_missing_artist_metadata": "Scan missing artist metadata",
     "refresh_playlist_metadata": "Refresh playlist metadata",
-    "cleanup_thumbnail_cache": "Cleanup thumbnail cache"
+    "cleanup_thumbnail_cache": "Cleanup thumbnail cache",
+    "reconcile_duplicate_albums": "Reconcile duplicate albums"
   },
   "manifest": {
     "name": "Metadata",

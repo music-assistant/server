@@ -19,6 +19,7 @@ import os
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import (
@@ -625,7 +626,7 @@ class SpotifyConnectProvider(PluginProvider):
         :param source_ip: Local address of the player-facing interface, or None to
             advertise the Spotify Connect device on all interfaces.
         """
-        os.makedirs(self.cache_dir, exist_ok=True)
+        Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",

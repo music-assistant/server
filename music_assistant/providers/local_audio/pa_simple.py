@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
+from pathlib import Path
 from typing import Any, ClassVar, Final, Self
 
 from .constants import volume_pct_to_amplitude
@@ -51,7 +52,7 @@ def _find_pulse_server() -> str:
         "/run/pulse/native",
         "/var/run/pulse/native",
     ):
-        if os.path.exists(path):
+        if Path(path).exists():
             return f"unix:{path}"
     return ""
 

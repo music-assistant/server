@@ -68,7 +68,8 @@ class UniversalPlayerProvider(PlayerProvider):
 
         Universal players are created dynamically by the PlayerController,
         not through discovery. However, we restore previously created
-        universal players from config.
+        universal players from config. Native players that match a restored
+        universal player take it over, which removes the universal player.
         """
         async with self._lock:
             for player_conf in await self.mass.config.get_player_configs(
@@ -77,6 +78,17 @@ class UniversalPlayerProvider(PlayerProvider):
                 # Restore universal player from config
                 # The stored protocol IDs enable fast matching when protocols register
                 await self._restore_player(player_conf.player_id)
+
+        # This provider restores its players in a background task, so a native player
+        # may already have registered while none of the universal players it should
+        # replace existed yet. Re-check those now that the wrappers are back.
+        for player in self.mass.players.iter_players():
+            if player.state.type == PlayerType.GROUP:
+                continue
+            self.mass.players._check_replace_universal_player(player)
+            # Protocols that are disabled or not registered only ever reach a player's
+            # output list through cache recovery, which the registration path runs.
+            self.mass.players._recover_cached_protocol_links(player)
 
     async def create_universal_player(
         self,
@@ -371,7 +383,9 @@ class UniversalPlayerProvider(PlayerProvider):
                 )
                 self.mass.players._migrate_universal_player_config(player_id, default_parent)
                 self.mass.players._repoint_group_memberships(player_id, default_parent)
-                self.mass.players.delete_player_config(player_id)
+                self.mass.players.delete_player_config(
+                    player_id, replacement_player_id=default_parent
+                )
             return
 
         stored_protocol_ids = valid_protocol_ids

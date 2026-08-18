@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    RetriesExhausted,
+)
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
@@ -24,12 +31,14 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.helpers.compare import (
-    compare_album,
+    AlbumMatchEvidence,
+    album_tracks_have_positions,
+    compare_album_evidence,
     compare_artists,
-    compare_media_item,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
@@ -39,6 +48,27 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from music_assistant import MusicAssistant
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzBarcodeRelease
+
+
+# expected failures from a provider album-track lookup: a missing item or a transient
+# provider/transport outage. Either leaves that tracklist unavailable so the (best-effort,
+# multi-provider) match can continue rather than aborting the whole operation.
+_ALBUM_TRACK_LOOKUP_ERRORS = (
+    MediaNotFoundError,
+    RetriesExhausted,
+    TimeoutError,
+    aiohttp.ClientError,
+)
+
+
+@dataclass
+class _BaseTracksMemo:
+    """Single-slot memo for a base album tracklist, shared across match candidates."""
+
+    resolved: bool = False
+    tracks: list[Track] | None = None
 
 
 class AlbumsController(MediaControllerBase[Album]):
@@ -493,36 +523,14 @@ class AlbumsController(MediaControllerBase[Album]):
         self, db_album: Album, provider: MusicProvider, strict: bool = True
     ) -> list[ProviderMapping]:
         """
-        Try to find match on (streaming) provider for the provided (database) album.
+        Try to find a match on the given (streaming) provider for a (database) album.
 
-        This is used to link objects of different providers/qualities together.
+        Links albums of different providers/qualities together. Sparse provider search
+        results only rule out a confident non-match; a candidate that still looks
+        ambiguous is confirmed against the full provider album, its tracklist and, as a
+        last resort, MusicBrainz before its provider mapping is accepted.
         """
-        self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
-        matches: list[ProviderMapping] = []
-        artist_name = db_album.artists[0].name
-        search_str = f"{artist_name} - {db_album.name}"
-        search_result = await self.search(search_str, provider.instance_id)
-        for search_result_item in search_result:
-            if not search_result_item.available:
-                continue
-            if not compare_media_item(db_album, search_result_item, strict=strict):
-                continue
-            # we must fetch the full album version, search results can be simplified objects
-            prov_album = await self.get_provider_item(
-                search_result_item.item_id,
-                search_result_item.provider,
-                fallback=search_result_item,
-            )
-            if compare_album(db_album, prov_album, strict=strict):
-                # 100% match
-                matches.extend(prov_album.provider_mappings)
-        if not matches:
-            self.logger.debug(
-                "Could not find match for Album %s on provider %s",
-                db_album.name,
-                provider.name,
-            )
-        return matches
+        return await self._match_provider(db_album, provider, strict, _BaseTracksMemo())
 
     async def match_providers(self, db_album: Album) -> None:
         """
@@ -535,6 +543,8 @@ class AlbumsController(MediaControllerBase[Album]):
         if not db_album.artists:
             return  # guard
 
+        # resolve the base tracklist at most once for the whole match operation
+        base_tracks_memo = _BaseTracksMemo()
         # try to find match on all providers
         processed_domains = set()
         for provider in self.mass.music.providers:
@@ -547,7 +557,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
                 continue
-            if match := await self.match_provider(db_album, provider):
+            if match := await self._match_provider(db_album, provider, True, base_tracks_memo):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_album.item_id, match)
                 processed_domains.add(provider.domain)
@@ -657,6 +667,196 @@ class AlbumsController(MediaControllerBase[Album]):
             return await prov.get_album_tracks(item_id)
         return []
 
+    async def _match_provider(
+        self,
+        db_album: Album,
+        provider: MusicProvider,
+        strict: bool,
+        base_tracks_memo: _BaseTracksMemo,
+    ) -> list[ProviderMapping]:
+        """Search one provider and return the mappings of every confirmed album match."""
+        self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
+        matches: list[ProviderMapping] = []
+        artist_name = db_album.artists[0].name
+        search_str = f"{artist_name} - {db_album.name}"
+        for search_result_item in await self.search(search_str, provider.instance_id):
+            if not search_result_item.available:
+                continue
+            # a sparse search result only rules out a confident non-match; a MATCH or an
+            # ambiguous (INSUFFICIENT) candidate is confirmed against the full album below
+            if (
+                compare_album_evidence(db_album, search_result_item, strict=strict)
+                == AlbumMatchEvidence.NO_MATCH
+            ):
+                continue
+            # search results can be simplified objects, so fetch the full provider album
+            prov_album = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            evidence = await self._resolve_album_evidence(
+                db_album, prov_album, provider, strict, base_tracks_memo
+            )
+            if evidence == AlbumMatchEvidence.MATCH:
+                matches.extend(prov_album.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Album %s on provider %s",
+                db_album.name,
+                provider.name,
+            )
+        return matches
+
+    async def _resolve_album_evidence(
+        self,
+        db_album: Album,
+        prov_album: Album,
+        provider: MusicProvider,
+        strict: bool,
+        base_tracks_memo: _BaseTracksMemo,
+    ) -> AlbumMatchEvidence:
+        """
+        Return the match evidence for a fully-fetched provider album.
+
+        An ambiguous album is escalated to ordered track fingerprints and, only if those
+        stay inconclusive, to MusicBrainz; a mapping is accepted only on a MATCH.
+
+        :param provider: The exact provider instance the candidate album was matched on;
+            its tracklist is fetched directly so a same-domain fallback can never
+            fingerprint the candidate against a different account/server.
+        """
+        evidence = compare_album_evidence(db_album, prov_album, strict=strict)
+        if evidence != AlbumMatchEvidence.INSUFFICIENT:
+            return evidence
+        # ambiguous metadata: resolve conservatively with ordered track fingerprints
+        base_tracks = await self._resolve_base_album_tracks(db_album, base_tracks_memo)
+        try:
+            compare_tracks = await provider.get_album_tracks(prov_album.item_id)
+        except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+            # the candidate tracklist is unavailable: treat it as absent and let MusicBrainz decide
+            self.logger.debug(
+                "Album tracks unavailable for %s on %s: %s",
+                prov_album.item_id,
+                provider.instance_id,
+                err,
+            )
+            compare_tracks = []
+        evidence = compare_album_evidence(
+            db_album,
+            prov_album,
+            strict=strict,
+            base_tracks=base_tracks,
+            compare_tracks=compare_tracks,
+        )
+        if evidence != AlbumMatchEvidence.INSUFFICIENT:
+            return evidence
+        # tracklists could not resolve it either: consult MusicBrainz as a last resort
+        return await self._musicbrainz_album_evidence(db_album, prov_album)
+
+    async def _resolve_base_album_tracks(
+        self, db_album: Album, base_tracks_memo: _BaseTracksMemo
+    ) -> list[Track] | None:
+        """Return the memoized base tracklist, resolving it once on first use."""
+        if not base_tracks_memo.resolved:
+            base_tracks_memo.tracks = await self._load_base_album_tracks(db_album)
+            base_tracks_memo.resolved = True
+        return base_tracks_memo.tracks
+
+    async def _load_base_album_tracks(self, db_album: Album) -> list[Track] | None:
+        """
+        Return a complete, ordered base tracklist to fingerprint against.
+
+        Iterates the album's existing provider mappings in a deterministic order and
+        returns the first loaded provider's full tracklist whose disc/track positions can
+        be trusted. A provider-sourced tracklist is used rather than the stored library
+        tracks because those can be an incomplete subset (individually added tracks), and
+        an incomplete base would make a track-count difference look like a real conflict.
+        """
+        for mapping in sorted(
+            db_album.provider_mappings,
+            key=lambda mapping: (
+                mapping.provider_domain,
+                mapping.provider_instance,
+                mapping.item_id,
+            ),
+        ):
+            if not mapping.available:
+                continue
+            provider = self.mass.get_provider(mapping.provider_instance, return_unavailable=True)
+            if (
+                provider is None
+                or provider.instance_id != mapping.provider_instance
+                or not provider.available
+            ):
+                # only trust the exact, currently-available provider instance and never a
+                # same-domain fallback pointing at a different account/server
+                continue
+            try:
+                provider_tracks = await self._get_provider_album_tracks(
+                    mapping.item_id, mapping.provider_instance
+                )
+            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+                # this mapping's tracklist is unavailable: try the next existing mapping
+                self.logger.debug(
+                    "Base album tracks unavailable for %s on %s: %s",
+                    mapping.item_id,
+                    mapping.provider_instance,
+                    err,
+                )
+                continue
+            if album_tracks_have_positions(provider_tracks):
+                return provider_tracks
+        return None
+
+    async def _musicbrainz_album_evidence(
+        self, base_album: Album, compare_album: Album
+    ) -> AlbumMatchEvidence:
+        """
+        Return album match evidence from MusicBrainz release identity, or abstain.
+
+        A barcode that resolves unambiguously to a single specific MusicBrainz release on
+        both albums is strong positive evidence; barcodes belonging to entirely different
+        release groups are negative. A barcode resolving to several releases, a shared
+        release group alone, an unresolved barcode or a lookup failure abstains
+        (INSUFFICIENT) rather than guessing.
+        """
+        base_barcodes = _canonical_album_barcodes(base_album)
+        compare_barcodes = _canonical_album_barcodes(compare_album)
+        if not base_barcodes or not compare_barcodes:
+            return AlbumMatchEvidence.INSUFFICIENT
+        musicbrainz = self.mass.get_provider("musicbrainz")
+        if musicbrainz is None:
+            return AlbumMatchEvidence.INSUFFICIENT
+        musicbrainz = cast("MusicbrainzProvider", musicbrainz)
+        releases_by_barcode: dict[str, list[MusicBrainzBarcodeRelease]] = {}
+        try:
+            for barcode in sorted(base_barcodes | compare_barcodes):
+                releases_by_barcode[barcode] = await musicbrainz.get_releases_by_barcode(barcode)
+        except (RetriesExhausted, InvalidDataError, TimeoutError, aiohttp.ClientError) as err:
+            self.logger.debug(
+                "MusicBrainz barcode lookup failed while matching album %s: %s",
+                base_album.name,
+                err,
+            )
+            return AlbumMatchEvidence.INSUFFICIENT
+        base_release_ids = _unambiguous_release_ids(base_barcodes, releases_by_barcode)
+        compare_release_ids = _unambiguous_release_ids(compare_barcodes, releases_by_barcode)
+        if base_release_ids & compare_release_ids:
+            # both albums carry a barcode that names the same single specific release
+            return AlbumMatchEvidence.MATCH
+        if not all(releases_by_barcode[barcode] for barcode in base_barcodes | compare_barcodes):
+            # an unresolved barcode leaves the release-group sets incomplete, so a disjoint
+            # comparison could wrongly reject regional equivalents: abstain instead
+            return AlbumMatchEvidence.INSUFFICIENT
+        base_group_ids = _release_group_ids(base_barcodes, releases_by_barcode)
+        compare_group_ids = _release_group_ids(compare_barcodes, releases_by_barcode)
+        if base_group_ids.isdisjoint(compare_group_ids):
+            # the barcodes belong to entirely different release groups: different albums
+            return AlbumMatchEvidence.NO_MATCH
+        # a shared release group alone (or an ambiguous barcode) never identifies an edition
+        return AlbumMatchEvidence.INSUFFICIENT
+
     async def _set_album_artists(
         self,
         db_id: int,
@@ -728,3 +928,36 @@ class AlbumsController(MediaControllerBase[Album]):
         item.album_type = AlbumType(db_row["album_type"])
         item.artists = self._parse_summary_artist_mappings(db_row)
         return item
+
+
+def _canonical_album_barcodes(album: Album) -> set[str]:
+    """Return an album's valid barcodes in canonical UPC form."""
+    return {
+        barcode_to_upc(value)
+        for external_id_type, value in album.external_ids
+        if external_id_type == ExternalID.BARCODE and is_valid_barcode(value)
+    }
+
+
+def _unambiguous_release_ids(
+    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzBarcodeRelease]]
+) -> set[str]:
+    """Return release ids that at least one of the barcodes resolves to unambiguously."""
+    release_ids: set[str] = set()
+    for barcode in barcodes:
+        resolved = {release.id for release in releases_by_barcode.get(barcode, [])}
+        # only a barcode that maps to exactly one specific release is trustworthy evidence
+        if len(resolved) == 1:
+            release_ids |= resolved
+    return release_ids
+
+
+def _release_group_ids(
+    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzBarcodeRelease]]
+) -> set[str]:
+    """Return every release-group id the barcodes resolve to."""
+    return {
+        release.release_group.id
+        for barcode in barcodes
+        for release in releases_by_barcode.get(barcode, [])
+    }
