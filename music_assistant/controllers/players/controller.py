@@ -1490,6 +1490,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 # everywhere while it keeps blocking every later registration of the same
                 # id. Drop it again, but only while it is still ours: an unregister may
                 # have removed it already, and a blind delete would mask the real error.
+                # No on_unload here: the player never got far enough to own a queue,
+                # command locks or a sleep timer.
                 if self._players.get(player_id) is player:
                     del self._players[player_id]
                 raise

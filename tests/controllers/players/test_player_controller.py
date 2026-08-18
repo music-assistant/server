@@ -1216,6 +1216,30 @@ class TestRegisterFailureRollback:
 
         assert "player_1" not in controller._players
 
+    async def test_failure_after_the_player_was_added_keeps_it_registered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A failure after the player was announced leaves it registered."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        mock_mass.player_queues.on_player_register = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            await controller.register(player)
+
+        # PLAYER_ADDED was already signalled, so dropping the player now would
+        # remove it from every listing without a matching PLAYER_REMOVED
+        assert controller._players["player_1"] is player
+        assert player.initialized.is_set()
+
 
 class TestRegisterOrUpdateTypeTransition:
     """Tests for a registered player moving in or out of the protocol role."""
