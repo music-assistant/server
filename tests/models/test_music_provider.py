@@ -1,4 +1,4 @@
-"""Tests for MusicProvider source-stream capacity."""
+"""Tests for the MusicProvider base model."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ProviderType
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 
 from music_assistant.models.music_provider import (
     DEFAULT_MAX_CONCURRENT_STREAMS,
@@ -38,7 +38,9 @@ class _SingleStreamProvider(MusicProvider):
         return 1
 
 
-def _make_provider[ProviderT: MusicProvider](provider_cls: type[ProviderT]) -> ProviderT:
+def _make_provider[ProviderT: MusicProvider](
+    provider_cls: type[ProviderT], supported_features: set[ProviderFeature] | None = None
+) -> ProviderT:
     """Construct a minimal MusicProvider instance."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -49,7 +51,21 @@ def _make_provider[ProviderT: MusicProvider](provider_cls: type[ProviderT]) -> P
     config.name = "Test Provider"
     config.instance_id = "test_provider--1"
     config.get_value.return_value = "GLOBAL"
-    return provider_cls(mass, manifest, config)
+    return provider_cls(mass, manifest, config, supported_features)
+
+
+def test_supported_media_types_default_follows_library_features() -> None:
+    """Without an override, media type support is derived from the library features."""
+    provider = _make_provider(
+        _StreamingProvider,
+        supported_features={
+            ProviderFeature.SEARCH,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+        },
+    )
+
+    assert provider.supported_media_types == {MediaType.TRACK, MediaType.PLAYLIST}
 
 
 def test_streaming_provider_has_conservative_default() -> None:

@@ -86,6 +86,7 @@ def _music_provider(instance: str, has_slot: bool = True) -> MagicMock:
     provider.is_streaming_provider = True
     provider.has_available_stream_slot = has_slot
     provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
     provider.get_stream_details = AsyncMock(return_value=_streamdetails(instance))
     return provider
 
@@ -98,7 +99,6 @@ def _mass(providers: dict[str, MagicMock]) -> MagicMock:
     mass.player_queues.queue_data_or_none.return_value = None
     mass.streams.get_config_value.return_value = -17
     mass.music.providers = list(providers.values())
-    mass.music.library_supported.return_value = True
     mass.music.tracks.match_provider = AsyncMock(return_value=[])
     mass.music.tracks.add_provider_mappings = AsyncMock()
 
@@ -146,6 +146,36 @@ async def test_saturated_single_mapping_is_rescued_by_a_cross_provider_match(
     assert mass.music.tracks.match_provider.await_args.kwargs["strict"] is True
     # a non-library track keeps the mapping in memory only
     mass.music.tracks.add_provider_mappings.assert_not_awaited()
+
+
+async def test_a_provider_without_track_support_is_never_searched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching only consults providers that declare support for tracks."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, quality=ContentType.FLAC))
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    radio_only = _music_provider("radioprov--1")
+    radio_only.supported_media_types = {MediaType.RADIO}
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        "radioprov--1": radio_only,
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    mass = _mass(providers)
+    mass.music.tracks.match_provider = AsyncMock(
+        return_value=[_mapping(MATCH_INSTANCE, item_id=MATCHED_ITEM_ID)]
+    )
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    # the radio-only provider is skipped; the track-capable provider gets the search
+    mass.music.tracks.match_provider.assert_awaited_once()
+    assert mass.music.tracks.match_provider.await_args.args[1] is providers[MATCH_INSTANCE]
 
 
 async def test_a_matchless_search_falls_back_to_the_blocking_wait(

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import AlbumType, ProviderFeature
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
@@ -670,6 +670,7 @@ async def test_reconcile_duplicate_albums_merges_conflicting_mapping_via_safe_pa
     provider.domain = "spotify"
     provider.instance_id = "spotify_1"
     provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.ALBUM}
     provider.is_streaming_provider = True
 
     search_result = Album(
@@ -691,7 +692,6 @@ async def test_reconcile_duplicate_albums_merges_conflicting_mapping_via_safe_pa
     with (
         patch.object(mass.music.albums, "search", AsyncMock(return_value=[search_result])),
         patch.object(mass.music.albums, "get_provider_item", AsyncMock(return_value=search_result)),
-        patch.object(mass.music, "library_supported", Mock(return_value=True)),
         patch.object(type(mass.music), "providers", new_callable=PropertyMock) as providers_mock,
     ):
         providers_mock.return_value = [provider]

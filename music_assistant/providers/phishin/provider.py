@@ -66,6 +66,12 @@ class PhishInProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # full catalogue access via search/browse, but only the artist as library item
+        return {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST}
+
     async def search(
         self,
         search_query: str,
