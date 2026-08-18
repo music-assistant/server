@@ -817,3 +817,11 @@ async def test_expired_by_timestamp_is_replaced(tmp_path: Path) -> None:
     path = await manager.ensure_fresh(consent=True)
 
     assert b"GOOD-BUILD-B" in path.read_bytes()
+
+
+def test_parse_build_timestamp_reads_the_real_epoch_format() -> None:
+    """The observed 1.3.7 --version output carries the build date as a unix epoch."""
+    raw = "soloist 1.3.7.345 build 1787077868 (20260818) (gb24005ef46) (linux/aarch64)"
+    assert soloist._parse_build_timestamp(raw) == 1787077868.0
+    # an unrelated small number is not mistaken for a timestamp
+    assert soloist._parse_build_timestamp("soloist 1.2.3 build 42") is None

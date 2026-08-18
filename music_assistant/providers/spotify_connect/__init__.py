@@ -15,8 +15,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .provider import (
+    BACKEND_GO_LIBRESPOT,
+    BACKEND_SOLOIST,
+    CONF_API_KEY,
+    CONF_BACKEND,
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
+    CONF_SOLOIST_CONSENT,
+    CONF_VOLUME_MODE,
     DEFAULT_PUBLISH_NAME,
     PLAYER_ID_AUTO,
     SUPPORTED_FEATURES,
@@ -31,8 +37,14 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 __all__ = [
+    "BACKEND_GO_LIBRESPOT",
+    "BACKEND_SOLOIST",
+    "CONF_API_KEY",
+    "CONF_BACKEND",
     "CONF_MASS_PLAYER_ID",
     "CONF_PUBLISH_NAME",
+    "CONF_SOLOIST_CONSENT",
+    "CONF_VOLUME_MODE",
     "DEFAULT_PUBLISH_NAME",
     "PLAYER_ID_AUTO",
     "SUPPORTED_FEATURES",

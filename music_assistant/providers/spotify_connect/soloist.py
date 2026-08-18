@@ -102,8 +102,11 @@ _DOWNLOAD_TIMEOUT: Final[float] = 300.0
 _HEAD_TIMEOUT: Final[float] = 30.0
 
 # --version output is free-form text (the docs give no schema); fish out a
-# version token and an ISO-like timestamp defensively.
+# version token and a build timestamp defensively. Observed 1.3.7 output:
+# "soloist 1.3.7.345 build 1787077868 (20260818) (gb24005ef46) (linux/aarch64)"
+# — the build timestamp is a unix epoch; an ISO-like date is kept as fallback.
 _VERSION_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"\bv?(\d+\.\d+(?:\.\d+)*)\b")
+_BUILD_EPOCH_RE: Final[re.Pattern[str]] = re.compile(r"\bbuild\s+(\d{9,11})\b")
 _TIMESTAMP_RE: Final[re.Pattern[str]] = re.compile(
     r"\b(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?)\b"
 )
@@ -117,25 +120,39 @@ _COMMAND_RESULT_TIMEOUT: Final[float] = 10.0
 class SoloistError(MusicAssistantError):
     """Base error for all soloist helper failures."""
 
+    # the soloist strings are authored once, in the spotify_connect provider's
+    # strings.json, regardless of which provider raised the error
+    translation_owner = "provider.spotify_connect"
+
 
 class ConsentRequiredError(SoloistError):
     """A download from Spotify's CDN is needed but the user did not consent (yet)."""
+
+    translation_key = "soloist_consent_required"
 
 
 class UnsupportedPlatformError(SoloistError):
     """No official soloist build exists for this platform/architecture."""
 
+    translation_key = "soloist_unsupported_platform"
+
 
 class DownloadFailedError(SoloistError):
     """The soloist release archive could not be downloaded."""
+
+    translation_key = "soloist_download_failed"
 
 
 class InvalidArchiveError(SoloistError):
     """The downloaded release archive or its binary failed validation."""
 
+    translation_key = "soloist_invalid_archive"
+
 
 class BuildExpiredError(SoloistError):
     """The soloist build passed its 90-day expiry and no replacement is available."""
+
+    translation_key = "soloist_build_expired"
 
 
 @dataclass
@@ -941,6 +958,15 @@ class SoloistClient:
         self._pending_results.clear()
 
 
+def verify_platform_supported() -> None:
+    """
+    Verify an official soloist build exists for this platform.
+
+    :raises UnsupportedPlatformError: soloist has no build for this OS/architecture.
+    """
+    _resolve_architecture()
+
+
 @dataclass
 class _BinaryMetadata(DataClassDictMixin):
     """Install metadata persisted next to the soloist binary."""
@@ -1053,6 +1079,11 @@ def _parse_version_token(version_output: str) -> str | None:
 
 def _parse_build_timestamp(version_output: str) -> float | None:
     """Best-effort extraction of the build timestamp from free-form ``--version`` output."""
+    if epoch_match := _BUILD_EPOCH_RE.search(version_output):
+        epoch = float(epoch_match.group(1))
+        # sanity range guard so an unrelated number is not taken for a timestamp
+        if 1_500_000_000 <= epoch <= 4_100_000_000:
+            return epoch
     for match in _TIMESTAMP_RE.finditer(version_output):
         candidate = match.group(1).replace("Z", "+00:00")
         try:

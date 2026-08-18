@@ -2,13 +2,28 @@
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant.providers.spotify_connect import SpotifyConnectProvider
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.enums import ProviderType
+
+from music_assistant.providers.spotify_connect import (
+    BACKEND_SOLOIST,
+    CONF_API_KEY,
+    CONF_BACKEND,
+    CONF_SOLOIST_CONSENT,
+    CONF_VOLUME_MODE,
+    SpotifyConnectProvider,
+)
 from music_assistant.providers.spotify_connect.backends.go_librespot import (
     API_PORT_RANGE_END,
     API_PORT_RANGE_START,
     GoLibrespotBackend,
+)
+from music_assistant.providers.spotify_connect.backends.soloist import (
+    VOLUME_MODE_SYNC_SPOTIFY,
+    SoloistBackend,
 )
 from music_assistant.providers.spotify_connect.clients.go_librespot import GoLibrespotClient
 
@@ -141,3 +156,52 @@ async def test_sync_player_volume_restores_cache_on_failure() -> None:
     await provider._sync_player_volume_to_spotify("player1")
 
     assert provider._last_volume_sent is None
+
+
+def _provider_with_stored_config(
+    setup_data: dict[str, Any], tmp_path: Path
+) -> SpotifyConnectProvider:
+    """Build a provider whose stored setup_data resolves through the real accessors."""
+    provider = object.__new__(SpotifyConnectProvider)
+    provider.mass = MagicMock()
+    provider.mass.storage_path = str(tmp_path / "storage")
+    provider.mass.cache_path = str(tmp_path / "cache")
+    provider.mass.config.get.return_value = setup_data
+    provider.mass.config.decrypt_string.side_effect = lambda value: value
+    provider.logger = MagicMock()
+    provider._publish_name = "Test Speaker"
+    provider.config = ProviderConfig(
+        values={},
+        type=ProviderType.PLUGIN,
+        domain="spotify_connect",
+        instance_id="spotify_connect--test",
+        name="Spotify Connect",
+    )
+    return provider
+
+
+def test_config_without_backend_choice_loads_go_librespot(tmp_path: Path) -> None:
+    """A config from before the backend choice existed loads go-librespot unchanged."""
+    provider = _provider_with_stored_config({}, tmp_path)
+
+    assert isinstance(provider._create_backend(), GoLibrespotBackend)
+
+
+def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
+    """A flow-configured soloist instance loads the soloist backend with its stored values."""
+    provider = _provider_with_stored_config(
+        {
+            CONF_BACKEND: BACKEND_SOLOIST,
+            CONF_API_KEY: "soloist-api-key-0123456789abcdef",
+            CONF_SOLOIST_CONSENT: True,
+            CONF_VOLUME_MODE: VOLUME_MODE_SYNC_SPOTIFY,
+        },
+        tmp_path,
+    )
+
+    backend = provider._create_backend()
+
+    assert isinstance(backend, SoloistBackend)
+    assert backend._api_key == "soloist-api-key-0123456789abcdef"
+    assert backend._consent is True
+    assert backend._volume_mode == VOLUME_MODE_SYNC_SPOTIFY

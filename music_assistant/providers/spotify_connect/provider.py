@@ -14,7 +14,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     MediaType,
@@ -30,7 +30,7 @@ from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
 from .backends.go_librespot import GoLibrespotBackend
-from .backends.soloist import VOLUME_MODE_PLAYER_ONLY, SoloistBackend
+from .backends.soloist import VOLUME_MODE_PLAYER_ONLY, VOLUME_MODE_SYNC_SPOTIFY, SoloistBackend
 from .models import BackendEventType
 
 if TYPE_CHECKING:
@@ -48,12 +48,12 @@ CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
 DEFAULT_PUBLISH_NAME = "Music Assistant"
 
-# Backend selection (hidden for now; the setup flow change makes it user-facing).
+# Backend selection, collected by the setup flow (stored in setup_data).
 CONF_BACKEND = "backend"
 BACKEND_GO_LIBRESPOT = "go_librespot"
 BACKEND_SOLOIST = "soloist"
 
-# Soloist-specific options (hidden for now, see CONF_BACKEND).
+# Soloist-specific values collected by the setup flow (see CONF_BACKEND).
 CONF_API_KEY = "soloist_api_key"
 CONF_SOLOIST_CONSENT = "soloist_download_consent"
 CONF_VOLUME_MODE = "volume_mode"
@@ -156,8 +156,10 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return runtime options for this provider."""
-        # The backend selection and the soloist options stay hidden for now:
-        # the upcoming setup flow change makes them user-facing.
+        # The backend selection and the soloist secrets are managed by the setup
+        # flow (stored in setup_data) and stay hidden; the volume mode is a
+        # visible runtime option for soloist configs.
+        is_soloist = self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST
         return (
             CONF_ENTRY_WARN_PREVIEW,
             ConfigEntry(
@@ -183,9 +185,17 @@ class SpotifyConnectProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_VOLUME_MODE,
                 type=ConfigEntryType.STRING,
-                default_value=VOLUME_MODE_PLAYER_ONLY,
+                # default to the mode chosen in the setup flow so the options
+                # page shows the effective mode until the user overrides it here
+                default_value=cast(
+                    "str", self.get_setup_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY
+                ),
                 required=False,
-                hidden=True,
+                options=[
+                    ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
+                    ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
+                ],
+                hidden=not is_soloist,
             ),
         )
 
@@ -423,7 +433,10 @@ class SpotifyConnectProvider(PluginProvider):
 
     def _create_backend(self) -> SpotifyConnectBackend:
         """Construct the configured Spotify Connect backend implementation."""
-        if self.config.get_value(CONF_BACKEND) == BACKEND_SOLOIST:
+        # The backend choice and soloist secrets are collected by the setup flow
+        # into setup_data; configs from before the backend choice existed have
+        # no stored value at all and resolve to go-librespot.
+        if self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST:
             return SoloistBackend(
                 self.mass,
                 instance_id=self.instance_id,
@@ -431,10 +444,14 @@ class SpotifyConnectProvider(PluginProvider):
                 name=self.name,
                 logger=self.logger,
                 event_callback=self._handle_backend_event,
-                api_key=cast("str", self.config.get_value(CONF_API_KEY) or ""),
-                consent=bool(self.config.get_value(CONF_SOLOIST_CONSENT)),
+                api_key=cast("str", self.get_setup_value(CONF_API_KEY) or ""),
+                consent=bool(self.get_setup_value(CONF_SOLOIST_CONSENT)),
+                # the visible option (values) wins over the flow-collected choice
                 volume_mode=cast(
-                    "str", self.config.get_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY
+                    "str",
+                    self.config.get_value(CONF_VOLUME_MODE)
+                    or self.get_setup_value(CONF_VOLUME_MODE)
+                    or VOLUME_MODE_PLAYER_ONLY,
                 ),
             )
         return GoLibrespotBackend(
