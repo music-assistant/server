@@ -178,6 +178,13 @@ class ProtocolLinkingMixin:
             )
             if result:
                 return
+            if not self.get_player(cached_parent_id):
+                # The persisted owner has not registered yet: wait for it instead of
+                # letting another parent's cached ids or identifiers claim this
+                # protocol. Delayed evaluation links it elsewhere if the owner
+                # never shows up.
+                self._schedule_protocol_evaluation(protocol_player)
+                return
             # Link was refused or parent has active domain - fall through to search
 
         # Look for a matching native player

@@ -1208,6 +1208,162 @@ class TestCachedProtocolParentRestore:
         assert protocol_player.protocol_parent_id is None
         mock_schedule.assert_called_once_with(protocol_player)
 
+    def test_stale_cache_does_not_claim_a_protocol_waiting_for_its_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol whose persisted owner is still starting up is not claimed by another parent."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "sonos_owner"},
+                },
+                "heos_player": {
+                    "provider": "heos--y",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+                "sonos_owner": {
+                    "provider": "sonos--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        # a native player that kept a stale cached id for a protocol it no longer owns
+        heos_player = MockPlayer(
+            MockProvider("heos", mass=mock_mass),
+            "heos_player",
+            "Old Receiver",
+            identifiers={IdentifierType.MAC_ADDRESS: "11:22:33:44:55:66"},
+        )
+        heos_player.set_initialized()
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "Speaker (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        airplay.set_initialized()
+        controller._players = {"heos_player": heos_player, "ap_shared": airplay}
+
+        # the persisted owner has not registered yet
+        controller._try_link_protocol_to_native(airplay)
+
+        assert airplay.protocol_parent_id is None
+        assert heos_player.linked_output_protocols == []
+        assert mock_mass.loop.call_later.call_args.args[0] == 45.0
+
+        # once the owner registers it takes its own protocol
+        sonos_owner = MockPlayer(
+            MockProvider("sonos", mass=mock_mass),
+            "sonos_owner",
+            "Speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        sonos_owner.set_initialized()
+        controller._players["sonos_owner"] = sonos_owner
+        controller._try_link_protocols_to_native(sonos_owner)
+
+        assert airplay.protocol_parent_id == "sonos_owner"
+        assert [  # type: ignore[unreachable]
+            link.output_protocol_id for link in sonos_owner.linked_output_protocols
+        ] == ["ap_shared"]
+
+    def test_identifier_match_does_not_claim_a_protocol_waiting_for_its_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Identifier matching does not override a protocol's own persisted owner."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "sonos_owner"},
+                },
+                "sonos_owner": {"provider": "sonos--z", "player_type": "player", "values": {}},
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        # shares identifiers with the protocol but is not its persisted owner
+        other_native = MockPlayer(
+            MockProvider("heos", mass=mock_mass),
+            "heos_player",
+            "Other Receiver",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        other_native.set_initialized()
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "Speaker (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        airplay.set_initialized()
+        controller._players = {"heos_player": other_native, "ap_shared": airplay}
+
+        controller._try_link_protocol_to_native(airplay)
+
+        assert airplay.protocol_parent_id is None
+        assert other_native.linked_output_protocols == []
+
+    @pytest.mark.asyncio
+    async def test_protocol_links_elsewhere_when_its_owner_never_registers(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol whose persisted owner never registers still links on delayed evaluation."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "gone_owner"},
+                },
+                "heos_player": {
+                    "provider": "heos--y",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        heos_player = MockPlayer(
+            MockProvider("heos", mass=mock_mass),
+            "heos_player",
+            "Receiver",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        heos_player.set_initialized()
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "Speaker (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        airplay.set_initialized()
+        controller._players = {"heos_player": heos_player, "ap_shared": airplay}
+
+        controller._try_link_protocol_to_native(airplay)
+        assert airplay.protocol_parent_id is None
+
+        await controller._delayed_protocol_evaluation("ap_shared")
+
+        assert airplay.protocol_parent_id == "heos_player"
+
     @pytest.mark.asyncio
     async def test_cached_parent_registers_before_delayed_eval_links_without_universal(
         self, mock_mass: MagicMock
