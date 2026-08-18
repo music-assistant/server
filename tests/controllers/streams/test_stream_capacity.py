@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -232,6 +233,71 @@ async def test_capacity_reselection_is_shared_by_concurrent_waiters(
     assert results[1] is fallback_buffer
     assert queue_item.streamdetails is fallback_details
     assert audio.get_stream_details.await_count == 1
+
+
+async def test_a_failed_reselection_spends_the_budget_on_the_blocked_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unplayable alternative falls back to waiting out the budget on the busy source."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    busy_details = _streamdetails(BUSY_INSTANCE)
+    queue_item.streamdetails = busy_details
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
+    }
+    audio = StreamsAudio(_mass(providers))
+    # the alternative mapping exists but can not be resolved (e.g. region locked)
+    audio.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("not here"))  # type: ignore[method-assign]
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    # the capacity budget is spent on the blocked provider instead of being abandoned
+    assert result is expected_buffer
+    assert get_buffer.await_count == 2
+    assert get_buffer.await_args_list[0].kwargs["source_wait_timeout"] == 0
+    assert get_buffer.await_args_list[1].kwargs["source_wait_timeout"] > 0
+    assert get_buffer.await_args_list[1].kwargs["streamdetails"] is busy_details
+    assert queue_item.streamdetails is busy_details
+
+
+@pytest.mark.parametrize(
+    "reselection_error",
+    [ProviderUnavailableError("gone"), asyncio.CancelledError()],
+    ids=["provider_unavailable", "cancelled"],
+)
+async def test_streamdetails_survive_an_unexpected_reselection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    reselection_error: BaseException,
+) -> None:
+    """No exit path may leave the queue item without stream details."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    busy_details = _streamdetails(BUSY_INSTANCE)
+    queue_item.streamdetails = busy_details
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
+    }
+    audio = StreamsAudio(_mass(providers))
+    audio.get_stream_details = AsyncMock(side_effect=reselection_error)  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        AudioBuffer, "get_buffer", AsyncMock(side_effect=_limit_error(BUSY_INSTANCE))
+    )
+
+    with pytest.raises(type(reselection_error)):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    # a None here crashes the flow stream's end-of-track bookkeeping
+    assert queue_item.streamdetails is busy_details
 
 
 async def test_flow_mode_skips_the_item_on_capacity_exhaustion() -> None:

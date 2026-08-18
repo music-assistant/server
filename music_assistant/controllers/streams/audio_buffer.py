@@ -38,6 +38,7 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -429,8 +430,15 @@ class AudioBuffer:
                     existing_buffer._discarded_chunks,
                 )
                 streamdetails.buffer = None
-                if time.time() - existing_buffer._last_access_time > 30:
-                    # no recent consumer activity - safe to fully clear
+                # a still-filling producer holds one of the provider's source-stream
+                # slots; the replacement buffer needs that slot, so stop it now
+                provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
+                must_release_slot = (
+                    existing_buffer.is_buffering
+                    and isinstance(provider, MusicProvider)
+                    and provider.max_concurrent_streams is not None
+                )
+                if must_release_slot or time.time() - existing_buffer._last_access_time > 30:
                     await asyncio.shield(existing_buffer.clear())
                 # else: an active consumer is still reading via its local reference;
                 # the inactivity monitor will clean up after it finishes

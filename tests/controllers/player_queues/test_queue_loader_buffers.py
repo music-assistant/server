@@ -67,17 +67,37 @@ def _controller(*queues: tuple[str, list[QueueItem]]) -> PlayerQueuesController:
 
 
 async def test_starting_an_item_aborts_the_other_filling_sources_of_its_queue() -> None:
-    """A still-filling source of another item in the same queue hands its slot over."""
+    """A still-filling source of a preceding item in the same queue hands its slot over."""
     target = _item(QUEUE_ID, "target", LIMITED)
     filling = _item(QUEUE_ID, "filling", LIMITED)
     ctrl = _controller((QUEUE_ID, [filling, target]))
 
     await ctrl._abort_superseded_source_buffers(target)
 
+    # the aborted buffer stays attached so the flow stream can see the abort
     assert filling.streamdetails is not None
-    assert filling.streamdetails.buffer is None
+    assert filling.streamdetails.buffer is not None
+    filling.streamdetails.buffer.clear.assert_awaited_once()
     assert target.streamdetails is not None
     assert target.streamdetails.buffer is not None
+    assert target.streamdetails.buffer.clear.await_count == 0
+
+
+async def test_the_started_items_successor_keeps_its_prewarm() -> None:
+    """A resume or seek must not cost the crossfade prewarm of the upcoming track."""
+    target = _item(QUEUE_ID, "target", LIMITED)
+    upcoming = _item(QUEUE_ID, "upcoming", LIMITED)
+    stale = _item(QUEUE_ID, "stale", LIMITED)
+    ctrl = _controller((QUEUE_ID, [target, upcoming, stale]))
+
+    await ctrl._abort_superseded_source_buffers(target)
+
+    assert upcoming.streamdetails is not None
+    assert upcoming.streamdetails.buffer is not None
+    assert upcoming.streamdetails.buffer.clear.await_count == 0
+    assert stale.streamdetails is not None
+    assert stale.streamdetails.buffer is not None
+    stale.streamdetails.buffer.clear.assert_awaited_once()
 
 
 async def test_completed_and_unlimited_sources_are_left_alone() -> None:

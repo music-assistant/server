@@ -94,7 +94,6 @@ CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
 
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
-# Matches the buffer readiness wait, so a start never blocks longer than the audio it waits for.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
 
 # Maximum seconds we wait for the buffer to catch up on a forward seek.

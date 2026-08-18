@@ -1377,6 +1377,10 @@ class StreamsAudio:
             return
         streamdetails = queue_item.streamdetails
         assert streamdetails  # for type checking
+        if normalization_override is not None:
+            # a capacity reselection hands back freshly resolved details, so the
+            # crossfade's intro/body normalization pin must be re-applied to them
+            streamdetails.volume_normalization_mode = normalization_override
 
         # handle volume normalization
         gain_correct: float | None = None
@@ -1867,6 +1871,9 @@ class StreamsAudio:
                 del fade_out_data
         # make sure the buffer gets cleaned up
         del buffer
+        # a capacity reselection inside the stream replaces the queue item's details,
+        # so rebind before the writebacks land on an orphaned object
+        streamdetails = queue_item.streamdetails or streamdetails
         # update duration details based on the actual pcm data we sent
         # this also accounts for crossfade and silence stripping
         seconds_streamed = bytes_written / pcm_format.pcm_sample_size
@@ -2325,18 +2332,23 @@ class StreamsAudio:
             # this also accounts for crossfade and silence stripping
             seconds_streamed = bytes_written / pcm_sample_size
             queue_track.streamdetails.seconds_streamed = seconds_streamed
-            # the held-back crossfade tail still counts as this track's media-time
-            tail_seconds = len(last_fadeout_part) / pcm_sample_size
-            # streamdetails.duration is in media-time; seconds_streamed is stream-time
-            # (post-atempo), so we scale by the track's playback_speed to recover media-time.
-            queue_track.streamdetails.duration = int(
-                queue_track.streamdetails.seek_position
-                + (seconds_streamed + tail_seconds) * track_playback_speed
-            )
-            # propagate accurate duration to queue_item so UI displays it
-            queue_track.duration = queue_track.streamdetails.duration
             play_log_entry.seconds_streamed = seconds_streamed
-            play_log_entry.duration = queue_track.streamdetails.duration
+            # an externally aborted source ends in a clean EOF mid-track, so the
+            # streamed length must not be written back as the item's duration
+            source_buffer = queue_track.streamdetails.buffer
+            source_aborted = source_buffer is not None and source_buffer.cancelled
+            if not source_aborted:
+                # the held-back crossfade tail still counts as this track's media-time
+                tail_seconds = len(last_fadeout_part) / pcm_sample_size
+                # streamdetails.duration is in media-time; seconds_streamed is stream-time
+                # (post-atempo), so we scale by the track's playback_speed to recover media-time.
+                queue_track.streamdetails.duration = int(
+                    queue_track.streamdetails.seek_position
+                    + (seconds_streamed + tail_seconds) * track_playback_speed
+                )
+                # propagate accurate duration to queue_item so UI displays it
+                queue_track.duration = queue_track.streamdetails.duration
+                play_log_entry.duration = queue_track.streamdetails.duration
             if last_play_log_entry is play_log_entry and last_fadeout_part:
                 # Pre-count the full crossfade tail so the queue index calculation
                 # doesn't undercount while waiting for the next track's crossfade mix.
@@ -2729,7 +2741,14 @@ class StreamsAudio:
         reason: str,
         capacity_wait_timeout: float,
     ) -> AudioBuffer:
-        """Create or reuse a ready AudioBuffer within one queue-item preparation lock."""
+        """
+        Create or reuse a ready AudioBuffer within one queue-item preparation lock.
+
+        :param queue_item: Queue item whose source should be buffered.
+        :param seek_position_ms: Position in milliseconds to start from.
+        :param reason: Caller context for logging.
+        :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
+        """
         loop = asyncio.get_running_loop()
         # the playback intent lives on the details we start from; keep it across a reselection
         initial_streamdetails = queue_item.streamdetails
@@ -2757,10 +2776,10 @@ class StreamsAudio:
         busy_instances: set[str] = set()
         final_pass = False
         last_capacity_error: ProviderStreamLimitError | None = None
+        last_failed_streamdetails: StreamDetails | None = None
         while True:
-            if (
-                queue_item.streamdetails is None
-                or queue_item.streamdetails.provider in busy_instances
+            if queue_item.streamdetails is None or (
+                queue_item.streamdetails.provider in busy_instances and not final_pass
             ):
                 try:
                     queue_item.streamdetails = await self.get_stream_details(
@@ -2773,8 +2792,18 @@ class StreamsAudio:
                 except (AudioError, MediaNotFoundError) as err:
                     if last_capacity_error is None:
                         raise
-                    # capacity was the root cause, so surface the typed (actionable) error
-                    raise last_capacity_error from err
+                    if final_pass:
+                        # capacity was the root cause, surface the typed (actionable) error
+                        raise last_capacity_error from err
+                    # no usable alternative mapping: restore the capacity-blocked details
+                    # and spend the remaining budget blocking on that provider's slot
+                    final_pass = True
+                    continue
+                finally:
+                    if queue_item.streamdetails is None:
+                        # never leave the queue item without streamdetails on any exit,
+                        # including a cancellation or a non-audio provider failure
+                        queue_item.streamdetails = last_failed_streamdetails
             streamdetails = queue_item.streamdetails
             assert streamdetails is not None  # for type checking
             provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
@@ -2801,6 +2830,7 @@ class StreamsAudio:
                 )
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
+                last_failed_streamdetails = streamdetails
                 busy_instances.add(err.provider_instance)
                 if final_pass or loop.time() >= deadline:
                     raise
@@ -3105,7 +3135,7 @@ class StreamsAudio:
         :param playback_speed: Incoming track playback-speed multiplier.
         :return: Effective mode and resident fade-in duration in seconds.
         """
-        audio_buffer = getattr(streamdetails, "buffer", None)
+        audio_buffer = streamdetails.buffer
         if (
             crossfade_mode == CrossfadeMode.DISABLED
             or playback_speed <= 0

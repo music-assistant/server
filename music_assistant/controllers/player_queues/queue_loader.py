@@ -1003,8 +1003,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         :param queue_item: The queue item that is about to start playing.
         """
         queue_data = self._queue_data.get(queue_item.queue_id)
-        for item in tuple(queue_data.items) if queue_data else ():
-            if item.queue_item_id == queue_item.queue_item_id or item.streamdetails is None:
+        items = tuple(queue_data.items) if queue_data else ()
+        # the started item keeps its own buffer; its direct successor keeps a prewarm
+        # in flight, so a resume or seek does not cost the upcoming crossfade
+        spared_item_ids = {queue_item.queue_item_id}
+        for index, item in enumerate(items):
+            if item.queue_item_id == queue_item.queue_item_id and index + 1 < len(items):
+                spared_item_ids.add(items[index + 1].queue_item_id)
+                break
+        for item in items:
+            if item.queue_item_id in spared_item_ids or item.streamdetails is None:
                 continue
             audio_buffer = item.streamdetails.buffer
             if audio_buffer is None or not audio_buffer.is_buffering:
@@ -1018,6 +1026,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 provider.name,
                 queue_item.name,
             )
+            # the cancelled buffer stays attached: it marks the source as aborted for
+            # the flow stream's accounting and fails is_valid() for any later reuse
             await audio_buffer.clear()
-            if item.streamdetails.buffer is audio_buffer:
-                item.streamdetails.buffer = None
