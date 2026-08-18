@@ -1,5 +1,6 @@
 """Tests for mediaitem compare helper functions."""
 
+import pytest
 from music_assistant_models import media_items
 from music_assistant_models.enums import ExternalID
 
@@ -499,6 +500,46 @@ def test_compare_album_evidence_blank_vs_remaster_resolves_with_fingerprint() ->
         )
         == compare.AlbumMatchEvidence.NO_MATCH
     )
+
+
+@pytest.mark.parametrize(
+    "conflict_version",
+    ["Live", "Remix", "Karaoke Edition", "Instrumental", "Acoustic Version", "Demo", "Cover"],
+)
+def test_compare_album_evidence_blank_vs_recording_conflict_is_no_match(
+    conflict_version: str,
+) -> None:
+    """
+    A blank version next to a recording-changing qualifier is a proven conflict.
+
+    Unlike a blank version next to plain packaging wording (remaster, deluxe, ...), a
+    missing version tag can never explain away a recording-altering qualifier on the
+    other side, so this must not be left for a tracklist to resolve.
+    """
+    base_item = _album(version="")
+    compare_item = _album(item_id="2", provider="test2", version=conflict_version)
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item)
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+    assert compare.compare_album(base_item, compare_item) is False
+
+
+@pytest.mark.parametrize("packaging_version", ["Remaster", "Deluxe Edition", "Anniversary Edition"])
+def test_compare_album_evidence_blank_vs_packaging_edition_is_insufficient(
+    packaging_version: str,
+) -> None:
+    """A blank version next to plain packaging wording stays undecided, not a proven conflict."""
+    base_item = _album(version="")
+    compare_item = _album(item_id="2", provider="test2", version=packaging_version)
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
+    # the compatibility wrapper stays conservative and does not merge on insufficient evidence
+    assert compare.compare_album(base_item, compare_item) is False
 
 
 def test_compare_album_evidence_resolves_with_matching_fingerprint() -> None:

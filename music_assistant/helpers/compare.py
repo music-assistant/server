@@ -750,16 +750,17 @@ def _compare_album_version(base_version: str, compare_version: str) -> AlbumMatc
     compare_tokens = set(_normalize_version_tokens(compare_version))
     if base_tokens == compare_tokens:
         return AlbumMatchEvidence.MATCH
+    # a recording-changing qualifier (live, karaoke, remix, ...) makes an otherwise
+    # unequal pair of editions unsafe to merge, wherever it appears in either wording,
+    # not only when it is the token that happens to differ between the two, and even
+    # when the other side omits version metadata entirely
+    if (base_tokens | compare_tokens) & _RECORDING_CONFLICT_VERSION_TOKENS:
+        return AlbumMatchEvidence.NO_MATCH
     if not base_tokens or not compare_tokens:
         # a provider commonly omits edition metadata entirely (e.g. a remaster tagged
         # without a version string), so a blank version next to a real one is
         # undecided rather than a proven conflict: let a tracklist resolve it
         return AlbumMatchEvidence.INSUFFICIENT
-    # a recording-changing qualifier (live, karaoke, remix, ...) makes an otherwise
-    # unequal pair of editions unsafe to merge, wherever it appears in either wording,
-    # not only when it is the token that happens to differ between the two
-    if (base_tokens | compare_tokens) & _RECORDING_CONFLICT_VERSION_TOKENS:
-        return AlbumMatchEvidence.NO_MATCH
     if base_tokens < compare_tokens or compare_tokens < base_tokens:
         # one version's wording is a strict subset of the other's (e.g. "2022 Remaster"
         # vs. "Deluxe 2022 Remaster"): an ambiguous packaging difference a tracklist can resolve
