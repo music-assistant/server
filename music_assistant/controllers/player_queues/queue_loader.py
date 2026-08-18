@@ -58,13 +58,13 @@ from music_assistant.controllers.player_queues.helpers import (
     is_dynamic_source,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
-from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
@@ -375,6 +375,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         *org_images,
                     ]
                 )
+        if is_start:
+            # a track skip should hand its source slot to the item the user is starting
+            await self._abort_superseded_source_buffers(queue_item)
+
         # Fetch streamdetails (reuses existing if buffer is still valid for the seek).
         queue_item.streamdetails = await self.mass.streams.audio.get_stream_details(
             queue_item=queue_item,
@@ -391,11 +395,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # initialize the buffer ~30s before the current track ends instead.
         # AudioSource items are realtime/live and bypass the AudioBuffer.
         if is_start and queue_item.streamdetails.media_type != MediaType.AUDIO_SOURCE:
-            await AudioBuffer.get_buffer(
-                self.mass,
-                queue_item.streamdetails,
+            await self.mass.streams.audio.get_audio_buffer(
+                queue_item,
                 seek_position_ms=int(seek_position * 1000),
-                wait_ready=True,
                 reason="prepare",
             )
             # the first chunk is in, so the source has been probed and a duration the
@@ -993,3 +995,29 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Drop anything already queued/played
         queued_set = set(queue_track_items)
         return [track for track in dynamic_tracks if track not in queued_set]
+
+    async def _abort_superseded_source_buffers(self, queue_item: QueueItem) -> None:
+        """
+        Abort the still-filling source buffers of other items in the same queue.
+
+        :param queue_item: The queue item that is about to start playing.
+        """
+        queue_data = self._queue_data.get(queue_item.queue_id)
+        for item in tuple(queue_data.items) if queue_data else ():
+            if item.queue_item_id == queue_item.queue_item_id or item.streamdetails is None:
+                continue
+            audio_buffer = item.streamdetails.buffer
+            if audio_buffer is None or not audio_buffer.is_buffering:
+                continue
+            provider = self.mass.get_provider(item.streamdetails.provider, return_unavailable=True)
+            if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams is None:
+                continue
+            self.logger.debug(
+                "Aborting the source of %s to free a %s stream slot for %s",
+                item.name,
+                provider.name,
+                queue_item.name,
+            )
+            await audio_buffer.clear()
+            if item.streamdetails.buffer is audio_buffer:
+                item.streamdetails.buffer = None

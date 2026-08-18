@@ -26,7 +26,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
-from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
@@ -73,16 +73,19 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item.name,
                     queue.display_name,
                 )
-                await AudioBuffer.get_buffer(
-                    self.mass,
-                    next_item.streamdetails,
+                await self.mass.streams.audio.get_audio_buffer(
+                    next_item,
                     reason="prepare_next",
-                    wait_ready=True,
+                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
                 )
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
 
-        self.mass.create_task(_do_prepare)
+        self.mass.create_task(
+            _do_prepare,
+            task_id=f"prepare_next_audio_buffer_{queue_id}",
+            abort_existing=True,
+        )
 
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue the next item on the player."""

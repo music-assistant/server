@@ -6,15 +6,18 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 
 @pytest.mark.parametrize(
@@ -106,3 +109,64 @@ def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
         name=item_id,
         duration=60,
     )
+
+
+def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespace, MagicMock]:
+    """Build a bare controller whose queue has an unprepared next item."""
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+    next_item = SimpleNamespace(
+        queue_item_id="next",
+        media_type=MediaType.TRACK,
+        streamdetails=SimpleNamespace(buffer=None),
+        name="Next",
+        available=True,
+    )
+    queue = SimpleNamespace(
+        current_item=SimpleNamespace(queue_item_id="current"),
+        next_item=next_item,
+        display_name="Queue",
+    )
+    controller.get = MagicMock(return_value=queue)  # type: ignore[method-assign]
+    controller._queue_data = {
+        "queue-1": cast("Any", SimpleNamespace(queue=queue, session_id="session-1"))
+    }
+    mass = MagicMock()
+    controller.mass = mass
+    return controller, next_item, mass
+
+
+async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
+    """Warming the next track never waits longer for capacity than a speculative attempt may."""
+    controller, next_item, mass = _controller_with_next_item()
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once_with(
+        next_item,
+        reason="prepare_next",
+        capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+    )
+    assert mass.create_task.call_args.kwargs == {
+        "task_id": "prepare_next_audio_buffer_queue-1",
+        "abort_existing": True,
+    }
+
+
+async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
+    """A speculative source-capacity miss leaves the next item playable."""
+    controller, next_item, mass = _controller_with_next_item()
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Limited"
+    provider.instance_id = "limited--1"
+    mass.streams.audio.get_audio_buffer = AsyncMock(
+        side_effect=ProviderStreamLimitError(provider, STREAM_SLOT_WAIT_TIMEOUT)
+    )
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    assert next_item.available

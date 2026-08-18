@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
 import aiofiles
 import aiofiles.os
@@ -99,6 +100,7 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
     STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
     STREAMDETAILS_INBAND_TITLE_KEY,
@@ -152,6 +154,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import ProviderMapping
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
@@ -159,6 +162,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
     from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.provider import Provider
 
 # ruff: noqa: PLR0915
 
@@ -242,6 +246,11 @@ class StreamsAudio:
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.streams.audio")
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._smart_fades_mixer: SmartFadesMixer | None = None
+        # serializes buffer preparation per queue item, so concurrent callers share
+        # the single source (and the single capacity reselection) instead of racing
+        self._audio_buffer_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+            WeakValueDictionary()
+        )
 
     def setup(self) -> None:
         """Set up the audio sub-controller (called after all core controllers are created)."""
@@ -261,15 +270,23 @@ class StreamsAudio:
         seek_position: int = 0,
         fade_in: bool = False,
         prefer_album_loudness: bool = False,
+        excluded_provider_instances: set[str] | None = None,
     ) -> StreamDetails:
         """
         Get streamdetails for the given QueueItem.
 
         This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
         Do not try to request streamdetails too much in advance as this is expiring data.
+
+        :param queue_item: Queue item to resolve.
+        :param seek_position: Requested playback position in seconds.
+        :param fade_in: Whether playback should fade in.
+        :param prefer_album_loudness: Whether album loudness should be preferred.
+        :param excluded_provider_instances: Provider instances to skip during this selection.
         """
         mass = self.mass
         streamdetails: StreamDetails | None = None
+        excluded_provider_instances = excluded_provider_instances or set()
         time_start = time.time()
         self.logger.debug("Getting streamdetails for %s", queue_item.uri)
 
@@ -280,15 +297,20 @@ class StreamsAudio:
                 f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             )
 
-        if queue_item.streamdetails and (
-            # reuse if the buffer can serve this seek position (fast seek path)
-            (
-                queue_item.streamdetails.buffer
-                and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
+        if (
+            queue_item.streamdetails
+            # cached details of an excluded instance are exactly what we select away from
+            and queue_item.streamdetails.provider not in excluded_provider_instances
+            and (
+                # reuse if the buffer can serve this seek position (fast seek path)
+                (
+                    queue_item.streamdetails.buffer
+                    and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
+                )
+                # or reuse if streamdetails hasn't expired yet (new buffer will be created)
+                or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
+                > time.time()
             )
-            # or reuse if streamdetails hasn't expired yet (new buffer will be created)
-            or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
-            > time.time()
         ):
             streamdetails = queue_item.streamdetails
         else:
@@ -306,61 +328,14 @@ class StreamsAudio:
             ):
                 # handle steering into user preferred providerinstance
                 preferred_providers = playback_user.provider_filter
-            else:
-                preferred_providers = [x.provider_instance for x in media_item.provider_mappings]
-            # Remember the last AudioError so we can re-raise its (actionable)
-            # message instead of the generic MediaNotFoundError below.
-            last_audio_error: AudioError | None = None
-            attempted: set[tuple[str, str]] = set()
-            for allow_other_provider in (False, True):
-                if streamdetails:
-                    break
-                # sort by quality and check item's availability
-                for prov_media in sorted(
-                    media_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
-                ):
-                    if not prov_media.available:
-                        self.logger.debug(f"Skipping unavailable {prov_media}")
-                        continue
-                    if (
-                        not allow_other_provider
-                        and prov_media.provider_instance not in preferred_providers
-                    ):
-                        continue
-                    # the second pass is there to widen to providers the steering held back,
-                    # not to give a mapping a second chance: without a user provider filter
-                    # the first pass already tried them all, so re-attempting one just buys
-                    # the same failure at the cost of another provider round-trip
-                    attempt = (prov_media.provider_instance, prov_media.item_id)
-                    if attempt in attempted:
-                        continue
-                    # guard that provider is available
-                    provider = mass.get_provider(prov_media.provider_instance)
-                    if not provider:
-                        self.logger.debug(f"Skipping {prov_media} - provider not available")
-                        continue  # provider not available ?
-                    attempted.add(attempt)
-                    # get streamdetails from provider; music and plugin providers
-                    # share this signature, so either type can own the item.
-                    try:
-                        BYPASS_THROTTLER.set(True)
-                        stream_prov = cast("MusicProvider | PluginProvider", provider)
-                        streamdetails = await stream_prov.get_stream_details(
-                            prov_media.item_id, media_item.media_type
-                        )
-                    except AudioError as err:
-                        last_audio_error = err
-                        self.logger.warning(str(err))
-                    except MusicAssistantError as err:
-                        self.logger.warning(str(err))
-                    else:
-                        break
-                    finally:
-                        BYPASS_THROTTLER.set(False)
+            candidates = self._get_streamdetail_candidates(
+                media_item.provider_mappings,
+                preferred_providers,
+                excluded_provider_instances,
+            )
+            streamdetails = await self._request_streamdetails(candidates, media_item.media_type)
 
             if not streamdetails:
-                if last_audio_error is not None:
-                    raise last_audio_error
                 msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
                 raise MediaNotFoundError(msg)
 
@@ -440,6 +415,34 @@ class StreamsAudio:
             int((time.time() - time_start) * 1000),
         )
         return streamdetails
+
+    async def get_audio_buffer(
+        self,
+        queue_item: QueueItem,
+        seek_position_ms: int = 0,
+        reason: str = "",
+        capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
+    ) -> AudioBuffer:
+        """
+        Return a ready AudioBuffer for the given queue item.
+
+        Compatible provider mappings are reselected while the owning provider has no free
+        source-stream slot. Other AudioErrors propagate as on a direct buffer request.
+
+        :param queue_item: Queue item whose source should be buffered.
+        :param seek_position_ms: Position in milliseconds to start from.
+        :param reason: Caller context for logging (e.g. 'prepare_next', 'streaming').
+        :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
+        :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
+        """
+        lock_key = (queue_item.queue_id, queue_item.queue_item_id)
+        if (buffer_lock := self._audio_buffer_locks.get(lock_key)) is None:
+            buffer_lock = asyncio.Lock()
+            self._audio_buffer_locks[lock_key] = buffer_lock
+        async with buffer_lock:
+            return await self._get_audio_buffer(
+                queue_item, seek_position_ms, reason, capacity_wait_timeout
+            )
 
     async def get_media_stream(
         self,
@@ -1233,7 +1236,7 @@ class StreamsAudio:
         except AudioError as err:
             streamdetails.stream_error = True
             # revoke availability when the stream never produced any audio
-            if bytes_received == 0:
+            if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
                 queue_item.available = False
             if raise_on_error:
                 raise
@@ -1338,6 +1341,28 @@ class StreamsAudio:
                     streamdetails,
                 )
 
+        # get or create the AudioBuffer (stores raw decoded PCM). This runs before the
+        # filters are built because a source-capacity reselection can hand back another
+        # provider's streamdetails, which everything below must then work with.
+        seek_position_ms = int(seek_position * 1000)
+        try:
+            audio_buffer = await self.get_audio_buffer(
+                queue_item, seek_position_ms=seek_position_ms, reason="streaming"
+            )
+        except AudioError as err:
+            streamdetails.stream_error = True
+            if raise_on_error:
+                raise
+            logger.error(
+                "AudioError while preparing queue item %s (%s): %s",
+                queue_item.name,
+                streamdetails.uri,
+                err,
+            )
+            return
+        streamdetails = queue_item.streamdetails
+        assert streamdetails  # for type checking
+
         # handle volume normalization
         gain_correct: float | None = None
         if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
@@ -1392,14 +1417,6 @@ class StreamsAudio:
             playback_speed,
         )
 
-        # get or create the AudioBuffer (stores raw decoded PCM)
-        seek_position_ms = int(seek_position * 1000)
-        audio_buffer = await AudioBuffer.get_buffer(
-            mass=self.mass,
-            streamdetails=streamdetails,
-            seek_position_ms=seek_position_ms,
-            reason="streaming",
-        )
         if (
             streamdetails.queue_id
             and (queue_data := self.mass.player_queues.queue_data_or_none(streamdetails.queue_id))
@@ -1463,7 +1480,7 @@ class StreamsAudio:
         except AudioError as err:
             streamdetails.stream_error = True
             # revoke availability when the stream never produced any audio
-            if bytes_received == 0:
+            if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
                 queue_item.available = False
             if raise_on_error:
                 raise
@@ -2650,6 +2667,195 @@ class StreamsAudio:
             "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
         )
         return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
+
+    async def _get_audio_buffer(
+        self,
+        queue_item: QueueItem,
+        seek_position_ms: int,
+        reason: str,
+        capacity_wait_timeout: float,
+    ) -> AudioBuffer:
+        """Create or reuse a ready AudioBuffer within one queue-item preparation lock."""
+        loop = asyncio.get_running_loop()
+        # the playback intent lives on the details we start from; keep it across a reselection
+        initial_streamdetails = queue_item.streamdetails
+        seek_position = (
+            int(initial_streamdetails.seek_position)
+            if initial_streamdetails
+            else seek_position_ms // 1000
+        )
+        fade_in = bool(initial_streamdetails and initial_streamdetails.fade_in)
+        prefer_album_loudness = bool(
+            initial_streamdetails and initial_streamdetails.prefer_album_loudness
+        )
+        all_candidate_instances = {
+            provider.instance_id
+            for mapping in (
+                queue_item.media_item.provider_mappings if queue_item.media_item else ()
+            )
+            if mapping.available
+            for provider in self._get_mapping_providers(mapping)
+        }
+        if initial_streamdetails is not None:
+            all_candidate_instances.add(initial_streamdetails.provider)
+
+        deadline = loop.time() + capacity_wait_timeout
+        busy_instances: set[str] = set()
+        final_pass = False
+        last_capacity_error: ProviderStreamLimitError | None = None
+        while True:
+            if (
+                queue_item.streamdetails is None
+                or queue_item.streamdetails.provider in busy_instances
+            ):
+                try:
+                    queue_item.streamdetails = await self.get_stream_details(
+                        queue_item,
+                        seek_position=seek_position,
+                        fade_in=fade_in,
+                        prefer_album_loudness=prefer_album_loudness,
+                        excluded_provider_instances=busy_instances,
+                    )
+                except (AudioError, MediaNotFoundError) as err:
+                    if last_capacity_error is None:
+                        raise
+                    # capacity was the root cause, so surface the typed (actionable) error
+                    raise last_capacity_error from err
+            streamdetails = queue_item.streamdetails
+            assert streamdetails is not None  # for type checking
+            provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+            remaining = max(deadline - loop.time(), 0)
+            alternatives_left = bool(
+                all_candidate_instances - busy_instances - {streamdetails.provider}
+            )
+            provider_busy = (
+                isinstance(provider, MusicProvider) and not provider.has_available_stream_slot
+            )
+            # probe (0s) while other candidates remain untried, so a saturated provider is
+            # swapped out instead of waited on; otherwise block for the remaining budget
+            source_wait = (
+                0.0 if (provider_busy and alternatives_left and not final_pass) else remaining
+            )
+            try:
+                return await AudioBuffer.get_buffer(
+                    mass=self.mass,
+                    streamdetails=streamdetails,
+                    seek_position_ms=seek_position_ms,
+                    wait_ready=True,
+                    reason=reason,
+                    source_wait_timeout=source_wait,
+                )
+            except ProviderStreamLimitError as err:
+                last_capacity_error = err
+                busy_instances.add(err.provider_instance)
+                if final_pass or loop.time() >= deadline:
+                    raise
+                if all_candidate_instances.issubset(busy_instances):
+                    # every candidate is saturated: one last blocking wait on the best one
+                    busy_instances.clear()
+                    final_pass = True
+                queue_item.streamdetails = None
+
+    def _get_streamdetail_candidates(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+        preferred_providers: list[str],
+        excluded_provider_instances: set[str],
+    ) -> list[tuple[ProviderMapping, Provider]]:
+        """
+        Return mapping candidates in steering, quality, and instance-fallback order.
+
+        :param provider_mappings: Mappings attached to the media item.
+        :param preferred_providers: Provider instances tried before widening to the rest.
+        :param excluded_provider_instances: Provider instances unavailable to this attempt.
+        :return: Ordered provider mapping candidates.
+        """
+        ordered_mappings = sorted(
+            provider_mappings, key=lambda mapping: mapping.quality or 0, reverse=True
+        )
+        preferred_candidates: list[tuple[ProviderMapping, Provider]] = []
+        fallback_candidates: list[tuple[ProviderMapping, Provider]] = []
+        seen_candidates: set[tuple[str, str]] = set()
+        for mapping in ordered_mappings:
+            if not mapping.available:
+                self.logger.debug("Skipping unavailable %s", mapping)
+                continue
+            for provider in self._get_mapping_providers(mapping):
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if (
+                    candidate_id in seen_candidates
+                    or provider.instance_id in excluded_provider_instances
+                ):
+                    continue
+                seen_candidates.add(candidate_id)
+                candidate = (mapping, provider)
+                if provider.instance_id in preferred_providers:
+                    preferred_candidates.append(candidate)
+                else:
+                    fallback_candidates.append(candidate)
+        return [*preferred_candidates, *fallback_candidates]
+
+    def _get_mapping_providers(self, mapping: ProviderMapping) -> list[Provider]:
+        """
+        Return the mapped provider followed by compatible instances of its streaming catalog.
+
+        :param mapping: Provider mapping whose item ID will be requested.
+        :return: Loaded provider instances that can resolve the mapping.
+        """
+        providers: list[Provider] = []
+        if (
+            primary_provider := self.mass.get_provider(
+                mapping.provider_instance, return_unavailable=True
+            )
+        ) and primary_provider.available:
+            providers.append(primary_provider)
+        # another account of the same streaming catalog serves the same item ID,
+        # so it can stand in when the mapped instance can not
+        for provider in self.mass.providers:
+            if (
+                not isinstance(provider, MusicProvider)
+                or not provider.available
+                or not provider.is_streaming_provider
+                or provider.domain != mapping.provider_domain
+                or provider in providers
+            ):
+                continue
+            providers.append(provider)
+        if not providers:
+            self.logger.debug("Skipping %s - provider not available", mapping)
+        return providers
+
+    async def _request_streamdetails(
+        self,
+        candidates: Iterable[tuple[ProviderMapping, Provider]],
+        media_type: MediaType,
+    ) -> StreamDetails | None:
+        """
+        Request stream details from ordered provider mapping candidates.
+
+        :param candidates: Candidates in mapping and compatible-instance order.
+        :param media_type: Media type requested from each provider.
+        :return: The first resolved stream details, or None when every candidate failed.
+        :raises AudioError: The last (actionable) audio error when no candidate resolved.
+        """
+        last_audio_error: AudioError | None = None
+        for mapping, provider in candidates:
+            # music and plugin providers share this signature, so either type can own the item
+            token = BYPASS_THROTTLER.set(True)
+            try:
+                stream_prov = cast("MusicProvider | PluginProvider", provider)
+                return await stream_prov.get_stream_details(mapping.item_id, media_type)
+            except AudioError as err:
+                # remember the last one so its (actionable) message can be re-raised
+                last_audio_error = err
+                self.logger.warning("%s", err)
+            except MusicAssistantError as err:
+                self.logger.warning("%s", err)
+            finally:
+                BYPASS_THROTTLER.reset(token)
+        if last_audio_error is not None:
+            raise last_audio_error
+        return None
 
     async def _get_media_stream(
         self,

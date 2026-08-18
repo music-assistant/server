@@ -866,7 +866,7 @@ async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssi
 async def test_real_buffer_producer_error_reaches_queue_item_stream(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """A real AudioBuffer producer error is surfaced after buffered audio is yielded."""
+    """A real AudioBuffer producer error is surfaced instead of a truncated stream."""
 
     async def _failing_source() -> AsyncGenerator[bytes]:
         yield ONE_SECOND_CHUNK
@@ -893,7 +893,9 @@ async def test_real_buffer_producer_error_reaches_queue_item_stream(
     ):
         chunks.append(chunk)
 
-    assert chunks == [ONE_SECOND_CHUNK]
+    # the stream waits for the buffer to become playable, so a producer failure is
+    # reported before any audio is served rather than truncating it mid-stream
+    assert chunks == []
     assert streamdetails.stream_error is True
     assert queue_item.available
 
