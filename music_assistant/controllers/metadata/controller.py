@@ -620,24 +620,28 @@ def _duplicate_album_sibling_guard() -> str:
         f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
     )
     # a provider that spells out the retail suffix stores the album under the plain name
-    # plus that suffix, so both spellings are sought from either row of the pair; each
-    # stays an equality on dup.search_name so the search_name index remains usable
+    # plus that suffix, so the pair is related from either side. The raw title decides
+    # which side spelled it out, so an ordinary title that merely ends in those letters
+    # ("Step") is left alone; any dash style qualifies, only the space in front counts.
+    # Every alternative stays an equality on dup.search_name, keeping the name index in use.
     own_name = f"{DB_TABLE_ALBUMS}.search_name"
-    keys = [own_name]
+    matches_name = [f"dup.search_name = {own_name}"]
     for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
-        keys.append(f"{own_name} || '{suffix}'")
-        keys.append(
-            f"CASE WHEN {own_name} LIKE '%{suffix}' "
-            f"THEN substr({own_name}, 1, length({own_name}) - {len(suffix)}) END"
+        matches_name.append(
+            f"(rtrim(dup.name) LIKE '% {suffix}' AND dup.search_name = {own_name} || '{suffix}')"
         )
-    name_keys = ", ".join(keys)
+        matches_name.append(
+            f"(rtrim({DB_TABLE_ALBUMS}.name) LIKE '% {suffix}' AND dup.search_name = "
+            f"substr({own_name}, 1, length({own_name}) - {len(suffix)}))"
+        )
+    same_name = " OR ".join(matches_name)
     # deliberately an identity-only pre-filter: which editions may be merged is decided by
     # the album comparison, which escalates an ambiguous edition to tracklists and
     # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright
     return (
         f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
         f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
-        f"AND dup.search_name IN ({name_keys}) "
+        f"AND ({same_name}) "
         f"AND {same_title} AND {shares_artist})"
     )
 
