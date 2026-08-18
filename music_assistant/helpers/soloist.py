@@ -62,8 +62,8 @@ EXIT_CODE_BUILD_EXPIRED: Final[int] = 10
 _MACHINE_TO_ARCH: Final[dict[str, str]] = {
     "aarch64": "arm64",
     "arm64": "arm64",
+    # the official arm32 build targets ARMv7; older ARM cores are unsupported
     "armv7l": "arm32",
-    "armv6l": "arm32",
     "armv8l": "arm32",
     "x86_64": "x86_64",
     "amd64": "x86_64",

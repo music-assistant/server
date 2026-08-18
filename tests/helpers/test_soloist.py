@@ -202,7 +202,6 @@ def linux_platform(monkeypatch: pytest.MonkeyPatch) -> None:
         ("aarch64", "arm64"),
         ("arm64", "arm64"),
         ("armv7l", "arm32"),
-        ("armv6l", "arm32"),
         ("armv8l", "arm32"),
         ("x86_64", "x86_64"),
         ("amd64", "x86_64"),
