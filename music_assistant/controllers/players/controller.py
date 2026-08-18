@@ -1485,15 +1485,21 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
                 # Handle protocol linking
                 self._evaluate_protocol_links(player)
-            except Exception:
+            except Exception, asyncio.CancelledError:
                 # a player whose setup failed never becomes initialized, which hides it
-                # everywhere while it keeps blocking every later registration of the same
-                # id. Drop it again, but only while it is still ours: an unregister may
-                # have removed it already, and a blind delete would mask the real error.
-                # No on_unload here: the player never got far enough to own a queue,
-                # command locks or a sleep timer.
+                # everywhere while it keeps blocking every later registration of the same id.
+                # Cancellation counts too: a re-triggered provider discovery aborts the task
+                # this runs in. Only roll back while the player is still ours: an unregister
+                # may have dropped it already, and it unloads the player itself.
                 if self._players.get(player_id) is player:
                     del self._players[player_id]
+                    # players claim resources in their constructor (event subscriptions,
+                    # connections) that only on_unload releases. Best-effort, so a failing
+                    # teardown cannot mask the error that got us here.
+                    try:
+                        await player.on_unload()
+                    except Exception:
+                        self.logger.exception("Error unloading player %s", player.name)
                 raise
 
             # now we're ready to signal the player is added and available
