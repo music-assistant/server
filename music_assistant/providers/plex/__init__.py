@@ -8,7 +8,7 @@ import random
 import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
-from datetime import UTC, datetime
+from datetime import MAXYEAR, MINYEAR, UTC, datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
@@ -161,12 +161,6 @@ Param = ParamSpec("Param")
 RetType = TypeVar("RetType")
 PlexObjectT = TypeVar("PlexObjectT", bound=PlexObject)
 MediaItemT = TypeVar("MediaItemT", bound=MediaItem)
-
-# errors that make a single item unusable without affecting the rest of the library: its
-# metadata is too incomplete to build a media item from, or it was removed from the server
-# between listing and parsing. connection and auth errors affect every item and must abort
-# the sync instead, so the deletion pass is held back.
-SKIPPABLE_PARSE_ERRORS = (InvalidDataError, plexapi.exceptions.NotFound)
 
 
 class PlexProvider(RecommendationPayloadMixin, MusicProvider):
@@ -760,10 +754,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for plex_track in await self._run_async(plex_album.tracks):
-            track = await self._parse_track(
-                plex_track,
-            )
-            tracks.append(track)
+            if track := await self._parse_or_skip(self._parse_track, plex_track):
+                tracks.append(track)
         return tracks
 
     @use_cache(3600 * 3)  # Cache for 3 hours
@@ -837,7 +829,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             # Collections can contain tracks, albums, or artists - we only want tracks
             for item in collection_items:
                 if item.type == "track":
-                    if track := await self._parse_track(item):
+                    if track := await self._parse_or_skip(self._parse_track, item):
                         track.position = len(result) + 1
                         result.append(track)
                 elif item.type == "album":
@@ -857,18 +849,18 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             tracks_key = f"{mix_key}&type={plexapi.utils.searchType('track')}"
             plex_tracks = await self._run_async(self._plex_library.fetchItems, tracks_key)
             random.shuffle(plex_tracks)
-            for index, plex_track in enumerate(plex_tracks, 1):
-                if track := await self._parse_track(plex_track):
-                    track.position = index
+            for plex_track in plex_tracks:
+                if track := await self._parse_or_skip(self._parse_track, plex_track):
+                    track.position = len(result) + 1
                     result.append(track)
             return result
 
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
-        for index, plex_track in enumerate(playlist_items, 1):
-            if track := await self._parse_track(plex_track):
-                track.position = index
+        for plex_track in playlist_items:
+            if track := await self._parse_or_skip(self._parse_track, plex_track):
+                track.position = len(result) + 1
                 result.append(track)
         return result
 
@@ -1219,7 +1211,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         """
         try:
             return await parse_coro(plex_item)
-        except SKIPPABLE_PARSE_ERRORS as err:
+        except InvalidDataError as err:
+            # only an item we can not build a media item from is skippable. anything else
+            # affects every item that follows, so it has to abort the sync, which is what
+            # holds back the deletion pass that would otherwise drop the whole library.
+            #
             # read the identifiers from the cached payload, so reporting a failed item
             # can not trigger a reload that fails all over again
             attrib = plex_item._data.attrib
@@ -1582,7 +1578,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             audiobook.authors = UniqueList([author_name])
         if plex_album.summary:
             audiobook.metadata.description = plex_album.summary
-        if plex_album.year:
+        if plex_album.year and MINYEAR <= plex_album.year <= MAXYEAR:
             audiobook.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             audiobook.metadata.images = images
@@ -1645,7 +1641,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.publisher = publisher
         if plex_album.summary:
             podcast.metadata.description = plex_album.summary
-        if plex_album.year:
+        if plex_album.year and MINYEAR <= plex_album.year <= MAXYEAR:
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images

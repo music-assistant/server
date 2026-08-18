@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import plexapi.exceptions
 import pytest
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Track
 
 from music_assistant.providers.plex import PlexProvider
 from music_assistant.providers.plex.helpers import SUPPORTED_FEATURES
@@ -76,10 +77,25 @@ class _FakePlexTrack:
 class _FakePlexAlbum:
     """Minimal PlexAlbum stub for the audiobook library."""
 
-    def __init__(self, key: str = "/library/metadata/500", title: str = "Audiobook 1") -> None:
+    def __init__(
+        self,
+        key: str = "/library/metadata/500",
+        title: str = "Audiobook 1",
+        year: int | None = None,
+    ) -> None:
         self.key = key
         self.title = title
+        self.year = year
+        self.parentTitle = "Author 1"
+        self.grandparentTitle = None
+        self.summary = ""
         self._data = _FakePlexData({"title": title, "key": key})
+
+    def getWebURL(self, baseurl: str) -> str:  # noqa: N802
+        return f"{baseurl}/web/index.html#!/server/item/{self.key}"
+
+    def firstAttr(self, *attrs: str) -> str | None:  # noqa: N802
+        return None
 
 
 def _make_provider(library_type: str = LIBRARY_TYPE_MUSIC) -> Any:
@@ -119,8 +135,8 @@ async def test_library_tracks_skips_track_without_artist() -> None:
     assert [track.item_id for track in tracks] == ["/2"]
 
 
-async def test_library_artists_skips_vanished_item() -> None:
-    """An artist removed from the server between listing and parsing is skipped."""
+async def test_library_artists_skips_item_without_valid_id() -> None:
+    """An artist Plex holds no usable id for is skipped, the rest still syncs."""
     provider = _make_provider()
     good_artist = MagicMock()
     provider._plex_library.all = MagicMock(return_value=[MagicMock(), good_artist])
@@ -128,7 +144,7 @@ async def test_library_artists_skips_vanished_item() -> None:
     async def _parse_artist(plex_artist: Any) -> Any:
         if plex_artist is good_artist:
             return "parsed"
-        raise plexapi.exceptions.NotFound("gone")
+        raise InvalidDataError("Artist does not have a valid ID")
 
     provider._parse_artist = _parse_artist
 
@@ -139,12 +155,23 @@ async def test_library_artists_skips_vanished_item() -> None:
 
 @pytest.mark.parametrize(
     "error",
-    [plexapi.exceptions.Unauthorized("invalid token"), ConnectionError("server gone")],
+    [
+        plexapi.exceptions.Unauthorized("invalid token"),
+        plexapi.exceptions.NotFound("gone"),
+        ConnectionError("server gone"),
+    ],
 )
-async def test_library_tracks_does_not_swallow_connection_errors(error: Exception) -> None:
-    """An error that affects every item aborts the sync instead of skipping one track."""
+async def test_library_tracks_does_not_swallow_server_errors(error: Exception) -> None:
+    """
+    An error that is not about the item itself aborts the sync instead of skipping a track.
+
+    Skipping would drop the track from this run, and the sync deletion pass then removes
+    it from the library even though it is still on the server.
+    """
     provider = _make_provider()
-    provider._plex_library.searchTracks = MagicMock(return_value=[_FakePlexTrack()])
+    # a terminating second batch, so widening the caught errors fails the test instead
+    # of looping on the same batch forever
+    provider._plex_library.searchTracks = MagicMock(side_effect=[[_FakePlexTrack()], []])
 
     async def _parse_track(_plex_track: Any) -> Any:
         raise error
@@ -191,3 +218,64 @@ async def test_spoken_library_does_not_swallow_listing_error(
 
     with pytest.raises(ConnectionError):
         _ = [item async for item in getattr(provider, generator)()]
+
+
+async def test_audiobook_accepts_out_of_range_year() -> None:
+    """A year Plex cannot express as a date is ignored instead of failing the item."""
+    provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
+
+    audiobook = await provider._parse_audiobook(_FakePlexAlbum(year=19999))
+
+    assert audiobook.metadata.release_date is None
+
+
+async def test_album_tracks_skips_unparsable_track() -> None:
+    """An unusable track no longer costs the whole tracklist of an album."""
+    provider = _make_provider()
+    bad_track, good_track = _FakePlexTrack(key="/1"), _FakePlexTrack(key="/2")
+    plex_album = MagicMock()
+    plex_album.tracks = MagicMock(return_value=[bad_track, good_track])
+    provider._get_data = AsyncMock(return_value=plex_album)
+
+    async def _parse_track(plex_track: Any) -> Any:
+        if plex_track is bad_track:
+            raise InvalidDataError("No artist was found for track")
+        return "parsed"
+
+    provider._parse_track = _parse_track
+
+    get_album_tracks: Any = PlexProvider.get_album_tracks.__wrapped__  # type: ignore[attr-defined]
+
+    assert await get_album_tracks(provider, "/library/metadata/100") == ["parsed"]
+
+
+async def test_playlist_tracks_skips_unparsable_track() -> None:
+    """
+    An unusable track no longer makes the whole playlist unplayable.
+
+    The remaining tracks keep consecutive positions, so the skip does not leave a hole in
+    the queue built from this playlist.
+    """
+    provider = _make_provider()
+    tracks = [_FakePlexTrack(key="/1"), _FakePlexTrack(key="/2"), _FakePlexTrack(key="/3")]
+    plex_playlist = MagicMock()
+    plex_playlist.items = MagicMock(return_value=tracks)
+    provider._get_data = AsyncMock(return_value=plex_playlist)
+
+    async def _parse_track(plex_track: Any) -> Any:
+        if plex_track is tracks[0]:
+            raise InvalidDataError("No artist was found for track")
+        return Track(
+            item_id=plex_track.key,
+            provider=provider.instance_id,
+            name=plex_track.title,
+            provider_mappings=set(),
+        )
+
+    provider._parse_track = _parse_track
+
+    get_playlist_tracks: Any = PlexProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
+    result = await get_playlist_tracks(provider, "/playlists/1")
+
+    assert [track.item_id for track in result] == ["/2", "/3"]
+    assert [track.position for track in result] == [1, 2]
