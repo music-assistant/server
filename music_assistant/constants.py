@@ -137,6 +137,10 @@ CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
 CONF_EXPOSE_PLAYER_TO_HA: Final[str] = "expose_player_to_ha"
+CONF_REAPPLY_VOLUME_STEP: Final[str] = "reapply_volume_step"
+# range() only hints the frontend, so this ceiling is re-enforced in code where the value is read.
+# A few percent is plenty: the device just needs a different value, and the detour is audible.
+REAPPLY_VOLUME_STEP_MAX: Final[float] = 3.0
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
 CONF_TTS_PRE_ANNOUNCE: Final[str] = "tts_pre_announce"
 CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"

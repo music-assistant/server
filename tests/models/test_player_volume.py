@@ -10,7 +10,8 @@ no value.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.enums import PlayerFeature
@@ -197,3 +198,112 @@ class TestFinalVolumeMutedState:
 
         player.update_state(signal_event=False)
         assert player.state.volume_muted is None
+
+
+class TestReapplyVolume:
+    """
+    Tests for the generic Player.reapply_volume detour.
+
+    A device can accept a volume set while it is idle, report it back as applied, keep playing
+    at the old level, and then ignore a repeat of the value it is already reporting. Only a
+    different value gets through, so the re-apply detours by one step and comes back.
+    """
+
+    @staticmethod
+    def _player(mock_mass: MagicMock, volume_level: int | None) -> MockPlayer:
+        provider = MockProvider("test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_volume_level = volume_level
+        player._cache.clear()
+        player.volume_set = AsyncMock()  # type: ignore[method-assign]
+        return player
+
+    async def test_detours_one_step_then_restores(self, mock_mass: MagicMock) -> None:
+        """The detour value must differ from the target, or the device drops it as a no-op."""
+        player = self._player(mock_mass, 30)
+        await player.reapply_volume(1)
+        assert cast("AsyncMock", player.volume_set).await_args_list == [call(29), call(30)]
+
+    async def test_zero_volume_detours_upwards(self, mock_mass: MagicMock) -> None:
+        """At zero the detour has to go up: -1 is not a volume any player would accept."""
+        player = self._player(mock_mass, 0)
+        await player.reapply_volume(1)
+        assert cast("AsyncMock", player.volume_set).await_args_list == [call(1), call(0)]
+
+    async def test_unknown_volume_sends_nothing(self, mock_mass: MagicMock) -> None:
+        """With no volume known there is nothing to re-apply, and no value to invent."""
+        player = self._player(mock_mass, None)
+        await player.reapply_volume(1)
+        cast("AsyncMock", player.volume_set).assert_not_awaited()
+
+    async def test_step_below_one_percent_rounds_up(self, mock_mass: MagicMock) -> None:
+        """
+        volume_set carries whole percent, so a finer step becomes one whole step here.
+
+        A player that can honour the configured step exactly overrides this - the Cast player
+        does, because a rounded-up step is audible where the configured one is not.
+        """
+        player = self._player(mock_mass, 30)
+        await player.reapply_volume(0.4)
+        assert cast("AsyncMock", player.volume_set).await_args_list == [call(29), call(30)]
+
+    async def test_larger_step_is_honoured(self, mock_mass: MagicMock) -> None:
+        """A step big enough to express is used as given, for a device needing a coarser one."""
+        player = self._player(mock_mass, 30)
+        await player.reapply_volume(3)
+        assert cast("AsyncMock", player.volume_set).await_args_list == [call(27), call(30)]
+
+    async def test_oversized_step_stays_within_range(self, mock_mass: MagicMock) -> None:
+        """
+        The detour goes straight to the device, so it has to stay a valid volume itself.
+
+        It skips the controller's 0-100 clamp, and a step larger than the headroom would
+        otherwise send something out of range to the hardware.
+        """
+        player = self._player(mock_mass, 50)
+        await player.reapply_volume(60)
+        sent = [c.args[0] for c in cast("AsyncMock", player.volume_set).await_args_list]
+        assert all(0 <= level <= 100 for level in sent)
+        assert sent[-1] == 50
+
+    async def test_step_that_fits_nowhere_sends_nothing(self, mock_mass: MagicMock) -> None:
+        """A step with no room on either side has no detour value, so nothing is sent."""
+        player = self._player(mock_mass, 100)
+        await player.reapply_volume(150)
+        cast("AsyncMock", player.volume_set).assert_not_awaited()
+
+    async def test_detour_stays_above_the_min_volume_limit(self, mock_mass: MagicMock) -> None:
+        """
+        A configured min-volume floor bounds the detour, not just the hardware 0..100.
+
+        The detour goes straight to the device; a value below the floor would be reported back
+        as out of range and dragged to the floor by the controller's limit enforcement. At the
+        floor the detour has to go up instead of below it.
+        """
+        player = self._player(mock_mass, 20)
+        await player.reapply_volume(5, 20, 100)
+        assert cast("AsyncMock", player.volume_set).await_args_list == [call(25), call(20)]
+
+    async def test_detour_stays_below_the_max_volume_limit(self, mock_mass: MagicMock) -> None:
+        """A configured max-volume ceiling bounds the up-detour, not just the hardware 100."""
+        player = self._player(mock_mass, 0)
+        await player.reapply_volume(10, 0, 5)
+        assert cast("AsyncMock", player.volume_set).await_args_list == [call(5), call(0)]
+
+    async def test_anchor_above_the_max_limit_sends_nothing(self, mock_mass: MagicMock) -> None:
+        """
+        A current volume already above the ceiling has no in-range detour, so nothing is sent.
+
+        The device level can be moved out of the configured range externally (e.g. the Google
+        Home app), and the Cast path anchors on that device-reported level. A detour from there
+        lands out of range too; limit enforcement is about to drag the level back regardless.
+        """
+        player = self._player(mock_mass, 100)
+        await player.reapply_volume(1, 0, 80)
+        cast("AsyncMock", player.volume_set).assert_not_awaited()
+
+    async def test_anchor_below_the_min_limit_sends_nothing(self, mock_mass: MagicMock) -> None:
+        """A current volume already below the floor has no in-range detour either."""
+        player = self._player(mock_mass, 10)
+        await player.reapply_volume(1, 20, 100)
+        cast("AsyncMock", player.volume_set).assert_not_awaited()

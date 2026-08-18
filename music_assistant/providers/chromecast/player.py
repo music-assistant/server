@@ -213,6 +213,22 @@ class ChromecastPlayer(Player):
         # Round to 2 decimal places to avoid floating-point precision issues
         await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
+    async def reapply_volume(self, step: float, min_volume: int = 0, max_volume: int = 100) -> None:
+        """Re-apply the current volume, keeping the configured step at Cast's own resolution."""
+        # cast takes a float, so use the step as given (no rounding to whole percent) and anchor
+        # on the device's own reported level - it de-dups a repeat against its value, not MA's
+        if (status := self.cc.status) is None:
+            return
+        level = status.volume_level
+        # fractional step (step/100) and limits converted from MA's 0..100 to cast's 0..1
+        detour = self._volume_detour(
+            level, step / 100, max(0.0, min_volume / 100), min(1.0, max_volume / 100)
+        )
+        if detour is None:
+            return
+        await asyncio.to_thread(self.cc.set_volume, detour)
+        await asyncio.to_thread(self.cc.set_volume, level)
+
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         await asyncio.to_thread(self.cc.set_volume_muted, muted)

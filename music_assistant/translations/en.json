@@ -216,6 +216,8 @@
   "common.config_entries.protocol_enable.label": "Enable this protocol on this player",
   "common.config_entries.protocol_enable_via.description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled.",
   "common.config_entries.protocol_enable_via.label": "Enable this protocol on this player",
+  "common.config_entries.reapply_volume_step.description": "Leave empty or set to 0 to disable.\n\nSome devices accept a volume change made while they are idle or switched off, report it back as applied, and then start playing at their previous volume.\n\nSetting a value here re-sends the volume when playback starts, briefly stepping it by this amount so the device stops treating it as a repeat. Given as a percentage of the full volume range.\n\nStart at 0.5: players whose protocol carries a fine volume step (Chromecast for example) apply it as given and it is inaudible, while the rest round up to a whole percent. Increase it only if the volume still does not take effect.",
+  "common.config_entries.reapply_volume_step.label": "Volume re-apply step",
   "common.config_entries.remember_session.description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires — toggling this off after logging in immediately drops the stored long-lived tokens.",
   "common.config_entries.remember_session.label": "Remember session (auto-refresh token)",
   "common.config_entries.sample_rates.description": "The sample rates (and bit depths) supported by this player.\nContent with unsupported sample rates will be automatically resampled.",

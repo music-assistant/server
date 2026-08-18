@@ -22,6 +22,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from math import isfinite
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -92,9 +93,11 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PROTOCOL_PARENT_ID,
+    CONF_REAPPLY_VOLUME_STEP,
     CONF_REPORTED_MAC,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
+    REAPPLY_VOLUME_STEP_MAX,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -440,6 +443,30 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             msg = f"Player {player_id} is not available"
             raise PlayerUnavailableError(msg)
         return None
+
+    def resolve_volume_owner(self, player: Player) -> Player | None:
+        """
+        Return the player that actually applies volume for the given (visible) player.
+
+        Mirrors how ``_handle_cmd_volume_set`` routes a volume command: native control stays on
+        the player itself; an external player control renders volume itself, so there is no
+        device volume to re-apply; a wrapped device (e.g. a generic Cast receiver) carries its
+        volume on a linked protocol player. Fake and none volume also resolve to ``None``.
+
+        :param player: the visible player to resolve volume for.
+        """
+        if player.type == PlayerType.GROUP:
+            # _handle_cmd_volume_set redirects a group to cmd_group_volume before any control
+            # routing; a group has no device volume of its own to re-apply
+            return None
+        control = player.volume_control
+        if control == PLAYER_CONTROL_NATIVE:
+            return player
+        if self.get_player_control(control) is not None:
+            # an external control applies volume itself - no device level to detour around
+            return None
+        # a protocol/linked player id resolves to a real player; fake/none do not
+        return self.get_player(control)
 
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
@@ -3934,11 +3961,60 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # power on the player if needed (skip auto-play since we're about to start playback)
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+        # captured before play_media (which changes it): the re-apply is only for a device
+        # waking up. PAUSED counts as active too - the device is connected, not idle
+        was_active = player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         await target_player.play_media(media)
+        if not was_active:
+            await self._reapply_volume_after_playback_start(player)
         if target_player.player_id != player.player_id:
             # notify the native player that protocol playback started
             assert output_protocol is not None
             await player.on_protocol_playback(output_protocol=output_protocol)
+
+    async def _reapply_volume_after_playback_start(self, player: Player) -> None:
+        """
+        Re-send the volume at playback start, for players configured to need it.
+
+        :param player: the visible player, which carries the config (a protocol player has none).
+        """
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # announcements run their own volume cycle, so stay out of it
+            return
+        raw_step = self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_REAPPLY_VOLUME_STEP
+        )
+        try:
+            step = float(raw_step)  # type: ignore[arg-type]
+        except TypeError, ValueError:
+            # unset or unparsable: leave the workaround off rather than raise mid-playback
+            return
+        # nan/inf parse fine and pass <= 0, but would raise on the arithmetic below
+        if not isfinite(step) or step <= 0:
+            return
+        volume_owner = self.resolve_volume_owner(player)
+        if volume_owner is None:
+            return
+        step = min(step, REAPPLY_VOLUME_STEP_MAX)
+        # keep the detour within the configured limits: out of range, it would trip
+        # _enforce_volume_limits, whose unlocked correction can land after the restore and stick
+        min_volume, max_volume = self._get_volume_limits(player.player_id)
+        try:
+            # lock on the visible player (where volume commands serialize): the detour writes
+            # twice, and a command landing between the writes would be undone by the restore
+            async with self.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
+                if player.state.volume_muted:
+                    # checked under the lock: a mute serializes on this same lock and can win
+                    # it first (fake mute drives the volume to 0), and the restore would then
+                    # audibly un-mute
+                    return
+                await volume_owner.reapply_volume(step, min_volume, max_volume)
+        except Exception:
+            # best effort: media is already playing and on_protocol_playback must still run,
+            # so a failed nudge must not abort the caller
+            self.logger.warning(
+                "Could not re-apply the volume for %s", player.state.name, exc_info=True
+            )
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """

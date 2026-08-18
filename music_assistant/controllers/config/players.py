@@ -63,10 +63,12 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_REAPPLY_VOLUME_STEP,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
+    REAPPLY_VOLUME_STEP_MAX,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
 from music_assistant.controllers.config.helpers import _with_translation_owner
@@ -682,7 +684,7 @@ class PlayerConfigMixin:
         """
         Return the default (generic) player config entries.
 
-        This does not return audio/protocol specific entries, those are handled elsewhere.
+        This does not return the per-output-protocol audio entries, those are handled elsewhere.
         """
         entries: list[ConfigEntry] = []
         # default protocol-player config entries
@@ -748,6 +750,21 @@ class PlayerConfigMixin:
             # play_media-on-self preference (only relevant to non-group players)
             CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
         ]
+        # opt-in per-player. Gated on the resolved volume owner, not native VOLUME_SET, so a
+        # wrapped Cast (volume on a linked protocol player, no native feature) still gets it while
+        # fake/external do not. Below the group return: a group has no volume of its own.
+        if self.mass.players.resolve_volume_owner(player) is not None:
+            entries.append(
+                ConfigEntry(
+                    key=CONF_REAPPLY_VOLUME_STEP,
+                    type=ConfigEntryType.FLOAT,
+                    required=False,
+                    default_value=None,
+                    range=(0, int(REAPPLY_VOLUME_STEP_MAX)),
+                    category="audio",
+                    advanced=True,
+                )
+            )
         return entries
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:

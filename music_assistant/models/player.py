@@ -81,6 +81,8 @@ if TYPE_CHECKING:
 
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
+# volume-detour helper: int in/out or float in/out, so each caller keeps its own unit scale
+_VolumeT = TypeVar("_VolumeT", int, float)
 
 
 def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
@@ -791,6 +793,32 @@ class Player(ABC):
         raise NotImplementedError(
             "volume_set needs to be implemented when PlayerFeature.VOLUME_SET is set"
         )
+
+    async def reapply_volume(self, step: float, min_volume: int = 0, max_volume: int = 100) -> None:
+        """
+        Re-apply the current volume, for a device that accepted it but never acted on it.
+
+        Some devices take a volume change while they are idle, report it back as if it had been
+        applied, and keep playing at the old level - then ignore a repeat of the value they are
+        already reporting. Only a different value gets through, so this detours by ``step`` and
+        comes back. Opt-in per player, called at playback start.
+
+        Override this when the device takes a finer step than the whole percent ``volume_set``
+        carries, so the user's configured value is not rounded up to something audible.
+
+        :param step: size of the detour, as a percentage of the full volume range.
+        :param min_volume: lowest device volume the detour may use (a configured volume limit).
+        :param max_volume: highest device volume the detour may use (a configured volume limit).
+        """
+        if (volume_level := self.volume_level) is None:
+            return
+        # volume_set carries whole percent, so round the step up to at least 1
+        delta = max(1, round(step))
+        detour = self._volume_detour(volume_level, delta, max(0, min_volume), min(100, max_volume))
+        if detour is None:
+            return
+        await self.volume_set(detour)
+        await self.volume_set(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """
@@ -2192,6 +2220,30 @@ class Player(ABC):
             # control on this output there is no way to mute it at all
             return PLAYER_CONTROL_NONE
         return control
+
+    @staticmethod
+    def _volume_detour(
+        level: _VolumeT, delta: _VolumeT, low: _VolumeT, high: _VolumeT
+    ) -> _VolumeT | None:
+        """
+        Return a value to briefly detour ``level`` to, or ``None`` if there is no room.
+
+        The detour has to differ from ``level`` (a device that ignored a set de-duplicates a
+        repeat of the value it is already reporting) and stay within ``[low, high]`` (the detour
+        goes straight to the device, and an out-of-range value is dragged back by the volume
+        limits). Prefers going down; goes up when the step does not fit below.
+
+        :param level: the current volume to detour around.
+        :param delta: how far to move, in the same unit scale as ``level``.
+        :param low: lowest value the detour may use.
+        :param high: highest value the detour may use.
+        """
+        if not low <= level <= high:
+            # the anchor is already out of range: any detour from here lands out of range too,
+            # and the volume limits are about to drag the level back regardless
+            return None
+        detour = level - delta if level - delta >= low else min(high, level + delta)
+        return None if detour == level else detour
 
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """

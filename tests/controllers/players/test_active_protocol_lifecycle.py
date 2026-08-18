@@ -263,3 +263,199 @@ class TestCmdStopWithPinnedProtocol:
         protocol_player.stop.assert_awaited_once()
         player.stop.assert_not_awaited()
         controller.schedule_active_output_protocol_clear.assert_called_once_with(player)
+
+
+class TestReapplyVolumeIsWiredIntoPlayback:
+    """The re-apply has to actually run at playback start, not merely exist."""
+
+    async def test_configured_step_reapplies_on_the_rendering_player(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        A configured step reaches the protocol player that just started rendering.
+
+        Without this the unit tests around the helper all still pass while the call site is
+        missing, so the feature would be dead in the product and green in CI.
+        """
+        player, protocol_player = _make_player_with_protocol(
+            mock_mass, controller, PlaybackState.IDLE
+        )
+        # an idle player re-selects and renders natively, so it is its own rendering player
+        player.reapply_volume = AsyncMock()  # type: ignore[method-assign]
+        protocol_player.reapply_volume = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                0.4 if key == "reapply_volume_step" and pid == "player_1" else default
+            )
+        )
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        player.reapply_volume.assert_awaited_once_with(0.4, 0, 100)
+        protocol_player.reapply_volume.assert_not_awaited()
+
+    async def test_reapply_runs_after_play_media(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        The detour must run after play_media, not before.
+
+        The whole point is to re-send the volume once the device is waking for playback; a
+        detour sent while it is still idle would be ignored exactly like the original set was.
+        """
+        player, _protocol_player = _make_player_with_protocol(
+            mock_mass, controller, PlaybackState.IDLE
+        )
+        order: list[str] = []
+        original_play_media = player.play_media
+
+        async def _play_media(media: PlayerMedia) -> None:
+            order.append("play_media")
+            await original_play_media(media)
+
+        async def _reapply(*_args: object) -> None:
+            order.append("reapply")
+
+        player.play_media = _play_media  # type: ignore[method-assign]
+        player.reapply_volume = _reapply  # type: ignore[method-assign,assignment]
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                0.4 if key == "reapply_volume_step" and pid == "player_1" else default
+            )
+        )
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        assert order == ["play_media", "reapply"]
+
+    @pytest.mark.parametrize("state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+    async def test_play_media_on_an_already_active_player_does_not_reapply(
+        self, mock_mass: MagicMock, controller: PlayerController, state: PlaybackState
+    ) -> None:
+        """
+        A player already playing or paused is not waking up, so it has nothing to re-apply.
+
+        play_media also arrives on an active player (next/previous, or a new item replacing
+        the current one). PAUSED counts as active just like PLAYING: the device is still
+        connected, not idle. Re-applying there would put two extra device round-trips and an
+        audible volume step on each one - the workaround is only for a device that ignored a
+        volume set while it was idle.
+        """
+        player, _protocol_player = _make_player_with_protocol(mock_mass, controller, state)
+        # the visible player has native volume, so it is its own volume owner
+        player.reapply_volume = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                0.4 if key == "reapply_volume_step" and pid == "player_1" else default
+            )
+        )
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        player.reapply_volume.assert_not_awaited()
+
+    async def test_a_player_that_starts_playing_during_play_media_still_reapplies(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        The waking-up check reads the state from before play_media, not after.
+
+        Providers differ in when play_media returns: some hand off immediately, others block
+        until the device reports PLAYING. If the check ran afterwards, that second group would
+        look like it had been playing all along and would never get the workaround - the very
+        devices it exists for.
+        """
+        player, _protocol_player = _make_player_with_protocol(
+            mock_mass, controller, PlaybackState.IDLE
+        )
+        player.reapply_volume = AsyncMock()  # type: ignore[method-assign]
+        original_play_media = player.play_media
+
+        async def _play_media_then_report_playing(media: PlayerMedia) -> None:
+            await original_play_media(media)
+            player._attr_playback_state = PlaybackState.PLAYING
+            player.update_state(signal_event=False)
+
+        player.play_media = _play_media_then_report_playing  # type: ignore[method-assign]
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                0.4 if key == "reapply_volume_step" and pid == "player_1" else default
+            )
+        )
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        player.reapply_volume.assert_awaited_once_with(0.4, 0, 100)
+
+    async def test_a_failing_reapply_still_lets_playback_finish(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        A device that errors on the volume detour must not fail the play command.
+
+        Playback has already started by then, so raising would report a failure for audio that
+        is audibly playing, and skip the protocol-playback callback that runs after it.
+        """
+        player, _protocol_player = _make_player_with_protocol(
+            mock_mass, controller, PlaybackState.IDLE
+        )
+        player.reapply_volume = AsyncMock(  # type: ignore[method-assign]
+            side_effect=OSError("device went away")
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                0.4 if key == "reapply_volume_step" and pid == "player_1" else default
+            )
+        )
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        assert player.play_media_calls == [PlayerMedia(uri="http://test/stream")]
+
+    async def test_a_failing_reapply_on_the_protocol_path_still_runs_on_protocol_playback(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        A failing re-apply must not skip on_protocol_playback on a protocol-redirected play.
+
+        The re-apply runs between play_media and on_protocol_playback, and providers hang real
+        behaviour off that callback (Sonos ungroups AirPlay there). This is the exact reason
+        for the best-effort except, and it only bites when the render target is a protocol
+        player (target != visible player), which no native-render test can reach.
+        """
+        # native_play_media=False forces the render onto the protocol player, so target !=
+        # player and on_protocol_playback is invoked after the re-apply
+        player, _protocol_player = _make_player_with_protocol(
+            mock_mass, controller, PlaybackState.IDLE, native_play_media=False
+        )
+        player.reapply_volume = AsyncMock(  # type: ignore[method-assign]
+            side_effect=OSError("device went away")
+        )
+        player.on_protocol_playback = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                0.4 if key == "reapply_volume_step" and pid == "player_1" else default
+            )
+        )
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        player.reapply_volume.assert_awaited_once()  # the nudge fired and raised
+        player.on_protocol_playback.assert_awaited_once()  # ...yet the callback still ran
+
+    async def test_no_step_configured_leaves_playback_untouched(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """The default config path must not touch the volume of anything."""
+        player, protocol_player = _make_player_with_protocol(
+            mock_mass, controller, PlaybackState.IDLE
+        )
+        player.reapply_volume = AsyncMock()  # type: ignore[method-assign]
+        protocol_player.reapply_volume = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_play_media("player_1", PlayerMedia(uri="http://test/stream"))
+
+        # the native visible player is the volume owner here, so assert it too - not just the
+        # protocol player, which is never the owner in this topology
+        player.reapply_volume.assert_not_awaited()
+        protocol_player.reapply_volume.assert_not_awaited()

@@ -306,6 +306,10 @@
       "label": "Hide this player in the user interface",
       "description": "Hide this player from the main players list and dashboard selection menus.  The player remains fully controllable and still appears in any sync group it currently belongs to and in the settings. Disable the player to exclude it everywhere."
     },
+    "reapply_volume_step": {
+      "label": "Volume re-apply step",
+      "description": "Leave empty or set to 0 to disable.\n\nSome devices accept a volume change made while they are idle or switched off, report it back as applied, and then start playing at their previous volume.\n\nSetting a value here re-sends the volume when playback starts, briefly stepping it by this amount so the device stops treating it as a repeat. Given as a percentage of the full volume range.\n\nStart at 0.5: players whose protocol carries a fine volume step (Chromecast for example) apply it as given and it is inaudible, while the rest round up to a whole percent. Increase it only if the volume still does not take effect."
+    },
     "expose_player_to_ha": {
       "label": "Expose this player to Home Assistant",
       "description": "Expose this player to the Home Assistant integration. \nIf disabled, this player will not be imported into Home Assistant."

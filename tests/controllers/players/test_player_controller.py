@@ -45,6 +45,7 @@ from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
@@ -56,8 +57,10 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_OUTPUT_CODEC,
     CONF_POWER_CONTROL,
+    CONF_REAPPLY_VOLUME_STEP,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
+    REAPPLY_VOLUME_STEP_MAX,
 )
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
@@ -5073,6 +5076,329 @@ class TestConfigChangeRestartsPlayback:
 
         mock_mass.player_queues.stop.assert_not_awaited()
         mock_mass.call_later.assert_not_called()
+
+
+class TestReapplyVolumeOnPlaybackStart:
+    """
+    Tests for the opt-in volume re-apply at playback start.
+
+    The controller decides *whether* to re-apply and *which* player owns the volume; the
+    player decides *how*, because the step a device can carry is protocol specific. See
+    Player.reapply_volume.
+    """
+
+    @staticmethod
+    def _visible(
+        volume_control: str = PLAYER_CONTROL_NATIVE, muted: bool = False
+    ) -> SimpleNamespace:
+        # native volume control means the visible player owns its own volume, so it is both the
+        # config carrier and the re-apply target - the simplest topology to assert against
+        return SimpleNamespace(
+            player_id="player_1",
+            type=PlayerType.PLAYER,
+            volume_control=volume_control,
+            reapply_volume=AsyncMock(),
+            extra_data={},
+            state=SimpleNamespace(name="Player 1", volume_muted=muted),
+        )
+
+    @staticmethod
+    def _with_config(controller: PlayerController, step: float | None) -> None:
+        # keyed on the visible player id: a protocol player carries no config of its own, so
+        # reading it from the rendering player would always come back empty
+        cast("MagicMock", controller.mass.config).get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                step if (key == CONF_REAPPLY_VOLUME_STEP and pid == "player_1") else default
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_unset_does_nothing(self, controller: PlayerController) -> None:
+        """No configured step means the workaround is off, which is the default."""
+        visible = self._visible()
+        self._with_config(controller, step=None)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_zero_step_does_nothing(self, controller: PlayerController) -> None:
+        """A zero step would detour to the value itself, which is the no-op being avoided."""
+        visible = self._visible()
+        self._with_config(controller, step=0)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_step_is_ignored(self, controller: PlayerController) -> None:
+        """
+        A value that is not a number must not break playback.
+
+        This runs in the middle of starting playback, so anything raising here takes the whole
+        play command with it - and a stale or hand-edited config can hold any string.
+        """
+        visible = self._visible()
+        self._with_config(controller, step=cast("float", "auto"))
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_finite_step_is_ignored(self, controller: PlayerController) -> None:
+        """
+        Nan and inf parse as floats but are not usable steps.
+
+        Neither is caught by a `<= 0` check (nan compares False to everything, inf is
+        positive), and both blow up further down - round(nan) and round(inf) raise. A
+        hand-edited config can hold either.
+        """
+        for raw in ("nan", "inf", "-inf"):
+            visible = self._visible()
+            self._with_config(controller, step=cast("float", raw))
+            await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+            visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_muted_player_is_left_alone(self, controller: PlayerController) -> None:
+        """
+        A muted player must not be detoured, or it is audibly un-muted at playback start.
+
+        Fake mute simulates muting by driving the real volume to 0 while reporting muted; the
+        detour writes the real volume straight to the device, so it would un-mute the speaker
+        while the state still says muted.
+        """
+        visible = self._visible(muted=True)
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_announcement_in_progress_is_left_alone(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        The re-apply must stay out of the announcement volume cycle.
+
+        Announcements stop the player to idle, set their own temporary volume, play, and
+        restore - all with was_active False - so without this guard the detour would fire on
+        the announcement's volume (and again on the resume), which the workaround is not for.
+        """
+        visible = self._visible()
+        visible.extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: True}
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configured_volume_limits_reach_the_owner(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        The player's min/max volume limits are passed through so the detour stays inside them.
+
+        The detour is sent in raw device units; without the limits it could cross a configured
+        floor/ceiling and be dragged there by the controller's volume-limit enforcement.
+        """
+        visible = self._visible()
+        cast("MagicMock", controller.mass.config).get_raw_player_config_value = MagicMock(
+            side_effect=lambda pid, key, default=None: (
+                {
+                    CONF_REAPPLY_VOLUME_STEP: 0.4,
+                    CONF_MIN_VOLUME: 20,
+                    CONF_MAX_VOLUME: 80,
+                }.get(key, default)
+                if pid == "player_1"
+                else default
+            )
+        )
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_awaited_once_with(0.4, 20, 80)
+
+    @pytest.mark.asyncio
+    async def test_a_player_without_volume_control_does_nothing(
+        self, controller: PlayerController
+    ) -> None:
+        """A player whose volume resolves to nothing has no device volume to re-apply."""
+        visible = self._visible(volume_control=PLAYER_CONTROL_NONE)
+        # dropping the owner guard would `await None.reapply_volume(...)`, and the best-effort
+        # except would swallow the AttributeError into a warning - so pin the clean return by
+        # also asserting nothing was logged, not just that this mock stayed untouched
+        controller.logger = MagicMock()
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+        controller.logger.warning.assert_not_called()
+
+    def test_external_volume_control_resolves_to_no_owner(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        Volume routed through an external player control has no device level to detour.
+
+        An external control applies volume itself. If a control id ever collided with a real
+        player id, resolving to that player would poke the wrong device, so the external
+        control must win - matching how _handle_cmd_volume_set routes (control before player).
+        """
+        controller._controls = {"amp": MagicMock()}
+        # a full player at the same id: without the external-control check, get_player would
+        # return this one and resolve to the wrong device instead of None
+        collision = SimpleNamespace(
+            player_id="amp", state=SimpleNamespace(available=True, enabled=True)
+        )
+        controller._players = {"amp": collision}  # type: ignore[dict-item]
+        visible = self._visible(volume_control="amp")
+        assert controller.resolve_volume_owner(visible) is None  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_reapply_never_breaks_playback(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        The re-apply is best effort: playback has already started when it runs.
+
+        Anything it raises - a socket error from the device, an unsupported volume_set -
+        would otherwise abort the play command after the media is already playing, and skip
+        the on_protocol_playback callback that follows it.
+        """
+        visible = self._visible()
+        visible.reapply_volume = AsyncMock(side_effect=OSError("device went away"))
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_configured_step_reaches_the_native_volume_owner(
+        self, controller: PlayerController
+    ) -> None:
+        """With native volume control the visible player is itself the volume owner."""
+        visible = self._visible()
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_awaited_once_with(0.4, 0, 100)
+
+    @pytest.mark.asyncio
+    async def test_configured_step_reaches_the_protocol_volume_owner(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        A wrapped device carries its volume on a linked protocol player, not the visible one.
+
+        The visible player (a generic Cast receiver wrapped in a universal player) has no
+        native volume; its volume_control resolves to the protocol player. Re-applying on the
+        visible player would miss the device entirely - the exact case the workaround targets.
+        """
+        owner = SimpleNamespace(
+            player_id="protocol_1",
+            reapply_volume=AsyncMock(),
+            state=SimpleNamespace(available=True, enabled=True),
+        )
+        controller._players = {"protocol_1": owner}  # type: ignore[dict-item]
+        visible = self._visible(volume_control="protocol_1")
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        owner.reapply_volume.assert_awaited_once_with(0.4, 0, 100)
+        visible.reapply_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_step_above_the_maximum_is_capped(self, controller: PlayerController) -> None:
+        """
+        A step larger than the entry allows is capped before it reaches the device.
+
+        ConfigEntry.range only bounds the frontend, so a value written straight through the
+        config API arrives here unchecked - and this step is sent to the device as given.
+        """
+        visible = self._visible()
+        self._with_config(controller, step=100)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_awaited_once_with(REAPPLY_VOLUME_STEP_MAX, 0, 100)
+
+    @pytest.mark.asyncio
+    async def test_detour_holds_the_visible_player_volume_lock(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        The detour writes the volume twice, so it must exclude other volume commands.
+
+        Every volume command serializes on the *visible* player id (a protocol redirect
+        recurses without re-locking), and the caller holds only the playback lock. Without the
+        volume lock on the visible id, a volume_set landing between the detour and the restore
+        is silently undone by the restore writing the old level back.
+        """
+        visible = self._visible()
+        held: list[bool] = []
+
+        async def _check_lock(_step: float, *_limits: int) -> None:
+            lock = controller._player_command_locks.get(f"volume_{visible.player_id}")
+            held.append(lock is not None and lock.locked())
+
+        visible.reapply_volume = AsyncMock(side_effect=_check_lock)
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        assert held == [True]
+
+    @pytest.mark.asyncio
+    async def test_detour_locks_the_visible_id_not_the_owner(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        The lock is keyed on the visible player, even when the owner is a different player.
+
+        A wrapped device's volume is applied by its protocol player, but every volume command
+        still serializes on the visible id (the redirect recurses without re-locking). Locking
+        the owner's id would leave that real serialization point unguarded.
+        """
+        held: dict[str, bool] = {}
+
+        async def _check_lock(_step: float, *_limits: int) -> None:
+            visible_lock = controller._player_command_locks.get("volume_player_1")
+            held["visible_locked"] = visible_lock is not None and visible_lock.locked()
+            # the owner's own id must never be the lock key
+            held["owner_key_used"] = "volume_protocol_1" in controller._player_command_locks
+
+        owner = SimpleNamespace(
+            player_id="protocol_1",
+            reapply_volume=AsyncMock(side_effect=_check_lock),
+            state=SimpleNamespace(available=True, enabled=True),
+        )
+        controller._players = {"protocol_1": owner}  # type: ignore[dict-item]
+        visible = self._visible(volume_control="protocol_1")
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        assert held == {"visible_locked": True, "owner_key_used": False}
+
+    @pytest.mark.asyncio
+    async def test_a_mute_winning_the_lock_first_cancels_the_reapply(
+        self, controller: PlayerController
+    ) -> None:
+        """
+        A mute that lands while the re-apply waits for the volume lock must cancel it.
+
+        cmd_volume_mute serializes on the same volume lock, so the muted state is read under
+        the lock, not before it. Without the in-lock check, a mute could win the lock first and
+        fake-mute the device (volume 0), and the restore would then audibly un-mute it.
+        """
+        visible = self._visible()  # not muted at the outset
+        real_get_lock = controller.get_player_lock
+
+        def _mute_on_acquire(*args: object, **kwargs: object) -> object:
+            # stand in for a mute command that won the lock just before us: by the time we take
+            # it, the player is already (fake) muted
+            visible.state.volume_muted = True
+            return real_get_lock(*args, **kwargs)  # type: ignore[arg-type]
+
+        controller.get_player_lock = _mute_on_acquire  # type: ignore[assignment]
+        self._with_config(controller, step=0.4)
+        await controller._reapply_volume_after_playback_start(visible)  # type: ignore[arg-type]
+        visible.reapply_volume.assert_not_awaited()
+
+    def test_a_group_player_resolves_to_no_owner(self, controller: PlayerController) -> None:
+        """
+        A group has no device volume of its own, so it never resolves to a re-apply owner.
+
+        _handle_cmd_volume_set redirects a group to cmd_group_volume before any control
+        routing; resolve_volume_owner mirrors that, so a group returns None even with a native
+        VOLUME_SET feature.
+        """
+        visible = self._visible()  # native volume control would otherwise resolve to itself
+        visible.type = PlayerType.GROUP
+        assert controller.resolve_volume_owner(visible) is None  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
