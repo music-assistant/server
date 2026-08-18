@@ -173,8 +173,10 @@ WHERE (t1.item_id > :cursor_item_id_1
       ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
     WHERE at1.track_id = t1.item_id
       AND al1.search_name != ''
-      -- a disc number of 0 means the provider did not report one: assume disc 1,
-      -- matching how compare_track reads it for local files without a disc tag
+      -- an unreported position is stored as 0, so two of those agree on nothing;
+      -- a missing disc number does read as disc 1, the way compare_track takes it
+      -- for local files that carry no disc tag
+      AND at1.track_number > 0
       AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
       AND at1.track_number = at2.track_number)
   AND NOT EXISTS (

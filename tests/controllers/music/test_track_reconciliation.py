@@ -273,6 +273,20 @@ async def test_treats_an_unreported_disc_number_as_disc_one(mass: MusicAssistant
     }
 
 
+async def test_ignores_tracks_with_an_unreported_album_position(mass: MusicAssistant) -> None:
+    """Two unknown track numbers agree on nothing, so they are no evidence of a duplicate."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    for track in (track_1, track_2):
+        await mass.music.database.update(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}, {"track_number": 0}
+        )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 async def test_ignores_albums_whose_title_normalizes_to_nothing(mass: MusicAssistant) -> None:
     """Symbol-only album titles are not treated as agreement, they match everything."""
     track_1, track_2 = await _build_duplicate_pair(mass, second_album_name="+")
