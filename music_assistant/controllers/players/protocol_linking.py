@@ -1254,9 +1254,11 @@ class ProtocolLinkingMixin:
         Other players that list the removed player as a group member (or allowed
         member) must follow its successor so those memberships are not silently
         lost. Without a successor the player is gone for good and its id is dropped
-        instead, so it can not linger in a group and pull a device that returns
-        under the same id back in. Updates the persisted config and keeps any
-        registered player whose membership changed in sync.
+        from the group members instead, so it can not linger in a group and pull a
+        device that returns under the same id back in. Its allow-list entry is left
+        alone there, since an allow-list that runs empty stops restricting at all.
+        Updates the persisted config and keeps any registered player whose
+        membership changed in sync.
 
         :param old_player_id: Player id that is being removed.
         :param new_player_id: Player id that replaces it, or None if there is none.
@@ -1270,9 +1272,15 @@ class ProtocolLinkingMixin:
             other_values = other_cfg.get("values")
             if not isinstance(other_values, dict):
                 continue
+            other_player = self.get_player(other_id)
+            changed = False
             for key in (CONF_GROUP_MEMBERS, CONF_ALLOWED_MEMBERS):
                 members = other_values.get(key)
                 if not isinstance(members, list) or old_player_id not in members:
+                    continue
+                if new_player_id is None and key == CONF_ALLOWED_MEMBERS:
+                    # an allow-list that runs empty reads as "everyone may join", so the
+                    # entry of a removed player stays: it can never join again anyway
                     continue
                 new_members: list[str] = []
                 for member_id in members:
@@ -1280,11 +1288,21 @@ class ProtocolLinkingMixin:
                     if resolved is not None and resolved not in new_members:
                         new_members.append(resolved)
                 self.mass.config.set(f"{CONF_PLAYERS}/{other_id}/values/{key}", new_members)
-                # keep a registered player's in-place config copy and state in sync
-                if other_player := self.get_player(other_id):
-                    if entry := other_player.config.values.get(key):
-                        entry.value = new_members
-                    other_player.refresh_state()
+                changed = True
+                # keep a registered player's in-place config copy in sync
+                if other_player and (entry := other_player.config.values.get(key)):
+                    entry.value = new_members
+            if changed and other_player:
+                self.mass.create_task(self._reload_group_members(other_player))
+
+    async def _reload_group_members(self, player: Player) -> None:
+        """
+        Let a group re-read its member config so its live member list follows along.
+
+        :param player: The group player whose stored member list changed.
+        """
+        await player.on_config_updated()
+        player.refresh_state()
 
     async def _stop_and_unregister(self, player: Player, replacement_player_id: str) -> None:
         """

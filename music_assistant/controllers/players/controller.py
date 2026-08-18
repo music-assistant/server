@@ -1684,7 +1684,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         :param player_id: Player ID of the player to delete the configuration of.
         :param replacement_player_id: Player ID that takes this player's place, so users
-                                      restricted to it follow the replacement.
+                                      restricted to it and groups it belongs to follow
+                                      the replacement.
         """
         self._detach_protocol_children(player_id)
         self._update_group_memberships(player_id, replacement_player_id)

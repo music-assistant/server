@@ -5366,7 +5366,8 @@ class TestDeletePlayerConfigGroupMemberships:
         controller.delete_player_config("sonos_1")
 
         assert config_store["players/group_1/values/group_members"] == ["sonos_2"]
-        assert config_store["players/group_1/values/allowed_members"] == []
+        # the allow-list is left alone: emptying it would stop it restricting anything
+        assert "players/group_1/values/allowed_members" not in config_store
 
     def test_replacement_hands_the_membership_to_the_new_player(self, mock_mass: MagicMock) -> None:
         """A replaced player hands its group memberships over to its replacement."""
@@ -5402,6 +5403,32 @@ class TestDeletePlayerConfigGroupMemberships:
         await controller.unregister("sonos_1")
 
         assert "players/group_1/values/group_members" not in config_store
+
+    async def test_a_registered_group_re_reads_its_members(self, mock_mass: MagicMock) -> None:
+        """A registered group is told to re-read its members so its live list follows."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        self._config_store(mock_mass)
+        scheduled: list[Any] = []
+        mock_mass.create_task = MagicMock(side_effect=lambda task: scheduled.append(task))
+        group = MockPlayer(MockProvider("sync_group", mass=mock_mass), "group_1", "Group")
+        entry = ConfigEntry(key="group_members", type=ConfigEntryType.STRING, multi_value=True)
+        entry.value = ["sonos_1", "sonos_2"]
+        group.config.values = {"group_members": entry}
+        controller._players = {"group_1": group}
+
+        with (
+            patch.object(group, "on_config_updated", AsyncMock()) as mock_reload,
+            patch.object(group, "refresh_state") as mock_refresh,
+        ):
+            controller.delete_player_config("sonos_1")
+            for task in [t for t in scheduled if "_reload_group_members" in repr(t)]:
+                await task
+
+        # the in-place config copy is pruned before the group re-reads it
+        assert group.config.values["group_members"].value == ["sonos_2"]
+        mock_reload.assert_awaited_once()
+        mock_refresh.assert_called_once()
 
 
 class TestConfigChangeRestartsPlayback:
