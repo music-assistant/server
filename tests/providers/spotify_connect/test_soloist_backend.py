@@ -634,12 +634,15 @@ async def test_uri_cache_feeds_all_events() -> None:
         )
     )
 
-    assert events[0].type is BackendEventType.PLAYING
-    assert events[0].context_uri == "spotify:playlist:ctx"
-    assert events[0].track_uri == "spotify:track:t1"
-    # the position event does not carry uris itself; the cache fills them in
+    # the unseen track first yields its metadata, then the playback event
+    assert events[0].type is BackendEventType.METADATA
+    assert events[1].type is BackendEventType.PLAYING
     assert events[1].context_uri == "spotify:playlist:ctx"
     assert events[1].track_uri == "spotify:track:t1"
+    # the position event does not carry uris itself; the cache fills them in
+    assert events[2].type is BackendEventType.POSITION
+    assert events[2].context_uri == "spotify:playlist:ctx"
+    assert events[2].track_uri == "spotify:track:t1"
 
 
 async def test_event_resets_restart_counter() -> None:
@@ -997,6 +1000,44 @@ async def test_playback_state_volume_pins_in_player_only() -> None:
 
     client.set_volume.assert_awaited_once_with(100)
     assert [event.type for event in events] == [BackendEventType.PLAYING]
+
+
+async def test_failed_pin_marks_volume_unknown_and_retries() -> None:
+    """player_only: a failed 100% pin is retried by a snapshot reporting the same volume."""
+    backend, _events = _make_backend(volume_mode=VOLUME_MODE_PLAYER_ONLY)
+    client = AsyncMock()
+    client.set_volume.side_effect = [OSError("ws down"), None]
+    backend._client = client
+
+    await backend._handle_event(
+        _event("playback_state", SoloistPlaybackState(status="playing", volume=80))
+    )
+    assert backend._spotify_volume is None
+    # the reconnect snapshot reports the unchanged volume; the pin is retried
+    await backend._handle_event(
+        _event("playback_state", SoloistPlaybackState(status="paused", volume=80))
+    )
+    assert client.set_volume.await_count == 2
+
+
+async def test_playback_state_snapshot_emits_metadata_for_unseen_track() -> None:
+    """A snapshot carrying an unseen track emits its metadata; a repeat does not."""
+    backend, events = _make_backend()
+    state = SoloistPlaybackState(
+        status="playing",
+        item=SoloistEntity(uri="spotify:track:t1", entity_type="track"),
+    )
+
+    await backend._handle_event(_event("playback_state", state))
+    await backend._handle_event(_event("playback_state", state))
+
+    assert [event.type for event in events] == [
+        BackendEventType.METADATA,
+        BackendEventType.PLAYING,
+        BackendEventType.PLAYING,
+    ]
+    assert events[0].metadata is not None
+    assert events[0].metadata.track_uri == "spotify:track:t1"
 
 
 def test_sink_prefix_is_sanitized() -> None:

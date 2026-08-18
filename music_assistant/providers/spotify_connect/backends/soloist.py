@@ -639,6 +639,17 @@ class SoloistBackend(SpotifyConnectBackend):
             # carries the daemon's current volume; resync the pin/compensation
             # before forwarding the playback event itself
             await self._handle_volume_changed(event.data.volume)
+        if (
+            isinstance(event.data, SoloistPlaybackState)
+            and (item := event.data.item) is not None
+            and item.uri != self._last_track_uri
+        ):
+            # the snapshot describes a track we have no metadata for yet (an
+            # already-playing session at (re)connect); emit its metadata so it
+            # does not stay stale until the next track_changed
+            await self._event_callback(
+                self._make_event(BackendEventType.METADATA, metadata=_entity_metadata(item))
+            )
         await self._event_callback(self._translate_event(event))
 
     async def _handle_volume_changed(self, volume: int) -> None:
@@ -659,6 +670,9 @@ class SoloistBackend(SpotifyConnectBackend):
                         await self._client.set_volume(100)
                     except Exception as err:
                         self.logger.debug("Failed to reset soloist volume: %s", err)
+                        # mark the volume unknown so the next snapshot
+                        # reporting the same value still retries the pin
+                        self._spotify_volume = None
                     finally:
                         self._pin_in_flight = False
                 return
