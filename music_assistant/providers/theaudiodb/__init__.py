@@ -366,17 +366,15 @@ class AudioDbMetadataProvider(MetadataProvider):
         # update the album mbid while at it
         if (
             track.album
-            and not track.album.get_external_id(ExternalID.MB_RELEASEGROUP)
             and track.album.provider == "library"
-            and isinstance(track.album, Album)
+            and not track.album.get_external_id(ExternalID.MB_RELEASEGROUP)
             # a recording is shared by every release it appears on, so the album id is
             # only ours to take when the matched record is for this album as well
             and compare_album_name(track.album.name, adb_track["strAlbum"])
         ):
-            track.album.add_external_id(
-                ExternalID.MB_RELEASEGROUP, adb_track["strMusicBrainzAlbumID"]
+            await self.mass.music.albums.set_release_group(
+                int(track.album.item_id), adb_track["strMusicBrainzAlbumID"]
             )
-            await self.mass.music.albums.update_item_in_library(track.album.item_id, track.album)
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata

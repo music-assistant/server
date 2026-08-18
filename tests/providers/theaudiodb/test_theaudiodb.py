@@ -25,12 +25,12 @@ async def test_album_backfill_runs_with_images_disabled() -> None:
     provider = _provider(images_enabled=False)
     artist = _artist("Nirvana")
     album = Album(
-        item_id="album",
+        item_id="1",
         provider="library",
         name="Nevermind",
         artists=UniqueList([artist]),
         external_ids={(ExternalID.MB_RELEASEGROUP, RELEASEGROUP_MBID)},
-        provider_mappings=_mappings("album"),
+        provider_mappings=_mappings("1"),
     )
     provider._get_data = AsyncMock(  # type: ignore[method-assign]
         return_value={"album": [_adb_album()]}
@@ -65,9 +65,9 @@ async def test_track_release_group_written_when_album_matches(library_album: str
 
     await provider.get_track_metadata(track)
 
-    assert track.album is not None
-    assert track.album.get_external_id(ExternalID.MB_RELEASEGROUP) == RELEASEGROUP_MBID
-    cast("AsyncMock", provider.mass.music.albums.update_item_in_library).assert_awaited_once()
+    cast("AsyncMock", provider.mass.music.albums.set_release_group).assert_awaited_once_with(
+        1, RELEASEGROUP_MBID
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,9 +90,7 @@ async def test_track_release_group_skipped_for_another_release(
 
     await provider.get_track_metadata(track)
 
-    assert track.album is not None
-    assert track.album.get_external_id(ExternalID.MB_RELEASEGROUP) is None
-    cast("AsyncMock", provider.mass.music.albums.update_item_in_library).assert_not_awaited()
+    cast("AsyncMock", provider.mass.music.albums.set_release_group).assert_not_awaited()
     # the artist backfill is independent of the album, so it still happens
     assert track.artists[0].mbid == ARTIST_MBID
 
@@ -141,10 +139,10 @@ def _track(album_name: str) -> Track:
         external_ids={(ExternalID.MB_RECORDING, RECORDING_MBID)},
         artists=UniqueList([_artist("Nirvana")]),
         album=Album(
-            item_id="album",
+            item_id="1",
             provider="library",
             name=album_name,
-            provider_mappings=_mappings("album"),
+            provider_mappings=_mappings("1"),
         ),
         provider_mappings=_mappings("track"),
     )
