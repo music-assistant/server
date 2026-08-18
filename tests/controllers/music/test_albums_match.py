@@ -825,17 +825,25 @@ async def test_insert_match_is_io_free_without_candidates() -> None:
     assert harness.album_track_calls() == []
 
 
-async def test_insert_match_looks_up_every_retail_suffix_spelling() -> None:
-    """An album is looked up under its plain title and both spelled-out retail suffixes."""
+async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
+    """A plain title is sought under every retail suffix, a suffixed one only under its own."""
+
+    async def searched_names(harness: _InsertHarness, name: str) -> list[str]:
+        assert (
+            await harness.ctrl._get_library_item_by_match(_album("a1", "spotify_1", name=name))
+            is None
+        )
+        params = harness.get_library_items_by_query.await_args_list[-1].kwargs["extra_query_params"]
+        return list(params["search_names"])
+
     with _insert_harness(candidates=[]) as harness:
-        item = _album("a1", "spotify_1", name="Stargazing - EP")
-
-        assert await harness.ctrl._get_library_item_by_match(item) is None
-
-    query_params = harness.get_library_items_by_query.await_args_list[-1].kwargs[
-        "extra_query_params"
-    ]
-    assert query_params["search_names"] == ["stargazing", "stargazingep", "stargazingsingle"]
+        assert await searched_names(harness, "Stargazing") == [
+            "stargazing",
+            "stargazingep",
+            "stargazingsingle",
+        ]
+        # a title spelling out one suffix is a different release from one spelling out another
+        assert await searched_names(harness, "Stargazing - EP") == ["stargazing", "stargazingep"]
 
 
 async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(

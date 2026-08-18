@@ -831,15 +831,13 @@ def _compare_safe_strings(base: str, compare: str) -> bool:
 def _normalize_name(name: str) -> str:
     """Return a punctuation/diacritic/whitespace-insensitive name for identity checks."""
     core = create_safe_string(name, True, True)
+    if not core:
+        # a name made up entirely of symbols is decided on its complete raw spelling
+        return core
     stripped = name.strip()
     # a symbol bordering the title belongs to it ("MOTOMAMI +"), however it is spaced,
     # while punctuation and symbols between words are drift two spellings may differ on
-    lead = _edge_symbols(stripped)
-    trail = _edge_symbols(stripped[::-1])[::-1]
-    if len(lead) + len(trail) > len(stripped):
-        # a title made up entirely of symbols is reached from both ends
-        trail = ""
-    return f"{lead}{core}{trail}"
+    return f"{_edge_symbols(stripped)}{core}{_edge_symbols(stripped[::-1])[::-1]}"
 
 
 def _edge_symbols(name: str) -> str:

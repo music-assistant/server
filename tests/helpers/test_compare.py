@@ -496,7 +496,14 @@ def test_compare_album_evidence_symbol_only_titles_identify_their_own_album() ->
             )
             == compare.AlbumMatchEvidence.MATCH
         ), name
-    for base_name, compare_name in (("+", "="), ("+", "÷"), ("=", "÷"), ("\u00d7", "÷")):
+    # a symbol-only title is decided on its complete raw spelling, punctuation included
+    for base_name, compare_name in (
+        ("+", "="),
+        ("+", "÷"),
+        ("=", "÷"),
+        ("\u00d7", "÷"),
+        ("+", "+!"),
+    ):
         assert (
             compare.compare_album_evidence(
                 _album(name=base_name), _album(item_id="2", provider="test2", name=compare_name)

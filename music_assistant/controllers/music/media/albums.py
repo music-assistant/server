@@ -672,6 +672,10 @@ class AlbumsController(MediaControllerBase[Album]):
     def _library_match_names(self, item: Album | ItemMapping) -> list[str]:
         """Return the normalized album names, with and without a spelled-out retail suffix."""
         base_name = create_safe_string(strip_album_retail_suffix(item.name), True, True)
+        own_name = create_safe_string(item.name, True, True)
+        if own_name != base_name:
+            # the title spells out one retail suffix, and a different one is a different release
+            return [base_name, own_name]
         return [base_name, *(f"{base_name}{suffix}" for suffix in ALBUM_RETAIL_SUFFIX_KEYS)]
 
     async def _confirm_library_candidate(self, db_item: Album, item: Album | ItemMapping) -> bool:
