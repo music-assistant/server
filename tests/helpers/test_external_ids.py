@@ -24,8 +24,15 @@ def test_normalize_gtin_variants() -> None:
 
 def test_invalid_gtin_is_preserved() -> None:
     """Invalid provider barcode data remains available for exact matching."""
-    assert normalize_external_id(ExternalID.BARCODE, "0724354283858") == "0724354283858"
+    assert normalize_external_id(ExternalID.BARCODE, "602445790392") == "602445790392"
     assert normalize_external_id(ExternalID.BARCODE, "catalog-123") == "catalog-123"
+
+
+def test_truncated_gtin14_recovers_check_digit() -> None:
+    """A GTIN-14 with its check digit chopped off (Qobuz) recovers the full value."""
+    assert normalize_external_id(ExternalID.BARCODE, "0060252758365") == "00602527583655"
+    # a structurally valid EAN-13 keeps taking the regular normalization path
+    assert normalize_external_id(ExternalID.BARCODE, "0724354283857") == "00724354283857"
 
 
 def test_legacy_gtin_lookup_values() -> None:
@@ -51,6 +58,15 @@ def test_normalize_isrc_and_mbid() -> None:
     assert normalize_external_id(ExternalID.ISRC, "us-rc1-76-07839") == "USRC17607839"
     assert normalize_external_id(ExternalID.ISRC, "invalid-isrc") == "invalid-isrc"
     assert normalize_external_id(ExternalID.MB_RECORDING, f"{{{mbid}}}") == mbid.lower()
+
+
+def test_mbid_lookup_values_include_braced_form() -> None:
+    """A canonical MBID lookup also covers the legacy braced storage form."""
+    mbid = "b1a9c0e9-d987-4042-ae91-78d6a3267d69"
+    values = external_id_lookup_values(ExternalID.MB_RECORDING, mbid)
+
+    assert mbid in values
+    assert f"{{{mbid}}}" in values
 
 
 def test_normalize_external_ids_deduplicates_values() -> None:

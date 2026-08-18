@@ -45,7 +45,11 @@ _VERSION_IGNORE_WORDS = {
 _VERSION_WORD_ALIASES = {
     "remastered": "remaster",
 }
-_IGNORE_VERSION_KEYS = {create_safe_string(value) for value in IGNORE_VERSIONS}
+# phrases stripped from a version before tokenizing: they may contain punctuation
+# ("hi-res") that the tokenizer would otherwise split into meaningful-looking tokens
+_IGNORE_VERSION_PATTERNS = tuple(
+    re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE) for phrase in IGNORE_VERSIONS
+)
 
 # version tokens that signal a fundamentally different recording (not just packaging),
 # so they must never be treated as an ambiguous/mergeable edition difference
@@ -60,7 +64,11 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "session",
 }
 
-# duration tolerances (seconds) for the album-track fingerprint comparison
+# trailing " - EP" / " - Single" retail suffix (any dash style), as appended by Apple Music
+_ALBUM_SUFFIX_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+(?:EP|Single)\s*$", re.IGNORECASE)
+
+# duration tolerances (seconds) for track comparisons: an external-id corroborated
+# match allows more duration drift than a bare title/version fallback
 _ISRC_DURATION_TOLERANCE = 8
 _FALLBACK_DURATION_TOLERANCE = 2
 
@@ -190,7 +198,7 @@ def compare_album_evidence(
             return AlbumMatchEvidence.MATCH if external_id_match else AlbumMatchEvidence.NO_MATCH
 
     # barcode/ASIN are shared across pressings and are non-unique corroboration only,
-    # so they are never used on their own, only to corroborate a year mismatch below
+    # so they are never used on their own, only to resolve a year or edition ambiguity below
     secondary_external_id_match = any(
         compare_external_ids(base_item.external_ids, compare_item.external_ids, ext_id) is True
         for ext_id in (ExternalID.ASIN, ExternalID.BARCODE)
@@ -206,6 +214,11 @@ def compare_album_evidence(
         return AlbumMatchEvidence.NO_MATCH
 
     ambiguous = version_evidence == AlbumMatchEvidence.INSUFFICIENT
+    if ambiguous and secondary_external_id_match:
+        # a shared barcode/ASIN identifies the same retail product, which resolves an
+        # ambiguous edition wording; when the caller supplies tracklists, a conflicting
+        # fingerprint still overrides
+        ambiguous = False
     if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
         return _finalize_album_evidence(ambiguous, base_tracks, compare_tracks)
     # for strict matching we REQUIRE both items to be a real album object
@@ -338,7 +351,7 @@ def compare_track(
         if external_id_match is True:
             # we got a 'soft-match' on a secondary external id (like ISRC)
             # but we do a double check on duration
-            if abs(base_item.duration - compare_item.duration) <= 8:
+            if abs(base_item.duration - compare_item.duration) <= _ISRC_DURATION_TOLERANCE:
                 return True
 
     # compare name
@@ -359,15 +372,14 @@ def compare_track(
         return False
 
     # exact albumtrack match = 100% match
+    # a missing disc number means unknown: assume disc 1 (local files often omit the tag)
     if (
         base_item.album
         and compare_item.album
         and compare_album(base_item.album, compare_item.album, False)
-        and base_item.disc_number
-        and compare_item.disc_number
         and base_item.track_number
         and compare_item.track_number
-        and base_item.disc_number == compare_item.disc_number
+        and (base_item.disc_number or 1) == (compare_item.disc_number or 1)
         and base_item.track_number == compare_item.track_number
     ):
         return True
@@ -600,22 +612,6 @@ def compare_artists(
     return len(base_items) == len(compare_items) == matches
 
 
-def compare_albums(
-    base_items: list[Album | ItemMapping],
-    compare_items: list[Album | ItemMapping],
-    any_match: bool = True,
-) -> bool:
-    """Compare two lists of albums and return True if a match was found."""
-    matches = 0
-    for base_item in base_items:
-        for compare_item in compare_items:
-            if compare_album(base_item, compare_item):
-                if any_match:
-                    return True
-                matches += 1
-    return len(base_items) == matches
-
-
 def compare_item_ids(
     base_item: MediaItem | ItemMapping, compare_item: MediaItem | ItemMapping
 ) -> bool:
@@ -706,7 +702,7 @@ def loose_compare_strings(base: str, alt: str) -> bool:
     alt_comp = create_safe_string(alt)
     if base_comp in alt_comp:
         return True
-    return base_comp in alt_comp
+    return alt_comp in base_comp
 
 
 def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
@@ -748,14 +744,16 @@ def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> boo
 
 @lru_cache(maxsize=1024)
 def _normalize_version_tokens(value: str) -> tuple[str, ...]:
-    """Return meaningful version tokens in stable order."""
-    if not value or create_safe_string(value) in _IGNORE_VERSION_KEYS:
+    """Return meaningful, deduplicated version tokens in stable order."""
+    if not value:
         return ()
+    stripped_value = value.casefold()
+    for pattern in _IGNORE_VERSION_PATTERNS:
+        stripped_value = pattern.sub(" ", stripped_value)
     tokens = (
-        _VERSION_WORD_ALIASES.get(token, token)
-        for token in re.findall(r"[^\W_]+", value.casefold())
+        _VERSION_WORD_ALIASES.get(token, token) for token in re.findall(r"[^\W_]+", stripped_value)
     )
-    return tuple(sorted(token for token in tokens if token not in _VERSION_IGNORE_WORDS))
+    return tuple(sorted({token for token in tokens if token not in _VERSION_IGNORE_WORDS}))
 
 
 def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:
@@ -796,13 +794,20 @@ def _compare_album_name(base_name: str, compare_name: str) -> bool:
     if base_safe or compare_safe:
         return False
     # both titles collapse to nothing under normalization (e.g. pure punctuation):
-    # fall back to a whitespace-normalized raw comparison so unrelated titles don't match
-    return " ".join(base_name.split()).casefold() == " ".join(compare_name.split()).casefold()
+    # fall back to a raw comparison with all whitespace removed, so spacing drift
+    # ("( )" vs "()") still matches while unrelated titles don't; the retail suffix
+    # is stripped here as well so "... - EP" still matches "..."
+    base_raw = _ALBUM_SUFFIX_PATTERN.sub("", base_name)
+    compare_raw = _ALBUM_SUFFIX_PATTERN.sub("", compare_name)
+    return "".join(base_raw.split()).casefold() == "".join(compare_raw.split()).casefold()
 
 
 def _normalize_album_name(name: str) -> str:
-    """Return a punctuation/diacritic/whitespace-normalized album title for identity checks."""
-    return " ".join(create_safe_string(name).split())
+    """Return a punctuation/diacritic/whitespace-insensitive album title for identity checks."""
+    # the retail suffix carries no identity information: Apple Music appends it to
+    # EP/single titles while already setting album_type
+    name = _ALBUM_SUFFIX_PATTERN.sub("", name)
+    return create_safe_string(name, True, True)
 
 
 def _track_positions(tracks: Sequence[Track]) -> dict[tuple[int, int], Track]:

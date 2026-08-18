@@ -800,14 +800,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         external_id: str,
         external_id_type: ExternalID | None = None,
-        limit: int | None = 50,
+        *,
+        limit: int | None,
     ) -> list[ItemCls]:
         """
         Get library items for the given external identifier.
 
         :param external_id: External identifier value to look up.
         :param external_id_type: Optional identifier type.
-        :param limit: Maximum number of library items to return.
+        :param limit: Maximum number of library items to return, or None for all matches.
         """
         if external_id_type:
             lookup_values = external_id_lookup_values(external_id_type, external_id)
@@ -1576,10 +1577,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if provider_mappings:
             if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
                 return int(cur_item.item_id)
-        for cur_item in await self.get_library_items_by_external_ids(item.external_ids):
-            # External identifiers may be reused, so verify every candidate.
-            if compare_media_item(item, cur_item):
-                return int(cur_item.item_id)
+        # fetch candidates per external id (best identifier first) and stop at the
+        # first verified match; external identifiers may be reused, so verify
+        # every candidate before accepting it
+        seen_item_ids: set[str] = set()
+        for external_id_type, external_id in sorted(item.external_ids, key=external_id_sort_key):
+            for cur_item in await self.get_library_items_by_external_id(
+                external_id, external_id_type, limit=None
+            ):
+                if cur_item.item_id in seen_item_ids:
+                    continue
+                seen_item_ids.add(cur_item.item_id)
+                if compare_media_item(item, cur_item):
+                    return int(cur_item.item_id)
         # search by normalized exact name match
         query = (
             f"{self.db_table}.search_name = :search_name "

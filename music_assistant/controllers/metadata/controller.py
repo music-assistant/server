@@ -415,8 +415,8 @@ class MetaDataController(
             metadata={"task_domain": "metadata_thumb_cache_cleanup"},
             allow_retry=True,
         )
-        # runs every hour rather than spread across the day: it is already bounded to a
-        # handful of albums per run, so there is no shared-mirror stampede to avoid
+        # runs every hour rather than spread across the day: it is bounded to a small
+        # batch of albums per run, so there is no shared-mirror stampede to avoid
         self.mass.tasks.register_scheduled_task(
             task_id=ALBUM_RECONCILIATION_TASK_ID,
             name="Reconcile duplicate albums",

@@ -474,10 +474,15 @@ async def test_base_mapping_skipped_when_exact_instance_not_loaded() -> None:
 
 async def test_candidate_tracklist_not_found_falls_through_to_musicbrainz() -> None:
     """A candidate tracklist that 404s is treated as absent so MusicBrainz can decide."""
-    musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
+    musicbrainz = _mb(
+        **{
+            BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+            OTHER_BARCODE: [_mb_release("rel-2", "rg-2")],
+        }
+    )
     base = _library_album(version="2022 Remaster", barcodes=[BASE_BARCODE])
-    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[BASE_BARCODE])
-    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[BASE_BARCODE])
+    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[OTHER_BARCODE])
+    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[OTHER_BARCODE])
     with _harness(
         search_results=[sparse],
         provider_items={"s1": full},
@@ -486,16 +491,23 @@ async def test_candidate_tracklist_not_found_falls_through_to_musicbrainz() -> N
     ) as harness:
         matches = await harness.match(base)
 
-    assert [mapping.item_id for mapping in matches] == ["s1"]
+    # MusicBrainz was consulted despite the tracklist failure and its verdict
+    # (disjoint release groups) was applied
+    assert matches == []
     musicbrainz.get_releases_by_barcode.assert_awaited()
 
 
 async def test_candidate_tracklist_transient_error_falls_through_to_musicbrainz() -> None:
     """A transient candidate tracklist failure is treated as absent so MusicBrainz can decide."""
-    musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
+    musicbrainz = _mb(
+        **{
+            BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+            OTHER_BARCODE: [_mb_release("rel-2", "rg-2")],
+        }
+    )
     base = _library_album(version="2022 Remaster", barcodes=[BASE_BARCODE])
-    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[BASE_BARCODE])
-    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[BASE_BARCODE])
+    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[OTHER_BARCODE])
+    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[OTHER_BARCODE])
     with _harness(
         search_results=[sparse],
         provider_items={"s1": full},
@@ -504,7 +516,9 @@ async def test_candidate_tracklist_transient_error_falls_through_to_musicbrainz(
     ) as harness:
         matches = await harness.match(base)
 
-    assert [mapping.item_id for mapping in matches] == ["s1"]
+    # MusicBrainz was consulted despite the tracklist failure and its verdict
+    # (disjoint release groups) was applied
+    assert matches == []
     musicbrainz.get_releases_by_barcode.assert_awaited()
 
 
@@ -545,7 +559,7 @@ def _mb_harness(
     musicbrainz: Mock | None,
     *,
     base_barcodes: Sequence[str] = (BASE_BARCODE,),
-    compare_barcodes: Sequence[str] = (BASE_BARCODE,),
+    compare_barcodes: Sequence[str] = (OTHER_BARCODE,),
 ) -> Iterator[tuple[_Harness, Album]]:
     """Yield a harness plus base album whose only candidate is ambiguous past fingerprints."""
     base = _library_album(version="2022 Remaster", barcodes=base_barcodes)
@@ -561,22 +575,23 @@ def _mb_harness(
         yield harness, base
 
 
-async def test_musicbrainz_shared_single_release_matches() -> None:
-    """A barcode resolving to one shared specific release confirms the match."""
-    musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
-    with _mb_harness(musicbrainz) as (harness, base):
+async def test_shared_barcode_resolves_ambiguity_without_musicbrainz() -> None:
+    """A shared barcode resolves an ambiguous edition wording without any lookups."""
+    musicbrainz = _mb()
+    with _mb_harness(musicbrainz, compare_barcodes=(BASE_BARCODE,)) as (harness, base):
         matches = await harness.match(base)
 
     assert [mapping.item_id for mapping in matches] == ["s1"]
-    # the tracklist is consulted before MusicBrainz is ever asked
-    assert harness.album_track_calls() == ["base-prov", "s1"]
-    musicbrainz.get_releases_by_barcode.assert_awaited()
+    musicbrainz.get_releases_by_barcode.assert_not_awaited()
 
 
 async def test_musicbrainz_multiple_releases_per_barcode_abstains() -> None:
     """A barcode resolving to several releases is ambiguous and must not match."""
     musicbrainz = _mb(
-        **{BASE_BARCODE: [_mb_release("rel-1", "rg-1"), _mb_release("rel-2", "rg-1")]}
+        **{
+            BASE_BARCODE: [_mb_release("rel-1", "rg-1"), _mb_release("rel-2", "rg-1")],
+            OTHER_BARCODE: [_mb_release("rel-3", "rg-1")],
+        }
     )
     with _mb_harness(musicbrainz) as (harness, base):
         assert await harness.match(base) == []
@@ -584,11 +599,19 @@ async def test_musicbrainz_multiple_releases_per_barcode_abstains() -> None:
 
 async def test_musicbrainz_multiple_barcodes_are_all_considered() -> None:
     """Every canonical barcode on each album is used, not just the first."""
-    musicbrainz = _mb(**{THIRD_BARCODE: [_mb_release("rel-9", "rg-9")]})
+    musicbrainz = _mb(
+        **{
+            BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+            THIRD_BARCODE: [_mb_release("rel-9", "rg-9")],
+            OTHER_BARCODE: [_mb_release("rel-2", "rg-9")],
+        }
+    )
     with _mb_harness(
-        musicbrainz, base_barcodes=(BASE_BARCODE, THIRD_BARCODE), compare_barcodes=(THIRD_BARCODE,)
+        musicbrainz, base_barcodes=(BASE_BARCODE, THIRD_BARCODE), compare_barcodes=(OTHER_BARCODE,)
     ) as (harness, base):
-        assert [mapping.item_id for mapping in await harness.match(base)] == ["s1"]
+        assert await harness.match(base) == []
+    queried = {call.args[0] for call in musicbrainz.get_releases_by_barcode.await_args_list}
+    assert queried == {BASE_BARCODE, OTHER_BARCODE, THIRD_BARCODE}
 
 
 async def test_musicbrainz_shared_release_group_alone_does_not_match() -> None:
@@ -647,6 +670,28 @@ def _mb_evidence_ctrl(musicbrainz: Mock) -> AlbumsController:
     return ctrl
 
 
+async def test_musicbrainz_evidence_shared_single_release_matches() -> None:
+    """A shared barcode resolving to exactly one specific release is positive evidence."""
+    musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
+    ctrl = _mb_evidence_ctrl(musicbrainz)
+    base = _library_album(barcodes=(BASE_BARCODE,))
+    compare = _album("s1", "spotify_1", barcodes=(BASE_BARCODE,))
+
+    assert await ctrl._musicbrainz_album_evidence(base, compare) == AlbumMatchEvidence.MATCH
+
+
+async def test_musicbrainz_evidence_ambiguous_barcode_is_not_release_identity() -> None:
+    """A shared barcode resolving to several releases never identifies a specific release."""
+    musicbrainz = _mb(
+        **{BASE_BARCODE: [_mb_release("rel-1", "rg-1"), _mb_release("rel-2", "rg-1")]}
+    )
+    ctrl = _mb_evidence_ctrl(musicbrainz)
+    base = _library_album(barcodes=(BASE_BARCODE,))
+    compare = _album("s1", "spotify_1", barcodes=(BASE_BARCODE,))
+
+    assert await ctrl._musicbrainz_album_evidence(base, compare) == AlbumMatchEvidence.INSUFFICIENT
+
+
 async def test_musicbrainz_evidence_all_resolved_disjoint_groups_reject() -> None:
     """Disjoint release groups are negative evidence when every barcode resolved."""
     musicbrainz = _mb(
@@ -698,7 +743,7 @@ async def test_get_library_item_by_match_is_io_free() -> None:
         # every DB lookup returns nothing; a real provider/MusicBrainz call would raise
         get_library_item_by_prov_id=AsyncMock(return_value=None),
         get_library_item_by_prov_mappings=AsyncMock(return_value=None),
-        get_library_items_by_external_ids=AsyncMock(return_value=[]),
+        get_library_items_by_external_id=AsyncMock(return_value=[]),
         get_library_items_by_query=AsyncMock(return_value=[]),
         search=AsyncMock(side_effect=AssertionError("search during sync")),
         get_provider_item=AsyncMock(side_effect=AssertionError("provider fetch during sync")),
