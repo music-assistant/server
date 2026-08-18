@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -29,6 +30,19 @@ from music_assistant.mass import MusicAssistant
 
 _DUPLICATE_NAME = "Shared Track Title"
 _REPORT_FAILURE = "music_assistant.controllers.music.controller.report_current_task_failure"
+
+
+class _TrackSpec(NamedTuple):
+    """How one side of a duplicate pair should differ from the other."""
+
+    provider: str = "spotify_instance"
+    title: str = _DUPLICATE_NAME
+    album_name: str = "Shared Album"
+    duration: int = 200
+    version: str = ""
+    track_number: int = 1
+    explicit: bool | None = None
+    mbid: str | None = None
 
 
 def _mapping(provider_instance: str, item_id: str) -> ProviderMapping:
@@ -82,6 +96,7 @@ async def _add_track(
     version: str = "",
     track_number: int = 1,
     explicit: bool | None = None,
+    mbid: str | None = None,
 ) -> Track:
     """Create a fixture track under a unique name, so it is stored as its own row."""
     return await mass.music.tracks.add_item_to_library(
@@ -92,6 +107,7 @@ async def _add_track(
             version=version,
             duration=duration,
             metadata=MediaItemMetadata(explicit=explicit),
+            external_ids={(ExternalID.MB_RECORDING, mbid)} if mbid else set(),
             provider_mappings={
                 _mapping(
                     provider_instance,
@@ -129,38 +145,31 @@ async def _make_titles_look_alike(mass: MusicAssistant, track: Track, title: str
 
 async def _build_duplicate_pair(
     mass: MusicAssistant,
-    *,
-    second_provider: str = "qobuz_instance",
-    second_duration: int = 200,
-    second_version: str = "",
-    second_track_number: int = 1,
-    second_album_name: str = "Shared Album",
-    first_explicit: bool | None = None,
-    second_explicit: bool | None = None,
-    first_title: str = _DUPLICATE_NAME,
-    second_title: str = _DUPLICATE_NAME,
+    first: _TrackSpec | None = None,
+    second: _TrackSpec | None = None,
 ) -> tuple[Track, Track]:
-    """Create two same-titled library tracks that differ only as the parameters say."""
-    artist_1 = await _add_artist(mass, "spotify_instance")
-    album_1 = await _add_album(mass, "spotify_instance", artist_1)
-    track_1 = await _add_track(
-        mass, "spotify_instance", artist_1, album_1, name="First Title", explicit=first_explicit
-    )
-    album_2 = await _add_album(mass, second_provider, artist_1, name=second_album_name)
-    track_2 = await _add_track(
-        mass,
-        second_provider,
-        artist_1,
-        album_2,
-        name="Second Title",
-        duration=second_duration,
-        version=second_version,
-        track_number=second_track_number,
-        explicit=second_explicit,
-    )
-    await _make_titles_look_alike(mass, track_1, first_title)
-    await _make_titles_look_alike(mass, track_2, second_title)
-    return track_1, track_2
+    """Create two same-titled library tracks that differ only as the specs say."""
+    first = first or _TrackSpec()
+    second = second or _TrackSpec(provider="qobuz_instance")
+    artist = await _add_artist(mass, first.provider)
+    tracks: list[Track] = []
+    for index, spec in enumerate((first, second)):
+        album = await _add_album(mass, spec.provider, artist, name=spec.album_name)
+        track = await _add_track(
+            mass,
+            spec.provider,
+            artist,
+            album,
+            name=f"Fixture Title {index}",
+            duration=spec.duration,
+            version=spec.version,
+            track_number=spec.track_number,
+            explicit=spec.explicit,
+            mbid=spec.mbid,
+        )
+        await _make_titles_look_alike(mass, track, spec.title)
+        tracks.append(track)
+    return tracks[0], tracks[1]
 
 
 def _bare_controller(candidate_rows: list[dict[str, int]]) -> MusicController:
@@ -195,7 +204,9 @@ async def test_merges_cross_provider_duplicate_tracks(mass: MusicAssistant) -> N
 
 async def test_keeps_different_versions_apart(mass: MusicAssistant) -> None:
     """A remaster is never merged into the original recording."""
-    track_1, track_2 = await _build_duplicate_pair(mass, second_version="Remastered 2011")
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, second=_TrackSpec("qobuz_instance", version="Remastered 2011")
+    )
 
     await mass.music._reconcile_duplicate_tracks()
 
@@ -205,7 +216,9 @@ async def test_keeps_different_versions_apart(mass: MusicAssistant) -> None:
 
 async def test_merges_despite_disagreement_on_the_explicit_flag(mass: MusicAssistant) -> None:
     """Providers routinely disagree on the explicit flag; that alone must not block a merge."""
-    track_1, track_2 = await _build_duplicate_pair(mass, first_explicit=False, second_explicit=True)
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, _TrackSpec(explicit=False), _TrackSpec("qobuz_instance", explicit=True)
+    )
 
     await mass.music._reconcile_duplicate_tracks()
 
@@ -259,11 +272,31 @@ async def test_merges_across_an_ignorable_album_edition(mass: MusicAssistant) ->
         await mass.music.tracks.get_library_item(track_2.item_id)
 
 
-async def test_keeps_differently_titled_tracks_apart(mass: MusicAssistant) -> None:
-    """Titles that only look alike once normalized still have to survive the full compare."""
-    # both titles normalize to the same search_name, so the candidate query pairs them up
+async def test_merges_titles_that_differ_only_in_punctuation(mass: MusicAssistant) -> None:
+    """A curly apostrophe against a straight one is the same title, so the rows still merge."""
     track_1, track_2 = await _build_duplicate_pair(
-        mass, first_title="Song, One", second_title="Song One!"
+        mass,
+        _TrackSpec(title="You\u2019re My Best Friend"),
+        _TrackSpec("qobuz_instance", title="You're My Best Friend"),
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_keeps_distinct_recordings_apart(mass: MusicAssistant) -> None:
+    """Two different MusicBrainz recordings are different tracks, whatever else lines up."""
+    track_1, track_2 = await _build_duplicate_pair(
+        mass,
+        _TrackSpec(mbid="11111111-1111-1111-1111-111111111111"),
+        _TrackSpec("qobuz_instance", mbid="22222222-2222-2222-2222-222222222222"),
     )
 
     await mass.music._reconcile_duplicate_tracks()
@@ -327,7 +360,9 @@ async def test_ignores_tracks_with_an_unreported_album_position(mass: MusicAssis
 
 async def test_ignores_albums_whose_title_normalizes_to_nothing(mass: MusicAssistant) -> None:
     """Symbol-only album titles are not treated as agreement, they match everything."""
-    track_1, track_2 = await _build_duplicate_pair(mass, second_album_name="+")
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, second=_TrackSpec("qobuz_instance", album_name="+")
+    )
     for track in (track_1, track_2):
         album_id = (
             await mass.music.database.get_rows(
@@ -346,7 +381,7 @@ async def test_ignores_albums_whose_title_normalizes_to_nothing(mass: MusicAssis
 
 async def test_ignores_tracks_from_the_same_provider(mass: MusicAssistant) -> None:
     """Two rows of the same provider are left alone, however alike they look."""
-    track_1, track_2 = await _build_duplicate_pair(mass, second_provider="spotify_instance")
+    track_1, track_2 = await _build_duplicate_pair(mass, second=_TrackSpec("spotify_instance"))
 
     await mass.music._reconcile_duplicate_tracks()
 
@@ -356,7 +391,9 @@ async def test_ignores_tracks_from_the_same_provider(mass: MusicAssistant) -> No
 
 async def test_requires_agreement_on_the_album(mass: MusicAssistant) -> None:
     """Tracks that sit on differently titled albums are not treated as duplicates."""
-    track_1, track_2 = await _build_duplicate_pair(mass, second_album_name="Greatest Hits")
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, second=_TrackSpec("qobuz_instance", album_name="Greatest Hits")
+    )
 
     await mass.music._reconcile_duplicate_tracks()
 
@@ -366,7 +403,9 @@ async def test_requires_agreement_on_the_album(mass: MusicAssistant) -> None:
 
 async def test_requires_agreement_on_the_album_position(mass: MusicAssistant) -> None:
     """Tracks at a different position on the same album are not treated as duplicates."""
-    track_1, track_2 = await _build_duplicate_pair(mass, second_track_number=4)
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, second=_TrackSpec("qobuz_instance", track_number=4)
+    )
 
     await mass.music._reconcile_duplicate_tracks()
 
@@ -376,7 +415,9 @@ async def test_requires_agreement_on_the_album_position(mass: MusicAssistant) ->
 
 async def test_ignores_tracks_with_a_large_duration_difference(mass: MusicAssistant) -> None:
     """A duration difference beyond the tolerance rules out a duplicate."""
-    track_1, track_2 = await _build_duplicate_pair(mass, second_duration=260)
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, second=_TrackSpec("qobuz_instance", duration=260)
+    )
 
     await mass.music._reconcile_duplicate_tracks()
 
