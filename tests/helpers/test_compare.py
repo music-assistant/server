@@ -372,14 +372,43 @@ def test_compare_album_evidence_barcode_never_matches_unrelated_titles() -> None
     assert compare.compare_album(album_a, album_b) is False
 
 
+def test_compare_album_evidence_name_hyphen_spacing_drift_matches() -> None:
+    """Punctuation/spacing drift around a title's hyphenation does not block a match."""
+    album_a = _album(name="All Change - - EP")
+    album_b = _album(item_id="2", provider="test2", name="All Change - EP")
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+    assert compare.compare_album(album_a, album_b) is True
+
+
+def test_compare_album_evidence_name_accent_and_apostrophe_variants_match() -> None:
+    """Diacritic and apostrophe drift in an otherwise identical title does not block a match."""
+    album_a = _album(name="Am\u00e9lie Soundtrack")
+    album_b = _album(item_id="2", provider="test2", name="Amelie Soundtrack")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+    album_a = _album(name="Guns N' Roses Live")
+    album_b = _album(item_id="2", provider="test2", name="Guns N Roses Live")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_unrelated_punctuation_only_titles_stay_distinct() -> None:
+    """Two different titles that both normalize to nothing must not be treated as equal."""
+    album_a = _album(name="...")
+    album_b = _album(item_id="2", provider="test2", name="!!!")
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+    assert compare.compare_album(album_a, album_b) is False
+
+
 def test_compare_album_evidence_mb_releasegroup_not_sufficient_alone() -> None:
     """A shared MusicBrainz release-group is family evidence only, never sufficient identity."""
     releasegroup = {(ExternalID.MB_RELEASEGROUP, "11111111-1111-1111-1111-111111111111")}
-    original = _album(name="Album A", version="", external_ids=releasegroup)
+    original = _album(name="Album A", version="Original Mix", external_ids=releasegroup)
     remaster = _album(item_id="2", provider="test2", name="Album A", version="Live")
     remaster.external_ids = releasegroup
 
-    # a genuine edition conflict (studio vs. live) must not auto-merge on releasegroup alone
+    # a genuine edition conflict (studio mix vs. live) must not auto-merge on releasegroup alone
     assert compare.compare_album_evidence(original, remaster) == compare.AlbumMatchEvidence.NO_MATCH
     assert compare.compare_album(original, remaster) is False
 
@@ -407,6 +436,69 @@ def test_compare_album_evidence_subset_wording_with_recording_conflict_is_no_mat
         == compare.AlbumMatchEvidence.NO_MATCH
     )
     assert compare.compare_album(base_item, compare_item) is False
+
+
+def test_compare_album_evidence_recording_conflict_word_anywhere_is_no_match() -> None:
+    """A recording-changing qualifier stays NO_MATCH even when it's shared, not differing."""
+    # "live" is shared by both sides here (not the token that differs), but a bare
+    # "Live" tag next to a specific "Live at <venue>" tag is still not safe to merge
+    base_item = _album(version="Live")
+    compare_item = _album(item_id="2", provider="test2", version="Live at Wembley")
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item)
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+    assert compare.compare_album(base_item, compare_item) is False
+
+
+def test_compare_album_evidence_equivalent_location_wording_matches() -> None:
+    """Reordered wording that differs only by a harmless connector word ('at') still matches."""
+    base_item = _album(version="Live at Wembley")
+    compare_item = _album(item_id="2", provider="test2", version="Wembley Live")
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item) == compare.AlbumMatchEvidence.MATCH
+    )
+    assert compare.compare_album(base_item, compare_item) is True
+
+
+def test_compare_album_evidence_blank_vs_remaster_version_is_insufficient() -> None:
+    """A blank version next to a tagged remaster is undecided, not a proven conflict."""
+    base_item = _album(version="")
+    compare_item = _album(item_id="2", provider="test2", version="Remaster")
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
+    # the compatibility wrapper stays conservative and does not merge on insufficient evidence
+    assert compare.compare_album(base_item, compare_item) is False
+
+
+def test_compare_album_evidence_blank_vs_remaster_resolves_with_fingerprint() -> None:
+    """A blank-vs-remaster version gap is resolved once track fingerprints are supplied."""
+    base_item = _album(version="")
+    compare_item = _album(item_id="2", provider="test2", version="Remaster")
+    matching_tracks = _tracklist(10)
+
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=matching_tracks, compare_tracks=matching_tracks
+        )
+        == compare.AlbumMatchEvidence.MATCH
+    )
+
+    conflicting_tracks = _tracklist(10, isrc_prefix="USRC28718")
+    assert (
+        compare.compare_album_evidence(
+            base_item,
+            compare_item,
+            base_tracks=matching_tracks,
+            compare_tracks=conflicting_tracks,
+        )
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
 
 
 def test_compare_album_evidence_resolves_with_matching_fingerprint() -> None:
@@ -454,6 +546,21 @@ def test_compare_album_evidence_ordinary_and_deluxe_track_counts_stay_distinct()
     )
 
 
+def test_compare_album_evidence_fingerprint_overrides_matching_metadata() -> None:
+    """A conflicting tracklist overrides an otherwise nominally-matching album."""
+    base_item = _album(version="", year=2020)
+    compare_item = _album(item_id="2", provider="test2", version="", year=2020)
+    base_tracks = _tracklist(8)
+    compare_tracks = _tracklist(14)
+
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=base_tracks, compare_tracks=compare_tracks
+        )
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+
+
 def test_compare_album_track_fingerprint_matching_isrc_and_duration() -> None:
     """Equal ISRC, title and duration at every position is a confident match."""
     base_tracks = _tracklist(3)
@@ -483,6 +590,30 @@ def test_compare_album_track_fingerprint_conflicting_isrc() -> None:
 
     assert (
         compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+
+
+def test_compare_album_track_fingerprint_invalid_isrc_falls_back_to_title_duration() -> None:
+    """A structurally invalid ISRC is ignored, not treated as identity evidence."""
+    base_tracks = [_track("1", track_number=1, name="Track One", duration=200, isrc="NOTANISRC")]
+    matching_compare_tracks = [
+        _track("2", track_number=1, name="Track One", duration=200, isrc="ALSOINVALID")
+    ]
+
+    # both sides tag an (invalid) ISRC, but neither is structurally valid, so the
+    # comparison falls back to title/duration and still finds a match
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, matching_compare_tracks)
+        == compare.AlbumMatchEvidence.MATCH
+    )
+
+    # a genuine title conflict is still caught once the invalid ISRCs are ignored
+    conflicting_compare_tracks = [
+        _track("2", track_number=1, name="Different Track", duration=200, isrc="ALSOINVALID")
+    ]
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, conflicting_compare_tracks)
         == compare.AlbumMatchEvidence.NO_MATCH
     )
 
@@ -520,6 +651,25 @@ def test_compare_album_track_fingerprint_sparse_tracks_are_insufficient() -> Non
     )
     assert (
         compare.compare_album_track_fingerprint([], []) == compare.AlbumMatchEvidence.INSUFFICIENT
+    )
+
+
+def test_compare_album_track_fingerprint_unknown_disc_layout_vs_multi_disc_is_insufficient() -> (
+    None
+):
+    """An unknown (no disc numbers reported at all) layout can't be shape-compared."""
+    # a provider that never reports disc numbers: assumed single disc by omission
+    base_tracks = [_track(str(n), disc_number=0, track_number=n) for n in range(1, 15)]
+    # the other side is a genuine 2-disc release (8 + 6 tracks)
+    compare_tracks = [_track(f"d1-{n}", disc_number=1, track_number=n) for n in range(1, 9)] + [
+        _track(f"d2-{n}", disc_number=2, track_number=n) for n in range(1, 7)
+    ]
+
+    # assuming disc 1 for the unknown side would falsely look like a shape conflict
+    # (or, worse, a false match): neither is safe, so this must stay undecided
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
     )
 
 
