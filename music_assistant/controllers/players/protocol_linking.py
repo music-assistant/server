@@ -185,7 +185,9 @@ class ProtocolLinkingMixin:
                 # never shows up.
                 self._schedule_protocol_evaluation(protocol_player)
                 return
-            # Link was refused or parent has active domain - fall through to search
+            # The parent is registered but did not take the link (it is a group, the
+            # cached id points at the protocol player itself, or the parent already
+            # has an active link from this domain) - fall through to generic matching.
 
         # Look for a matching native player
         if self._try_link_to_existing_player(protocol_player, protocol_domain):
