@@ -10565,6 +10565,90 @@ class TestDerivedProtocolLinking:
         assert derived.protocol_parent_id == "up_aabbccddeeff"
         assert "spb_1" in universal._protocol_player_ids
 
+    def test_derived_stays_with_refused_base_on_replacement(self, mock_mass: MagicMock) -> None:
+        """
+        Keep a derived protocol with its base when the base's link is refused.
+
+        The native player absorbs the first universal player's cast protocol, so the
+        second universal player's cast protocol is refused and stays behind. The
+        sendspin bridge riding on it must stay behind too instead of moving on its own.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        config_store: dict[str, Any] = {
+            f"players/{player_id}": {"enabled": True}
+            for player_id in ("native", "up_a", "up_b", "cc_1", "cc_2", "spb_2")
+        }
+        mock_mass.config.get = MagicMock(side_effect=config_store.get)
+        mock_mass.config.set = MagicMock(side_effect=config_store.__setitem__)
+        mock_mass.config.remove = MagicMock(side_effect=lambda key: config_store.pop(key, None))
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock()
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        identifiers = {IdentifierType.MAC_ADDRESS: mac}
+        universals = {}
+        for universal_id, protocol_ids in (("up_a", ["cc_1"]), ("up_b", ["cc_2", "spb_2"])):
+            universal = UniversalPlayer(
+                provider=up_provider,
+                player_id=universal_id,
+                name=f"Soundbar ({universal_id})",
+                device_info=DeviceInfo(model="Test", manufacturer="Test"),
+                protocol_player_ids=protocol_ids,
+            )
+            universal._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+            universal._cache.clear()
+            universal.update_state(signal_event=False)
+            universal.set_initialized()
+            universals[universal_id] = universal
+
+        native = MockPlayer(
+            MockProvider("linkplay", mass=mock_mass), "native", "Soundbar", identifiers=identifiers
+        )
+        native.set_initialized()
+
+        cast_provider = MockProvider("chromecast", mass=mock_mass)
+        cast_players = {}
+        for cast_id in ("cc_1", "cc_2"):
+            cast_player = MockPlayer(
+                cast_provider,
+                cast_id,
+                f"Cast {cast_id}",
+                player_type=PlayerType.PROTOCOL,
+                identifiers=identifiers,
+            )
+            cast_player.set_initialized()
+            cast_players[cast_id] = cast_player
+
+        derived = self._make_derived_player(mock_mass, "spb_2", "cc_2")
+
+        controller._players = {
+            **universals,
+            **cast_players,
+            "native": native,
+            "spb_2": derived,
+        }
+        controller._add_protocol_link(universals["up_a"], cast_players["cc_1"], "chromecast")
+        controller._add_protocol_link(universals["up_b"], cast_players["cc_2"], "chromecast")
+        controller._add_protocol_link(universals["up_b"], derived, "sendspin")
+
+        controller._check_replace_universal_player(native)
+
+        # the second universal player keeps the refused cast protocol and its bridge
+        assert cast_players["cc_2"].protocol_parent_id == "up_b"
+        assert derived.protocol_parent_id == "up_b"
+        assert {link.output_protocol_id for link in universals["up_b"].linked_output_protocols} == {
+            "cc_2",
+            "spb_2",
+        }
+        # the native player only took over the protocol it could actually claim
+        assert {link.output_protocol_id for link in native.linked_output_protocols} == {"cc_1"}
+        assert "spb_2" not in (config_store.get("players/native/values/linked_protocol_ids") or [])
+
     def test_save_underlying_player_id_persists_and_clears(self, mock_mass: MagicMock) -> None:
         """Test the derived edge is persisted, cleared when revoked and skipped otherwise."""
         controller = PlayerController(mock_mass)

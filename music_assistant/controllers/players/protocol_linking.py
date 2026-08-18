@@ -1039,9 +1039,16 @@ class ProtocolLinkingMixin:
             refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
-            # Transfer all protocol links from universal player to native player
-            for linked in list(player.linked_output_protocols):
+            # Transfer all protocol links from universal player to native player.
+            # Derived protocols ride on another output and must stay with it, so settle
+            # the bases first and let a derived protocol inherit its base's refusal.
+            for linked in sorted(
+                player.linked_output_protocols, key=lambda link: link.derived_from is not None
+            ):
                 if protocol_player := self.get_player(linked.output_protocol_id):
+                    if protocol_player.underlying_player_id in refused_protocol_ids:
+                        refused_protocol_ids.add(protocol_player.player_id)
+                        continue
                     protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
