@@ -1456,8 +1456,8 @@ class ProtocolLinkingMixin:
         Drop a protocol's output entry from every parent except the one that owns it.
 
         A parent that still holds an active entry while another parent takes the protocol
-        is out of date, so its cached id is dropped as well. Parents that already gave up
-        the active entry keep their cached id and can still offer the protocol for re-enabling.
+        is out of date, so its stored ownership is dropped as well. Parents that already gave
+        up the active entry keep theirs and can still offer the protocol for re-enabling.
 
         :param protocol_player_id: Player id of the protocol player that got a new parent.
         :param parent_id: Player id of the parent that now owns it.
@@ -1465,15 +1465,12 @@ class ProtocolLinkingMixin:
         for player in list(self._players.values()):
             if player.player_id == parent_id:
                 continue
-            remaining = [
-                link
+            if not any(
+                link.output_protocol_id == protocol_player_id
                 for link in player.linked_output_protocols
-                if link.output_protocol_id != protocol_player_id
-            ]
-            if len(remaining) == len(player.linked_output_protocols):
+            ):
                 continue
-            player.set_linked_output_protocols(remaining)
-            self._remove_protocol_id_from_cache(player.player_id, protocol_player_id)
+            self._remove_protocol_ids_from_parent(player, {protocol_player_id})
             self.logger.debug(
                 "Removed stale output %s from %s: it is owned by %s",
                 protocol_player_id,

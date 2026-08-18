@@ -9034,6 +9034,60 @@ class TestCachedProtocolLinkRecovery:
         # the stale cached id is gone too, so the bridge is not offered here as disabled
         assert store[CONF_PLAYERS]["heos_player"]["values"]["linked_protocol_ids"] == []
 
+    def test_claiming_a_protocol_clears_universal_membership(self, mock_mass: MagicMock) -> None:
+        """A wrapper that loses a protocol also gives up its stored membership."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: STORED_UNIVERSAL_ID},
+                },
+                STORED_UNIVERSAL_ID: {
+                    "provider": "universal_player",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+                "heos_player": {
+                    "provider": "heos--z",
+                    "player_type": "player",
+                    "values": {},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        wrapper = _create_universal_player(
+            mock_mass, STORED_UNIVERSAL_ID, "AVR (wrapper)", ["ap_shared"]
+        )
+        wrapper.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="ap_shared", protocol_domain="airplay")]
+        )
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "AVR (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        airplay.set_protocol_parent_id(STORED_UNIVERSAL_ID)
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {
+            STORED_UNIVERSAL_ID: wrapper,
+            "ap_shared": airplay,
+            "heos_player": heos_player,
+        }
+
+        controller._add_protocol_link(heos_player, airplay, "airplay")
+
+        assert airplay.protocol_parent_id == "heos_player"
+        assert wrapper.linked_output_protocols == []
+        # the wrapper's stored membership is authoritative and gets written back on save,
+        # so it has to give up the protocol there as well
+        assert wrapper._protocol_player_ids == []
+        assert store[CONF_PLAYERS][STORED_UNIVERSAL_ID]["values"]["linked_protocol_ids"] == []
+
 
 class TestMultiMACMatching:
     """Tests for multi-MAC matching (reported MAC vs ARP MAC)."""
