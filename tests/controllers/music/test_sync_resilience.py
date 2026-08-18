@@ -29,6 +29,8 @@ class FailingAlbumProvider(MusicProvider):
 
     #: provider album id whose ``get_album_tracks`` raises
     fail_album_tracks_for: str | None = None
+    #: yield the albums as provider favorites, so the sync performs its favorite work
+    mark_favorite: bool = False
 
     async def get_library_albums(self) -> AsyncGenerator[Any]:
         """Yield the three test albums."""
@@ -37,7 +39,7 @@ class FailingAlbumProvider(MusicProvider):
             album.item_id = item_id
             album.name = f"Album {item_id}"
             album.uri = f"test://album/{item_id}"
-            album.favorite = False
+            album.favorite = self.mark_favorite
             album.metadata.genres = None
             album.provider_mappings = [MagicMock()]
             yield album
@@ -309,3 +311,21 @@ async def test_item_lookup_failure_skips_only_that_item() -> None:
     # all three were reached, and the two healthy ones were still added
     assert calls == list(ALBUM_IDS)
     assert _synced_album_ids(mass) == ["album_1", "album_3"]
+
+
+async def test_item_stays_tracked_when_ancillary_work_fails() -> None:
+    """
+    An item whose favorite work fails is still recorded as seen.
+
+    Its library row is committed regardless, so leaving it out of the id's would make it
+    an orphan no later cleanup run could ever discover.
+    """
+    mass = _build_mass()
+    provider = _build_provider(mass)
+    provider.mark_favorite = True
+    mass.music.albums.set_favorite = AsyncMock(side_effect=TypeError("bad favorite"))
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    assert mass.music.albums.set_favorite.await_count == len(ALBUM_IDS)
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]

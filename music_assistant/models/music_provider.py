@@ -1080,6 +1080,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.artists.set_favorite(db_id, True)
@@ -1094,7 +1095,6 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._sync_incomplete = True
@@ -1141,6 +1141,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.albums.set_favorite(db_id, True)
@@ -1155,7 +1156,6 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._sync_incomplete = True
@@ -1318,6 +1318,7 @@ class MusicProvider(Provider):
                             lib_fully_played = sync_details.fully_played
                             lib_resume_position_ms = sync_details.resume_position_ms
 
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.audiobooks.set_favorite(db_id, True)
@@ -1344,7 +1345,6 @@ class MusicProvider(Provider):
                         fallback_genres,
                     )
 
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._sync_incomplete = True
@@ -1402,10 +1402,10 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
+                    cur_db_ids.add(int(library_item.item_id))
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.playlists.set_favorite(library_item.item_id, True)
-                cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._sync_incomplete = True
@@ -1432,13 +1432,13 @@ class MusicProvider(Provider):
         item_count = 0
         async for _prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
             prov_track: PlaylistPlayableItem | Podcast = _prov_track
-            if isinstance(_prov_track, PodcastEpisode):
-                # In MA, only full podcasts can be synced to the library
-                prov_track = await self.get_podcast(_prov_track.podcast.item_id)
             item_count += 1
-            self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            controller = self.mass.music.get_controller(prov_track.media_type)
             try:
+                if isinstance(_prov_track, PodcastEpisode):
+                    # In MA, only full podcasts can be synced to the library
+                    prov_track = await self.get_podcast(_prov_track.podcast.item_id)
+                self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
+                controller = self.mass.music.get_controller(prov_track.media_type)
                 sync_details = await controller.get_library_item_sync_details(
                     prov_track.provider_mappings,
                 )
@@ -1518,6 +1518,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.tracks.set_favorite(db_id, True)
@@ -1532,7 +1533,6 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._sync_incomplete = True
@@ -1569,6 +1569,7 @@ class MusicProvider(Provider):
                     else:
                         db_id = sync_details.item_id
                         favorite = sync_details.favorite
+                    cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.podcasts.set_favorite(db_id, True)
@@ -1583,7 +1584,6 @@ class MusicProvider(Provider):
                         db_id,
                         fallback_genres,
                     )
-                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._sync_incomplete = True
@@ -1636,10 +1636,10 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )
+                    cur_db_ids.add(int(library_item.item_id))
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.radio.set_favorite(library_item.item_id, True)
-                cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
 
             except Exception as err:
