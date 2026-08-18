@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import suppress
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 # input args a provider may attach to its StreamDetails (podcastfeed does exactly this).
 # Kept as a tuple so the tests below can never assert against a mutated expectation.
@@ -45,6 +49,7 @@ class _FakeFFMpeg:
         self.returncode: int | None = 0
         self.log_history: list[str] = []
         self.proc = MagicMock(pid=1234)
+        self.stdin_feeder_exception: Exception | None = None
         type(self).last_instance = self
 
     async def start(self) -> None:
@@ -185,6 +190,75 @@ class _TwoMinuteFFMpeg(_FakeFFMpeg):
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
         for _ in range(self.seconds_emitted):
             yield b"\x00" * _PCM_SAMPLE_SIZE
+
+
+class _FailingStartFFMpeg(_FakeFFMpeg):
+    """FFMpeg double that fails while opening its source."""
+
+    async def start(self) -> None:
+        """Fail source startup."""
+        raise RuntimeError("source failed")
+
+
+class _FeederErrorFFMpeg(_FakeFFMpeg):
+    """FFMpeg double whose input feeder failed before producing PCM."""
+
+    error: Exception
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.stdin_feeder_exception = self.error
+
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        """Yield no PCM after the feeder failure."""
+        if _chunk_size < 0:
+            yield b""
+
+
+class _LimitedProvider(MusicProvider):
+    """Music provider with one source-stream slot."""
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Return one source-stream slot."""
+        return 1
+
+    def get_audio_stream(
+        self, _streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Yield a custom source chunk."""
+        del seek_position
+
+        async def _source() -> AsyncGenerator[bytes]:
+            yield b"source"
+
+        return _source()
+
+
+def _limited_provider() -> _LimitedProvider:
+    """Build a one-slot music provider."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.type = ProviderType.MUSIC
+    manifest.domain = "limited"
+    manifest.name = "Limited"
+    config = MagicMock()
+    config.name = "Limited"
+    config.instance_id = "limited--1"
+    config.get_value.return_value = "GLOBAL"
+    return _LimitedProvider(mass, manifest, config)
+
+
+def _provider_http_streamdetails(provider: MusicProvider) -> StreamDetails:
+    """Build HTTP stream details owned by the given provider."""
+    return StreamDetails(
+        provider=provider.instance_id,
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.HTTP,
+        path="http://test.invalid/track.mp3",
+    )
 
 
 def _multi_part_streamdetails() -> StreamDetails:
@@ -439,6 +513,183 @@ async def test_get_media_stream_keeps_caller_extra_input_args_intact(
 
     assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "600"]
     assert streamdetails.extra_input_args == [*_PROVIDER_INPUT_ARGS]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_type", [StreamType.HTTP, StreamType.CUSTOM])
+@pytest.mark.usefixtures("patch_ffmpeg")
+async def test_music_provider_slot_covers_http_and_custom_until_eof(
+    stream_type: StreamType,
+) -> None:
+    """HTTP and CUSTOM sources hold one provider slot until their source reaches EOF."""
+    provider = _limited_provider()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+    streamdetails = StreamDetails(
+        provider=provider.instance_id,
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+        stream_type=stream_type,
+        path="http://test.invalid/track.mp3" if stream_type == StreamType.HTTP else None,
+    )
+    stream = audio.get_media_stream(streamdetails, _make_pcm_format())
+
+    await anext(stream)
+    assert not provider.has_available_stream_slot
+    await _drain(stream)
+
+    cast("MagicMock", audio.mass).get_provider.assert_any_call(
+        provider.instance_id, return_unavailable=True
+    )
+    assert provider.has_available_stream_slot
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("patch_ffmpeg")
+async def test_music_provider_slot_is_acquired_before_hls_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HLS playlist resolution runs inside the provider source lease."""
+    provider = _limited_provider()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+
+    async def _get_hls_substream(_url: str) -> SimpleNamespace:
+        assert not provider.has_available_stream_slot
+        return SimpleNamespace(path="http://test.invalid/media.m3u8")
+
+    monkeypatch.setattr(audio, "get_hls_substream", _get_hls_substream)
+    streamdetails = StreamDetails(
+        provider=provider.instance_id,
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.AAC),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.HLS,
+        path="http://test.invalid/master.m3u8",
+    )
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert provider.has_available_stream_slot
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("patch_ffmpeg")
+async def test_music_provider_without_free_slot_reports_stream_limit() -> None:
+    """A second source on a one-slot provider fails with a typed capacity error."""
+    provider = _limited_provider()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+    streamdetails = _provider_http_streamdetails(provider)
+    active_stream = audio.get_media_stream(streamdetails, _make_pcm_format())
+    await anext(active_stream)
+
+    with pytest.raises(ProviderStreamLimitError):
+        await _drain(
+            audio.get_media_stream(streamdetails, _make_pcm_format(), source_wait_timeout=0)
+        )
+
+    await active_stream.aclose()
+    assert provider.has_available_stream_slot
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("patch_ffmpeg")
+async def test_non_music_provider_source_takes_no_slot() -> None:
+    """Sources owned by a plugin provider stream without any capacity handling."""
+    plugin_provider = MagicMock()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = plugin_provider
+
+    await _drain(
+        audio.get_media_stream(
+            _provider_http_streamdetails(_limited_provider()), _make_pcm_format()
+        )
+    )
+
+    plugin_provider.acquire_stream_slot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_music_provider_slot_releases_on_source_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source startup error releases the provider slot."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _FailingStartFFMpeg)
+    provider = _limited_provider()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+
+    with pytest.raises(AudioError):
+        await _drain(
+            audio.get_media_stream(_provider_http_streamdetails(provider), _make_pcm_format())
+        )
+
+    assert provider.has_available_stream_slot
+
+
+@pytest.mark.asyncio
+async def test_music_provider_slot_releases_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling a stalled source closes the provider lease."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _StallingFFMpeg)
+    provider = _limited_provider()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+    stream = audio.get_media_stream(_provider_http_streamdetails(provider), _make_pcm_format())
+    read_task = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    assert not provider.has_available_stream_slot
+
+    read_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await read_task
+
+    assert provider.has_available_stream_slot
+
+
+@pytest.mark.asyncio
+async def test_audio_buffer_clear_closes_provider_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AudioBuffer cancellation closes the source generator and releases its provider slot."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _StallingFFMpeg)
+    provider = _limited_provider()
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+    audio_buffer = AudioBuffer(_make_pcm_format())
+    audio_buffer.fill(
+        audio.get_media_stream(_provider_http_streamdetails(provider), _make_pcm_format()),
+        source_name="limited",
+    )
+    await asyncio.sleep(0)
+    assert not provider.has_available_stream_slot
+
+    await audio_buffer.clear()
+
+    assert provider.has_available_stream_slot
+
+
+@pytest.mark.asyncio
+async def test_provider_capacity_error_from_ffmpeg_feeder_remains_typed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A capacity error raised by a nested source survives the ffmpeg stage."""
+    provider = _limited_provider()
+    _FeederErrorFFMpeg.error = ProviderStreamLimitError(provider, 5)
+    monkeypatch.setattr(audio_mod, "FFMpeg", _FeederErrorFFMpeg)
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = MagicMock()
+
+    with pytest.raises(ProviderStreamLimitError):
+        await _drain(
+            audio.get_media_stream(
+                _provider_http_streamdetails(provider),
+                _make_pcm_format(),
+            )
+        )
 
 
 @pytest.mark.asyncio

@@ -179,6 +179,11 @@ class SpotifyProvider(MusicProvider):
             )
 
     @property
+    def max_concurrent_streams(self) -> int:
+        """Spotify accounts tolerate two concurrent sessions (main + librespot)."""
+        return 2
+
+    @property
     def audiobooks_supported(self) -> bool:
         """Check if audiobooks are supported for this user/region."""
         return self._audiobooks_supported

@@ -52,6 +52,11 @@ if TYPE_CHECKING:
 class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return ()

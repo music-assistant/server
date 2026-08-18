@@ -14,7 +14,7 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator, Iterable
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -99,6 +99,7 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    STREAM_SLOT_WAIT_TIMEOUT,
     STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
     STREAMDETAILS_INBAND_TITLE_KEY,
 )
@@ -148,6 +149,7 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
     remove_file,
 )
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -155,7 +157,6 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.player import Player
     from music_assistant.models.plugin import PluginProvider
 
@@ -447,6 +448,7 @@ class StreamsAudio:
         seek_position: int = 0,
         filter_params: list[str] | None = None,
         chunk_seconds: float = 1.0,
+        source_wait_timeout: float | None = STREAM_SLOT_WAIT_TIMEOUT,
     ) -> AsyncGenerator[bytes]:
         """
         Get audio stream for given media details as raw PCM.
@@ -460,215 +462,28 @@ class StreamsAudio:
             Defaults to 1 s for track-like sources; callers streaming live
             AudioSources should pass a much smaller value (e.g. 0.02) to keep
             end-to-end latency low.
+        :param source_wait_timeout: Maximum seconds to wait for a free source-stream slot
+            on the providing music provider, or None to wait without a timeout.
+        :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
         """
-        mass = self.mass
-        logger = self.logger.getChild("media_stream")
-        logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
-        # copy: the args below are appended per call, while the StreamDetails is cached on
-        # the queue item and reused across calls (retry, seek, background analysis)
-        extra_input_args = list(streamdetails.extra_input_args or [])
-        # the branches below zero out seek_position where the seek is delegated to the
-        # source itself, so keep the requested position for the duration writeback
-        requested_seek_position = seek_position
-
-        # work out audio source for these streamdetails
-        audio_source: str | AsyncGenerator[bytes]
-        stream_type = streamdetails.stream_type
-        if stream_type == StreamType.CUSTOM:
-            # MusicProvider and PluginProvider both expose get_audio_stream with the same shape
-            provider = mass.get_provider(streamdetails.provider)
-            if provider is None:
-                raise ProviderUnavailableError(
-                    f"Provider {streamdetails.provider} for stream is no longer available"
-                )
-            provider = cast("MusicProvider | PluginProvider", provider)
-            audio_source = provider.get_audio_stream(
-                streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
-            )
-            seek_position = 0 if streamdetails.can_seek else seek_position
-        elif stream_type == StreamType.ICY:
-            assert streamdetails.path is not None
-            assert isinstance(streamdetails.path, (str, list))
-            audio_source = self.get_reconnecting_icy_radio_stream(streamdetails.path, streamdetails)
-            seek_position = 0
-        elif stream_type == StreamType.SHOUTCAST:
-            assert isinstance(streamdetails.path, str)
-            audio_source = self.get_shoutcast_stream(streamdetails.path, streamdetails)
-            seek_position = 0
-        elif stream_type == StreamType.IN_BAND:
-            assert isinstance(streamdetails.path, str)  # for type checking
-
-            # For IN_BAND (OGG/Opus) radio streams, use chained OGG handler.
-            # This handles the chained OGG format by stitching logical bitstreams together
-            # so FFmpeg sees a single continuous stream. Metadata is extracted in-band.
-            audio_source = get_chained_ogg_stream(
-                mass,
-                streamdetails.path,
-                metadata_callback=partial(self._handle_inband_metadata, streamdetails),
-            )
-            seek_position = 0  # seeking not possible on radio streams
-        elif stream_type == StreamType.HLS:
-            assert isinstance(streamdetails.path, str)  # for type checking
-            substream = await self.get_hls_substream(streamdetails.path)
-            audio_source = substream.path
-            if streamdetails.media_type == MediaType.RADIO:
-                # HLS streams (especially the BBC) struggle when they're played directly
-                # with ffmpeg, where they just stop after some minutes,
-                # so we tell ffmpeg to loop around in this case.
-                extra_input_args += ["-stream_loop", "-1", "-re"]
-        else:
-            # all other stream types (HTTP, FILE, etc)
-            if stream_type == StreamType.ENCRYPTED_HTTP:
-                assert streamdetails.decryption_key is not None  # for type checking
-                extra_input_args += ["-decryption_key", streamdetails.decryption_key]
-            if isinstance(streamdetails.path, list):
-                # multi part stream
-                audio_source = self.get_multi_file_stream(streamdetails, seek_position)
-                seek_position = 0  # handled by get_multi_file_stream
-            else:
-                # regular single file/url stream
-                assert isinstance(streamdetails.path, str)  # for type checking
-                audio_source = streamdetails.path
-
-        # pace ffmpeg at native rate for live sources; the producer (e.g.
-        # librespot's pipe backend) may otherwise write faster than realtime.
-        # The initial burst grants a small bounded read-ahead so downstream
-        # jitter does not immediately underrun the player. Providers that need
-        # different pacing can pass their own -re/-readrate args to override.
-        if (
-            streamdetails.media_type == MediaType.AUDIO_SOURCE
-            and "-re" not in extra_input_args
-            and "-readrate" not in extra_input_args
-        ):
-            extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
-
-        # handle seek support
-        if seek_position and streamdetails.duration and streamdetails.allow_seek:
-            extra_input_args += ["-ss", str(int(seek_position))]
-
-        bytes_sent = 0
-        finished = False
-        cancelled = False
-        first_chunk_received = False
-        ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
-        # When a provider hands us already-decoded audio (e.g. Spotify Connect /
-        # AirPlay receivers piping PCM after their own decode), audio_format is
-        # the original source format meant for display while decoded_audio_format
-        # is what ffmpeg actually needs to read off the wire.
-        ffmpeg_input_format = streamdetails.decoded_audio_format or streamdetails.audio_format
-        ffmpeg_proc = FFMpeg(
-            audio_input=audio_source,
-            input_format=ffmpeg_input_format,
-            output_format=pcm_format,
-            filter_params=filter_params,
-            extra_input_args=extra_input_args,
-            collect_log_history=True,
-            loglevel=ffmpeg_loglevel,
+        media_stream = self._get_media_stream(
+            streamdetails,
+            pcm_format,
+            seek_position,
+            filter_params,
+            chunk_seconds,
         )
-
-        try:
-            await ffmpeg_proc.start()
-            assert ffmpeg_proc.proc is not None  # for type checking
-            if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-                logger.log(
-                    VERBOSE_LOG_LEVEL,
-                    "Started media stream for %s - using streamtype: %s "
-                    "- pcm format: %s - ffmpeg PID: %s",
-                    streamdetails.uri,
-                    streamdetails.stream_type,
-                    pcm_format.content_type.value,
-                    ffmpeg_proc.proc.pid,
-                )
-            else:
-                logger.debug(
-                    "Started media stream for %s - using streamtype: %s",
-                    streamdetails.uri,
-                    streamdetails.stream_type,
-                )
-            stream_start = mass.loop.time()
-            chunk_size = calculate_content_length(pcm_format, chunk_seconds)
-            chunk_iter = ffmpeg_proc.iter_chunked(chunk_size)
-            while True:
-                # Time the read, not the yield: catches a stalled source, ignores backpressure.
-                read_timeout = (
-                    STREAM_START_TIMEOUT if not first_chunk_received else STREAM_STALL_TIMEOUT
-                )
-                try:
-                    async with asyncio.timeout(read_timeout):
-                        chunk = await anext(chunk_iter)
-                except StopAsyncIteration:
-                    break
-                except TimeoutError as err:
-                    raise AudioError(f"Source stalled: no audio for {read_timeout}s") from err
-                if not first_chunk_received:
-                    # At this point ffmpeg has started and should now know the codec used
-                    # for encoding the audio.
-                    # Note: ffmpeg_proc.input_format is the same object as
-                    # ffmpeg_input_format, so sample_rate / bit_depth / bit_rate
-                    # parsed from the ffmpeg log already live on streamdetails too.
-                    first_chunk_received = True
-                    # Skip the codec_type writeback when the provider declared a
-                    # decoded format: audio_format already holds the authoritative
-                    # source codec and the probed value would just be the
-                    # post-decode wire format (e.g. PCM for Spotify Connect).
-                    if streamdetails.decoded_audio_format is None:
-                        streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
-                    # Some providers omit (or report 0 for) the item duration; ffmpeg can
-                    # usually probe it from the source. Only apply when missing so we
-                    # don't clobber an accurate provider value with a rounded one.
-                    if ffmpeg_proc.parsed_duration is not None and not streamdetails.duration:
-                        streamdetails.duration = ffmpeg_proc.parsed_duration
-                    logger.debug(
-                        "First chunk received after %.2f seconds (codec detected: %s)",
-                        mass.loop.time() - stream_start,
-                        ffmpeg_proc.input_format.codec_type,
-                    )
+        # resolve the exact owning instance (even when flagged unavailable) so the
+        # slot is charged to the account that issued the streamdetails
+        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        stream_slot = (
+            provider.acquire_stream_slot(source_wait_timeout)
+            if isinstance(provider, MusicProvider)
+            else nullcontext()
+        )
+        async with stream_slot, aclosing(media_stream):
+            async for chunk in media_stream:
                 yield chunk
-                bytes_sent += len(chunk)
-
-            # end of audio/track reached
-            logger.debug("End of media stream reached for %s", streamdetails.uri)
-            # wait until stderr also completed reading
-            await ffmpeg_proc.wait_with_timeout(5)
-            logger.log(
-                VERBOSE_LOG_LEVEL,
-                "FFmpeg process ended with return code %s for %s",
-                ffmpeg_proc.returncode,
-                streamdetails.uri,
-            )
-            if ffmpeg_proc.returncode not in (0, None):
-                log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
-                raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
-            if bytes_sent == 0:
-                # edge case: no audio data was received at all
-                raise AudioError("No audio was received")
-            finished = True
-        except (Exception, GeneratorExit, asyncio.CancelledError) as err:
-            if isinstance(err, asyncio.CancelledError | GeneratorExit):
-                # we were cancelled, just raise
-                cancelled = True
-                raise
-            # dump the last 10 lines of the log in case of an unclean exit
-            logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
-            raise AudioError(f"Error while streaming: {err}") from err
-        finally:
-            # always ensure close is called which also handles all cleanup
-            await ffmpeg_proc.close()
-            # determine how many seconds we've received
-            # for pcm output we can calculate this easily
-            seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration, but only for a playthrough from the very start:
-            # a seeked stream yields the remaining audio, not the item's full length
-            if finished and not requested_seek_position and seconds_received:
-                streamdetails.duration = int(seconds_received)
-
-            logger.log(
-                VERBOSE_LOG_LEVEL,
-                "stream %s (with code %s) for %s",
-                "cancelled" if cancelled else "finished" if finished else "aborted",
-                ffmpeg_proc.returncode,
-                streamdetails.uri,
-            )
 
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
@@ -2835,6 +2650,253 @@ class StreamsAudio:
             "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
         )
         return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
+
+    async def _get_media_stream(
+        self,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+        seek_position: int,
+        filter_params: list[str] | None,
+        chunk_seconds: float,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Stream one provider source as raw PCM.
+
+        :param streamdetails: Details of the stream to fetch.
+        :param pcm_format: Target PCM format the consumer expects.
+        :param seek_position: Requested seek offset in seconds.
+        :param filter_params: Optional ffmpeg filter expressions.
+        :param chunk_seconds: Size of each yielded chunk in seconds of audio.
+        """
+        mass = self.mass
+        logger = self.logger.getChild("media_stream")
+        logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
+        # copy: the args below are appended per call, while the StreamDetails is cached on
+        # the queue item and reused across calls (retry, seek, background analysis)
+        extra_input_args = list(streamdetails.extra_input_args or [])
+        # the resolver below zeroes out seek_position where the seek is delegated to the
+        # source itself, so keep the requested position for the duration writeback
+        requested_seek_position = seek_position
+
+        # work out audio source for these streamdetails
+        audio_source, seek_position, extra_input_args = await self._resolve_media_stream_source(
+            streamdetails, seek_position, extra_input_args
+        )
+
+        # pace ffmpeg at native rate for live sources; the producer (e.g.
+        # librespot's pipe backend) may otherwise write faster than realtime.
+        # The initial burst grants a small bounded read-ahead so downstream
+        # jitter does not immediately underrun the player. Providers that need
+        # different pacing can pass their own -re/-readrate args to override.
+        if (
+            streamdetails.media_type == MediaType.AUDIO_SOURCE
+            and "-re" not in extra_input_args
+            and "-readrate" not in extra_input_args
+        ):
+            extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
+
+        # handle seek support
+        if seek_position and streamdetails.duration and streamdetails.allow_seek:
+            extra_input_args += ["-ss", str(int(seek_position))]
+
+        bytes_sent = 0
+        finished = False
+        cancelled = False
+        first_chunk_received = False
+        ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
+        # When a provider hands us already-decoded audio (e.g. Spotify Connect /
+        # AirPlay receivers piping PCM after their own decode), audio_format is
+        # the original source format meant for display while decoded_audio_format
+        # is what ffmpeg actually needs to read off the wire.
+        ffmpeg_input_format = streamdetails.decoded_audio_format or streamdetails.audio_format
+        ffmpeg_proc = FFMpeg(
+            audio_input=audio_source,
+            input_format=ffmpeg_input_format,
+            output_format=pcm_format,
+            filter_params=filter_params,
+            extra_input_args=extra_input_args,
+            collect_log_history=True,
+            loglevel=ffmpeg_loglevel,
+        )
+
+        try:
+            await ffmpeg_proc.start()
+            assert ffmpeg_proc.proc is not None  # for type checking
+            if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Started media stream for %s - using streamtype: %s "
+                    "- pcm format: %s - ffmpeg PID: %s",
+                    streamdetails.uri,
+                    streamdetails.stream_type,
+                    pcm_format.content_type.value,
+                    ffmpeg_proc.proc.pid,
+                )
+            else:
+                logger.debug(
+                    "Started media stream for %s - using streamtype: %s",
+                    streamdetails.uri,
+                    streamdetails.stream_type,
+                )
+            stream_start = mass.loop.time()
+            chunk_size = calculate_content_length(pcm_format, chunk_seconds)
+            chunk_iter = ffmpeg_proc.iter_chunked(chunk_size)
+            while True:
+                # Time the read, not the yield: catches a stalled source, ignores backpressure.
+                read_timeout = (
+                    STREAM_START_TIMEOUT if not first_chunk_received else STREAM_STALL_TIMEOUT
+                )
+                try:
+                    async with asyncio.timeout(read_timeout):
+                        chunk = await anext(chunk_iter)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as err:
+                    raise AudioError(f"Source stalled: no audio for {read_timeout}s") from err
+                if not first_chunk_received:
+                    # At this point ffmpeg has started and should now know the codec used
+                    # for encoding the audio.
+                    # Note: ffmpeg_proc.input_format is the same object as
+                    # ffmpeg_input_format, so sample_rate / bit_depth / bit_rate
+                    # parsed from the ffmpeg log already live on streamdetails too.
+                    first_chunk_received = True
+                    # Skip the codec_type writeback when the provider declared a
+                    # decoded format: audio_format already holds the authoritative
+                    # source codec and the probed value would just be the
+                    # post-decode wire format (e.g. PCM for Spotify Connect).
+                    if streamdetails.decoded_audio_format is None:
+                        streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
+                    # Some providers omit (or report 0 for) the item duration; ffmpeg can
+                    # usually probe it from the source. Only apply when missing so we
+                    # don't clobber an accurate provider value with a rounded one.
+                    if ffmpeg_proc.parsed_duration is not None and not streamdetails.duration:
+                        streamdetails.duration = ffmpeg_proc.parsed_duration
+                    logger.debug(
+                        "First chunk received after %.2f seconds (codec detected: %s)",
+                        mass.loop.time() - stream_start,
+                        ffmpeg_proc.input_format.codec_type,
+                    )
+                yield chunk
+                bytes_sent += len(chunk)
+
+            # end of audio/track reached
+            logger.debug("End of media stream reached for %s", streamdetails.uri)
+            # wait until stderr also completed reading
+            await ffmpeg_proc.wait_with_timeout(5)
+            logger.log(
+                VERBOSE_LOG_LEVEL,
+                "FFmpeg process ended with return code %s for %s",
+                ffmpeg_proc.returncode,
+                streamdetails.uri,
+            )
+            # a nested source raises through the stdin feeder, where ffmpeg's own exit
+            # would otherwise flatten it into a generic AudioError
+            if isinstance(ffmpeg_proc.stdin_feeder_exception, ProviderStreamLimitError):
+                raise ffmpeg_proc.stdin_feeder_exception
+            if ffmpeg_proc.returncode not in (0, None):
+                log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
+                raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
+            if bytes_sent == 0:
+                # edge case: no audio data was received at all
+                raise AudioError("No audio was received")
+            finished = True
+        except (Exception, GeneratorExit, asyncio.CancelledError) as err:
+            if isinstance(err, asyncio.CancelledError | GeneratorExit):
+                # we were cancelled, just raise
+                cancelled = True
+                raise
+            if isinstance(ffmpeg_proc.stdin_feeder_exception, ProviderStreamLimitError):
+                raise ffmpeg_proc.stdin_feeder_exception
+            # dump the last 10 lines of the log in case of an unclean exit
+            logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
+            raise AudioError(f"Error while streaming: {err}") from err
+        finally:
+            # always ensure close is called which also handles all cleanup
+            await ffmpeg_proc.close()
+            # determine how many seconds we've received
+            # for pcm output we can calculate this easily
+            seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
+            # store accurate duration, but only for a playthrough from the very start:
+            # a seeked stream yields the remaining audio, not the item's full length
+            if finished and not requested_seek_position and seconds_received:
+                streamdetails.duration = int(seconds_received)
+
+            logger.log(
+                VERBOSE_LOG_LEVEL,
+                "stream %s (with code %s) for %s",
+                "cancelled" if cancelled else "finished" if finished else "aborted",
+                ffmpeg_proc.returncode,
+                streamdetails.uri,
+            )
+
+    async def _resolve_media_stream_source(
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int,
+        extra_input_args: list[str],
+    ) -> tuple[str | AsyncGenerator[bytes], int, list[str]]:
+        """
+        Resolve the input consumed by ffmpeg for the given stream details.
+
+        :param streamdetails: Details of the stream to fetch.
+        :param seek_position: Requested seek offset in seconds.
+        :param extra_input_args: Provider-supplied ffmpeg input arguments.
+        :return: The ffmpeg input, the remaining seek offset and the ffmpeg input arguments.
+        """
+        stream_type = streamdetails.stream_type
+        if stream_type == StreamType.CUSTOM:
+            # MusicProvider and PluginProvider both expose get_audio_stream with the same shape
+            provider = self.mass.get_provider(streamdetails.provider)
+            if provider is None:
+                raise ProviderUnavailableError(
+                    f"Provider {streamdetails.provider} for stream is no longer available"
+                )
+            provider = cast("MusicProvider | PluginProvider", provider)
+            audio_source = provider.get_audio_stream(
+                streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
+            )
+            return audio_source, 0 if streamdetails.can_seek else seek_position, extra_input_args
+        if stream_type == StreamType.ICY:
+            assert streamdetails.path is not None
+            assert isinstance(streamdetails.path, (str, list))
+            audio_source = self.get_reconnecting_icy_radio_stream(streamdetails.path, streamdetails)
+            return audio_source, 0, extra_input_args
+        if stream_type == StreamType.SHOUTCAST:
+            assert isinstance(streamdetails.path, str)
+            return self.get_shoutcast_stream(streamdetails.path, streamdetails), 0, extra_input_args
+        if stream_type == StreamType.IN_BAND:
+            assert isinstance(streamdetails.path, str)  # for type checking
+
+            # For IN_BAND (OGG/Opus) radio streams, use chained OGG handler.
+            # This handles the chained OGG format by stitching logical bitstreams together
+            # so FFmpeg sees a single continuous stream. Metadata is extracted in-band.
+            audio_source = get_chained_ogg_stream(
+                self.mass,
+                streamdetails.path,
+                metadata_callback=partial(self._handle_inband_metadata, streamdetails),
+            )
+            # seeking not possible on radio streams
+            return audio_source, 0, extra_input_args
+        if stream_type == StreamType.HLS:
+            assert isinstance(streamdetails.path, str)  # for type checking
+            substream = await self.get_hls_substream(streamdetails.path)
+            if streamdetails.media_type == MediaType.RADIO:
+                # HLS streams (especially the BBC) struggle when they're played directly
+                # with ffmpeg, where they just stop after some minutes,
+                # so we tell ffmpeg to loop around in this case.
+                extra_input_args += ["-stream_loop", "-1", "-re"]
+            return substream.path, seek_position, extra_input_args
+
+        # all other stream types (HTTP, FILE, etc)
+        if stream_type == StreamType.ENCRYPTED_HTTP:
+            assert streamdetails.decryption_key is not None  # for type checking
+            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
+        if isinstance(streamdetails.path, list):
+            # multi part stream, which handles the seek itself
+            return self.get_multi_file_stream(streamdetails, seek_position), 0, extra_input_args
+        # regular single file/url stream
+        assert isinstance(streamdetails.path, str)  # for type checking
+        return streamdetails.path, seek_position, extra_input_args
 
     async def _iter_audio_source_pcm(
         self,

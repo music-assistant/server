@@ -71,6 +71,11 @@ class InternetArchiveProvider(MusicProvider):
         self.client = InternetArchiveClient(mass)
         self.streaming = InternetArchiveStreaming(self)
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return ()
