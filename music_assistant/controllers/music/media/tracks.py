@@ -656,7 +656,7 @@ class TracksController(MediaControllerBase[Track]):
                     fallback=search_result_item,
                 )
                 if compare_track(base_track, prov_track, strict=strict, track_albums=ref_albums):
-                    matches.extend(search_result_item.provider_mappings)
+                    matches.extend(prov_track.provider_mappings)
 
         if not matches:
             self.logger.debug(
@@ -740,7 +740,12 @@ class TracksController(MediaControllerBase[Track]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Track, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Track,
+        overwrite: bool = False,
+        *,
+        set_album: bool = True,
     ) -> None:
         """Update Track record in the database, merging data."""
         db_id = int(item_id)  # ensure integer
@@ -783,7 +788,7 @@ class TracksController(MediaControllerBase[Track]):
         artists = update.artists if overwrite else cur_item.artists + update.artists
         await self._set_track_artists(db_id, artists, overwrite=overwrite)
         # update/set track album
-        if update.album:
+        if update.album and set_album:
             await self._set_track_album(
                 db_id=db_id,
                 album=update.album,
@@ -792,6 +797,10 @@ class TracksController(MediaControllerBase[Track]):
                 overwrite=overwrite,
             )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    async def _update_library_item_for_merge(self, item_id: int, update: Track) -> None:
+        """Merge track model state without replacing existing album relations."""
+        await self._update_library_item(item_id, update, set_album=False)
 
     async def _set_track_album(
         self,

@@ -1387,6 +1387,20 @@ class GenreController(MediaControllerBase[Genre]):
         )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    async def _merge_library_item_references(self, target_id: int, source_id: int) -> None:
+        """Transfer media mappings and exclusions owned by a merged genre."""
+        await self._merge_genre_references(target_id, source_id)
+
+    async def _validate_library_item_merge(self, target: Genre, source: Genre) -> None:
+        """Validate that two genres belong to the same taxonomy."""
+        await super()._validate_library_item_merge(target, source)
+        if target.content_type != source.content_type:
+            msg = (
+                f"Cannot merge genre '{source.name}' into '{target.name}': "
+                "genres must belong to the same taxonomy (music / podcast / audiobook)."
+            )
+            raise InvalidDataError(msg)
+
     async def _bulk_scan_media_genres(self) -> None:
         """
         Bulk-scan all media items and rebuild genre mappings using CTE.
