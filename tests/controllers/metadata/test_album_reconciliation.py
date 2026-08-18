@@ -312,7 +312,35 @@ async def test_reconcile_duplicate_albums_selects_spelled_out_retail_suffix_sibl
     )
     assert plain.item_id != suffixed.item_id
 
-    assert plain.item_id in await _reconciled_ids(mass)
+    assert await _reconciled_ids(mass) == {plain.item_id, suffixed.item_id}
+
+
+async def test_reconcile_duplicate_albums_selects_retail_suffix_on_a_symbol_only_title(
+    mass: MusicAssistant,
+) -> None:
+    """A retail suffix on a title that normalizes to nothing still reaches the matcher."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Nils Frahm",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    await _add_album(mass, "...", artist, provider_instance="spotify_1")
+    suffixed = await _add_album(
+        mass,
+        "... - EP",
+        artist,
+        album_type=AlbumType.SINGLE,
+        provider_instance="apple_music_1",
+    )
+
+    assert await _reconciled_ids(mass) == {suffixed.item_id}
 
 
 async def test_reconcile_duplicate_albums_ignores_other_albums_by_the_same_artist(

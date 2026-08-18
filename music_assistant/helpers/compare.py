@@ -831,25 +831,27 @@ def _compare_safe_strings(base: str, compare: str) -> bool:
 def _normalize_name(name: str) -> str:
     """Return a punctuation/diacritic/whitespace-insensitive name for identity checks."""
     core = create_safe_string(name, True, True)
-    tokens = name.split()
-    if not tokens:
-        return core
-    # a standalone symbol is part of the title where it sits at an edge ("MOTOMAMI +"),
-    # but only a separator between words ("HIStory - Past, Present and Future")
-    lead = _symbol_token(tokens[0])
-    trail = _symbol_token(tokens[-1]) if len(tokens) > 1 else ""
+    stripped = name.strip()
+    # a symbol bordering the title belongs to it ("MOTOMAMI +"), however it is spaced,
+    # while punctuation and symbols between words are drift two spellings may differ on
+    lead = _edge_symbols(stripped)
+    trail = _edge_symbols(stripped[::-1])[::-1]
+    if len(lead) + len(trail) > len(stripped):
+        # a title made up entirely of symbols is reached from both ends
+        trail = ""
     return f"{lead}{core}{trail}"
 
 
-def _symbol_token(token: str) -> str:
-    """Return the identity form of a token that is a bare symbol, else an empty string."""
-    if create_safe_string(token, True, True):
-        # the token has alphanumeric content, so it is already part of the normalized name
-        return ""
-    if not any(unicodedata.category(char).startswith("S") for char in token):
-        # punctuation only (e.g. "!!!" or "( )"): formatting drift rather than identity
-        return ""
-    return token.casefold()
+def _edge_symbols(name: str) -> str:
+    """Return the run of identity-bearing symbols at the start of a title."""
+    # only a mathematical symbol is a title's own wording (Ed Sheeran's operators);
+    # currency and modifier symbols stand in for letters ("bbno$", a backtick for an
+    # apostrophe), which normalization folds away like the punctuation they replace
+    for index, char in enumerate(name):
+        # a symbol anyascii spells out (∂ -> d) already sits in the normalized name
+        if unicodedata.category(char) != "Sm" or create_safe_string(char, True, True):
+            return name[:index].casefold()
+    return name.casefold()
 
 
 def _track_positions(tracks: Sequence[Track]) -> dict[tuple[int, int], Track]:

@@ -619,18 +619,18 @@ def _duplicate_album_sibling_guard() -> str:
         f"({DB_TABLE_ALBUMS}.search_name != '' OR "
         f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
     )
-    # a sibling whose provider spells out the retail suffix is stored under the same name
-    # plus that suffix; only this direction is expressed, because either row of the pair
-    # entering the batch reconciles both, and an equality keeps the search_name index usable
-    name_keys = ", ".join(
-        [
-            f"{DB_TABLE_ALBUMS}.search_name",
-            *(
-                f"{DB_TABLE_ALBUMS}.search_name || '{suffix}'"
-                for suffix in ALBUM_RETAIL_SUFFIX_KEYS
-            ),
-        ]
-    )
+    # a provider that spells out the retail suffix stores the album under the plain name
+    # plus that suffix, so both spellings are sought from either row of the pair; each
+    # stays an equality on dup.search_name so the search_name index remains usable
+    own_name = f"{DB_TABLE_ALBUMS}.search_name"
+    keys = [own_name]
+    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
+        keys.append(f"{own_name} || '{suffix}'")
+        keys.append(
+            f"CASE WHEN {own_name} LIKE '%{suffix}' "
+            f"THEN substr({own_name}, 1, length({own_name}) - {len(suffix)}) END"
+        )
+    name_keys = ", ".join(keys)
     # deliberately an identity-only pre-filter: which editions may be merged is decided by
     # the album comparison, which escalates an ambiguous edition to tracklists and
     # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright

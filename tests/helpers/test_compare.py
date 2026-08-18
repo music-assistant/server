@@ -457,23 +457,46 @@ def test_compare_album_evidence_name_retail_suffix_stripped() -> None:
 
 def test_compare_album_evidence_trailing_symbol_marks_a_different_release() -> None:
     """A bonus edition marked by a trailing symbol is a release of its own."""
-    album_a = _album(name="MOTOMAMI", year=2022)
-    album_b = _album(item_id="2", provider="test2", name="MOTOMAMI +", year=2022)
+    for name in ("MOTOMAMI +", "MOTOMAMI+"):
+        album_a = _album(name="MOTOMAMI", year=2022)
+        album_b = _album(item_id="2", provider="test2", name=name, year=2022)
 
-    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
-    assert compare.compare_album(album_a, album_b) is False
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+        ), name
+        assert compare.compare_album(album_a, album_b) is False, name
+
+    # how the symbol is spaced is still formatting the two providers may differ on
+    album_a = _album(name="MOTOMAMI +", year=2022)
+    album_b = _album(item_id="2", provider="test2", name="MOTOMAMI+", year=2022)
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_symbol_standing_in_for_letters_is_still_drift() -> None:
+    """A symbol used to spell a letter is folded away, so both spellings still match."""
+    for stylized, plain in (("bbno$", "bbno"), ("\u0060Round Midnight", "'Round Midnight")):
+        album_a = _album(name=stylized)
+        album_b = _album(item_id="2", provider="test2", name=plain)
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), stylized
+
+    # a mathematical symbol anyascii spells out is counted once, not twice
+    album_a = _album(name="Partial \u2202")
+    album_b = _album(item_id="2", provider="test2", name="Partial d")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
 
 
 def test_compare_album_evidence_symbol_only_titles_identify_their_own_album() -> None:
     """A symbol-titled album (Ed Sheeran's '+', '=', '÷') matches only its own spelling."""
-    for name in ("+", "=", "÷"):
+    for name in ("+", "=", "÷", "\u00d7"):
         assert (
             compare.compare_album_evidence(
                 _album(name=name), _album(item_id="2", provider="test2", name=f"{name} ")
             )
             == compare.AlbumMatchEvidence.MATCH
         ), name
-    for base_name, compare_name in (("+", "="), ("+", "÷"), ("=", "÷")):
+    for base_name, compare_name in (("+", "="), ("+", "÷"), ("=", "÷"), ("\u00d7", "÷")):
         assert (
             compare.compare_album_evidence(
                 _album(name=base_name), _album(item_id="2", provider="test2", name=compare_name)
