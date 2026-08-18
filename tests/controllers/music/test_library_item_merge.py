@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -26,6 +26,7 @@ from music_assistant.constants import (
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.music.media.base import (
     SUPPRESS_MEDIA_ITEM_UPDATES,
@@ -532,6 +533,100 @@ async def test_merge_honors_outer_event_suppression(mass: MusicAssistant) -> Non
     finally:
         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
     signal_event.assert_not_called()
+
+
+async def test_genre_merge_rejects_different_taxonomies(mass: MusicAssistant) -> None:
+    """A genre merge cannot cross music and podcast taxonomies."""
+    target = await mass.music.genres.add_item_to_library(
+        Genre(
+            item_id="0",
+            provider="library",
+            name="Podcast Genre",
+            content_type=MediaType.PODCAST,
+            provider_mappings=set(),
+        )
+    )
+    source = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Music Genre", provider_mappings=set())
+    )
+
+    with pytest.raises(InvalidDataError, match="same taxonomy"):
+        await mass.music.genres.merge_library_items(target.item_id, source.item_id)
+
+    assert await mass.music.genres.get_library_item(target.item_id)
+    assert await mass.music.genres.get_library_item(source.item_id)
+
+
+async def test_merge_retry_does_not_double_play_count(mass: MusicAssistant) -> None:
+    """A retry after a later transfer failure preserves the merged play count."""
+    artist = await _add_artist(mass, "Artist", "target_instance", "target-artist")
+    target_album = await _add_album(
+        mass,
+        "Target Album",
+        "target_instance",
+        "target-album",
+        artist,
+        "target-barcode",
+    )
+    source_album = await _add_album(
+        mass,
+        "Source Album",
+        "source_instance",
+        "source-album",
+        artist,
+        "source-barcode",
+    )
+    target = await _add_track(
+        mass,
+        "Target Track",
+        "target_instance",
+        "target-track",
+        artist,
+        target_album,
+    )
+    source = await _add_track(
+        mass,
+        "Source Track",
+        "source_instance",
+        "source-track",
+        artist,
+        source_album,
+    )
+    await mass.music.database.update(
+        DB_TABLE_TRACKS, {"item_id": int(target.item_id)}, {"play_count": 2}
+    )
+    await mass.music.database.update(
+        DB_TABLE_TRACKS, {"item_id": int(source.item_id)}, {"play_count": 3}
+    )
+
+    with (
+        patch.object(
+            mass.music.tracks,
+            "_merge_genre_mappings",
+            AsyncMock(side_effect=MusicAssistantError("merge failure")),
+        ),
+        pytest.raises(MusicAssistantError, match="merge failure"),
+    ):
+        await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    target_row = await mass.music.database.get_row(
+        DB_TABLE_TRACKS, {"item_id": int(target.item_id)}
+    )
+    source_row = await mass.music.database.get_row(
+        DB_TABLE_TRACKS, {"item_id": int(source.item_id)}
+    )
+    assert target_row is not None
+    assert source_row is not None
+    assert target_row["play_count"] == 5
+    assert source_row["play_count"] == 0
+
+    await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    merged_row = await mass.music.database.get_row(
+        DB_TABLE_TRACKS, {"item_id": int(target.item_id)}
+    )
+    assert merged_row is not None
+    assert merged_row["play_count"] == 5
 
 
 async def _assert_album_merge_result(

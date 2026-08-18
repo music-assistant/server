@@ -2343,9 +2343,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Merge the source library item into the target while the controller lock is held."""
         target_item = await self.get_library_item(target_id)
         source_item = await self.get_library_item(source_id)
-        if target_item.media_type != self.media_type or source_item.media_type != self.media_type:
-            msg = "Library items must have the controller's media type"
-            raise InvalidDataError(msg)
+        await self._validate_library_item_merge(target_item, source_item)
         target_row = await self.mass.music.database.get_row(self.db_table, {"item_id": target_id})
         source_row = await self.mass.music.database.get_row(self.db_table, {"item_id": source_id})
         assert target_row is not None
@@ -2368,13 +2366,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             finally:
                 source_item.provider_mappings = source_mappings
 
+            await self.mass.music.database.execute_write(
+                f"""
+                UPDATE {self.db_table}
+                SET play_count = CASE item_id
+                    WHEN :target_id THEN :merged_play_count
+                    WHEN :source_id THEN 0
+                END
+                WHERE item_id IN (:target_id, :source_id)
+                """,
+                {
+                    "target_id": target_id,
+                    "source_id": source_id,
+                    "merged_play_count": int(target_row["play_count"] or 0)
+                    + int(source_row["play_count"] or 0),
+                },
+            )
             await self.mass.music.database.update(
                 self.db_table,
                 {"item_id": target_id},
                 {
                     "favorite": bool(target_row["favorite"]) or bool(source_row["favorite"]),
-                    "play_count": int(target_row["play_count"] or 0)
-                    + int(source_row["play_count"] or 0),
                     "last_played": max(
                         int(target_row["last_played"] or 0), int(source_row["last_played"] or 0)
                     ),
@@ -2413,6 +2425,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, source_item.uri, source_item)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, merged_item.uri, merged_item)
         return merged_item
+
+    async def _validate_library_item_merge(self, target: ItemCls, source: ItemCls) -> None:
+        """Validate that the target and source items can be merged."""
+        if target.media_type != self.media_type or source.media_type != self.media_type:
+            msg = "Library items must have the controller's media type"
+            raise InvalidDataError(msg)
 
     async def _update_library_item_for_merge(self, item_id: int, update: ItemCls) -> None:
         """Merge model state into an existing library item."""
