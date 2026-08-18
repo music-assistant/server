@@ -1039,12 +1039,28 @@ class ProtocolLinkingMixin:
             refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
-            # Transfer all protocol links from universal player to native player
-            for linked in list(player.linked_output_protocols):
-                if protocol_player := self.get_player(linked.output_protocol_id):
+            # Transfer the protocol links from the universal player to the native player.
+            # A derived protocol rides on another output, so a base and everything riding
+            # on it can only move together: refusing one of them holds back the group.
+            for group in self._group_protocol_links(player):
+                domains = {
+                    protocol_player.player_id: linked.protocol_domain
+                    or protocol_player.provider.domain
+                    for linked, protocol_player in group
+                }
+                if any(
+                    self._parent_has_active_protocol_from_domain(
+                        native_player, domain, exclude_player_id=protocol_id
+                    )
+                    for protocol_id, domain in domains.items()
+                ):
+                    refused_protocol_ids.update(domains.keys())
+                    continue
+                for _, protocol_player in group:
                     protocol_player.set_protocol_parent_id(None)
-                    domain = linked.protocol_domain or protocol_player.provider.domain
-                    self._add_protocol_link(native_player, protocol_player, domain)
+                    self._add_protocol_link(
+                        native_player, protocol_player, domains[protocol_player.player_id]
+                    )
                     if protocol_player.protocol_parent_id != native_player.player_id:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
@@ -1082,6 +1098,45 @@ class ProtocolLinkingMixin:
 
             # Stop playback and remove the now-obsolete universal player
             self.mass.create_task(self._stop_and_unregister(player, native_player.player_id))
+
+    def _group_protocol_links(
+        self, parent: Player
+    ) -> list[list[tuple[LinkedOutputProtocol, Player]]]:
+        """
+        Group a parent's registered protocol links with the protocols riding on them.
+
+        Each group holds one base protocol followed by the derived protocols that ride
+        on it. A protocol whose underlying player is not one of the parent's own links
+        forms a group of its own.
+
+        :param parent: The parent player whose protocol links should be grouped.
+        """
+        registered = [
+            (linked, protocol_player)
+            for linked in parent.linked_output_protocols
+            if (protocol_player := self.get_player(linked.output_protocol_id))
+        ]
+        link_ids = {protocol_player.player_id for _, protocol_player in registered}
+        riders: dict[str, list[tuple[LinkedOutputProtocol, Player]]] = {}
+        bases: list[tuple[LinkedOutputProtocol, Player]] = []
+        for linked, protocol_player in registered:
+            underlying_id = protocol_player.underlying_player_id
+            if underlying_id and underlying_id in link_ids:
+                riders.setdefault(underlying_id, []).append((linked, protocol_player))
+            else:
+                bases.append((linked, protocol_player))
+
+        groups = [
+            [(linked, protocol_player), *riders.get(protocol_player.player_id, [])]
+            for linked, protocol_player in bases
+        ]
+        # A derived protocol riding on another derived protocol has no base group here,
+        # so it moves on its own rather than being dropped from the transfer.
+        grouped_ids = {
+            protocol_player.player_id for group in groups for _, protocol_player in group
+        }
+        groups.extend([entry] for entry in registered if entry[1].player_id not in grouped_ids)
+        return groups
 
     def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """
