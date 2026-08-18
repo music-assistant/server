@@ -467,7 +467,8 @@ class SoloistBinaryManager:
         metadata = self._read_metadata()
         try:
             remote_etag = await self._fetch_remote_etag(arch)
-        except (ClientError, TimeoutError, OSError) as err:
+        except (ClientError, TimeoutError, OSError, DownloadFailedError) as err:
+            # any failed update check keeps the current (still valid) build
             LOGGER.warning("Unable to check for a soloist update: %s", err)
             return False
         if remote_etag is None:

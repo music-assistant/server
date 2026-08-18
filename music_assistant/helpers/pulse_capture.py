@@ -237,10 +237,18 @@ class PulseCaptureServer:
             if self._refcount > 1:
                 self._refcount -= 1
                 return
-            # last consumer: only commit the zero refcount once teardown
-            # finished, so a cancelled/failed stop can be retried and a
-            # concurrent acquire cannot start a second daemon meanwhile
-            await self._stop()
+            # last consumer: run teardown to completion even when this call is
+            # cancelled, and only commit the zero refcount once it finished —
+            # no half-stopped daemon can be left behind or double-started
+            teardown = asyncio.ensure_future(self._stop())
+            try:
+                await asyncio.shield(teardown)
+            except asyncio.CancelledError:
+                while not teardown.done():
+                    with suppress(asyncio.CancelledError):
+                        await asyncio.shield(teardown)
+                self._refcount = 0
+                raise
             self._refcount = 0
 
     def child_env(self, sink_name: str) -> dict[str, str]:

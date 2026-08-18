@@ -248,6 +248,8 @@ RUN set -x \
         pipewire-alsa \
         # Allows pulse audio devices to be detected using pactl. (local audio)
         pulseaudio-utils \
+        # PulseAudio daemon for MA's private audio-capture server (spotify connect soloist)
+        pulseaudio \
         libvorbisidec1 \
         libflac14 \
         libavahi-client3 \
