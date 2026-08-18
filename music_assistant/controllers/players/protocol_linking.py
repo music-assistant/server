@@ -1400,6 +1400,9 @@ class ProtocolLinkingMixin:
 
         # Set protocol player's parent
         protocol_player.set_protocol_parent_id(native_player.player_id)
+        # Ownership is exclusive: a parent that still lists this protocol would show it
+        # twice and hold its domain slot against a genuine protocol of that domain.
+        self._evict_protocol_from_other_parents(protocol_player.player_id, native_player.player_id)
 
         # Persist linked protocol IDs to config for fast restart
         # (only for non-universal players, as universal players handle this themselves)
@@ -1447,6 +1450,36 @@ class ProtocolLinkingMixin:
             # removals because the merge approach will preserve the ID in the cache
         # Always clear the cached parent ID (for both native and universal parents)
         self._clear_protocol_parent_id(protocol_player_id)
+
+    def _evict_protocol_from_other_parents(self, protocol_player_id: str, parent_id: str) -> None:
+        """
+        Drop a protocol's output entry from every parent except the one that owns it.
+
+        A parent that still holds an active entry while another parent takes the protocol
+        is out of date, so its cached id is dropped as well. Parents that already gave up
+        the active entry keep their cached id and can still offer the protocol for re-enabling.
+
+        :param protocol_player_id: Player id of the protocol player that got a new parent.
+        :param parent_id: Player id of the parent that now owns it.
+        """
+        for player in list(self._players.values()):
+            if player.player_id == parent_id:
+                continue
+            remaining = [
+                link
+                for link in player.linked_output_protocols
+                if link.output_protocol_id != protocol_player_id
+            ]
+            if len(remaining) == len(player.linked_output_protocols):
+                continue
+            player.set_linked_output_protocols(remaining)
+            self._remove_protocol_id_from_cache(player.player_id, protocol_player_id)
+            self.logger.debug(
+                "Removed stale output %s from %s: it is owned by %s",
+                protocol_player_id,
+                player.player_id,
+                parent_id,
+            )
 
     def _save_linked_protocol_ids(self, native_player: Player) -> None:
         """

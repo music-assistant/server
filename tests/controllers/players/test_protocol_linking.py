@@ -8952,6 +8952,88 @@ class TestCachedProtocolLinkRecovery:
         assert heos_player.linked_output_protocols == []
         assert not controller._parent_has_active_protocol_from_domain(heos_player, "sendspin")
 
+    def test_claiming_a_protocol_clears_it_from_its_previous_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A parent loses its output entry for a protocol that another parent claims.
+
+        A bridge that registers before the connection it runs on has no owner to
+        compare against yet, so a stale cached id still recovers it onto a native
+        player. Once the connection registers and takes the bridge along, the native
+        player must give up its entry instead of listing the bridge as well.
+        """
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "cast_base": {
+                    "provider": "chromecast--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: STORED_UNIVERSAL_ID},
+                },
+                "spb_bridge": {
+                    "provider": "sendspin--y",
+                    "player_type": "protocol",
+                    "values": {
+                        CONF_PROTOCOL_PARENT_ID: "heos_player",
+                        CONF_UNDERLYING_PLAYER_ID: "cast_base",
+                    },
+                },
+                STORED_UNIVERSAL_ID: {
+                    "provider": "universal_player",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["cast_base"]},
+                },
+                "heos_player": {
+                    "provider": "heos--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["spb_bridge"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        wrapper = _create_universal_player(
+            mock_mass, STORED_UNIVERSAL_ID, "AVR (wrapper)", ["cast_base"]
+        )
+        bridge = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_bridge",
+            "AVR (Bridge)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge._attr_underlying_player_id = "cast_base"
+        bridge.set_initialized()
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {
+            STORED_UNIVERSAL_ID: wrapper,
+            "spb_bridge": bridge,
+            "heos_player": heos_player,
+        }
+
+        # the bridge has no owner yet, so the cached id recovers it onto the native player
+        controller._recover_cached_protocol_links(heos_player)
+        assert [link.output_protocol_id for link in heos_player.linked_output_protocols] == [
+            "spb_bridge"
+        ]
+
+        # the connection registers and joins the wrapper, taking the bridge with it
+        base = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_base",
+            "AVR (Cast 2)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        controller._players["cast_base"] = base
+        controller._try_link_protocol_to_native(base)
+
+        assert bridge.protocol_parent_id == STORED_UNIVERSAL_ID
+        assert heos_player.linked_output_protocols == []
+        assert not controller._parent_has_active_protocol_from_domain(heos_player, "sendspin")
+        # the stale cached id is gone too, so the bridge is not offered here as disabled
+        assert store[CONF_PLAYERS]["heos_player"]["values"]["linked_protocol_ids"] == []
+
 
 class TestMultiMACMatching:
     """Tests for multi-MAC matching (reported MAC vs ARP MAC)."""
