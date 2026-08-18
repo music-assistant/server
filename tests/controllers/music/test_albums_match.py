@@ -25,6 +25,8 @@ from music_assistant.helpers.compare import AlbumMatchEvidence
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from music_assistant.mass import MusicAssistant
+
 MB_ALBUM_ID = "11111111-1111-1111-1111-111111111111"
 BASE_BARCODE = "888072439412"
 OTHER_BARCODE = "075678643224"
@@ -735,6 +737,7 @@ class _InsertHarness:
     ctrl: AlbumsController
     get_provider: Mock
     get_provider_album_tracks: AsyncMock
+    get_library_items_by_query: AsyncMock
 
     def album_track_calls(self) -> list[str]:
         """Return the album item ids passed to each provider album-track lookup."""
@@ -779,6 +782,7 @@ def _insert_harness(
     # a single recorder backs both the base mapping lookup (_get_provider_album_tracks)
     # and the candidate lookup (provider.get_album_tracks), so their calls stay ordered
     get_provider_album_tracks = AsyncMock(side_effect=_album_tracks)
+    get_library_items_by_query = AsyncMock(return_value=list(candidates))
     incoming_provider = _loaded_provider(incoming_instance)
     incoming_provider.get_album_tracks = get_provider_album_tracks
     registry = {"tidal_1": _loaded_provider("tidal_1"), "spotify_1": incoming_provider}
@@ -799,13 +803,15 @@ def _insert_harness(
         get_library_item_by_prov_id=AsyncMock(return_value=None),
         get_library_item_by_prov_mappings=AsyncMock(return_value=None),
         get_library_items_by_external_id=AsyncMock(return_value=[]),
-        get_library_items_by_query=AsyncMock(return_value=list(candidates)),
+        get_library_items_by_query=get_library_items_by_query,
         _get_provider_album_tracks=get_provider_album_tracks,
         # the insert path resolves an album from the library, it never searches a provider
         search=AsyncMock(side_effect=AssertionError("search during insert")),
         get_provider_item=AsyncMock(side_effect=AssertionError("provider fetch during insert")),
     ):
-        yield _InsertHarness(ctrl, mass.get_provider, get_provider_album_tracks)
+        yield _InsertHarness(
+            ctrl, mass.get_provider, get_provider_album_tracks, get_library_items_by_query
+        )
 
 
 async def test_insert_match_is_io_free_without_candidates() -> None:
@@ -817,6 +823,114 @@ async def test_insert_match_is_io_free_without_candidates() -> None:
 
     harness.get_provider.assert_not_called()
     assert harness.album_track_calls() == []
+
+
+async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
+    """An album is sought under its plain title and every spelled-out retail suffix."""
+
+    async def searched_names(harness: _InsertHarness, name: str) -> list[str]:
+        assert (
+            await harness.ctrl._get_library_item_by_match(_album("a1", "spotify_1", name=name))
+            is None
+        )
+        params = harness.get_library_items_by_query.await_args_list[-1].kwargs["extra_query_params"]
+        return list(params["search_names"])
+
+    expected = ["stargazing", "stargazingep", "stargazingsingle"]
+    with _insert_harness(candidates=[]) as harness:
+        assert await searched_names(harness, "Stargazing") == expected
+        assert await searched_names(harness, "Stargazing - EP") == expected
+
+
+async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
+    mass: MusicAssistant,
+) -> None:
+    """An 'X - EP' from one provider joins the existing 'X' row instead of duplicating it."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Kygo",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="spotify", provider_instance="spotify_1"
+                )
+            },
+        )
+    )
+    plain = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name="Stargazing",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="plain", provider_domain="spotify", provider_instance="spotify_1"
+                )
+            },
+        )
+    )
+    suffixed = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="suffixed",
+            provider="apple_music_1",
+            name="Stargazing - EP",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="suffixed",
+                    provider_domain="apple_music",
+                    provider_instance="apple_music_1",
+                )
+            },
+        )
+    )
+
+    assert suffixed.item_id == plain.item_id
+
+
+async def test_insert_match_keeps_an_ep_and_a_single_of_the_same_name_apart(
+    mass: MusicAssistant,
+) -> None:
+    """An EP and a single sharing a base title are separate releases, not one library row."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Kygo",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="spotify", provider_instance="spotify_1"
+                )
+            },
+        )
+    )
+
+    async def add(name: str, instance: str) -> Album:
+        return await mass.music.albums.add_item_to_library(
+            Album(
+                item_id=f"{instance}-item",
+                provider=instance,
+                name=name,
+                artists=UniqueList([artist]),
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f"{instance}-item",
+                        provider_domain=instance.rsplit("_", 1)[0],
+                        provider_instance=instance,
+                    )
+                },
+            )
+        )
+
+    ep = await add("Stargazing - EP", "apple_music_1")
+    single = await add("Stargazing - Single", "tidal_1")
+    assert ep.item_id != single.item_id
+
+    # the plain spelling still joins one of them rather than becoming a third row
+    plain = await add("Stargazing", "spotify_1")
+    assert plain.item_id in {ep.item_id, single.item_id}
 
 
 async def test_insert_match_does_not_escalate_an_unambiguous_candidate() -> None:

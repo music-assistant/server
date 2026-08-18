@@ -1592,11 +1592,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     return int(cur_item.item_id)
         # search by normalized exact name match
         query = (
-            f"{self.db_table}.search_name = :search_name "
+            f"{self.db_table}.search_name IN :search_names "
             f"OR {self.db_table}.search_sort_name = :search_sort_name"
         )
         query_params = {
-            "search_name": create_safe_string(item.name, True, True),
+            "search_names": self._library_match_names(item),
             "search_sort_name": create_safe_string(item.sort_name or "", True, True),
         }
         for db_item in await self.get_library_items_by_query(
@@ -1605,6 +1605,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if await self._confirm_library_candidate(db_item, item):
                 return int(db_item.item_id)
         return None
+
+    def _library_match_names(self, item: ItemCls | ItemMapping) -> list[str]:
+        """
+        Return the normalized names a library row for this item may be stored under.
+
+        Override in a subclass when a media type's title carries formatting that the
+        stored name keeps but its identity comparison ignores.
+        """
+        return [create_safe_string(item.name, True, True)]
 
     async def _confirm_library_candidate(
         self, db_item: ItemCls, item: ItemCls | ItemMapping
