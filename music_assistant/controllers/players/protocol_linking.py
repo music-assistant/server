@@ -1594,6 +1594,42 @@ class ProtocolLinkingMixin:
                         protocol_id,
                     )
 
+    def _cleanup_player_type_transition(self, existing: Player) -> None:
+        """
+        Release the protocol topology a player owned before its type changed.
+
+        :param existing: The registered player instance, still reporting its previous type.
+        """
+        if existing.state.type == PlayerType.PROTOCOL:
+            # a provider may announce the new type with the live parent link already
+            # dropped, so fall back to the persisted one to still reach the parent
+            parent_id = existing.protocol_parent_id or self._get_cached_protocol_parent_id(
+                existing.player_id
+            )
+            if not parent_id:
+                return
+            parent = self.get_player(parent_id)
+            if parent is not None and parent.provider.domain == "universal_player":
+                # drop only the active edge and leave the rest to the link evaluation,
+                # which replaces the wrapper with this player: a leftover edge makes it
+                # hand the player over to itself, which it refuses, abandoning the swap
+                self._remove_protocol_link(parent, existing.player_id)
+                return
+            existing.set_protocol_parent_id(parent_id)
+            # unlink at the parent and drop the persisted parent id, which would
+            # otherwise heal the player's type back to protocol
+            self._cleanup_protocol_links(existing)
+            # a player leaving the protocol role has no parent, also when that parent
+            # is not registered (anymore) and only the cached link could be cleaned up
+            existing.set_protocol_parent_id(None)
+            return
+        # the player becomes a child itself: detach the protocol players it owned so they
+        # can find a new parent, then give up their ownership in its (kept) config - the
+        # reverse of the removal path, which drops the ownership before the detach
+        protocol_ids = set(self._get_known_protocol_ids(existing))
+        self._cleanup_protocol_links(existing)
+        self._remove_protocol_ids_from_parent(existing, protocol_ids)
+
     def _detach_protocol_children(self, parent_id: str) -> None:
         """
         Detach the registered protocol players of a parent player that is going away.
