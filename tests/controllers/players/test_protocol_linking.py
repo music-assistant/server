@@ -7783,7 +7783,12 @@ class TestUniversalPlayerReplacement:
         controller = PlayerController(mock_mass)
         config_store: dict[str, Any] = {
             CONF_PLAYERS: {
-                "esp_client": {"enabled": True, "provider": "sendspin--test", "values": {}},
+                "esp_client": {
+                    "enabled": True,
+                    "provider": "sendspin--test",
+                    # left over from before the device changed type
+                    "values": {CONF_PROTOCOL_PARENT_ID: "up_old"},
+                },
                 "up_old": {
                     "enabled": True,
                     "provider": "universal_player",
@@ -7794,6 +7799,13 @@ class TestUniversalPlayerReplacement:
                 "ap_live": {
                     "enabled": True,
                     "provider": "airplay--test",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "up_old"},
+                },
+                # a disabled protocol that never registered, so it only exists in config
+                "dlna_off": {
+                    "enabled": False,
+                    "provider": "dlna--test",
                     "player_type": "protocol",
                     "values": {CONF_PROTOCOL_PARENT_ID: "up_old"},
                 },
@@ -7830,7 +7842,7 @@ class TestUniversalPlayerReplacement:
             mock_mass,
             "up_old",
             "ESP (Universal)",
-            ["ap_live", "esp_client"],
+            ["ap_live", "esp_client", "dlna_off"],
             identifiers=identifiers,
         )
         native = MockPlayer(
@@ -7877,8 +7889,15 @@ class TestUniversalPlayerReplacement:
         # and the user's configuration is carried over before that removal deletes it
         assert config_store[CONF_PLAYERS]["esp_client"]["name"] == "Living Room"
         assert config_store[CONF_PLAYERS]["esp_client"]["values"]["hide_in_ui"] is True
+        # ownership is handed over in config as well, for the protocol that moved and for
+        # the one that only exists in config: nothing may keep pointing at the removed wrapper
+        ap_values = config_store[CONF_PLAYERS]["ap_live"]["values"]
+        assert ap_values[CONF_PROTOCOL_PARENT_ID] == "esp_client"
+        dlna_values = config_store[CONF_PLAYERS]["dlna_off"]["values"]
+        assert dlna_values[CONF_PROTOCOL_PARENT_ID] == "esp_client"
         # the native player is never left pointing at the wrapper it replaces
         assert native.protocol_parent_id is None
+        assert config_store[CONF_PLAYERS]["esp_client"]["values"][CONF_PROTOCOL_PARENT_ID] is None
 
     async def test_wrapper_holding_only_the_native_id_completes_the_takeover(
         self, mock_mass: MagicMock
@@ -7939,6 +7958,7 @@ class TestUniversalPlayerReplacement:
         native = MockPlayer(MockProvider("sendspin", mass=mock_mass), "esp_client", "ESP")
         native.set_initialized()
         controller._players = {"up_old": universal, "esp_client": native}
+        scheduled_tasks.clear()
 
         with patch.object(controller, "unregister", new=AsyncMock()) as mock_unregister:
             controller._check_replace_universal_player(native)
@@ -7953,6 +7973,127 @@ class TestUniversalPlayerReplacement:
         assert config_store[CONF_PLAYERS]["esp_client"]["name"] == "Living Room"
         assert config_store[CONF_PLAYERS]["esp_client"]["values"]["hide_in_ui"] is True
         assert native.protocol_parent_id is None
+
+    async def test_wrapper_with_a_bridge_riding_on_the_native_completes_the_takeover(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A protocol riding on the native player's own id moves along with the takeover.
+
+        The wrapper lists the device that kept its id across a type change together with
+        the bridge riding on it, so both sit in one group with the device as its base.
+        Leaving the device out of the transfer must not hold the bridge back: the bridge
+        moves over as a protocol derived from the native player itself.
+        """
+        controller = PlayerController(mock_mass)
+        config_store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "cast_base": {"enabled": True, "provider": "chromecast--test", "values": {}},
+                "up_old": {
+                    "enabled": True,
+                    "provider": "universal_player",
+                    "name": "Kitchen",
+                    "default_name": "Speaker (Universal)",
+                    "values": {"hide_in_ui": True},
+                },
+                "spb_bridge": {
+                    "enabled": True,
+                    "provider": "sendspin--test",
+                    "player_type": "protocol",
+                    "values": {
+                        CONF_PROTOCOL_PARENT_ID: "up_old",
+                        CONF_UNDERLYING_PLAYER_ID: "cast_base",
+                    },
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, config_store)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        # keep the state refreshes below from scheduling an unrelated palette fetch
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+        mock_mass.config.get_player_config = AsyncMock(
+            return_value=PlayerConfig.parse(
+                [],
+                {
+                    "player_id": "cast_base",
+                    "provider": "chromecast--test",
+                    "name": "Kitchen",
+                    "default_name": "Speaker",
+                },
+            )
+        )
+
+        identifiers = {IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"}
+        universal = _create_universal_player(
+            mock_mass,
+            "up_old",
+            "Speaker (Universal)",
+            ["cast_base", "spb_bridge"],
+            identifiers=identifiers,
+        )
+        native = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_base",
+            "Speaker",
+            identifiers=identifiers,
+        )
+        native.set_initialized()
+        bridge = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_bridge",
+            "Speaker (Bridge)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge._attr_underlying_player_id = "cast_base"
+        bridge.set_initialized()
+        controller._players = {"up_old": universal, "cast_base": native, "spb_bridge": bridge}
+
+        controller._add_protocol_link(universal, bridge, "sendspin")
+        # the wrapper linked the device as a protocol before it changed type, which makes
+        # it the base of the group the bridge rides on
+        universal.set_linked_output_protocols(
+            [
+                *universal.linked_output_protocols,
+                LinkedOutputProtocol(
+                    output_protocol_id="cast_base", protocol_domain="chromecast", priority=30
+                ),
+            ]
+        )
+        scheduled_tasks.clear()
+
+        with patch.object(controller, "unregister", new=AsyncMock()) as mock_unregister:
+            controller._check_replace_universal_player(native)
+            # replay what the takeover scheduled, otherwise the unregister assertion below
+            # would hold for a task that never got the chance to run
+            for task in scheduled_tasks:
+                await task
+
+        assert bridge.protocol_parent_id == "cast_base"
+        # the bridge now rides on the parent player itself, recorded as "native"
+        bridge_link = next(
+            link
+            for link in native.linked_output_protocols
+            if link.output_protocol_id == "spb_bridge"
+        )
+        assert bridge_link.derived_from == "native"
+        # the native player is never left pointing at the wrapper it replaces
+        assert native.protocol_parent_id is None
+        # the wrapper is left without any output and permanently removed
+        assert universal.linked_output_protocols == []
+        assert universal._protocol_player_ids == []
+        mock_unregister.assert_awaited_once_with(
+            "up_old", permanent=True, replacement_player_id="cast_base"
+        )
 
 
 class TestEndToEndDuplicateProtocol:

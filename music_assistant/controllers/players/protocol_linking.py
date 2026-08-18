@@ -1120,6 +1120,10 @@ class ProtocolLinkingMixin:
             self._remove_protocol_ids_from_parent(
                 player, migrated_protocol_ids | {native_player.player_id}
             )
+            # Drop the player's own side of that entry as well, so its config cannot
+            # claim to be a protocol child of the wrapper it is replacing.
+            if self._get_cached_protocol_parent_id(native_player.player_id) == player.player_id:
+                self._clear_protocol_parent_id(native_player.player_id)
             native_player.refresh_state()
 
             if refused_protocol_ids:
