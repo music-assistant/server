@@ -794,8 +794,11 @@ def _compare_album_name(base_name: str, compare_name: str) -> bool:
         return False
     # both titles collapse to nothing under normalization (e.g. pure punctuation):
     # fall back to a raw comparison with all whitespace removed, so spacing drift
-    # ("( )" vs "()") still matches while unrelated titles don't
-    return "".join(base_name.split()).casefold() == "".join(compare_name.split()).casefold()
+    # ("( )" vs "()") still matches while unrelated titles don't; the retail suffix
+    # is stripped here as well so "... - EP" still matches "..."
+    base_raw = _ALBUM_SUFFIX_PATTERN.sub("", base_name)
+    compare_raw = _ALBUM_SUFFIX_PATTERN.sub("", compare_name)
+    return "".join(base_raw.split()).casefold() == "".join(compare_raw.split()).casefold()
 
 
 def _normalize_album_name(name: str) -> str:

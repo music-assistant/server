@@ -435,6 +435,11 @@ def test_compare_album_evidence_punctuation_only_title_whitespace_drift_matches(
     album_b = _album(item_id="2", provider="test2", name="()")
     assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
 
+    # the retail suffix is also ignored when the remaining title is punctuation-only
+    album_a = _album(name="... - EP")
+    album_b = _album(item_id="2", provider="test2", name="...")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
     # different punctuation-only titles are still different albums
     album_a = _album(name="\u00f7")
     album_b = _album(item_id="2", provider="test2", name="=")
