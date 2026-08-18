@@ -45,3 +45,10 @@ RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
+TRACK_RECONCILIATION_TASK_ID: Final[str] = "music_track_reconciliation"
+
+# number of duplicate track candidate pairs examined per reconciliation run
+TRACK_RECONCILIATION_BATCH_SIZE: Final[int] = 25
+# max difference in seconds between two track durations to still consider them the same
+# recording; matches the widest duration window compare_track is willing to accept
+TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
