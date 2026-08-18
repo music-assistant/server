@@ -839,10 +839,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Handle SKIP command for given queue.
 
-        Moves the playback position relative to the current position. A target outside the
-        item's range is clamped instead of refused. Repeated calls in quick succession
-        accumulate into a single position change.
-
         :param queue_id: queue_id of the queue to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
         """
