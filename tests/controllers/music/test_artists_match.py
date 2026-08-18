@@ -334,17 +334,55 @@ async def test_reference_album_edition_difference_confirms_artist() -> None:
     assert matches == [CANDIDATE_MAPPING]
 
 
-async def test_reference_album_recording_conflict_does_not_match() -> None:
-    """A live edition of the reference album is a different record, so it cannot confirm."""
+async def test_reference_album_packaging_editions_confirm_artist() -> None:
+    """Two non-overlapping packaging editions are still the same record by the same artist."""
+    with _harness(
+        ref_albums=[
+            _album("lib-album", "library", version="2009 Remaster", mappings=(BASE_MAPPING,))
+        ],
+        album_results=[_album("s1", "spotify_1", version="Deluxe Edition")],
+        provider_artists=[_provider_artist()],
+    ) as harness:
+        matches = await harness.match(_library_artist())
+
+    assert matches == [CANDIDATE_MAPPING]
+
+
+async def test_reference_album_retail_suffix_confirms_artist() -> None:
+    """An Apple-style retail suffix on the provider title does not block the match."""
     with _harness(
         ref_albums=[_album("lib-album", "library", mappings=(BASE_MAPPING,))],
-        album_results=[_album("s1", "spotify_1", version="Live")],
+        album_results=[_album("s1", "spotify_1", name="Album X - EP")],
+        provider_artists=[_provider_artist()],
+    ) as harness:
+        matches = await harness.match(_library_artist())
+
+    assert matches == [CANDIDATE_MAPPING]
+
+
+async def test_reference_album_different_title_does_not_match() -> None:
+    """A search result for another album cannot confirm the artist."""
+    with _harness(
+        ref_albums=[_album("lib-album", "library", mappings=(BASE_MAPPING,))],
+        album_results=[_album("s1", "spotify_1", name="Another Album")],
         provider_artists=[_provider_artist()],
     ) as harness:
         matches = await harness.match(_library_artist())
 
     assert matches == []
     harness.get_provider_item.assert_not_awaited()
+
+
+async def test_album_credit_beyond_the_first_confirms_artist() -> None:
+    """A collaboration album crediting the artist second still confirms it."""
+    with _harness(
+        ref_albums=[_album("lib-album", "library", mappings=(BASE_MAPPING,))],
+        album_results=[_album("s1", "spotify_1", artist_names=("Other Artist", "Main Artist"))],
+        provider_artists=[_provider_artist()],
+    ) as harness:
+        matches = await harness.match(_library_artist())
+
+    assert matches == [CANDIDATE_MAPPING]
 
 
 async def test_unresolvable_credit_does_not_match() -> None:

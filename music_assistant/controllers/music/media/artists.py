@@ -42,9 +42,8 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.helpers.compare import (
-    AlbumMatchEvidence,
     compare_album,
-    compare_album_evidence,
+    compare_album_name,
     compare_artist,
     compare_strings,
     compare_track,
@@ -970,18 +969,15 @@ class ArtistsController(MediaControllerBase[Artist]):
             search_str = f"{db_artist.name} - {ref_album.name}"
             search_result_albums = await self.mass.music.albums.search(search_str, provider.domain)
             for search_result_album in search_result_albums:
-                if not search_result_album.artists:
+                # only the album's identity matters here: a different edition is still the
+                # same record by the same artist, so the credits below decide the match
+                if not compare_album_name(search_result_album.name, ref_album.name):
                     continue
-                # an edition difference does not disprove the artist, a real conflict does
-                if (
-                    compare_album_evidence(ref_album, search_result_album, strict=False)
-                    == AlbumMatchEvidence.NO_MATCH
-                ):
-                    continue
-                if matches := await self._confirm_artist_match(
-                    db_artist, search_result_album.artists[0], strict
-                ):
-                    return matches
+                for search_album_artist in search_result_album.artists:
+                    if matches := await self._confirm_artist_match(
+                        db_artist, search_album_artist, strict
+                    ):
+                        return matches
         self.logger.debug(
             "Could not find match for Artist %s on provider %s",
             db_artist.name,

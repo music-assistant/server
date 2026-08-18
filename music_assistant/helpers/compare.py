@@ -210,7 +210,7 @@ def compare_album_evidence(
     if version_evidence == AlbumMatchEvidence.NO_MATCH:
         return AlbumMatchEvidence.NO_MATCH
     # compare name
-    if not _compare_album_name(base_item.name, compare_item.name):
+    if not compare_album_name(base_item.name, compare_item.name):
         return AlbumMatchEvidence.NO_MATCH
 
     ambiguous = version_evidence == AlbumMatchEvidence.INSUFFICIENT
@@ -735,6 +735,16 @@ def compare_version(base_version: str, compare_version: str) -> bool:
     return _normalize_version_tokens(base_version) == _normalize_version_tokens(compare_version)
 
 
+def compare_album_name(base_name: str, compare_name: str) -> bool:
+    """Return True if two album titles are the same identity, ignoring formatting drift."""
+    # the retail suffix carries no identity information: Apple Music appends it to
+    # EP/single titles while already setting album_type
+    return compare_strings(
+        _ALBUM_SUFFIX_PATTERN.sub("", base_name),
+        _ALBUM_SUFFIX_PATTERN.sub("", compare_name),
+    )
+
+
 def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> bool | None:
     """Compare if explicit is same in metadata."""
     if base.explicit is not None and compare.explicit is not None:
@@ -785,16 +795,6 @@ def _compare_album_version(base_version: str, compare_version: str) -> AlbumMatc
         # vs. "Deluxe 2022 Remaster"): an ambiguous packaging difference a tracklist can resolve
         return AlbumMatchEvidence.INSUFFICIENT
     return AlbumMatchEvidence.NO_MATCH
-
-
-def _compare_album_name(base_name: str, compare_name: str) -> bool:
-    """Return True if two album titles are the same identity, ignoring formatting drift."""
-    # the retail suffix carries no identity information: Apple Music appends it to
-    # EP/single titles while already setting album_type
-    return compare_strings(
-        _ALBUM_SUFFIX_PATTERN.sub("", base_name),
-        _ALBUM_SUFFIX_PATTERN.sub("", compare_name),
-    )
 
 
 def _compare_safe_strings(base: str, compare: str) -> bool:
