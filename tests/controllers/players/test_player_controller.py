@@ -1274,6 +1274,19 @@ class TestRegisterOrUpdateTypeTransition:
         assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
         assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
 
+    async def test_unchanged_protocol_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
+        """Re-registering a protocol player does not hand it a queue."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
+
+        await controller.register_or_update(player)
+
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
     async def test_group_type_change_is_not_a_role_change(self, mock_mass: MagicMock) -> None:
         """A player that turns into a group keeps its queue (Chromecast reports both)."""
         controller = self._prepare(mock_mass)

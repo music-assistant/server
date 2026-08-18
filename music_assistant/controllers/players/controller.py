@@ -1520,12 +1520,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         async with self._register_lock:
             if (existing := self._players.get(player.player_id)) is not None:
                 # a protocol player is hidden behind its parent and owns no queue, every
-                # other player does. Reading the role change off that published reality
-                # keeps it independent of when the player's state was last recalculated,
-                # which providers cannot control (they flip the type before this call).
+                # other player does. Reading the role the player is leaving off that
+                # published reality keeps it independent of when the player's state was
+                # last recalculated, which providers cannot control (they flip the type
+                # before this call).
+                was_protocol = self.mass.player_queues.get(player.player_id) is None
                 becomes_protocol = player.type == PlayerType.PROTOCOL
-                owns_queue = self.mass.player_queues.get(player.player_id) is not None
-                role_changed = becomes_protocol == owns_queue
+                role_changed = becomes_protocol != was_protocol
                 if role_changed:
                     # release the topology of the role the player is leaving
                     self._cleanup_player_type_transition(
