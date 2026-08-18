@@ -373,7 +373,7 @@ class CacheController(CoreController):
         def _get_db_size() -> float:
             total = 0
             for path in db_files:
-                if os.path.exists(path):
+                if Path(path).exists():
                     total += Path(path).stat().st_size
             return total / (1024 * 1024)
 

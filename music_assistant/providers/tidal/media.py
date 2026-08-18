@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
@@ -62,9 +61,15 @@ class TidalMediaManager:
         if not includes:
             return results
 
-        query = urllib.parse.quote(search_query, safe="")
-        doc = await self.api.get_jsonapi(f"searchResults/{query}", include=includes)
-        data = doc.data
+        # Since spec 1.10.101 search is a collection endpoint taking the query as
+        # a filter and returning exactly one searchResults resource (with an
+        # opaque id); the old /searchResults/{query} path 400s.
+        doc = await self.api.get_jsonapi(
+            "searchResults", params={"filter[query]": search_query}, include=includes
+        )
+        if not doc.data_list:
+            return results
+        data = doc.data_list[0]
 
         # Slice the resources before parsing so we only parse up to `limit` items.
         if MediaType.TRACK in wanted:

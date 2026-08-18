@@ -107,7 +107,7 @@ def parse_album(album_obj: dict[str, Any], provider: SpotifyProvider) -> Album:
         },
     )
     if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"]))
+        album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["upc"]))
     if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
         album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
 

@@ -371,6 +371,7 @@ def build_concat_filelist(paths: list[str]) -> str:
 async def realtime_pcm_pacer(
     inner: AsyncGenerator[bytes],
     pcm_format: AudioFormat,
+    initial_burst_s: float = 0.5,
 ) -> AsyncGenerator[bytes]:
     """
     Pace a PCM byte stream at the format's native rate.
@@ -381,6 +382,10 @@ async def realtime_pcm_pacer(
 
     :param inner: Source generator yielding raw PCM bytes.
     :param pcm_format: PCM format the inner generator emits.
+    :param initial_burst_s: Bounded head start (in seconds of audio) passed
+        through unpaced, so downstream jitter does not immediately underrun.
+        Mirrors ffmpeg's ``-readrate_initial_burst``; producers that cannot
+        deliver faster than realtime simply never use the allowance.
     """
     bytes_per_second = pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
     if bytes_per_second <= 0 or not pcm_format.content_type.is_pcm():
@@ -394,7 +399,7 @@ async def realtime_pcm_pacer(
     async for chunk in inner:
         yield chunk
         total_bytes += len(chunk)
-        expected_elapsed = total_bytes / bytes_per_second
+        expected_elapsed = total_bytes / bytes_per_second - initial_burst_s
         actual_elapsed = loop.time() - start_time
         if actual_elapsed < expected_elapsed:
             await asyncio.sleep(expected_elapsed - actual_elapsed)

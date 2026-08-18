@@ -50,7 +50,7 @@ from pathlib import Path
 # ruff: noqa: T201
 
 # repo paths (this file lives at <repo>/scripts/check_config_entries.py)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
 PACKAGE_ROOT = os.path.join(_REPO_ROOT, "music_assistant")
 
 # constructor name -> (localized text fields, whether an f-string also counts, strings.json target).

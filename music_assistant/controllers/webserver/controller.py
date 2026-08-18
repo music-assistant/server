@@ -431,6 +431,33 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
+    def update_active_user_filters(
+        self,
+        user_id: str,
+        player_filter: list[str] | None = None,
+        provider_filter: list[str] | None = None,
+    ) -> None:
+        """
+        Apply updated access filters to the live sessions of a user.
+
+        Call this after the filters of a user were changed in the database, so the
+        change takes effect right away instead of only on the next connection.
+
+        :param user_id: ID of the user whose sessions must be updated.
+        :param player_filter: The new player filter, or None to leave it untouched.
+        :param provider_filter: The new provider filter, or None to leave it untouched.
+        """
+        for client in list(self.clients):
+            user = client._authenticated_user
+            if user is None or user.user_id != user_id:
+                continue
+            # updated in place: the connection's context holds this very object
+            if player_filter is not None:
+                user.player_filter[:] = player_filter
+            if provider_filter is not None:
+                user.provider_filter[:] = provider_filter
+            self.logger.debug("Updated the access filters of a live session of %s", user.username)
+
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
         """
         Set the sendspin player_id on the websocket clients holding the given token.

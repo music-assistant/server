@@ -175,6 +175,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _cookie: str
     _yt_dlp_module = None
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """YouTube Music serves one stream per account session."""
+        return 1
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)

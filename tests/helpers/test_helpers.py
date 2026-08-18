@@ -120,6 +120,37 @@ def test_version_extract() -> None:
     assert version == "Oliver Smith Remix (Mixed)"
 
 
+def test_version_extracts_multiple_qualifiers() -> None:
+    """All recognized title qualifiers contribute to the version."""
+    title, version = util.parse_title_and_version("( ) [Deluxe] [2022 Remaster]")
+
+    assert title == "( )"
+    assert version == "Deluxe 2022 Remaster"
+
+
+@pytest.mark.parametrize(
+    ("test_str", "expected"),
+    [
+        ("Barcelona (Special Edition - Deluxe)", ("Barcelona", "Special Edition - Deluxe")),
+        (
+            "All of Me (Tiësto's Birthday Treatment Remix - Radio Edit)",
+            ("All of Me", "Tiësto's Birthday Treatment Remix - Radio Edit"),
+        ),
+        (
+            "Crime Of The Century (2014 - HD Remaster)",
+            ("Crime Of The Century", "2014 - HD Remaster"),
+        ),
+        ("Song (Live) - Remastered 2011", ("Song", "Live Remastered 2011")),
+        ("Song (Remastered) (Remastered)", ("Song", "Remastered")),
+        ("Allejoppa - Extended [Extended]", ("Allejoppa", "Extended")),
+        ("Song - Single (Deluxe)", ("Song", "Deluxe Single")),
+    ],
+)
+def test_version_extract_sequential_passes(test_str: str, expected: tuple[str, str]) -> None:
+    """Later parsing passes see the title as reduced by earlier passes."""
+    assert util.parse_title_and_version(test_str) == expected
+
+
 def test_with_handling_in_titles() -> None:
     """Test 'with' handling - preserved in title, stripped as featuring credit."""
     # 'with you' (preserved as title word)

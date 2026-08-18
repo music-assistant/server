@@ -90,6 +90,16 @@ CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 
+# Maximum wait for a provider source-stream slot before a speculative attempt gives up.
+STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
+
+# Total capacity budget when an actual playback start retries/reselects provider mappings.
+STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
+
+# Maximum time spent searching other streaming providers for an alternative mapping
+# when every known candidate is capacity-saturated.
+STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
+
 # Maximum seconds we wait for the buffer to catch up on a forward seek.
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20

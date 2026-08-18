@@ -23,7 +23,7 @@ its local HTTP + WebSocket API. Music Assistant needs **no** Spotify Web API cre
         │   GoLibrespotClient over its local HTTP + WS API:
         │   REST control (resume/pause/seek/volume) + /events (state, metadata)
         ▼
-   get_audio_stream  (CUSTOM stream: source-paced, ends on pause)
+   get_audio_stream  (CUSTOM stream: backpressured, ends on pause)
         │
         ▼
    MA streams controller  (ffmpeg resample, per player)
@@ -34,14 +34,22 @@ its local HTTP + WebSocket API. Music Assistant needs **no** Spotify Web API cre
 
 ### Key components
 
-- **go-librespot subprocess** (`_daemon_runner`): launched with `--config_dir <cache_dir>`;
-  decodes the Ogg Vorbis stream and writes raw PCM to its **stdout** (`audio_backend: pipe`,
-  `audio_output_pipe: /dev/stdout`). Exposes a loopback HTTP + WebSocket API on a free port,
-  one per instance. Supervised — restarts on exit, `unload_with_error`s after repeated failures.
-- **`GoLibrespotClient`** (`client.py`): REST control (`POST /player/{resume,pause,next,prev,
-  seek,volume,play}`) plus the `/events` WebSocket, which pushes `{"type": ..., "data": ...}`
-  messages for session/playback/metadata/volume state. `204 No Content` means "no active
-  session" and is treated as a no-op.
+- **`SpotifyConnectProvider`** (`provider.py`): the MA-facing half — AudioSource and
+  StreamDetails, target-player selection and the queue claim, the play_media debounce,
+  take-back-playback, volume sync policy and live StreamMetadata. Backend-agnostic: it
+  consumes only the normalized `BackendEvent`s defined in `models.py` and drives playback
+  through the `SpotifyConnectBackend` contract (`backends/base.py`: start/stop, play/resume/
+  pause/next/previous/seek/set_volume, audio formats and a PCM chunk-read API).
+- **go-librespot backend** (`backends/go_librespot.py`, `_daemon_runner`): launches the daemon
+  with `--config_dir <cache_dir>`; it decodes the Ogg Vorbis stream and writes raw PCM to its
+  **stdout** (`audio_backend: pipe`, `audio_output_pipe: /dev/stdout`). Exposes a loopback
+  HTTP + WebSocket API on a free port, one per instance. Supervised — restarts on exit, emits
+  a fatal event (→ `unload_with_error`) after repeated failures. Translates the raw websocket
+  events into normalized `BackendEvent`s.
+- **`GoLibrespotClient`** (`clients/go_librespot.py`): REST control (`POST /player/{resume,pause,
+  next,prev,seek,volume,play}`) plus the `/events` WebSocket, which pushes `{"type": ...,
+  "data": ...}` messages for session/playback/metadata/volume state. `204 No Content` means
+  "no active session" and is treated as a no-op.
 - **AudioSource MediaItem**: a single live item browsable under the global "Live Inputs" node,
   played through the standard `play_media` flow (like a radio station). `exclusive=True`,
   `allow_external_trigger=True`. Transport capabilities are statically enabled — go-librespot's
@@ -58,10 +66,12 @@ go-librespot ──s16le PCM──▶ stdout ──▶ get_audio_stream ──�
 
 - **`StreamType.CUSTOM`**: `get_audio_stream` reads the daemon's stdout and yields PCM. The
   subprocess pipe always has a reader, so go-librespot's non-blocking pipe open never fails,
-  and we control the byte stream (pacing it, and ending it cleanly on pause).
-- **Source pacing**: go-librespot's pipe backend is not realtime-paced, so `get_audio_stream`
-  paces the read at the native rate. This back-pressures the daemon to ~realtime, keeping it
-  only a fraction of a second ahead so transport commands land quickly.
+  and we control the byte stream (ending it cleanly on pause).
+- **Pacing**: the streams controller's realtime pacer (ffmpeg `-readrate` with a small
+  initial burst) is the single pacing authority. go-librespot's pipe backend is not
+  realtime-paced, but backpressure through the stdout pipe keeps the daemon only a
+  fraction of a second ahead, so transport commands land quickly, while the burst
+  headroom absorbs scheduling jitter that would otherwise underrun the player.
 - **Pause → clean EOF**: go-librespot keeps the pipe open while paused (it just stops writing),
   so `get_audio_stream` detects the gap and **ends the stream** — the player leaves the playing
   state (track preserved) and the next `playing` event re-streams. Resume works from both the
@@ -93,8 +103,9 @@ recognising the same device); zeroconf enabled (advertised on the streams bind i
 
 ## Event handling
 
-A self-healing WebSocket listener (`_events_runner`) reconnects across daemon restarts and
-dispatches `/events` messages:
+A self-healing WebSocket listener (`_events_runner`, in the go-librespot backend) reconnects
+across daemon restarts, translates `/events` messages into normalized `BackendEvent`s and
+hands them to the provider, which acts on them:
 
 | Event | Action |
 |-------|--------|

@@ -199,9 +199,9 @@ async def test_mix_modules_found_regardless_of_row_order(
 
 
 async def test_search_empty_results(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
-    """Test search with empty results."""
+    """Test search with a result resource carrying no hits."""
     provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
-        {"data": {"id": "query", "type": "searchResults", "relationships": {}}}
+        {"data": [{"id": "opaque123", "type": "searchResults", "relationships": {}}]}
     )
 
     results = await media_manager.search("query", [MediaType.ARTIST])
@@ -209,4 +209,15 @@ async def test_search_empty_results(media_manager: TidalMediaManager, provider_m
     assert len(results.artists) == 0
     assert len(results.albums) == 0
     assert len(results.tracks) == 0
+
+
+async def test_search_empty_collection(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test search returns empty results when the collection carries no resource."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument({"data": []})
+
+    results = await media_manager.search("query", [MediaType.ARTIST])
+
+    assert len(results.artists) == 0
     assert len(results.playlists) == 0

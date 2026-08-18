@@ -1143,15 +1143,20 @@ class AudioAnalysisController:
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         next_allowed = time.monotonic()
-        async for chunk in audio_source:
-            if session_key not in self._active_sessions:
-                # all providers evicted — bail early
-                break
-            now = time.monotonic()
-            if now < next_allowed:
-                await asyncio.sleep(next_allowed - now)
-            await self._distribute_chunk(session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS)
-            next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
+        # aclosing guarantees the source (and any provider stream slot it holds)
+        # is released promptly when the loop breaks out early
+        async with contextlib.aclosing(audio_source):
+            async for chunk in audio_source:
+                if session_key not in self._active_sessions:
+                    # all providers evicted — bail early
+                    break
+                now = time.monotonic()
+                if now < next_allowed:
+                    await asyncio.sleep(next_allowed - now)
+                await self._distribute_chunk(
+                    session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS
+                )
+                next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
