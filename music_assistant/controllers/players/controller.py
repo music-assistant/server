@@ -1572,7 +1572,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             task_id=task_id,
         )
 
-    async def unregister(self, player_id: str, permanent: bool = False) -> None:
+    async def unregister(
+        self,
+        player_id: str,
+        permanent: bool = False,
+        replacement_player_id: str | None = None,
+    ) -> None:
         """
         Unregister a player from the player controller.
 
@@ -1584,6 +1589,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param player_id: Player ID of the player to unregister.
         :param permanent: If True, remove the player permanently by deleting its config.
                           If False, the player config will not be removed.
+        :param replacement_player_id: Player ID that takes this player's place, only
+                                      used for a permanent removal.
         """
         player = self._players.get(player_id)
         if player is None:
@@ -1607,7 +1614,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # and signal PLAYER_REMOVED event
             await self._cleanup_player_memberships(player_id)
             self._cleanup_protocol_links(player)
-            self.delete_player_config(player_id)
+            self.delete_player_config(player_id, replacement_player_id)
             self.logger.info("Player removed: %s", player.name)
             if player.state.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
@@ -1654,7 +1661,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # We removed the player and can now clean up its config
         self.delete_player_config(player_id)
 
-    def delete_player_config(self, player_id: str) -> None:
+    def delete_player_config(
+        self, player_id: str, replacement_player_id: str | None = None
+    ) -> None:
         """
         Permanently delete a player's configuration, including its DSP and queue settings.
 
@@ -1665,6 +1674,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         returns as a brand new player once it is discovered again. Protocol players that
         are still registered or that already moved to another parent keep their config;
         registered ones are detached from the removed player and re-evaluated.
+
+        :param player_id: Player ID of the player to delete the configuration of.
+        :param replacement_player_id: Player ID that takes this player's place, so users
+                                      restricted to it follow the replacement.
         """
         self._detach_protocol_children(player_id)
         player_ids = [
@@ -1684,10 +1697,18 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             if self.get_player(pid) is None:
                 self.mass.player_queues.purge_saved_queue(pid)
         # a user access filter is an allow-list of player ids, so it must not be left
-        # pointing at a player whose config was just wiped
-        self.mass.create_task(
-            self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
-        )
+        # pointing at a player whose config was just wiped: a replaced player hands its
+        # entries over to its replacement, a removed one has them dropped
+        if replacement_player_id:
+            self.mass.create_task(
+                self.mass.webserver.auth.replace_player_in_user_filters(
+                    player_id, replacement_player_id, removed_player_ids=player_ids
+                )
+            )
+        else:
+            self.mass.create_task(
+                self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
+            )
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""

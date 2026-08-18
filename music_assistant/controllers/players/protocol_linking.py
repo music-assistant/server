@@ -118,7 +118,10 @@ class ProtocolLinkingMixin:
         def get_player(self, player_id: str) -> Player | None: ...  # noqa: D102
 
         def unregister(  # noqa: D102
-            self, player_id: str, permanent: bool = False
+            self,
+            player_id: str,
+            permanent: bool = False,
+            replacement_player_id: str | None = None,
         ) -> Coroutine[Any, Any, None]: ...
 
     def _is_protocol_player(self, player: Player) -> bool:
@@ -885,7 +888,7 @@ class ProtocolLinkingMixin:
         self._repoint_group_memberships(remove.player_id, keep.player_id)
 
         # Stop playback and remove the obsolete player
-        self.mass.create_task(self._stop_and_unregister(remove))
+        self.mass.create_task(self._stop_and_unregister(remove, keep.player_id))
 
     def _link_protocols_to_universal(
         self, universal_player: Player, protocol_players: list[Player]
@@ -1078,7 +1081,7 @@ class ProtocolLinkingMixin:
             self._repoint_group_memberships(player.player_id, native_player.player_id)
 
             # Stop playback and remove the now-obsolete universal player
-            self.mass.create_task(self._stop_and_unregister(player))
+            self.mass.create_task(self._stop_and_unregister(player, native_player.player_id))
 
     def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """
@@ -1227,7 +1230,7 @@ class ProtocolLinkingMixin:
                         entry.value = new_members
                     other_player.refresh_state()
 
-    async def _stop_and_unregister(self, player: Player) -> None:
+    async def _stop_and_unregister(self, player: Player, replacement_player_id: str) -> None:
         """
         Stop active playback on a player and then permanently unregister it.
 
@@ -1237,11 +1240,14 @@ class ProtocolLinkingMixin:
         intentionally not transferred.
 
         :param player: The obsolete player to stop and permanently remove.
+        :param replacement_player_id: Player ID that takes the obsolete player's place.
         """
         if player.playback_state != PlaybackState.IDLE:
             with suppress(PlayerCommandFailed, PlayerUnavailableError):
                 await self.mass.player_queues.stop(player.player_id)
-        await self.unregister(player.player_id, permanent=True)
+        await self.unregister(
+            player.player_id, permanent=True, replacement_player_id=replacement_player_id
+        )
 
     def _parent_has_active_protocol_from_domain(
         self, parent: Player, domain: str, exclude_player_id: str | None = None

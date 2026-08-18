@@ -383,7 +383,9 @@ class UniversalPlayerProvider(PlayerProvider):
                 )
                 self.mass.players._migrate_universal_player_config(player_id, default_parent)
                 self.mass.players._repoint_group_memberships(player_id, default_parent)
-                self.mass.players.delete_player_config(player_id)
+                self.mass.players.delete_player_config(
+                    player_id, replacement_player_id=default_parent
+                )
             return
 
         stored_protocol_ids = valid_protocol_ids
