@@ -1032,7 +1032,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     if isinstance(err, ProviderStreamLimitError):
                         # the requested item is playable, its provider is just at capacity:
                         # report that instead of silently advancing to another item
-                        self.logger.error(str(err))
+                        self.logger.error("%s", err)
                         await self.stop(queue_id)
                         raise
                     # Only MediaNotFoundError (item unreachable) is persistent;
