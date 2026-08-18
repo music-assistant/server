@@ -455,9 +455,9 @@ def test_compare_album_evidence_name_retail_suffix_stripped() -> None:
         ), suffix
 
 
-def test_compare_album_evidence_trailing_symbol_marks_a_different_release() -> None:
-    """A bonus edition marked by a trailing symbol is a release of its own."""
-    for name in ("MOTOMAMI +", "MOTOMAMI+"):
+def test_compare_album_evidence_bordering_symbol_marks_a_different_release() -> None:
+    """A bonus edition marked by a symbol at either end of the title is a release of its own."""
+    for name in ("MOTOMAMI +", "MOTOMAMI+", "+ MOTOMAMI", "+MOTOMAMI"):
         album_a = _album(name="MOTOMAMI", year=2022)
         album_b = _album(item_id="2", provider="test2", name=name, year=2022)
 
