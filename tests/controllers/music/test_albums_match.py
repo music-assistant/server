@@ -724,31 +724,216 @@ async def test_musicbrainz_evidence_unresolved_barcode_blocks_disjoint_rejection
 
 
 # ---------------------------------------------------------------------------
-# bulk-sync guard
+# library insert path
 # ---------------------------------------------------------------------------
 
 
-async def test_get_library_item_by_match_is_io_free() -> None:
-    """The DB-only sync match path must never reach a provider or MusicBrainz."""
+@dataclass
+class _InsertHarness:
+    """A controller under test on the library insert path, with its IO boundaries mocked."""
+
+    ctrl: AlbumsController
+    get_provider: Mock
+    get_provider_album_tracks: AsyncMock
+
+    def album_track_calls(self) -> list[str]:
+        """Return the album item ids passed to each provider album-track lookup."""
+        return [call.args[0] for call in self.get_provider_album_tracks.await_args_list]
+
+
+def _library_candidate(
+    *, version: str = "", year: int | None = 2022, barcodes: Sequence[str] = ()
+) -> Album:
+    """Build the existing library album a provider album is compared against."""
+    return _album(
+        "1", "library", version=version, year=year, barcodes=barcodes, mappings=[BASE_MAPPING]
+    )
+
+
+@contextmanager
+def _insert_harness(
+    *,
+    candidates: Sequence[Album],
+    provider_album_tracks: dict[str, list[Track] | Exception] | None = None,
+    musicbrainz: Mock | None = None,
+    incoming_instance: str = "spotify_1",
+) -> Iterator[_InsertHarness]:
+    """
+    Yield an AlbumsController whose library lookups return the given name candidates.
+
+    :param candidates: Library albums returned by the normalized-name lookup.
+    :param provider_album_tracks: Provider album tracks (or an error to raise) keyed by
+        album item id, for both the candidate and the base album's mappings.
+    :param musicbrainz: Optional mock MusicBrainz provider.
+    :param incoming_instance: Instance id the incoming album's provider reports as its own;
+        a value other than "spotify_1" stands in for a same-domain fallback.
+    """
+    album_tracks = provider_album_tracks or {}
+
+    async def _album_tracks(item_id: str, *_rest: object) -> list[Track]:
+        result = album_tracks.get(item_id, [])
+        if isinstance(result, Exception):
+            raise result
+        return list(result)
+
+    # a single recorder backs both the base mapping lookup (_get_provider_album_tracks)
+    # and the candidate lookup (provider.get_album_tracks), so their calls stay ordered
+    get_provider_album_tracks = AsyncMock(side_effect=_album_tracks)
+    incoming_provider = _loaded_provider(incoming_instance)
+    incoming_provider.get_album_tracks = get_provider_album_tracks
+    registry = {"tidal_1": _loaded_provider("tidal_1"), "spotify_1": incoming_provider}
+
+    def _get_provider(instance: str, **_kwargs: object) -> object:
+        if instance == "musicbrainz":
+            return musicbrainz
+        return registry.get(instance)
+
     mass = Mock()
-    mass.get_provider = Mock(side_effect=AssertionError("provider lookup during sync"))
+    mass.get_provider = Mock(side_effect=_get_provider)
     ctrl = AlbumsController.__new__(AlbumsController)
-    ctrl.logger = logging.getLogger("test.albums.sync")
+    ctrl.logger = logging.getLogger("test.albums.insert")
     ctrl.mass = mass
     ctrl.db_table = "albums"
-    item = _album("a1", "spotify_1", barcodes=[BASE_BARCODE])
-
     with patch.multiple(
         ctrl,
-        # every DB lookup returns nothing; a real provider/MusicBrainz call would raise
         get_library_item_by_prov_id=AsyncMock(return_value=None),
         get_library_item_by_prov_mappings=AsyncMock(return_value=None),
         get_library_items_by_external_id=AsyncMock(return_value=[]),
-        get_library_items_by_query=AsyncMock(return_value=[]),
-        search=AsyncMock(side_effect=AssertionError("search during sync")),
-        get_provider_item=AsyncMock(side_effect=AssertionError("provider fetch during sync")),
-        _get_provider_album_tracks=AsyncMock(side_effect=AssertionError("track fetch during sync")),
+        get_library_items_by_query=AsyncMock(return_value=list(candidates)),
+        _get_provider_album_tracks=get_provider_album_tracks,
+        # the insert path resolves an album from the library, it never searches a provider
+        search=AsyncMock(side_effect=AssertionError("search during insert")),
+        get_provider_item=AsyncMock(side_effect=AssertionError("provider fetch during insert")),
     ):
-        assert await ctrl._get_library_item_by_match(item) is None
+        yield _InsertHarness(ctrl, mass.get_provider, get_provider_album_tracks)
 
-    mass.get_provider.assert_not_called()
+
+async def test_insert_match_is_io_free_without_candidates() -> None:
+    """An album with no same-name library candidate never reaches a provider."""
+    with _insert_harness(candidates=[]) as harness:
+        item = _album("a1", "spotify_1", barcodes=[BASE_BARCODE])
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+    harness.get_provider.assert_not_called()
+    assert harness.album_track_calls() == []
+
+
+async def test_insert_match_does_not_escalate_an_unambiguous_candidate() -> None:
+    """A candidate the albums' own metadata already decides is never escalated."""
+    # a recording-changing edition conflict is decisive on metadata alone
+    with _insert_harness(candidates=[_library_candidate(version="Live")]) as harness:
+        item = _album("a1", "spotify_1", version="Deluxe")
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+    harness.get_provider.assert_not_called()
+    assert harness.album_track_calls() == []
+
+
+async def test_insert_match_escalates_ambiguous_candidate_to_existing_album() -> None:
+    """An ambiguous edition with a matching tracklist is linked, not inserted again."""
+    with _insert_harness(
+        candidates=[_library_candidate()],
+        # year drift alone is ambiguous; identical tracklists resolve it
+        provider_album_tracks={"base-prov": _tracklist(10), "a1": _tracklist(10)},
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023)
+
+        assert await harness.ctrl._get_library_item_by_match(item) == 1
+
+    assert harness.album_track_calls() == ["base-prov", "a1"]
+
+
+async def test_insert_match_keeps_ambiguous_candidate_with_conflicting_tracklist() -> None:
+    """An ambiguous edition whose tracklist conflicts stays a separate library album."""
+    with _insert_harness(
+        candidates=[_library_candidate()],
+        provider_album_tracks={"base-prov": _tracklist(10), "a1": _tracklist(14)},
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023)
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+    # the tracklists must have been the thing that rejected it, not a skipped escalation
+    assert harness.album_track_calls() == ["base-prov", "a1"]
+
+
+async def test_insert_match_escalates_each_candidate_against_its_own_tracklist() -> None:
+    """Every ambiguous candidate is fingerprinted against its own base tracklist."""
+    first = _library_candidate()
+    first.item_id = "7"
+    first.provider_mappings = {
+        ProviderMapping(item_id="other-prov", provider_domain="tidal", provider_instance="tidal_1")
+    }
+    with _insert_harness(
+        candidates=[first, _library_candidate()],
+        # only the second candidate shares the incoming tracklist
+        provider_album_tracks={
+            "other-prov": _tracklist(14),
+            "base-prov": _tracklist(10),
+            "a1": _tracklist(10),
+        },
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023)
+
+        assert await harness.ctrl._get_library_item_by_match(item) == 1
+
+    assert harness.album_track_calls() == ["other-prov", "a1", "base-prov", "a1"]
+
+
+async def test_insert_match_falls_through_to_musicbrainz_on_transient_error() -> None:
+    """A tracklist that is temporarily unavailable leaves the decision to MusicBrainz."""
+    with _insert_harness(
+        candidates=[_library_candidate(barcodes=(BASE_BARCODE,))],
+        provider_album_tracks={"base-prov": RetriesExhausted("provider unreachable")},
+        musicbrainz=_mb(
+            **{
+                BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+                OTHER_BARCODE: [_mb_release("rel-1", "rg-1")],
+            }
+        ),
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023, barcodes=(OTHER_BARCODE,))
+
+        assert await harness.ctrl._get_library_item_by_match(item) == 1
+
+
+async def test_insert_match_abstains_when_musicbrainz_is_not_loaded() -> None:
+    """Without MusicBrainz an unresolved album is added rather than guessed."""
+    with _insert_harness(candidates=[_library_candidate(barcodes=(BASE_BARCODE,))]) as harness:
+        item = _album("a1", "spotify_1", year=2023, barcodes=(OTHER_BARCODE,))
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+
+async def test_insert_match_escalates_to_musicbrainz_when_tracklists_are_absent() -> None:
+    """With no usable tracklist, a shared MusicBrainz release still links the album."""
+    with _insert_harness(
+        # no tracklist is available on either side, so only MusicBrainz can decide
+        candidates=[_library_candidate(barcodes=(BASE_BARCODE,))],
+        musicbrainz=_mb(
+            **{
+                BASE_BARCODE: [_mb_release("rel-1", "rg-1")],
+                OTHER_BARCODE: [_mb_release("rel-1", "rg-1")],
+            }
+        ),
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023, barcodes=(OTHER_BARCODE,))
+
+        assert await harness.ctrl._get_library_item_by_match(item) == 1
+
+
+async def test_insert_match_skips_escalation_when_exact_instance_not_loaded() -> None:
+    """A same-domain fallback is never fingerprinted as the incoming album's provider."""
+    with _insert_harness(
+        candidates=[_library_candidate()],
+        provider_album_tracks={"base-prov": _tracklist(10), "a1": _tracklist(10)},
+        # the loaded instance reports a different id: a second account of the same domain
+        incoming_instance="spotify_2",
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023)
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+    assert harness.album_track_calls() == []
