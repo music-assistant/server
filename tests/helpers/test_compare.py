@@ -397,6 +397,18 @@ def test_compare_album_evidence_ambiguous_version_without_tracks_is_insufficient
     assert compare.compare_album(base_item, compare_item) is False
 
 
+def test_compare_album_evidence_subset_wording_with_recording_conflict_is_no_match() -> None:
+    """A subset edition wording that adds a recording-altering qualifier must not merge."""
+    base_item = _album(version="Deluxe")
+    compare_item = _album(item_id="2", provider="test2", version="Deluxe Karaoke Edition")
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item)
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
+    assert compare.compare_album(base_item, compare_item) is False
+
+
 def test_compare_album_evidence_resolves_with_matching_fingerprint() -> None:
     """Ambiguous edition wording resolves to MATCH once track fingerprints agree."""
     base_item = _album(version="2022 Remaster")
@@ -450,6 +462,17 @@ def test_compare_album_track_fingerprint_matching_isrc_and_duration() -> None:
     assert (
         compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
         == compare.AlbumMatchEvidence.MATCH
+    )
+
+
+def test_compare_album_track_fingerprint_shared_isrc_without_duration_is_insufficient() -> None:
+    """A shared ISRC alone cannot confirm a match if neither side has a duration."""
+    base_tracks = [_track("1", track_number=1, isrc="USRC17607839", duration=0)]
+    compare_tracks = [_track("2", track_number=1, isrc="USRC17607839", duration=0)]
+
+    assert (
+        compare.compare_album_track_fingerprint(base_tracks, compare_tracks)
+        == compare.AlbumMatchEvidence.INSUFFICIENT
     )
 
 

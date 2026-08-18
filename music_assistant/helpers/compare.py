@@ -46,6 +46,19 @@ _VERSION_WORD_ALIASES = {
 }
 _IGNORE_VERSION_KEYS = {create_safe_string(value) for value in IGNORE_VERSIONS}
 
+# version tokens that signal a fundamentally different recording (not just packaging),
+# so they must never be treated as an ambiguous/mergeable edition difference
+_RECORDING_CONFLICT_VERSION_TOKENS = {
+    "acoustic",
+    "cover",
+    "demo",
+    "instrumental",
+    "karaoke",
+    "live",
+    "remix",
+    "session",
+}
+
 # duration tolerances (seconds) for the album-track fingerprint comparison
 _ISRC_DURATION_TOLERANCE = 8
 _FALLBACK_DURATION_TOLERANCE = 2
@@ -734,8 +747,13 @@ def _compare_album_version(base_version: str, compare_version: str) -> AlbumMatc
         return AlbumMatchEvidence.NO_MATCH
     if base_tokens < compare_tokens or compare_tokens < base_tokens:
         # one version's wording is a strict subset of the other's (e.g. "2022 Remaster"
-        # vs. "Deluxe 2022 Remaster"): could be the same or a genuinely different edition
-        return AlbumMatchEvidence.INSUFFICIENT
+        # vs. "Deluxe 2022 Remaster"): ambiguous, UNLESS the extra wording itself signals
+        # a different recording (e.g. "Deluxe" vs. "Deluxe Karaoke Edition"), which is
+        # never safe to merge regardless of the subset relationship
+        extra_tokens = base_tokens ^ compare_tokens
+        if extra_tokens.isdisjoint(_RECORDING_CONFLICT_VERSION_TOKENS):
+            return AlbumMatchEvidence.INSUFFICIENT
+        return AlbumMatchEvidence.NO_MATCH
     return AlbumMatchEvidence.NO_MATCH
 
 
@@ -761,6 +779,8 @@ def _compare_track_fingerprint(base_track: Track, compare_track: Track) -> Album
         if base_isrcs.isdisjoint(compare_isrcs):
             # both sides tagged an ISRC and they disagree: a different recording/remaster
             return AlbumMatchEvidence.NO_MATCH
+        if not base_track.duration or not compare_track.duration:
+            return AlbumMatchEvidence.INSUFFICIENT
         if _duration_close(base_track.duration, compare_track.duration, _ISRC_DURATION_TOLERANCE):
             return AlbumMatchEvidence.MATCH
         return AlbumMatchEvidence.INSUFFICIENT
