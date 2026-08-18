@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,7 +16,11 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_LOG_LEVEL,
 )
-from music_assistant.models.music_provider import MusicProvider, describe_sync_error
+from music_assistant.models.music_provider import (
+    MAX_LOGGED_SYNC_FAILURES,
+    MusicProvider,
+    describe_sync_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -44,11 +50,14 @@ class FailingAlbumProvider(MusicProvider):
             album.provider_mappings = [MagicMock()]
             yield album
 
+    #: tracks handed back by ``get_album_tracks``
+    album_tracks: list[Any] | None = None
+
     async def get_album_tracks(self, prov_album_id: str) -> list[Any]:
-        """Return no tracks, or raise for the album under test."""
+        """Return the configured tracks, or raise for the album under test."""
         if prov_album_id == self.fail_album_tracks_for:
             raise ValueError("malformed album tracks payload")
-        return []
+        return self.album_tracks or []
 
 
 def _build_provider(
@@ -329,3 +338,29 @@ async def test_item_stays_tracked_when_ancillary_work_fails() -> None:
 
     assert mass.music.albums.set_favorite.await_count == len(ALBUM_IDS)
     assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
+
+
+async def test_standalone_import_keeps_its_own_failure_state(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Each ad-hoc album-track import starts from a clean failure state.
+
+    They are launched as their own task when an album is added, so a shared counter would
+    silence every import after the first one had used up the logging budget.
+    """
+    mass = _build_mass()
+    provider = _build_provider(mass)
+    mass.music.tracks.get_library_item_sync_details = AsyncMock(return_value=None)
+    mass.music.tracks.add_item_to_library = AsyncMock(side_effect=KeyError("bad track"))
+    provider.album_tracks = [
+        MagicMock(item_id=f"t{i}", uri=f"test://track/{i}") for i in range(MAX_LOGGED_SYNC_FAILURES)
+    ]
+
+    await asyncio.create_task(provider.import_album_tracks("album_1"))
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        await asyncio.create_task(provider.import_album_tracks("album_2"))
+
+    # the second import reports its failures just like the first one did
+    assert len(caplog.records) == MAX_LOGGED_SYNC_FAILURES

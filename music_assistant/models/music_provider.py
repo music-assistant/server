@@ -6,6 +6,8 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
@@ -71,6 +73,35 @@ MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 
 
+@dataclass
+class SyncRunState:
+    """
+    Failure state of one library sync run.
+
+    :param incomplete: True once the run failed to collect an item, which makes its
+        result set an unsafe basis for deleting anything from the library.
+    :param failures: Number of item failures reported by the run so far.
+    """
+
+    incomplete: bool = False
+    failures: int = 0
+
+
+# scoped per run rather than per provider: a standalone import_album_tracks() is
+# launched as its own task, so it must not consume or inflate a running sync's state
+SYNC_RUN_STATE: Final[ContextVar[SyncRunState | None]] = ContextVar(
+    "music_provider_sync_run", default=None
+)
+
+
+def sync_run_state() -> SyncRunState:
+    """Return the state of the sync run in progress, starting one if there is none."""
+    if (state := SYNC_RUN_STATE.get()) is None:
+        state = SyncRunState()
+        SYNC_RUN_STATE.set(state)
+    return state
+
+
 class ProviderStreamLimitError(AudioError):
     """Raised when a music provider has no source-stream slot available."""
 
@@ -134,11 +165,6 @@ class MusicProvider(Provider):
             if max_concurrent_streams is not None
             else None
         )
-        # state of the sync run that is currently active: whether it failed to collect an item
-        # (leaving its result set incomplete) and how many failures it reported so far.
-        # library syncs are serialized (by the music controller) so plain attributes suffice
-        self._sync_incomplete = False
-        self._sync_item_failures = 0
 
     @property
     def max_concurrent_streams(self) -> int | None:
@@ -900,14 +926,21 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        token = SYNC_RUN_STATE.set(SyncRunState())
+        try:
+            await self._run_library_sync(media_type)
+        finally:
+            SYNC_RUN_STATE.reset(token)
+
+    async def _run_library_sync(self, media_type: MediaType) -> None:
+        """Sync the given media type into the library and process its deletions."""
         # this reference implementation may be overridden
         # with a provider specific approach if needed
 
         if not self.mass.music.library_supported(self, media_type):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
 
-        self._sync_incomplete = False
-        self._sync_item_failures = 0
+        sync_state = sync_run_state()
         if media_type == MediaType.ARTIST:
             cur_db_ids = await self._sync_library_artists()
         elif media_type == MediaType.ALBUM:
@@ -930,11 +963,11 @@ class MusicProvider(Provider):
         update_current_task_progress_text("Checking library deletions")
         controller = self.mass.music.get_controller(media_type)
         prev_library_items: list[int] | None
-        if self._sync_incomplete:
+        if sync_state.incomplete:
             # a skipped item is missing from cur_db_ids just like a deleted one, but it is
             # still in the provider's library, so deleting it would throw away valid content
             if self.library_sync_deletions_enabled():
-                summary = f"{self._sync_item_failures} item(s) could not be synced"
+                summary = f"{sync_state.failures} item(s) could not be synced"
                 self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
                 report_current_task_failure(f"Deletions skipped: {summary}")
             # merge this run's id's into the stored ones instead of replacing them: that
@@ -1007,9 +1040,10 @@ class MusicProvider(Provider):
         self, media_type: MediaType, item_ref: str | None, err: Exception
     ) -> None:
         """Log a non-fatal sync failure and record it on the active background task."""
-        self._sync_item_failures += 1
+        state = sync_run_state()
+        state.failures += 1
         error_detail = describe_sync_error(err)
-        if self._sync_item_failures <= MAX_LOGGED_SYNC_FAILURES:
+        if state.failures <= MAX_LOGGED_SYNC_FAILURES:
             if isinstance(err, MusicAssistantError):
                 self.logger.warning(
                     "Skipping sync of %s %s - error details: %s",
@@ -1097,7 +1131,7 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
         return cur_db_ids
 
@@ -1158,7 +1192,7 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
                 continue
             # optionally add album tracks to library. the album is already collected here,
@@ -1347,7 +1381,7 @@ class MusicProvider(Provider):
 
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
         return cur_db_ids
 
@@ -1408,7 +1442,7 @@ class MusicProvider(Provider):
                         await self.mass.music.playlists.set_favorite(library_item.item_id, True)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
                 continue
             # optionally sync playlist tracks. the playlist is already collected here, so
@@ -1535,7 +1569,7 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.TRACK, prov_item.uri, err)
         return cur_db_ids
 
@@ -1586,7 +1620,7 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
                 continue
             # the podcast is already collected here, so a feed that fails to deliver its
@@ -1643,7 +1677,7 @@ class MusicProvider(Provider):
                 await asyncio.sleep(0)  # yield to eventloop
 
             except Exception as err:
-                self._sync_incomplete = True
+                sync_run_state().incomplete = True
                 self._handle_sync_item_failure(MediaType.RADIO, prov_item.uri, err)
         return cur_db_ids
 
