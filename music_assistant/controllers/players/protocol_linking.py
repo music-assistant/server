@@ -1068,10 +1068,20 @@ class ProtocolLinkingMixin:
             # A derived protocol rides on another output, so a base and everything riding
             # on it can only move together: refusing one of them holds back the group.
             for group in self._group_protocol_links(player):
+                # A device that kept its id across a type change is still listed as one of
+                # the outputs of the wrapper it replaces. It cannot be taken over from
+                # itself, so leaving it in would mark it refused and abort the takeover.
+                movable = [
+                    (linked, protocol_player)
+                    for linked, protocol_player in group
+                    if protocol_player.player_id != native_player.player_id
+                ]
+                if not movable:
+                    continue
                 domains = {
                     protocol_player.player_id: linked.protocol_domain
                     or protocol_player.provider.domain
-                    for linked, protocol_player in group
+                    for linked, protocol_player in movable
                 }
                 if any(
                     self._parent_has_active_protocol_from_domain(
@@ -1081,7 +1091,7 @@ class ProtocolLinkingMixin:
                 ):
                     refused_protocol_ids.update(domains.keys())
                     continue
-                for _, protocol_player in group:
+                for _, protocol_player in movable:
                     protocol_player.set_protocol_parent_id(None)
                     self._add_protocol_link(
                         native_player, protocol_player, domains[protocol_player.player_id]
@@ -1110,6 +1120,10 @@ class ProtocolLinkingMixin:
             self._remove_protocol_ids_from_parent(
                 player, migrated_protocol_ids | {native_player.player_id}
             )
+            # Drop the player's own side of that entry as well, so its config cannot
+            # claim to be a protocol child of the wrapper it is replacing.
+            if self._get_cached_protocol_parent_id(native_player.player_id) == player.player_id:
+                self._clear_protocol_parent_id(native_player.player_id)
             native_player.refresh_state()
 
             if refused_protocol_ids:
