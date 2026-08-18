@@ -96,6 +96,10 @@ STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
 
+# Maximum time spent searching other streaming providers for an alternative mapping
+# when every known candidate is capacity-saturated.
+STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
+
 # Maximum seconds we wait for the buffer to catch up on a forward seek.
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20
