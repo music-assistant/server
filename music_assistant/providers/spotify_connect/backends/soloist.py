@@ -194,6 +194,11 @@ class SoloistBackend(SpotifyConnectBackend):
         """Return the PCM format the capture sink's named pipe delivers."""
         return self._capture_format
 
+    @property
+    def stream_ends_on_pause(self) -> bool:
+        """The pipe sink delivers silence on pause; the provider stops the player."""
+        return False
+
     async def start(self) -> None:
         """Start the backend and its supervised soloist daemon."""
         # setup errors (unsupported platform, missing consent, download failure,
@@ -642,8 +647,10 @@ def _entity_metadata(item: SoloistEntity) -> BackendTrackMetadata:
     """
     Extract normalized track metadata from an entity's decorations.
 
-    Only ``identity.name`` and ``playback.duration_ms`` are documented; the
-    other decoration keys are probed defensively (the bag is extensible).
+    Mapped from the observed 1.3.7 wire format: the artist lives under
+    ``creators[].entity``, the album under ``parent.entity`` and artwork
+    under ``visual_identity.cover[]`` — all traversed defensively since the
+    decorations bag is extensible.
 
     :param item: The soloist entity (track) to extract the metadata from.
     """
@@ -654,9 +661,9 @@ def _entity_metadata(item: SoloistEntity) -> BackendTrackMetadata:
     return BackendTrackMetadata(
         track_uri=item.uri,
         title=_as_str(identity.get("name")) or _as_str(identity.get("title")),
-        artist=_first_name(decorations.get("artists") or identity.get("artists")),
-        album=_entity_name(decorations.get("album")),
-        image_url=_image_url(decorations),
+        artist=_creator_name(decorations.get("creators")),
+        album=_nested_entity_name(decorations.get("parent")),
+        image_url=_cover_url(decorations),
         duration=int(duration_ms) // 1000 if isinstance(duration_ms, int | float) else None,
     )
 
@@ -680,21 +687,33 @@ def _entity_name(value: Any) -> str | None:
     return None
 
 
-def _first_name(value: Any) -> str | None:
-    """Return the name of the first entry of a list-like credits decoration."""
-    if isinstance(value, list):
-        return _entity_name(value[0]) if value else None
-    return _entity_name(value)
+def _nested_entity_name(value: Any) -> str | None:
+    """Return the identity name of a ``{"entity": {...}}`` decoration (album parent)."""
+    entity = _as_dict(_as_dict(value).get("entity"))
+    return _entity_name(_as_dict(entity.get("decorations"))) or _entity_name(entity)
 
 
-def _image_url(decorations: dict[str, Any]) -> str | None:
-    """Best-effort extraction of an artwork url from an entity's decorations."""
-    for key in ("image", "images", "artwork"):
-        candidate = decorations.get(key)
-        if isinstance(candidate, list) and candidate:
-            candidate = candidate[0]
-        if isinstance(candidate, str) and candidate:
-            return candidate
-        if isinstance(candidate, dict) and (url := _as_str(candidate.get("url"))):
+def _creator_name(value: Any) -> str | None:
+    """Return the name of the first creator credit (``creators[].entity``)."""
+    if isinstance(value, list) and value:
+        return _nested_entity_name(value[0])
+    return None
+
+
+def _cover_url(decorations: dict[str, Any]) -> str | None:
+    """
+    Return the artwork url from ``visual_identity.cover[]``.
+
+    Prefers the large rendition; falls back to the last (largest) entry.
+    """
+    covers = _as_dict(decorations.get("visual_identity")).get("cover")
+    if not isinstance(covers, list) or not covers:
+        return None
+    for entry in covers:
+        if isinstance(entry, dict) and entry.get("size") == "large":
+            if url := _as_str(entry.get("url")):
+                return url
+    for entry in reversed(covers):
+        if isinstance(entry, dict) and (url := _as_str(entry.get("url"))):
             return url
     return None

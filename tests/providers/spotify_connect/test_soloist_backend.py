@@ -500,12 +500,40 @@ async def test_track_changed_maps_decorations() -> None:
     item = SoloistEntity(
         uri="spotify:track:t1",
         entity_type="track",
+        # shape captured from a real soloist 1.3.7 playback_state payload
         decorations={
             "identity": {"name": "My Song"},
             "playback": {"duration_ms": 210999, "content_ratings": []},
-            "artists": [{"name": "Main Artist"}, {"name": "Feat Artist"}],
-            "album": {"name": "The Album"},
-            "image": {"url": "http://img.invalid/c.jpg"},
+            "creators": [
+                {
+                    "entity": {
+                        "uri": "spotify:artist:a1",
+                        "entity_type": "artist",
+                        "decorations": {"identity": {"name": "Main Artist"}},
+                    }
+                },
+                {
+                    "entity": {
+                        "uri": "spotify:artist:a2",
+                        "entity_type": "artist",
+                        "decorations": {"identity": {"name": "Feat Artist"}},
+                    }
+                },
+            ],
+            "parent": {
+                "entity": {
+                    "uri": "spotify:album:al1",
+                    "entity_type": "album",
+                    "decorations": {"identity": {"name": "The Album"}},
+                }
+            },
+            "visual_identity": {
+                "cover": [
+                    {"url": "http://img.invalid/small.jpg", "size": "small"},
+                    {"url": "http://img.invalid/c.jpg", "size": "large"},
+                    {"url": "http://img.invalid/xl.jpg", "size": "xlarge"},
+                ]
+            },
         },
     )
 

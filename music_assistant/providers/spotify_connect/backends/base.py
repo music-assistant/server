@@ -36,6 +36,16 @@ class SpotifyConnectBackend(ABC):
     def decoded_audio_format(self) -> AudioFormat:
         """Return the decoded PCM format the audio reader actually delivers."""
 
+    @property
+    def stream_ends_on_pause(self) -> bool:
+        """
+        Whether the audio stream reaches a clean end when playback pauses.
+
+        Pipe-fed backends deliver silence on pause instead; the provider then
+        stops the player actively on the paused state event.
+        """
+        return True
+
     @abstractmethod
     async def start(self) -> None:
         """Start the backend and its supervised Spotify Connect implementation."""

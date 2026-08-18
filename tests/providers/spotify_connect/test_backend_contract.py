@@ -586,3 +586,29 @@ def test_translate_event_volume_without_value_is_other() -> None:
     event = _make_backend()._translate_event("volume", {"max": 100})
     assert event.type is BackendEventType.OTHER
     assert event.volume is None
+
+
+async def test_paused_stops_player_when_stream_does_not_end() -> None:
+    """A pipe-fed backend (no EOF on pause) gets its player actively stopped."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(backend, playing=True, active_player_id="player-1")
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+    await asyncio.sleep(0)
+
+    assert provider._playing is False
+    assert stopped == ["player-1"]
+    # the claim survives so the next 'playing' event can resume playback
+    assert provider._active_player_id == "player-1"

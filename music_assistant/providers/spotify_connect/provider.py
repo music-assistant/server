@@ -561,6 +561,17 @@ class SpotifyConnectProvider(PluginProvider):
                 return False
             await asyncio.sleep(0.1)
 
+    async def _stop_paused_player(self, player_id: str) -> None:
+        """
+        Stop the active player after a pause on a backend without stream EOF.
+
+        :param player_id: The player currently consuming the live source.
+        """
+        try:
+            await self.mass.players.cmd_stop(player_id)
+        except Exception as err:
+            self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
+
     def _cancel_pending_play_media(self) -> None:
         """Cancel any pending deferred play_media trigger."""
         task = self._pending_play_media_task
@@ -703,6 +714,11 @@ class SpotifyConnectProvider(PluginProvider):
             # stop and ends the stream (clean EOF), so the player leaves the playing
             # state; the next 'playing' event re-fires play_media to resume.
             self._cancel_pending_play_media()
+            # A pipe-fed backend keeps delivering silence on pause (no EOF), so
+            # the player must be stopped actively; the claim stays so the next
+            # 'playing' event resumes playback like the EOF path does.
+            if not self._backend.stream_ends_on_pause and (player_id := self._active_player_id):
+                self.mass.create_task(self._stop_paused_player(player_id))
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(event.metadata)
