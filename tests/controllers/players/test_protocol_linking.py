@@ -10565,13 +10565,17 @@ class TestDerivedProtocolLinking:
         assert derived.protocol_parent_id == "up_aabbccddeeff"
         assert "spb_1" in universal._protocol_player_ids
 
-    def test_derived_stays_with_refused_base_on_replacement(self, mock_mass: MagicMock) -> None:
+    @pytest.mark.parametrize("derived_first", [False, True])
+    def test_derived_stays_with_refused_base_on_replacement(
+        self, mock_mass: MagicMock, derived_first: bool
+    ) -> None:
         """
         Keep a derived protocol with its base when the base's link is refused.
 
         The native player absorbs the first universal player's cast protocol, so the
         second universal player's cast protocol is refused and stays behind. The
-        sendspin bridge riding on it must stay behind too instead of moving on its own.
+        sendspin bridge riding on it must stay behind too instead of moving on its own,
+        whichever order the two links are listed in.
         """
         controller = PlayerController(mock_mass)
         up_provider = create_mock_universal_provider(mock_mass)
@@ -10633,8 +10637,12 @@ class TestDerivedProtocolLinking:
             "spb_2": derived,
         }
         controller._add_protocol_link(universals["up_a"], cast_players["cc_1"], "chromecast")
-        controller._add_protocol_link(universals["up_b"], cast_players["cc_2"], "chromecast")
-        controller._add_protocol_link(universals["up_b"], derived, "sendspin")
+        if derived_first:
+            controller._add_protocol_link(universals["up_b"], derived, "sendspin")
+            controller._add_protocol_link(universals["up_b"], cast_players["cc_2"], "chromecast")
+        else:
+            controller._add_protocol_link(universals["up_b"], cast_players["cc_2"], "chromecast")
+            controller._add_protocol_link(universals["up_b"], derived, "sendspin")
 
         controller._check_replace_universal_player(native)
 

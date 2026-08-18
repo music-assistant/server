@@ -1042,9 +1042,11 @@ class ProtocolLinkingMixin:
             # Transfer all protocol links from universal player to native player.
             # Derived protocols ride on another output and must stay with it, so settle
             # the bases first and let a derived protocol inherit its base's refusal.
-            for linked in sorted(
-                player.linked_output_protocols, key=lambda link: link.derived_from is not None
-            ):
+            def _is_derived(link: LinkedOutputProtocol) -> bool:
+                protocol_player = self.get_player(link.output_protocol_id)
+                return bool(protocol_player and protocol_player.underlying_player_id)
+
+            for linked in sorted(player.linked_output_protocols, key=_is_derived):
                 if protocol_player := self.get_player(linked.output_protocol_id):
                     if protocol_player.underlying_player_id in refused_protocol_ids:
                         refused_protocol_ids.add(protocol_player.player_id)
