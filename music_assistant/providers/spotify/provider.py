@@ -258,7 +258,7 @@ class SpotifyProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self._get_all_items("me/tracks"):
-            if item and item["track"]["id"]:
+            if item and item["track"] and item["track"]["id"]:
                 yield parse_track(item["track"], self)
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
