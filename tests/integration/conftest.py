@@ -133,7 +133,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
         ),
         # hermetic: no auto-loaded device providers and no host-audio bridging
         suppress_auto_loaded_providers(),
-        # hermetic: no library sync firing into a running test
+        # no library sync starting on its own inside a running test
         suppress_initial_library_sync(),
     ):
         try:

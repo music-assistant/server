@@ -177,10 +177,12 @@ async def wait_for_boot_to_settle() -> None:
     """
     Wait out the events a fixture boot leaves in flight.
 
-    Registering a background task emits a debounced task list, and a boot registers
-    tasks up to the moment ``start()`` returns, so without this a test can start
-    watching for events just in time to catch the tail of its own fixture's boot.
+    Registering a background task emits a debounced task list, and a boot keeps
+    registering them until just after ``start()`` returns, so without this a test can
+    start watching for events in time to catch the tail of its own fixture's boot.
     """
+    # one debounce window for what the boot itself armed, one for the provider
+    # registrations that land in detached tasks just after it returns
     await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
 
 
