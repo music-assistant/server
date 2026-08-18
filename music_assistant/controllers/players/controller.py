@@ -2389,7 +2389,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         self._evaluate_protocol_links(player)
         if player.state.type == PlayerType.PROTOCOL:
-            # the player is hidden behind its parent from now on and no longer owns a queue
+            # the player is hidden behind its parent from now on and no longer owns a queue.
+            # only the queue is dropped, never the playback: the player either just became a
+            # (hidden) bridge client with nothing playing on it, or is already serving its
+            # parent, where a stop would cut that parent's stream short. A protocol player
+            # has no active group of its own either, so there is nothing to detach here.
             self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
             self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
             return
