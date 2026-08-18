@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from difflib import SequenceMatcher
 
 from music_assistant_models.enums import ExternalID, MediaType
@@ -20,12 +21,27 @@ from music_assistant_models.media_items import (
     Track,
 )
 
+from music_assistant.helpers.external_ids import normalize_external_id
+
 IGNORE_VERSIONS = (
     "explicit",  # explicit is matched separately
     "music from and inspired by the motion picture",
     "original soundtrack",
     "hi-res",  # quality is handled separately
 )
+
+_VERSION_IGNORE_WORDS = {
+    "album",
+    "edition",
+    "variant",
+    "versie",
+    "version",
+    "versione",
+}
+_VERSION_WORD_ALIASES = {
+    "remastered": "remaster",
+}
+_IGNORE_VERSION_KEYS = {create_safe_string(value) for value in IGNORE_VERSIONS}
 
 
 def compare_media_item(
@@ -80,7 +96,7 @@ def compare_artist(
     if compare_item_ids(base_item, compare_item):
         return True
     # return early on (un)matched external id
-    for ext_id in (ExternalID.DISCOGS, ExternalID.MB_ARTIST, ExternalID.TADB):
+    for ext_id in (ExternalID.MB_ARTIST, ExternalID.DISCOGS, ExternalID.TADB):
         external_id_match = compare_external_ids(
             base_item.external_ids, compare_item.external_ids, ext_id
         )
@@ -107,19 +123,22 @@ def compare_album(
     if compare_item_ids(base_item, compare_item):
         return True
 
-    # return early on (un)matched external id
+    # return early on (un)matched authoritative external id
     for ext_id in (
-        ExternalID.DISCOGS,
         ExternalID.MB_ALBUM,
+        ExternalID.DISCOGS,
         ExternalID.TADB,
-        ExternalID.ASIN,
-        ExternalID.BARCODE,
     ):
         external_id_match = compare_external_ids(
             base_item.external_ids, compare_item.external_ids, ext_id
         )
         if external_id_match is not None:
             return external_id_match
+
+    secondary_external_id_match = any(
+        compare_external_ids(base_item.external_ids, compare_item.external_ids, ext_id) is True
+        for ext_id in (ExternalID.ASIN, ExternalID.BARCODE)
+    )
 
     # compare version
     if not compare_version(base_item.version, compare_item.version):
@@ -133,7 +152,12 @@ def compare_album(
     assert isinstance(base_item, Album)
     assert isinstance(compare_item, Album)
     # compare year
-    if base_item.year and compare_item.year and base_item.year != compare_item.year:
+    if (
+        base_item.year
+        and compare_item.year
+        and base_item.year != compare_item.year
+        and not secondary_external_id_match
+    ):
         return False
     # compare explicitness
     if compare_explicit(base_item.metadata, compare_item.metadata) is False:
@@ -519,28 +543,26 @@ def compare_external_ids(
     external_id_type: ExternalID,
 ) -> bool | None:
     """Compare external ids and return True if a match was found."""
-    base_ids = {x[1] for x in external_ids_base if x[0] == external_id_type}
+    base_ids = {
+        normalize_external_id(external_id_type, value)
+        for current_type, value in external_ids_base
+        if current_type == external_id_type
+    }
     if not base_ids:
         # return early if the requested external id type is not present in the base set
         return None
-    compare_ids = {x[1] for x in external_ids_compare if x[0] == external_id_type}
+    compare_ids = {
+        normalize_external_id(external_id_type, value)
+        for current_type, value in external_ids_compare
+        if current_type == external_id_type
+    }
     if not compare_ids:
         # return early if the requested external id type is not present in the compare set
         return None
-    for base_id in base_ids:
-        if base_id in compare_ids:
-            return True
-        # handle upc stored as EAN-13 barcode
-        if external_id_type == ExternalID.BARCODE and len(base_id) == 12:
-            if f"0{base_id}" in compare_ids:
-                return True
-        # handle EAN-13 stored as UPC barcode
-        if external_id_type == ExternalID.BARCODE and len(base_id) == 13:
-            if base_id[1:] in compare_ids:
-                return True
-        # return false if the identifier is unique (e.g. musicbrainz id)
-        if external_id_type.is_unique:
-            return False
+    if base_ids.intersection(compare_ids):
+        return True
+    if external_id_type.is_unique:
+        return False
     return None
 
 
@@ -585,36 +607,7 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
 
 def compare_version(base_version: str, compare_version: str) -> bool:
     """Compare version string."""
-    if not base_version and not compare_version:
-        return True
-    if not base_version and compare_version.lower() in IGNORE_VERSIONS:
-        return True
-    if not compare_version and base_version.lower() in IGNORE_VERSIONS:
-        return True
-    if not base_version and compare_version:
-        return False
-    if base_version and not compare_version:
-        return False
-
-    if " " not in base_version and " " not in compare_version:
-        return compare_strings(base_version, compare_version, False)
-
-    # do this the hard way as sometimes the version string is in the wrong order
-    base_versions = sorted(base_version.lower().split(" "))
-    compare_versions = sorted(compare_version.lower().split(" "))
-    # filter out words we can ignore (such as 'version')
-    ignore_words = [
-        *IGNORE_VERSIONS,
-        "version",
-        "edition",
-        "variant",
-        "versie",
-        "versione",
-    ]
-    base_versions = [x for x in base_versions if x not in ignore_words]
-    compare_versions = [x for x in compare_versions if x not in ignore_words]
-
-    return base_versions == compare_versions
+    return _normalize_version_tokens(base_version) == _normalize_version_tokens(compare_version)
 
 
 def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> bool | None:
@@ -624,6 +617,17 @@ def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> boo
         # only strict compare them if both have the info set
         return base.explicit == compare.explicit
     return None
+
+
+def _normalize_version_tokens(value: str) -> tuple[str, ...]:
+    """Return meaningful version tokens in stable order."""
+    if not value or create_safe_string(value) in _IGNORE_VERSION_KEYS:
+        return ()
+    tokens = (
+        _VERSION_WORD_ALIASES.get(token, token)
+        for token in re.findall(r"[^\W_]+", value.casefold())
+    )
+    return tuple(sorted(token for token in tokens if token not in _VERSION_IGNORE_WORDS))
 
 
 def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:

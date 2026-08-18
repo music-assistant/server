@@ -63,6 +63,11 @@ from music_assistant.helpers.collections import (
 )
 from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.external_ids import (
+    external_id_lookup_values,
+    external_id_sort_key,
+    normalize_external_ids,
+)
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 
@@ -271,8 +276,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 # actually add a new item in the library db
                 self.mass.music.match_provider_instances(item)
                 async with self._db_add_lock:
-                    library_id = await self._add_library_item(item)
-                    new_item = True
+                    if library_id := await self._get_library_item_by_match(item):
+                        await self._update_library_item(
+                            library_id, item, overwrite=overwrite_existing
+                        )
+                    else:
+                        library_id = await self._add_library_item(item)
+                        new_item = True
         # return final library_item
         library_item = await self.get_library_item(library_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -784,17 +794,31 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return None
 
     @final
-    async def get_library_item_by_external_id(
-        self, external_id: str, external_id_type: ExternalID | None = None
-    ) -> ItemCls | None:
-        """Get the library item for the given external id."""
+    async def get_library_items_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: ExternalID | None = None,
+        limit: int = 50,
+    ) -> list[ItemCls]:
+        """
+        Get library items for the given external identifier.
+
+        :param external_id: External identifier value to look up.
+        :param external_id_type: Optional identifier type.
+        :param limit: Maximum number of library items to return.
+        """
+        lookup_values = (
+            external_id_lookup_values(external_id_type, external_id)
+            if external_id_type
+            else (external_id,)
+        )
         subquery_parts = [
             "media_type = :ext_id_media_type",
-            "external_id = :external_id",
+            "external_id IN :external_ids",
         ]
         query_params: dict[str, Any] = {
             "ext_id_media_type": self.media_type.value,
-            "external_id": external_id,
+            "external_ids": lookup_values,
         }
         if external_id_type:
             subquery_parts.append("external_id_type = :external_id_type")
@@ -804,23 +828,39 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"WHERE {' AND '.join(subquery_parts)}"
         )
         query = f"{self.db_table}.item_id IN ({subquery})"
-        for item in await self.get_library_items_by_query(
-            limit=1,
+        items = await self.get_library_items_by_query(
+            limit=limit,
             extra_query_parts=[query],
             extra_query_params=query_params,
-        ):
-            return item
-        return None
+        )
+        return sorted(items, key=lambda item: int(item.item_id))
+
+    @final
+    async def get_library_item_by_external_id(
+        self, external_id: str, external_id_type: ExternalID | None = None
+    ) -> ItemCls | None:
+        """Get the first library item for the given external id, if present."""
+        items = await self.get_library_items_by_external_id(external_id, external_id_type, limit=1)
+        return items[0] if items else None
+
+    @final
+    async def get_library_items_by_external_ids(
+        self, external_ids: set[tuple[ExternalID, str]]
+    ) -> list[ItemCls]:
+        """Get all library items matching any of the given external identifiers."""
+        result: dict[str, ItemCls] = {}
+        for external_id_type, external_id in sorted(external_ids, key=external_id_sort_key):
+            for item in await self.get_library_items_by_external_id(external_id, external_id_type):
+                result.setdefault(item.item_id, item)
+        return list(result.values())
 
     @final
     async def get_library_item_by_external_ids(
         self, external_ids: set[tuple[ExternalID, str]]
     ) -> ItemCls | None:
         """Get the library item for (one of) the given external ids."""
-        for external_id_type, external_id in external_ids:
-            if match := await self.get_library_item_by_external_id(external_id, external_id_type):
-                return match
-        return None
+        items = await self.get_library_items_by_external_ids(external_ids)
+        return items[0] if items else None
 
     @final
     async def get_library_items_by_prov_id(
@@ -1310,6 +1350,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             DB_TABLE_EXTERNAL_ID_LOOKUP,
             {"media_type": self.media_type.value, "item_id": db_id},
         )
+        external_ids = normalize_external_ids(external_ids)
         if lookup_rows := [
             {
                 "media_type": self.media_type.value,
@@ -1516,14 +1557,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if provider_mappings:
             if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
                 return int(cur_item.item_id)
-        if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            # Double check external IDs - if MBID exists, regards that as overriding
+        for cur_item in await self.get_library_items_by_external_ids(item.external_ids):
+            # External identifiers may be reused, so verify every candidate.
             if compare_media_item(item, cur_item):
                 return int(cur_item.item_id)
-        # search by (exact) name match
-        query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
-        query_params = {"name": item.name, "sort_name": item.sort_name}
+        # search by normalized exact name match
+        query = (
+            f"{self.db_table}.search_name = :search_name "
+            f"OR {self.db_table}.search_sort_name = :search_sort_name"
+        )
+        query_params = {
+            "search_name": create_safe_string(item.name, True, True),
+            "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+        }
         for db_item in await self.get_library_items_by_query(
             extra_query_parts=[query], extra_query_params=query_params
         ):
