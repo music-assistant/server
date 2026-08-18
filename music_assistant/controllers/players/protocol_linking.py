@@ -1566,6 +1566,18 @@ class ProtocolLinkingMixin:
             if protocol_id in linked_protocol_ids:
                 continue  # Already linked
 
+            protocol_player = self.get_player(protocol_id)
+            # A protocol that another parent currently owns is not ours to claim: it would
+            # show up on both parents and occupy this parent's domain slot, keeping a
+            # genuine protocol of that domain out. The cached id is kept, so the protocol
+            # is recovered once its owner releases it.
+            if (
+                protocol_player is not None
+                and protocol_player.protocol_parent_id is not None
+                and protocol_player.protocol_parent_id != native_player.player_id
+            ):
+                continue
+
             # Get protocol player config to determine the protocol domain
             protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
             if not protocol_config:
@@ -1589,7 +1601,6 @@ class ProtocolLinkingMixin:
 
             # Resolve the derived-transport edge from the live player when
             # registered, else from the persisted edge in config
-            protocol_player = self.get_player(protocol_id)
             derived_from = (
                 protocol_player.underlying_player_id
                 if protocol_player
