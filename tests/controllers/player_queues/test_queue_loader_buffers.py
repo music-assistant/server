@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -57,13 +58,21 @@ def _controller(*queues: tuple[str, list[QueueItem]]) -> PlayerQueuesController:
     limited = MagicMock(spec=MusicProvider)
     limited.name = "Limited"
     limited.max_concurrent_streams = 2
+    # pinned rather than left to MagicMock truthiness: this decides whether a prewarm survives
+    limited.has_available_stream_slot = True
     unlimited = MagicMock(spec=MusicProvider)
     unlimited.name = "Local"
     unlimited.max_concurrent_streams = None
+    unlimited.has_available_stream_slot = True
     providers = {LIMITED: limited, UNLIMITED: unlimited}
     ctrl.mass = MagicMock()
     ctrl.mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     return ctrl
+
+
+def _limited_double(ctrl: PlayerQueuesController) -> MagicMock:
+    """Return the slot-limited provider double the controller resolves LIMITED to."""
+    return cast("MagicMock", ctrl.mass.get_provider(LIMITED))
 
 
 async def test_starting_an_item_aborts_the_other_filling_sources_of_its_queue() -> None:
@@ -98,6 +107,48 @@ async def test_the_started_items_successor_keeps_its_prewarm() -> None:
     assert stale.streamdetails is not None
     assert stale.streamdetails.buffer is not None
     stale.streamdetails.buffer.clear.assert_awaited_once()
+
+
+async def test_a_saturated_provider_takes_back_the_successors_prewarm() -> None:
+    """A prewarm may not sit on the last slot the item being started needs."""
+    target = _item(QUEUE_ID, "target", LIMITED)
+    upcoming = _item(QUEUE_ID, "upcoming", LIMITED)
+    ctrl = _controller((QUEUE_ID, [target, upcoming]))
+    _limited_double(ctrl).has_available_stream_slot = False
+
+    await ctrl._abort_superseded_source_buffers(target)
+
+    assert upcoming.streamdetails is not None
+    assert upcoming.streamdetails.buffer is not None
+    upcoming.streamdetails.buffer.clear.assert_awaited_once()
+    assert target.streamdetails is not None
+    assert target.streamdetails.buffer is not None
+    assert target.streamdetails.buffer.clear.await_count == 0
+
+
+async def test_freeing_a_slot_first_lets_the_successor_keep_its_prewarm() -> None:
+    """The prewarm is only given up when aborting the stale sources did not free a slot."""
+    stale = _item(QUEUE_ID, "stale", LIMITED)
+    target = _item(QUEUE_ID, "target", LIMITED)
+    upcoming = _item(QUEUE_ID, "upcoming", LIMITED)
+    ctrl = _controller((QUEUE_ID, [stale, target, upcoming]))
+    provider = _limited_double(ctrl)
+    provider.has_available_stream_slot = False
+
+    async def _release_slot() -> None:
+        provider.has_available_stream_slot = True
+
+    assert stale.streamdetails is not None
+    assert stale.streamdetails.buffer is not None
+    stale.streamdetails.buffer.clear.side_effect = _release_slot
+
+    await ctrl._abort_superseded_source_buffers(target)
+
+    # the successor is only re-checked after the stale aborts, so it survives
+    stale.streamdetails.buffer.clear.assert_awaited_once()
+    assert upcoming.streamdetails is not None
+    assert upcoming.streamdetails.buffer is not None
+    assert upcoming.streamdetails.buffer.clear.await_count == 0
 
 
 async def test_completed_and_unlimited_sources_are_left_alone() -> None:

@@ -376,18 +376,19 @@ async def test_get_buffer_sound_effect_uses_default_ready_threshold_without_cros
 
 
 @pytest.mark.parametrize(
-    ("max_concurrent_streams", "expect_released"),
-    [(1, True), (None, False)],
-    ids=["slot_limited", "unlimited"],
+    ("max_concurrent_streams", "has_free_slot", "expect_released"),
+    [(1, False, True), (1, True, False), (None, True, False)],
+    ids=["slot_limited_saturated", "slot_limited_with_free_slot", "unlimited"],
 )
 @pytest.mark.asyncio
 async def test_get_buffer_releases_a_slot_limited_producer_before_replacing_it(
-    max_concurrent_streams: int | None, expect_released: bool
+    max_concurrent_streams: int | None, has_free_slot: bool, expect_released: bool
 ) -> None:
-    """A replacement buffer needs the source slot the superseded producer still holds."""
+    """The superseded producer only gives up its slot when the provider has none to spare."""
     mass, _start_analysis, _scheduled_tasks = _make_mass_for_get_buffer()
     provider = MagicMock(spec=MusicProvider)
     provider.max_concurrent_streams = max_concurrent_streams
+    provider.has_available_stream_slot = has_free_slot
     mass.get_provider.return_value = provider
     streamdetails = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
     blocked = asyncio.Event()
@@ -401,7 +402,8 @@ async def test_get_buffer_releases_a_slot_limited_producer_before_replacing_it(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     streamdetails.buffer = stale_buffer
-    # the producer is still charging a source slot and the consumer is active right now
+    # the producer is still charging a source slot and the consumer is active right now,
+    # so the 30s inactivity heuristic must not be what decides this
     assert stale_buffer.is_buffering
     assert time.time() - stale_buffer._last_access_time < 30
 

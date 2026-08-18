@@ -430,13 +430,15 @@ class AudioBuffer:
                     existing_buffer._discarded_chunks,
                 )
                 streamdetails.buffer = None
-                # a still-filling producer holds one of the provider's source-stream
-                # slots; the replacement buffer needs that slot, so stop it now
+                # a still-filling producer holds one of the provider's source-stream slots.
+                # The replacement needs a slot, so take this one back only when the provider
+                # has none free - otherwise a superseded consumer keeps draining its audio.
                 provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
                 must_release_slot = (
                     existing_buffer.is_buffering
                     and isinstance(provider, MusicProvider)
                     and provider.max_concurrent_streams is not None
+                    and not provider.has_available_stream_slot
                 )
                 if must_release_slot or time.time() - existing_buffer._last_access_time > 30:
                     await asyncio.shield(existing_buffer.clear())

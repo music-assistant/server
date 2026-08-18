@@ -1004,28 +1004,61 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data.get(queue_item.queue_id)
         items = tuple(queue_data.items) if queue_data else ()
-        # the started item keeps its own buffer; its direct successor keeps a prewarm
-        # in flight, so a resume or seek does not cost the upcoming crossfade
-        spared_item_ids = {queue_item.queue_item_id}
+        successor: QueueItem | None = None
         for index, item in enumerate(items):
             if item.queue_item_id == queue_item.queue_item_id and index + 1 < len(items):
-                spared_item_ids.add(items[index + 1].queue_item_id)
+                successor = items[index + 1]
                 break
+        # the started item keeps its own buffer, and its direct successor keeps the prewarm
+        # for the upcoming crossfade unless the aborts below leave the provider without a slot
+        spared_item_ids = {queue_item.queue_item_id}
+        if successor is not None:
+            spared_item_ids.add(successor.queue_item_id)
         for item in items:
-            if item.queue_item_id in spared_item_ids or item.streamdetails is None:
+            if item.queue_item_id in spared_item_ids:
                 continue
-            audio_buffer = item.streamdetails.buffer
-            if audio_buffer is None or not audio_buffer.is_buffering:
-                continue
-            provider = self.mass.get_provider(item.streamdetails.provider, return_unavailable=True)
-            if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams is None:
-                continue
+            await self._abort_source_buffer(item, queue_item)
+        if successor is not None:
+            await self._abort_source_buffer(successor, queue_item, only_when_saturated=True)
+
+    async def _abort_source_buffer(
+        self,
+        item: QueueItem,
+        started_item: QueueItem,
+        only_when_saturated: bool = False,
+    ) -> None:
+        """
+        Cancel one item's still-filling source so its provider stream slot is handed over.
+
+        :param item: The queue item whose source buffer should be aborted.
+        :param started_item: The queue item that is about to start playing.
+        :param only_when_saturated: Only abort while the provider has no free slot left.
+        """
+        if item.streamdetails is None:
+            return
+        audio_buffer = item.streamdetails.buffer
+        if audio_buffer is None or not audio_buffer.is_buffering:
+            return
+        provider = self.mass.get_provider(item.streamdetails.provider, return_unavailable=True)
+        if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams is None:
+            return
+        if only_when_saturated:
+            if provider.has_available_stream_slot:
+                # an abort above already freed a slot, so this prewarm can stay
+                return
+            self.logger.debug(
+                "Aborting the prewarm of %s: %s has no free stream slot left for %s",
+                item.name,
+                provider.name,
+                started_item.name,
+            )
+        else:
             self.logger.debug(
                 "Aborting the source of %s to free a %s stream slot for %s",
                 item.name,
                 provider.name,
-                queue_item.name,
+                started_item.name,
             )
-            # the cancelled buffer stays attached: it marks the source as aborted for
-            # the flow stream's accounting and fails is_valid() for any later reuse
-            await audio_buffer.clear()
+        # the cancelled buffer stays attached: it marks the source as aborted for
+        # the flow stream's accounting and fails is_valid() for any later reuse
+        await audio_buffer.clear()
