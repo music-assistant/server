@@ -14,6 +14,14 @@ from music_assistant.providers.plex.helpers import SUPPORTED_FEATURES
 
 LIBRARY_TYPE_AUDIOBOOKS = "audiobooks"
 LIBRARY_TYPE_MUSIC = "music"
+LIBRARY_TYPE_PODCASTS = "podcasts"
+
+# both listings guard the same destructive failure, so they are covered the same way
+SPOKEN_LIBRARIES = [
+    (LIBRARY_TYPE_AUDIOBOOKS, "get_library_audiobooks", "_parse_audiobook"),
+    (LIBRARY_TYPE_PODCASTS, "get_library_podcasts", "_parse_podcast"),
+]
+SPOKEN_LIBRARY_LISTINGS = [(library, generator) for library, generator, _ in SPOKEN_LIBRARIES]
 
 
 class _FakePlexData:
@@ -147,33 +155,39 @@ async def test_library_tracks_does_not_swallow_connection_errors(error: Exceptio
         _ = [track async for track in provider.get_library_tracks()]
 
 
-async def test_library_audiobooks_skips_unparsable_item() -> None:
-    """An audiobook that cannot be parsed is skipped, the rest still syncs."""
-    provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
+@pytest.mark.parametrize(("library_type", "generator", "parse_method"), SPOKEN_LIBRARIES)
+async def test_spoken_library_skips_unparsable_item(
+    library_type: str, generator: str, parse_method: str
+) -> None:
+    """An audiobook or podcast that cannot be parsed is skipped, the rest still syncs."""
+    provider = _make_provider(library_type)
     good_album = _FakePlexAlbum(key="/501")
     provider._plex_library.albums = MagicMock(return_value=[_FakePlexAlbum(), good_album])
 
-    async def _parse_audiobook(plex_album: Any) -> Any:
+    async def _parse(plex_album: Any, **_kwargs: Any) -> Any:
         if plex_album is good_album:
             return "parsed"
         raise InvalidDataError("no title")
 
-    provider._parse_audiobook = _parse_audiobook
+    setattr(provider, parse_method, _parse)
 
-    audiobooks = [audiobook async for audiobook in provider.get_library_audiobooks()]
+    items = [item async for item in getattr(provider, generator)()]
 
-    assert audiobooks == ["parsed"]
+    assert items == ["parsed"]
 
 
-async def test_library_audiobooks_does_not_swallow_listing_error() -> None:
+@pytest.mark.parametrize(("library_type", "generator"), SPOKEN_LIBRARY_LISTINGS)
+async def test_spoken_library_does_not_swallow_listing_error(
+    library_type: str, generator: str
+) -> None:
     """
-    A failure to list the audiobook library aborts the sync.
+    A failure to list the audiobook or podcast library aborts the sync.
 
     Yielding nothing would look exactly like an emptied library, which makes the sync
-    deletion pass remove every audiobook that is still on the server.
+    deletion pass remove every item that is still on the server.
     """
-    provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
+    provider = _make_provider(library_type)
     provider._plex_library.albums = MagicMock(side_effect=ConnectionError("server gone"))
 
     with pytest.raises(ConnectionError):
-        _ = [audiobook async for audiobook in provider.get_library_audiobooks()]
+        _ = [item async for item in getattr(provider, generator)()]
