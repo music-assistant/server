@@ -635,6 +635,46 @@ def _persisting_mass(stored: dict[str, object]) -> Mock:
     )
 
 
+async def test_an_unexpected_failure_keeps_the_pairs_it_never_reached() -> None:
+    """A run cut short resumes at the pair it got to, not past the whole batch."""
+    ctrl = _bare_controller(
+        [{"item_id_1": index, "item_id_2": 900 + index} for index in range(1, 6)]
+    )
+
+    async def _boom(item_id_1: int, _item_id_2: int) -> bool:
+        if item_id_1 == 3:
+            raise RuntimeError("something unexpected")
+        return False
+
+    with (
+        patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(side_effect=_boom)),
+        pytest.raises(RuntimeError),
+    ):
+        await ctrl._reconcile_duplicate_tracks()
+
+    assert ctrl._track_reconciliation_cursor == (2, 902)
+
+
+async def test_a_merge_asks_for_another_pass() -> None:
+    """Merging moves relations onto the surviving row, which may duplicate an earlier one."""
+    ctrl = _bare_controller([{"item_id_1": 1, "item_id_2": 2}])
+
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=True)):
+        await ctrl._reconcile_duplicate_tracks()
+
+    assert ctrl._track_reconciliation_rescan_due
+
+
+async def test_a_run_without_merges_asks_for_nothing() -> None:
+    """A walk that changed nothing has no reason to start over."""
+    ctrl = _bare_controller([{"item_id_1": 1, "item_id_2": 2}])
+
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=False)):
+        await ctrl._reconcile_duplicate_tracks()
+
+    assert not ctrl._track_reconciliation_rescan_due
+
+
 async def test_the_walk_resumes_after_a_restart() -> None:
     """Progress is kept across restarts, so a long run of refusals is only crossed once."""
     stored: dict[str, object] = {}

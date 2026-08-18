@@ -2752,37 +2752,46 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self._set_track_reconciliation_state(None, self._track_reconciliation_rescan_due)
             update_current_task_progress_text("No duplicate tracks found")
             return
-        # resume after the exact pair examined last, so candidates this run refused can never
-        # starve the ones behind them, not even a further pair of the same track that the batch
-        # boundary cut off; a short batch means the walk has reached the end of the library
-        self._set_track_reconciliation_state(
-            (int(rows[-1]["item_id_1"]), int(rows[-1]["item_id_2"]))
-            if len(rows) == TRACK_RECONCILIATION_BATCH_SIZE
-            else None,
-            self._track_reconciliation_rescan_due,
-        )
         merged = 0
-        for index, row in enumerate(rows, 1):
-            update_current_task_progress_from_index(
-                index, len(rows), f"Checking duplicate track {index}/{len(rows)}"
-            )
-            try:
-                if await self._merge_duplicate_track_pair(
-                    int(row["item_id_1"]), int(row["item_id_2"])
-                ):
-                    merged += 1
-            except MediaNotFoundError:
-                # an earlier merge in this batch already absorbed one of the two rows
-                continue
-            except MusicAssistantError as err:
-                report_current_task_failure(str(err))
-                self.logger.warning(
-                    "Error while reconciling duplicate tracks %s and %s: %s",
-                    row["item_id_1"],
-                    row["item_id_2"],
-                    str(err),
-                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+        examined = cursor
+        try:
+            for index, row in enumerate(rows, 1):
+                update_current_task_progress_from_index(
+                    index, len(rows), f"Checking duplicate track {index}/{len(rows)}"
                 )
+                try:
+                    if await self._merge_duplicate_track_pair(
+                        int(row["item_id_1"]), int(row["item_id_2"])
+                    ):
+                        merged += 1
+                except MediaNotFoundError:
+                    # an earlier merge in this batch already absorbed one of the two rows
+                    pass
+                except MusicAssistantError as err:
+                    report_current_task_failure(str(err))
+                    self.logger.warning(
+                        "Error while reconciling duplicate tracks %s and %s: %s",
+                        row["item_id_1"],
+                        row["item_id_2"],
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                    )
+                examined = (int(row["item_id_1"]), int(row["item_id_2"]))
+        finally:
+            # resume after the pair examined last, so candidates this run refused can never
+            # starve the ones behind them, not even a further pair of the same track that the
+            # batch boundary cut off. Recording it even when the run is cut short keeps the
+            # pairs it did not reach for the next run rather than skipping past them.
+            walked_to_end = len(rows) < TRACK_RECONCILIATION_BATCH_SIZE and examined == (
+                int(rows[-1]["item_id_1"]),
+                int(rows[-1]["item_id_2"]),
+            )
+            # a merge moves album and artist relations onto the surviving row, which can make
+            # it a duplicate of a row this walk has already passed, so ask for another pass
+            self._set_track_reconciliation_state(
+                None if walked_to_end else examined,
+                self._track_reconciliation_rescan_due or merged > 0,
+            )
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
 
     def _restore_track_reconciliation_state(self) -> None:
