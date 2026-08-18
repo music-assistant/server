@@ -1033,9 +1033,7 @@ class ProtocolLinkingMixin:
                 continue
 
             known_protocol_ids = set(self._get_known_protocol_ids(player))
-            active_protocol_ids = {
-                link.output_protocol_id for link in player.linked_output_protocols
-            }
+            refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
             # Transfer all protocol links from universal player to native player
@@ -1044,34 +1042,35 @@ class ProtocolLinkingMixin:
                     protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
-                    if protocol_player.protocol_parent_id == native_player.player_id:
-                        moved_protocol_ids.add(protocol_player.player_id)
-                        protocol_player.refresh_state()
-                    else:
+                    if protocol_player.protocol_parent_id != native_player.player_id:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
+                        refused_protocol_ids.add(protocol_player.player_id)
+                        continue
+                    protocol_player.refresh_state()
+                    moved_protocol_ids.add(protocol_player.player_id)
 
-            if active_protocol_ids - moved_protocol_ids:
-                # A link was refused, keep the universal player and hand over only
-                # what moved so the refused protocols are not orphaned.
-                self._migrate_protocol_ids_to_parent(native_player, moved_protocol_ids)
-                self._remove_protocol_ids_from_parent(player, moved_protocol_ids)
-                native_player.refresh_state()
-                continue
-
-            cached_only_ids = known_protocol_ids - active_protocol_ids
-            preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            # A refused link leaves the universal player in charge, so only hand over what
+            # actually moved: ownership that exists in config alone stays with it, which
+            # keeps a protocol derived from a refused one with the parent it will link to.
+            migrated_protocol_ids = (
+                moved_protocol_ids if refused_protocol_ids else known_protocol_ids
+            )
             # A device that kept its id across a type change lists itself here.
             # It must never become its own protocol, and it must also be dropped
             # from the obsolete universal player so the permanent cleanup below
             # doesn't treat it as an orphaned protocol (which would re-wrap the
             # native player in a fresh universal player).
-            preserved_protocol_ids.discard(native_player.player_id)
-            self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
+            migrated_protocol_ids.discard(native_player.player_id)
+            self._migrate_protocol_ids_to_parent(native_player, migrated_protocol_ids)
             self._remove_protocol_ids_from_parent(
-                player, preserved_protocol_ids | {native_player.player_id}
+                player, migrated_protocol_ids | {native_player.player_id}
             )
             native_player.refresh_state()
+
+            if refused_protocol_ids:
+                # Registered protocols that the native player refused remain on the wrapper.
+                continue
 
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the universal player's config
@@ -1769,7 +1768,8 @@ class ProtocolLinkingMixin:
         1. Output protocol that is currently grouped/synced with other players.
         2. User's preferred output protocol (from player settings).
         3. Native playback (if player supports PLAY_MEDIA).
-        4. Best available protocol by priority.
+        4. The player's declared default output protocol domain, if available.
+        5. Best available protocol by priority.
 
         Returns tuple of (target_player, output_protocol).
         output_protocol is None when using native playback.
@@ -1795,9 +1795,10 @@ class ProtocolLinkingMixin:
                     return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
 
         # 2. Check for user's preferred output protocol.
-        # The value is only stored while it differs from the entry's default, which is computed
-        # per player: "native" when a native output is available, otherwise "auto". Both of those
-        # are handled identically by the steps below, so an absent value can safely fall through.
+        # The value is only stored while it differs from the entry's default: "native" when a
+        # native output is available, otherwise "auto". A player without a native output (e.g. a
+        # LinkPlay shell) therefore has no stored preference by default and gets its default
+        # output domain applied in step 4.
         preferred = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
@@ -1833,7 +1834,27 @@ class ProtocolLinkingMixin:
             )
             return player, None
 
-        # 4. Fall back to best protocol by priority
+        # 4. Use the player's preferred default protocol domain, if it declares one and a
+        # matching linked protocol is available (e.g. a LinkPlay shell prefers DLNA). This
+        # never influences grouping; it only steers the default output for playback. "Auto"
+        # is the entry default here, so it consistently resolves to this domain default.
+        if default_domain := player.default_output_protocol_domain:
+            for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
+                if linked.protocol_domain != default_domain:
+                    continue
+                if (protocol_player := self.get_player(linked.output_protocol_id)) and (
+                    protocol_player.available_for_playback
+                ):
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: %s (default domain %s)",
+                        player.state.name,
+                        protocol_player.state.name,
+                        default_domain,
+                    )
+                    return protocol_player, player.get_linked_protocol(linked.output_protocol_id)
+
+        # 5. Fall back to best protocol by priority
         for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if protocol_player := self.get_player(linked.output_protocol_id):
                 if protocol_player.available_for_playback:
@@ -2085,7 +2106,7 @@ class ProtocolLinkingMixin:
         if not parent_supports_native:
             return False
         return (
-            child_player.provider.instance_id == parent_player.provider.instance_id
+            parent_player.is_native_group_compatible(child_player)
             or child_player.player_id in parent_player._attr_can_group_with
             or child_player.provider.instance_id in parent_player._attr_can_group_with
         )
@@ -2451,6 +2472,21 @@ class ProtocolLinkingMixin:
             parent_supports_native_grouping,
             native_members,
         ):
+            return parent_protocol_player, parent_protocol_domain
+
+        # Priority 0.5: a player that runs its own multiroom (e.g. a LinkPlay control shell)
+        # keeps grouping on its native path rather than routing it through a linked protocol
+        # that is merely its preferred playback output. Native compatibility still decides
+        # whether this is possible, so an incompatible/cross-backend pair falls through.
+        if child_player.prefer_native_grouping and self._can_use_native_grouping(
+            child_player, parent_player, parent_supports_native_grouping
+        ):
+            native_members.append(child_player.player_id)
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Using native grouping (preferred) for %s",
+                child_player.state.name,
+            )
             return parent_protocol_player, parent_protocol_domain
 
         # Priority 1: the child's preferred output protocol

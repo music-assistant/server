@@ -954,7 +954,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         raw_playlist_id = playlist_obj["id"]
         playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
-        is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
+        is_editable = playlist_obj.get("owned", playlist_obj.get("privacy", "") == "PRIVATE")
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
         # So suffix with the instance id to make them unique
         if playlist_id in YT_PERSONAL_PLAYLISTS:

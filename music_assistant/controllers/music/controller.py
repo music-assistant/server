@@ -650,6 +650,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         fully_played_only: bool = True,
         user_initiated_only: bool = False,
         played_after_timestamp: int | None = None,
+        providers: list[str] | None = None,
         *,
         always_include_media_types: list[MediaType] | None = None,
     ) -> list[ItemMapping]:
@@ -664,60 +665,77 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param user_initiated_only: If True, only return items initiated by the user.
         :param played_after_timestamp: If set, only return items played at or after this
             epoch-seconds timestamp.
+        :param providers: Restrict results to items reachable through one of these provider
+            instance ids (OR semantics). None applies no filter; an explicit empty list
+            returns no items.
         :param always_include_media_types: Media types to include regardless of
             user_initiated_only (e.g. podcasts/audiobooks, which have no user-initiated
             container).
         """
+        if providers is not None and not providers:
+            return []
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
-        available_providers = ("library", *self.get_unique_providers())
+        available_providers = ("library", *self.get_active_provider_instances())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         # user_initiated_only constrains only `media_types`; always_include_media_types are
         # included regardless (e.g. podcasts/audiobooks have no user-initiated container row).
-        media_type_clause = f"media_type in {media_types_str}"
+        media_type_clause = f"p.media_type in {media_types_str}"
         if user_initiated_only:
-            media_type_clause += " AND user_initiated = 1"
+            media_type_clause += " AND p.user_initiated = 1"
         media_type_clause = f"({media_type_clause})"
         if always_include_media_types:
             always_str = "(" + ",".join(f'"{x}"' for x in always_include_media_types) + ")"
-            media_type_clause = f"({media_type_clause} OR media_type in {always_str})"
-        query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE {media_type_clause} "
-            f"AND provider in {available_providers_str} "
-        )
+            media_type_clause = f"({media_type_clause} OR p.media_type in {always_str})"
+
         params: dict[str, Any] = {}
+        user = get_current_user()
+        # a library row only needs resolving through its provider mappings when a filter
+        # (explicit or user-scoped) is actually active; otherwise every library row is
+        # kept, matching this method's unfiltered behavior.
+        if providers is not None or (user and user.provider_filter):
+            requested_clause = ""
+            direct_requested_clause = ""
+            if providers is not None:
+                params["requested_providers"] = providers
+                requested_clause = " AND m.provider_instance IN :requested_providers"
+                direct_requested_clause = " AND p.provider IN :requested_providers"
+            provider_clause = (
+                "(CASE WHEN p.provider = 'library' THEN "
+                f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
+                "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
+                f"AND m.available = 1 "
+                f"AND m.provider_instance IN {available_providers_str}{requested_clause}) "
+                f"ELSE (p.provider IN {available_providers_str}{direct_requested_clause}) END)"
+            )
+        else:
+            provider_clause = f"p.provider IN {available_providers_str}"
+        query = (
+            f"SELECT p.* FROM {DB_TABLE_PLAYLOG} p WHERE {media_type_clause} AND {provider_clause} "
+        )
         if fully_played_only:
-            query += "AND fully_played = 1 "
+            query += "AND p.fully_played = 1 "
         if userid:
-            query += "AND userid = :userid "
+            query += "AND p.userid = :userid "
             params["userid"] = userid
-        elif user := get_current_user():
-            query += "AND userid = :userid "
+        elif user:
+            query += "AND p.userid = :userid "
             params["userid"] = user.user_id
         if queue_id:
-            query += "AND queue_id = :queue_id "
+            query += "AND p.queue_id = :queue_id "
             params["queue_id"] = queue_id
         if played_after_timestamp is not None:
-            query += "AND timestamp >= :played_after_timestamp "
+            query += "AND p.timestamp >= :played_after_timestamp "
             params["played_after_timestamp"] = played_after_timestamp
-        query += "ORDER BY timestamp DESC"
+        query += "ORDER BY p.timestamp DESC"
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit
         )
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
-
-        # Get user provider filter if set
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
-
         for db_row in db_rows:
             provider = db_row["provider"]
-            # Apply user provider filter
-            if user_provider_filter and provider not in user_provider_filter:
-                continue
             result.append(
                 ItemMapping.from_dict(
                     {
@@ -790,11 +808,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
-        self, limit: int = 10, all_users: bool = False
+        self, limit: int = 10, all_users: bool = False, providers: list[str] | None = None
     ) -> list[ItemMapping]:
-        """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
-        available_providers = ("library", *self.get_unique_providers())
+        """
+        Return a list of the Audiobooks and PodcastEpisodes that are in progress.
+
+        :param limit: Maximum number of items to return.
+        :param all_users: If True, include in-progress items across all users, not just
+            the current session's user.
+        :param providers: Restrict results to items reachable through one of these provider
+            instance ids (OR semantics). None applies no filter; an explicit empty list
+            returns no items.
+        """
+        if providers is not None and not providers:
+            return []
+        available_providers = ("library", *self.get_active_provider_instances())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
+        params: dict[str, Any] = {}
+        requested_clause = ""
+        direct_requested_clause = ""
+        if providers is not None:
+            params["requested_providers"] = providers
+            requested_clause = " AND m.provider_instance IN :requested_providers"
+            direct_requested_clause = " AND p.provider IN :requested_providers"
 
         # An audiobook can be part of the library, in contrast to podcast episodes.
         # We then need to check the provider mappings table.
@@ -812,6 +848,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "CASE WHEN p.provider = 'library' THEN "
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
+            "AND m.available = 1 "
         )
         if not all_users and (user := get_current_user()):
             filter_for_str = available_providers_str
@@ -819,9 +856,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
             query += (
                 f"AND m.provider_instance IN {filter_for_str} "
-                f"AND m.provider_instance IN {available_providers_str} "
+                f"AND m.provider_instance IN {available_providers_str}"
+                f"{requested_clause} "
                 ") "
-                f"ELSE (p.provider IN {filter_for_str} AND p.provider IN {available_providers_str})"
+                f"ELSE (p.provider IN {filter_for_str} AND p.provider IN {available_providers_str}"
+                f"{direct_requested_clause})"
                 "END "
                 ") "
                 f"AND p.userid = '{user.user_id}' "
@@ -830,15 +869,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # for a library item, we still have to verify via the provider mapping table
             # that the provider is available
             query += (
-                f"AND m.provider_instance IN {available_providers_str} "
+                f"AND m.provider_instance IN {available_providers_str}"
+                f"{requested_clause} "
                 ") "
-                f"ELSE p.provider IN {available_providers_str} "
+                f"ELSE p.provider IN {available_providers_str}"
+                f"{direct_requested_clause} "
                 "END "
                 ") "
             )
         query += "ORDER BY timestamp DESC"
 
-        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            query, params=params or None, limit=limit
+        )
         result: list[ItemMapping] = []
         for db_row in db_rows:
             provider = db_row["provider"]
@@ -1838,6 +1881,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             result.append(provider.instance_id)
             processed_domains.add(provider.domain)
         return result
+
+    def get_active_provider_instances(self) -> list[str]:
+        """
+        Return the instance ids of all currently loaded, available MusicProviders.
+
+        Unlike `get_unique_providers`, this keeps every instance of a streaming
+        provider's domain instead of collapsing to one per domain, so a caller
+        validating a specific requested provider instance id isn't shadowed by
+        another instance of the same domain. Applies the current user's provider
+        filter (via the `providers` property) and excludes providers that are
+        loaded but not currently available.
+        """
+        return [provider.instance_id for provider in self.providers if provider.available]
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""

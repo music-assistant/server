@@ -50,8 +50,8 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.277
-music-assistant-models==1.1.188
+music-assistant-frontend==2.17.278
+music-assistant-models==1.1.190
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.4
@@ -82,6 +82,7 @@ python-slugify==8.0.4
 pytz==2026.2
 pywam==0.2.0
 pywidevine==1.9.0
+pywiim==2.3.0
 PyYAML==6.0.3
 qqmusic-api-python==0.7.2
 radios==0.3.2
