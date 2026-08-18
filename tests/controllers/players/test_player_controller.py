@@ -5226,6 +5226,34 @@ class TestUnregisterTeardown:
         assert player.unloaded
 
 
+class TestDeletePlayerConfigUserFilters:
+    """Test how a deleted player config is reflected in the user access filters."""
+
+    def test_removal_drops_the_player_from_the_filters(self, mock_mass: MagicMock) -> None:
+        """A removed player is dropped from the access filter of every user."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        controller.delete_player_config("sonos_1")
+
+        mock_mass.webserver.auth.remove_from_user_filters.assert_called_once_with(
+            player_ids=["sonos_1"]
+        )
+        mock_mass.webserver.auth.replace_player_in_user_filters.assert_not_called()
+
+    def test_replacement_hands_the_filters_to_the_new_player(self, mock_mass: MagicMock) -> None:
+        """A replaced player hands its access filter entries over to its replacement."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        controller.delete_player_config("up_old", replacement_player_id="sonos_1")
+
+        mock_mass.webserver.auth.replace_player_in_user_filters.assert_called_once_with(
+            "up_old", "sonos_1", removed_player_ids=["up_old"]
+        )
+        mock_mass.webserver.auth.remove_from_user_filters.assert_not_called()
+
+
 class TestConfigChangeRestartsPlayback:
     """Test that a changed player setting which needs a reload restarts playback."""
 

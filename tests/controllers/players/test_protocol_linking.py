@@ -261,6 +261,7 @@ def mock_mass() -> Iterator[MagicMock]:
     mass.get_providers = MagicMock(return_value=[])
     # awaited by the tests that replay the tasks scheduled during a config wipe
     mass.webserver.auth.remove_from_user_filters = AsyncMock()
+    mass.webserver.auth.replace_player_in_user_filters = AsyncMock()
     yield mass
     for call in mass.create_task.call_args_list:
         if call.args and inspect.iscoroutine(coro := call.args[0]):
@@ -6492,6 +6493,27 @@ class TestUniversalPlayerMerging:
         assert call_order == ["stop", "unregister"]
         mock_mass.player_queues.stop.assert_awaited_once_with("up_remove")
 
+    async def test_merge_hands_the_user_filters_to_the_keeper(self, mock_mass: MagicMock) -> None:
+        """The absorbed wrapper hands its access filter entries to the keeper."""
+        config_store: dict[str, Any] = {
+            "players/up_keep": {"enabled": True},
+            "players/up_remove": {"enabled": True},
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+        }
+        controller, keep, scheduled_tasks = self._setup_merge_scenario(mock_mass, config_store)
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        task = next(t for t in scheduled_tasks if "unregister" in repr(t))
+        with patch.object(controller, "unregister", new=AsyncMock()) as mock_unregister:
+            await task
+
+        mock_unregister.assert_awaited_once_with(
+            "up_remove", permanent=True, replacement_player_id="up_keep"
+        )
+
     async def test_merge_idle_loser_not_stopped(self, mock_mass: MagicMock) -> None:
         """An idle losing wrapper is removed without a stop command."""
         config_store: dict[str, Any] = {
@@ -7292,6 +7314,34 @@ class TestUniversalPlayerReplacement:
 
         assert call_order == ["stop", "unregister"]
         mock_mass.player_queues.stop.assert_awaited_once_with("up_old")
+
+    async def test_replace_hands_the_user_filters_to_the_native_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The replaced wrapper hands its access filter entries to the native player."""
+        config_store: dict[str, Any] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {
+                "enabled": True,
+                "name": "Soundbar (Universal)",
+                "default_name": "Soundbar (Universal)",
+                "values": {"linked_protocol_ids": ["ap_live"]},
+            },
+            "players/ap_live": {"enabled": True},
+        }
+        controller, native, scheduled_tasks = self._setup_carry_over_scenario(
+            mock_mass, config_store
+        )
+
+        controller._check_replace_universal_player(native)
+
+        task = next(t for t in scheduled_tasks if "unregister" in repr(t))
+        with patch.object(controller, "unregister", new=AsyncMock()) as mock_unregister:
+            await task
+
+        mock_unregister.assert_awaited_once_with(
+            "up_old", permanent=True, replacement_player_id="cast_1"
+        )
 
     async def test_replace_idle_universal_not_stopped(self, mock_mass: MagicMock) -> None:
         """An idle universal player is removed without a stop command."""
@@ -9546,7 +9596,9 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players._repoint_group_memberships.assert_called_once_with(
             universal_id, native_parent_id
         )
-        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+        mock_mass.players.delete_player_config.assert_called_once_with(
+            universal_id, replacement_player_id=native_parent_id
+        )
 
         # Each protocol's parent_id is restored to the disabled native parent
         parent_restorations = {
@@ -9635,7 +9687,9 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             universal_id, shell_id
         )
         mock_mass.players._repoint_group_memberships.assert_called_once_with(universal_id, shell_id)
-        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+        mock_mass.players.delete_player_config.assert_called_once_with(
+            universal_id, replacement_player_id=shell_id
+        )
 
     @pytest.mark.asyncio
     async def test_protocols_reparented_to_their_own_native_claimer(
@@ -9712,7 +9766,9 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players._repoint_group_memberships.assert_called_once_with(
             universal_id, "native_a"
         )
-        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+        mock_mass.players.delete_player_config.assert_called_once_with(
+            universal_id, replacement_player_id="native_a"
+        )
 
     @pytest.mark.asyncio
     async def test_restore_native_claims_carries_config_and_deletes_wrapper(
