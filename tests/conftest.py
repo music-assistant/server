@@ -25,6 +25,7 @@ from tests.common import (
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
     utf8_safe,
+    wait_for_boot_to_settle,
 )
 
 NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
@@ -153,6 +154,7 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     ):
         try:
             await mass_instance.start()
+            await wait_for_boot_to_settle()
             yield mass_instance
         finally:
             # also stop after a failed boot: pytest holds on to the setup traceback,

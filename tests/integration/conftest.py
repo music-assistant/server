@@ -22,7 +22,12 @@ from zeroconf.asyncio import AsyncZeroconf
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
+from tests.common import (
+    suppress_auto_loaded_providers,
+    suppress_initial_library_sync,
+    use_ephemeral_server_ports,
+    wait_for_boot_to_settle,
+)
 
 NUM_DEMO_PLAYERS = 3
 
@@ -128,6 +133,8 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
         ),
         # hermetic: no auto-loaded device providers and no host-audio bridging
         suppress_auto_loaded_providers(),
+        # hermetic: no library sync firing into a running test
+        suppress_initial_library_sync(),
     ):
         try:
             await mass_instance.start()
@@ -137,6 +144,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
                 "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
             )
             await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
+            await wait_for_boot_to_settle()
             yield mass_instance
         finally:
             # also stop after a failed boot, or the half-started server's open database

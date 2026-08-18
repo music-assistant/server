@@ -15,6 +15,7 @@ from music_assistant_models.enums import EventType, IdentifierType, PlayerFeatur
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.controllers.config.providers import ProviderConfigMixin
+from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 
@@ -172,14 +173,25 @@ def suppress_auto_loaded_providers() -> Iterator[None]:
         yield
 
 
+async def wait_for_boot_to_settle() -> None:
+    """
+    Wait out the events a fixture boot leaves in flight.
+
+    Registering a background task emits a debounced task list, and a boot registers
+    tasks up to the moment ``start()`` returns, so without this a test can start
+    watching for events just in time to catch the tail of its own fixture's boot.
+    """
+    await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
+
+
 @contextlib.contextmanager
 def suppress_initial_library_sync() -> Iterator[None]:
     """
-    Stop a fixture boot from arming the first library sync of its music providers.
+    Hold a fixture boot's music providers to their recurring library sync only.
 
-    A booted instance runs that sync a few seconds later, so on a loaded machine it lands
-    in the middle of whatever test is running by then and rewrites the library and emits
-    sync and task events into it. Tests that want a sync call ``start_sync()`` themselves.
+    The first sync of a freshly loaded provider otherwise runs seconds into the boot, so on
+    a loaded machine it lands in the middle of whatever test is running by then, rewriting
+    the library under it. Tests that want a sync call ``start_sync()`` themselves.
     """
     with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
         yield
