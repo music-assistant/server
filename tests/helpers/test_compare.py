@@ -25,6 +25,9 @@ def test_compare_version() -> None:
     assert compare.compare_version("Karaoke", "Karaoke Version") is True
     assert compare.compare_version("Remaster", "Remaster Edition Deluxe") is False
     assert compare.compare_version("Remastered Version", "Deluxe Version") is False
+    assert compare.compare_version("2011 Remaster", "Remastered 2011") is True
+    assert compare.compare_version("", "Album Version") is True
+    assert compare.compare_version("Deluxe 2022 Remaster", "2022 Remaster") is False
 
 
 def test_compare_artist() -> None:
@@ -215,6 +218,77 @@ def test_compare_album() -> None:
     assert compare.compare_album(album_a, album_b) is False
     # partial artist match is allowed in non-strict mode
     assert compare.compare_album(album_a, album_b, False) is True
+
+
+def test_compare_album_barcode_requires_corroboration() -> None:
+    """A shared retail barcode only overrides year when album identity also agrees."""
+    artist_a = media_items.Artist(
+        item_id="1",
+        provider="test1",
+        name="Artist A",
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="1", provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+    artist_b = media_items.Artist(
+        item_id="2",
+        provider="test2",
+        name="Artist A",
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="2", provider_domain="test", provider_instance="test2"
+            )
+        },
+    )
+    barcode_a = (ExternalID.BARCODE, "000724354283857")
+    barcode_b = (ExternalID.BARCODE, "0724354283857")
+    album_a = media_items.Album(
+        item_id="1",
+        provider="test1",
+        name="#1",
+        year=2001,
+        artists=media_items.UniqueList([artist_a]),
+        external_ids={barcode_a},
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="1", provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+    album_b = media_items.Album(
+        item_id="2",
+        provider="test2",
+        name="#1",
+        year=2002,
+        artists=media_items.UniqueList([artist_b]),
+        external_ids={barcode_b},
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="2", provider_domain="test", provider_instance="test2"
+            )
+        },
+    )
+
+    assert compare.compare_album(album_a, album_b) is True
+
+    album_b.name = "Different Album"
+    assert compare.compare_album(album_a, album_b) is False
+    album_b.name = album_a.name
+    album_b.artists[0].name = "Different Artist"
+    assert compare.compare_album(album_a, album_b) is False
+
+
+def test_compare_external_ids_checks_all_unique_values() -> None:
+    """One mismatching unique identifier does not hide another matching value."""
+    base_ids = {
+        (ExternalID.MB_ALBUM, "11111111-1111-1111-1111-111111111111"),
+        (ExternalID.MB_ALBUM, "22222222-2222-2222-2222-222222222222"),
+    }
+    compare_ids = {(ExternalID.MB_ALBUM, "22222222-2222-2222-2222-222222222222")}
+
+    assert compare.compare_external_ids(base_ids, compare_ids, ExternalID.MB_ALBUM) is True
 
 
 def test_compare_track() -> None:  # noqa: PLR0915

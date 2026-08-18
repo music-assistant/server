@@ -120,6 +120,14 @@ def test_version_extract() -> None:
     assert version == "Oliver Smith Remix (Mixed)"
 
 
+def test_version_extracts_multiple_qualifiers() -> None:
+    """All recognized title qualifiers contribute to the version."""
+    title, version = util.parse_title_and_version("( ) [Deluxe] [2022 Remaster]")
+
+    assert title == "( )"
+    assert version == "Deluxe 2022 Remaster"
+
+
 def test_with_handling_in_titles() -> None:
     """Test 'with' handling - preserved in title, stripped as featuring credit."""
     # 'with you' (preserved as title word)
