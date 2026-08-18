@@ -69,6 +69,8 @@ DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
 class ProviderStreamLimitError(AudioError):
     """Raised when a music provider has no source-stream slot available."""
 
+    translation_key = "provider_stream_limit"
+
     def __init__(self, provider: MusicProvider, wait_timeout: float | None) -> None:
         """
         Initialize the provider stream limit error.
@@ -81,7 +83,8 @@ class ProviderStreamLimitError(AudioError):
         wait_text = f" after waiting {wait_timeout:g} seconds" if wait_timeout is not None else ""
         super().__init__(
             f"{provider.name} has reached its limit of {limit} "
-            f"concurrent source streams{wait_text}."
+            f"concurrent source streams{wait_text}.",
+            translation_args=[provider.name, limit],
         )
         self.provider_instance = provider.instance_id
         self.limit = limit
