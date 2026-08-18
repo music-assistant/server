@@ -1567,15 +1567,15 @@ class ProtocolLinkingMixin:
                 continue  # Already linked
 
             protocol_player = self.get_player(protocol_id)
-            # A protocol that another parent currently owns is not ours to claim: it would
-            # show up on both parents and occupy this parent's domain slot, keeping a
-            # genuine protocol of that domain out. The cached id is kept, so the protocol
-            # is recovered once its owner releases it.
-            if (
-                protocol_player is not None
-                and protocol_player.protocol_parent_id is not None
-                and protocol_player.protocol_parent_id != native_player.player_id
-            ):
+            # A protocol that another parent owns is not ours to claim: it would show up
+            # on both parents and occupy this parent's domain slot, keeping a genuine
+            # protocol of that domain out. The live owner leads; a protocol that is still
+            # waiting for its owner to register only has the persisted one. The cached id
+            # is kept, so the protocol is recovered once its owner releases it.
+            owner_id = protocol_player.protocol_parent_id if protocol_player else None
+            if owner_id is None:
+                owner_id = self._get_cached_protocol_parent_id(protocol_id)
+            if owner_id is not None and owner_id != native_player.player_id:
                 continue
 
             # Get protocol player config to determine the protocol domain

@@ -8832,6 +8832,47 @@ class TestCachedProtocolLinkRecovery:
         # ap_disabled is not registered at all, dlna_own is registered without a parent
         assert recovered == {"ap_disabled", "dlna_own"}
 
+    def test_protocol_waiting_for_its_owner_is_not_recovered(self, mock_mass: MagicMock) -> None:
+        """A protocol whose owner has not registered yet is left to that owner."""
+        controller = PlayerController(mock_mass)
+
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "ap_shared": {
+                    "provider": "airplay--x",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "cast_owner"},
+                },
+                "heos_player": {
+                    "provider": "heos--y",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+                "cast_owner": {
+                    "provider": "chromecast--z",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["ap_shared"]},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        # the protocol is registered but still unparented: its owner is not registered yet
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_shared",
+            "AVR (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        heos_player = MockPlayer(MockProvider("heos", mass=mock_mass), "heos_player", "AVR")
+        controller._players = {"ap_shared": airplay, "heos_player": heos_player}
+
+        controller._recover_cached_protocol_links(heos_player)
+
+        assert airplay.protocol_parent_id is None
+        assert heos_player.linked_output_protocols == []
+        assert not controller._parent_has_active_protocol_from_domain(heos_player, "airplay")
+
     def test_bridge_owned_by_wrapper_leaves_native_domain_slot_free(
         self, mock_mass: MagicMock
     ) -> None:
