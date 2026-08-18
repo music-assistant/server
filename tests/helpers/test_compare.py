@@ -721,6 +721,8 @@ def test_album_tracks_have_positions() -> None:
     assert compare.album_tracks_have_positions([]) is False
     # a missing track number makes the layout untrustworthy
     assert compare.album_tracks_have_positions([_track("1", track_number=0)]) is False
+    # a missing disc number is treated as unknown, not silently assumed to be disc 1
+    assert compare.album_tracks_have_positions([_track("1", disc_number=0)]) is False
     # a duplicate position cannot be trusted either
     duplicate = [_track("1", track_number=1), _track("2", track_number=1)]
     assert compare.album_tracks_have_positions(duplicate) is False

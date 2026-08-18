@@ -685,6 +685,7 @@ async def test_releases_by_barcode_queries_every_compatible_form() -> None:
     call = get_data.await_args
     assert call is not None
     assert call.args == ("release",)
+    assert call.kwargs["limit"] == "100"
     query = call.kwargs["query"]
     assert "barcode:888072439412" in query
     assert "barcode:0888072439412" in query

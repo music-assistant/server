@@ -353,7 +353,9 @@ class MusicbrainzProvider(MetadataProvider):
             if value.isdigit()
         ]
         query = " OR ".join(f"barcode:{value}" for value in barcodes)
-        result = await self._api_client.get_data("release", query=query)
+        # a barcode identifies a single physical product, so one generously-sized page
+        # returns every release carrying it (no pagination needed)
+        result = await self._api_client.get_data("release", query=query, limit="100")
         if not result or not (releases := result.get("releases")):
             return []
         parsed: list[MusicBrainzRelease] = []

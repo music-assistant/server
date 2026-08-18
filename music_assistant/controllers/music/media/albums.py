@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRelease
 
 
 @dataclass
@@ -713,9 +715,13 @@ class AlbumsController(MediaControllerBase[Album]):
             return evidence
         # ambiguous metadata: resolve conservatively with ordered track fingerprints
         base_tracks = await self._resolve_base_album_tracks(db_album, base_tracks_memo)
-        compare_tracks = await self._get_provider_album_tracks(
-            prov_album.item_id, prov_album.provider
-        )
+        try:
+            compare_tracks = await self._get_provider_album_tracks(
+                prov_album.item_id, prov_album.provider
+            )
+        except MediaNotFoundError:
+            # the candidate tracklist is gone: treat it as absent and let MusicBrainz decide
+            compare_tracks = []
         evidence = compare_album_evidence(
             db_album,
             prov_album,
@@ -739,18 +745,36 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _load_base_album_tracks(self, db_album: Album) -> list[Track] | None:
         """
-        Return an ordered base tracklist to fingerprint against.
+        Return a complete, ordered base tracklist to fingerprint against.
 
-        Prefers the already-stored library tracks when their disc/track positions can be
-        trusted, and otherwise fetches from a single existing provider mapping.
+        Iterates the album's existing provider mappings in a deterministic order and
+        returns the first loaded provider's full tracklist whose disc/track positions can
+        be trusted. A provider-sourced tracklist is used rather than the stored library
+        tracks because those can be an incomplete subset (individually added tracks), and
+        an incomplete base would make a track-count difference look like a real conflict.
         """
-        library_tracks = await self.get_library_album_tracks(db_album.item_id)
-        if album_tracks_have_positions(library_tracks):
-            return library_tracks
-        mapping = next((m for m in db_album.provider_mappings if m.available), None)
-        if mapping is None:
-            return None
-        return await self._get_provider_album_tracks(mapping.item_id, mapping.provider_instance)
+        for mapping in sorted(
+            db_album.provider_mappings,
+            key=lambda mapping: (
+                mapping.provider_domain,
+                mapping.provider_instance,
+                mapping.item_id,
+            ),
+        ):
+            if not mapping.available:
+                continue
+            if self.mass.get_provider(mapping.provider_instance) is None:
+                # only trust a currently-loaded exact provider instance
+                continue
+            try:
+                provider_tracks = await self._get_provider_album_tracks(
+                    mapping.item_id, mapping.provider_instance
+                )
+            except MediaNotFoundError:
+                continue
+            if album_tracks_have_positions(provider_tracks):
+                return provider_tracks
+        return None
 
     async def _musicbrainz_album_evidence(
         self, base_album: Album, compare_album: Album
@@ -758,47 +782,42 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Return album match evidence from MusicBrainz release identity, or abstain.
 
-        Two barcodes resolving to the same specific MusicBrainz release are strong
-        positive evidence; barcodes belonging to entirely different release groups are
-        negative. A shared release group alone, an unresolved barcode or a lookup failure
-        abstains (INSUFFICIENT) rather than guessing.
+        A barcode that resolves unambiguously to a single specific MusicBrainz release on
+        both albums is strong positive evidence; barcodes belonging to entirely different
+        release groups are negative. A barcode resolving to several releases, a shared
+        release group alone, an unresolved barcode or a lookup failure abstains
+        (INSUFFICIENT) rather than guessing.
         """
-        base_barcode = _canonical_album_barcode(base_album)
-        compare_barcode = _canonical_album_barcode(compare_album)
-        if not base_barcode or not compare_barcode:
+        base_barcodes = _canonical_album_barcodes(base_album)
+        compare_barcodes = _canonical_album_barcodes(compare_album)
+        if not base_barcodes or not compare_barcodes:
             return AlbumMatchEvidence.INSUFFICIENT
         musicbrainz = self.mass.get_provider("musicbrainz")
         if musicbrainz is None:
             return AlbumMatchEvidence.INSUFFICIENT
         musicbrainz = cast("MusicbrainzProvider", musicbrainz)
+        releases_by_barcode: dict[str, list[MusicBrainzRelease]] = {}
         try:
-            base_releases = await musicbrainz.get_releases_by_barcode(base_barcode)
-            if not base_releases:
-                return AlbumMatchEvidence.INSUFFICIENT
-            if compare_barcode == base_barcode:
-                compare_releases = base_releases
-            else:
-                compare_releases = await musicbrainz.get_releases_by_barcode(compare_barcode)
-        except (RetriesExhausted, InvalidDataError) as err:
+            for barcode in sorted(base_barcodes | compare_barcodes):
+                releases_by_barcode[barcode] = await musicbrainz.get_releases_by_barcode(barcode)
+        except (RetriesExhausted, InvalidDataError, TimeoutError, aiohttp.ClientError) as err:
             self.logger.debug(
                 "MusicBrainz barcode lookup failed while matching album %s: %s",
                 base_album.name,
                 err,
             )
             return AlbumMatchEvidence.INSUFFICIENT
-        if not compare_releases:
-            return AlbumMatchEvidence.INSUFFICIENT
-        base_release_ids = {release.id for release in base_releases}
-        compare_release_ids = {release.id for release in compare_releases}
+        base_release_ids = _unambiguous_release_ids(base_barcodes, releases_by_barcode)
+        compare_release_ids = _unambiguous_release_ids(compare_barcodes, releases_by_barcode)
         if base_release_ids & compare_release_ids:
-            # both barcodes resolve to the same specific release: the same edition
+            # both albums carry a barcode that names the same single specific release
             return AlbumMatchEvidence.MATCH
-        base_group_ids = {release.release_group.id for release in base_releases}
-        compare_group_ids = {release.release_group.id for release in compare_releases}
+        base_group_ids = _release_group_ids(base_barcodes, releases_by_barcode)
+        compare_group_ids = _release_group_ids(compare_barcodes, releases_by_barcode)
         if base_group_ids and compare_group_ids and base_group_ids.isdisjoint(compare_group_ids):
             # the barcodes belong to entirely different release groups: different albums
             return AlbumMatchEvidence.NO_MATCH
-        # a shared release group alone never identifies a specific edition
+        # a shared release group alone (or an ambiguous barcode) never identifies an edition
         return AlbumMatchEvidence.INSUFFICIENT
 
     async def _set_album_artists(
@@ -874,9 +893,34 @@ class AlbumsController(MediaControllerBase[Album]):
         return item
 
 
-def _canonical_album_barcode(album: Album) -> str | None:
-    """Return an album's barcode in canonical UPC form, or None if it has no valid barcode."""
-    barcode = album.get_external_id(ExternalID.BARCODE)
-    if not barcode or not is_valid_barcode(barcode):
-        return None
-    return barcode_to_upc(barcode)
+def _canonical_album_barcodes(album: Album) -> set[str]:
+    """Return an album's valid barcodes in canonical UPC form."""
+    return {
+        barcode_to_upc(value)
+        for external_id_type, value in album.external_ids
+        if external_id_type == ExternalID.BARCODE and is_valid_barcode(value)
+    }
+
+
+def _unambiguous_release_ids(
+    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzRelease]]
+) -> set[str]:
+    """Return release ids that at least one of the barcodes resolves to unambiguously."""
+    release_ids: set[str] = set()
+    for barcode in barcodes:
+        resolved = {release.id for release in releases_by_barcode.get(barcode, [])}
+        # only a barcode that maps to exactly one specific release is trustworthy evidence
+        if len(resolved) == 1:
+            release_ids |= resolved
+    return release_ids
+
+
+def _release_group_ids(
+    barcodes: set[str], releases_by_barcode: dict[str, list[MusicBrainzRelease]]
+) -> set[str]:
+    """Return every release-group id the barcodes resolve to."""
+    return {
+        release.release_group.id
+        for barcode in barcodes
+        for release in releases_by_barcode.get(barcode, [])
+    }
