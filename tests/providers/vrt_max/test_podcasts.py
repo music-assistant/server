@@ -162,6 +162,28 @@ async def test_get_podcast_episodes_stops_on_transient_mid_pagination_error(
     assert [ep.item_id for ep in episodes] == [episode_0.page_id, episode_1.page_id]
 
 
+async def test_get_podcast_episodes_survives_chapter_fetch_error(
+    provider: VrtMaxProvider,
+) -> None:
+    """A transient tracklist-fetch error leaves the episode listed, just without chapters."""
+    program = VrtProgram(
+        RADIO_PROGRAM_ID, "Show", seasons=(VrtSeason(title="S1", component_id="comp-s1"),)
+    )
+    provider._client.get_program = AsyncMock(return_value=program)  # type: ignore[method-assign]
+    episodes_in = [VrtEpisode(f"{RADIO_PROGRAM_ID}show~1-{i}-0/", f"Ep {i}") for i in range(2)]
+    provider._client.iter_season_episodes = async_gen(  # type: ignore[method-assign]
+        episodes_in
+    )
+    provider._client.get_episode_chapters = AsyncMock(  # type: ignore[method-assign]
+        side_effect=VrtApiError("boom")
+    )
+
+    episodes = [ep async for ep in provider.get_podcast_episodes(RADIO_PROGRAM_ID)]
+
+    assert len(episodes) == 2
+    assert all(episode.metadata.chapters is None for episode in episodes)
+
+
 async def test_get_podcast_episode_radio_attaches_chapters(provider: VrtMaxProvider) -> None:
     """get_podcast_episode attaches the tracklist for a radio-archive episode."""
     radio_episode_id = f"{RADIO_PROGRAM_ID}show~1-3-0/"

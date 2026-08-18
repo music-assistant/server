@@ -566,12 +566,23 @@ class VrtMaxProvider(MusicProvider):
         if not _has_tracklist(page_id):
             return None
         try:
-            chapters = await self._client.get_episode_chapters(page_id)
+            chapters = await self._fetch_chapters(page_id)
         except VrtApiError as err:
+            # A transient failure raises out of the cached fetch, so it is not cached
+            # and the tracklist is retried the next time the episode is opened.
             self.logger.debug("Could not fetch chapters for %s: %s", page_id, err)
             return None
-        if not chapters:
-            return None
+        return chapters or None
+
+    @use_cache(3600 * 6, base_class=MediaItemChapter)
+    async def _fetch_chapters(self, page_id: str) -> list[MediaItemChapter]:
+        """
+        Fetch a radio episode's played-songs tracklist as chapters.
+
+        Cached because a past broadcast's tracklist is immutable, so re-opening a show
+        (or switching between its episodes) reuses the result instead of re-querying.
+        """
+        chapters = await self._client.get_episode_chapters(page_id)
         return [
             MediaItemChapter(
                 position=chapter.position,
