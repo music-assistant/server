@@ -188,8 +188,10 @@ WHERE (t1.item_id > :cursor_item_id_1
 ORDER BY t1.item_id, t2.item_id
 """
 
-# Returns the edition of every equally titled album the two tracks both appear on, so the
-# candidate pair can be held to agreeing on the edition and not just on the album title.
+# Returns the edition of every album appearance that made the two tracks a candidate, so the
+# pair can be held to agreeing on the edition and not just on the album title. The album terms
+# mirror the candidate query exactly: an appearance the pair does not share a position on says
+# nothing about the edition of the one it does.
 _SHARED_ALBUM_EDITIONS_QUERY = f"""
 SELECT al1.version AS version_1, al2.version AS version_2
 FROM {DB_TABLE_ALBUM_TRACKS} at1
@@ -198,6 +200,10 @@ JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = :item_id_2
 JOIN {DB_TABLE_ALBUMS} al2
   ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
 WHERE at1.track_id = :item_id_1
+  AND al1.search_name != ''
+  AND at1.track_number > 0
+  AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
+  AND at1.track_number = at2.track_number
 """
 
 
@@ -223,7 +229,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
-        self._track_reconciliation_cursor: tuple[int, int] = (0, 0)
+        self._track_reconciliation_cursor: tuple[int, int] | None = (0, 0)
         self._track_reconciliation_rescan_due = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
@@ -2722,31 +2728,34 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # judge duplicates against a half-populated library
             update_current_task_progress_text("Waiting for music sync completion")
             return
+        self._start_next_pass_if_due()
+        if (cursor := self._track_reconciliation_cursor) is None:
+            # the library has been walked end to end and nothing has been synced since,
+            # so there is nothing to look for: skip the query rather than scan for a miss
+            update_current_task_progress_text("No duplicate tracks found")
+            return
         update_current_task_progress_text("Searching for duplicate tracks")
-        cursor_item_id_1, cursor_item_id_2 = self._track_reconciliation_cursor
         rows = await self.database.get_rows_from_query(
             _DUPLICATE_TRACK_CANDIDATES_QUERY,
             {
                 "max_duration_delta": TRACK_RECONCILIATION_MAX_DURATION_DELTA,
-                "cursor_item_id_1": cursor_item_id_1,
-                "cursor_item_id_2": cursor_item_id_2,
+                "cursor_item_id_1": cursor[0],
+                "cursor_item_id_2": cursor[1],
             },
             limit=TRACK_RECONCILIATION_BATCH_SIZE,
         )
         if not rows:
-            self._start_next_pass_if_due()
+            self._track_reconciliation_cursor = None
             update_current_task_progress_text("No duplicate tracks found")
             return
         # resume after the exact pair examined last, so candidates this run refused can never
         # starve the ones behind them, not even a further pair of the same track that the batch
-        # boundary cut off. The cursor is deliberately left where the library ends: walking off
-        # the end costs nothing, while starting over would rescan the whole table every hour.
+        # boundary cut off; a short batch means the walk has reached the end of the library
         self._track_reconciliation_cursor = (
-            int(rows[-1]["item_id_1"]),
-            int(rows[-1]["item_id_2"]),
+            (int(rows[-1]["item_id_1"]), int(rows[-1]["item_id_2"]))
+            if len(rows) == TRACK_RECONCILIATION_BATCH_SIZE
+            else None
         )
-        if len(rows) < TRACK_RECONCILIATION_BATCH_SIZE:
-            self._start_next_pass_if_due()
         merged = 0
         for index, row in enumerate(rows, 1):
             update_current_task_progress_from_index(
@@ -2772,8 +2781,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
 
     def _start_next_pass_if_due(self) -> None:
-        """Rewind the duplicate track walk if a sync has added content since it started."""
+        """Rewind the duplicate track walk if a sync has added content and the walk is done."""
+        # rewinding a walk still in progress would keep re-examining the same first
+        # candidates, so a pending rescan waits for the current one to reach the end
         if not self._track_reconciliation_rescan_due:
+            return
+        if self._track_reconciliation_cursor is not None:
             return
         self._track_reconciliation_cursor = (0, 0)
         self._track_reconciliation_rescan_due = False

@@ -250,6 +250,39 @@ async def test_keeps_an_album_edition_apart_from_the_original(mass: MusicAssista
     assert await mass.music.tracks.get_library_item(track_2.item_id)
 
 
+async def test_an_unrelated_appearance_cannot_approve_an_edition(mass: MusicAssistant) -> None:
+    """Only the album appearance the pair shares a position on may vouch for the edition."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    artist = (await mass.music.artists.get_library_items_by_query(limit=1))[0]
+    # the appearance that made them candidates is an original against a remaster
+    for track, version in ((track_1, "Deluxe Edition"), (track_2, "2014 Remaster")):
+        album_id = (
+            await mass.music.database.get_rows(
+                DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}
+            )
+        )[0]["album_id"]
+        await mass.music.database.update(
+            DB_TABLE_ALBUMS, {"item_id": album_id}, {"version": version}
+        )
+    # both also turn up on one compilation, but at different positions on it
+    compilation = await _add_album(mass, "spotify_instance", artist, name="Some Compilation")
+    for track, track_number in ((track_1, 5), (track_2, 9)):
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {
+                "track_id": int(track.item_id),
+                "album_id": int(compilation.item_id),
+                "disc_number": 1,
+                "track_number": track_number,
+            },
+        )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 async def test_merges_across_an_ignorable_album_edition(mass: MusicAssistant) -> None:
     """A quality label like Hi-Res is not a different edition, so it must not block a merge."""
     track_1, track_2 = await _build_duplicate_pair(mass)
@@ -529,25 +562,27 @@ async def test_no_candidate_pair_is_starved() -> None:
     assert seen == set(pairs)
 
 
-async def test_drained_library_parks_the_cursor_at_the_end() -> None:
-    """Reaching the end leaves the cursor there, so later runs cost next to nothing."""
+async def test_a_short_batch_ends_the_walk() -> None:
+    """A batch that is not full means the end of the library has been reached."""
     ctrl = _bare_controller([{"item_id_1": 7, "item_id_2": 9}])
     ctrl._track_reconciliation_cursor = (5, 6)
 
     with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=True)):
         await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == (7, 9)
+    assert ctrl._track_reconciliation_cursor is None
 
 
-async def test_empty_batch_leaves_the_cursor_alone() -> None:
-    """With nothing left to examine the cursor stays put rather than rescanning."""
+async def test_a_finished_walk_does_not_query_again() -> None:
+    """A duplicate-free library must not pay for a scan every hour to prove it."""
     ctrl = _bare_controller([])
-    ctrl._track_reconciliation_cursor = (500, 900)
+    candidate_query = AsyncMock(return_value=[])
+    ctrl._database = Mock(get_rows_from_query=candidate_query)
+    ctrl._track_reconciliation_cursor = None
 
     await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == (500, 900)
+    assert not candidate_query.called
 
 
 async def test_a_completed_sync_does_not_restart_a_walk_in_progress() -> None:
@@ -578,13 +613,14 @@ async def test_a_completed_sync_does_not_restart_a_walk_in_progress() -> None:
 async def test_the_next_pass_starts_once_the_walk_reaches_the_end() -> None:
     """The rescan a sync asked for happens as soon as the current walk drains."""
     ctrl = _bare_controller([{"item_id_1": 7, "item_id_2": 9}])
-    ctrl._track_reconciliation_cursor = (5, 6)
+    ctrl._track_reconciliation_cursor = None
     ctrl._track_reconciliation_rescan_due = True
 
     with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=False)):
         await ctrl._reconcile_duplicate_tracks()
 
-    assert ctrl._track_reconciliation_cursor == (0, 0)
+    # the rescan rewound to the top, walked to the end again and finished there
+    assert ctrl._track_reconciliation_cursor is None
     assert not ctrl._track_reconciliation_rescan_due
 
 
