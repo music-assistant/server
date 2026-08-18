@@ -67,6 +67,11 @@ class TuneInProvider(MusicProvider):
     _throttler: Throttler
     _browse_url_map: dict[str, str]
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return ()

@@ -13,14 +13,24 @@ from time import time
 from typing import TYPE_CHECKING, cast
 from uuid import NAMESPACE_URL, uuid5
 
+import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    AlbumType,
+    ConfigEntryType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     VERBOSE_LOG_LEVEL,
@@ -40,6 +50,7 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
     CONF_PREFER_LOCAL_GENRES,
@@ -405,6 +416,18 @@ class MetaDataController(
             metadata={"task_domain": "metadata_thumb_cache_cleanup"},
             allow_retry=True,
         )
+        # runs every hour rather than spread across the day: it is bounded to a small
+        # batch of albums per run, so there is no shared-mirror stampede to avoid
+        self.mass.tasks.register_scheduled_task(
+            task_id=ALBUM_RECONCILIATION_TASK_ID,
+            name="Reconcile duplicate albums",
+            handler=self._reconcile_duplicate_albums,
+            schedule=TaskSchedule.hourly(),
+            translation_key="reconcile_duplicate_albums",
+            translation_owner=self.translation_owner,
+            metadata={"task_domain": "metadata_album_reconciliation"},
+            allow_retry=True,
+        )
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:
@@ -474,6 +497,51 @@ class MetaDataController(
                 )
         update_current_task_progress(100, f"Processed {len(playlists)} playlist(s)")
 
+    async def _reconcile_duplicate_albums(self) -> None:
+        """Enrich and re-match a small batch of sparse or possibly duplicated albums."""
+        update_current_task_progress_text("Searching for albums needing reconciliation")
+        # candidates keep retrying at the normal REFRESH_INTERVAL cadence (e.g. after a
+        # transient provider outage), rather than only ever once
+        refresh_before = int(time() - REFRESH_INTERVAL)
+        query = (
+            f"({DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' "
+            f"OR {_duplicate_album_sibling_guard()}) AND ("
+            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
+        )
+        albums = await self._get_scan_batch(self.mass.music.albums, DB_TABLE_ALBUMS, query)
+        if not albums:
+            update_current_task_progress_text("No albums require reconciliation")
+            return
+        for index, album in enumerate(albums, 1):
+            try:
+                update_current_task_progress_from_index(
+                    index,
+                    len(albums),
+                    f"Reconciling album {index}/{len(albums)}: {album.name}",
+                )
+                # enrich sparse provider data (type/year/metadata) first so the follow-up
+                # match has full album details to work with, then re-fetch the now-enriched
+                # library row before re-matching: match_providers merges a confirmed mapping
+                # into an existing duplicate through the safe add_provider_mappings path
+                try:
+                    await self._update_album_metadata(album, force_refresh=False)
+                    reconciled_album = await self.mass.music.albums.get_library_item(album.item_id)
+                except MediaNotFoundError:
+                    # both rows of a duplicate pair can share a batch, so this row may
+                    # already have been merged into its duplicate earlier in the run
+                    continue
+                await self.mass.music.albums.match_providers(reconciled_album)
+            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+                report_current_task_failure(f"{album.name}: {err}")
+                self.logger.warning(
+                    "Error while reconciling album %s: %s",
+                    album.name,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+        update_current_task_progress(100, f"Processed {len(albums)} album(s)")
+
     async def _cleanup_thumb_cache(self) -> None:
         """Remove oldest thumbnails when the cache folder exceeds the configured limit."""
         max_size_mb = (
@@ -535,6 +603,30 @@ class MetaDataController(
             )
             report_current_task_failure(message)
             self.logger.warning(message)
+
+
+def _duplicate_album_sibling_guard() -> str:
+    """Return a query part that selects albums which may be a duplicate of another library row."""
+    shares_artist = (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} own "
+        f"JOIN {DB_TABLE_ALBUM_ARTISTS} other ON other.artist_id = own.artist_id "
+        f"WHERE own.album_id = {DB_TABLE_ALBUMS}.item_id AND other.album_id = dup.item_id)"
+    )
+    # a title that normalizes to nothing (e.g. Ed Sheeran's '+', '=' and '÷') matches every
+    # other such title, so those fall back to their raw spelling like the album comparison does
+    same_title = (
+        f"({DB_TABLE_ALBUMS}.search_name != '' OR "
+        f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
+    )
+    # deliberately an identity-only pre-filter: which editions may be merged is decided by
+    # the album comparison, which escalates an ambiguous edition to tracklists and
+    # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright
+    return (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
+        f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
+        f"AND dup.search_name = {DB_TABLE_ALBUMS}.search_name "
+        f"AND {same_title} AND {shares_artist})"
+    )
 
 
 def _valid_metadata_guard(table: str) -> str:

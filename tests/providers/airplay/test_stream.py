@@ -1595,7 +1595,7 @@ async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
     ids=["join", "plain"],
 )
 async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: float) -> None:
-    """A join's ack is held for clock verification, so it waits far longer than a plain start."""
+    """Each START uses the acknowledgement window assigned to its contract."""
     stream = AirPlayStream(_make_player())
     stream._cli_proc = _make_cli_proc()
     stream._connected.set()
@@ -1617,6 +1617,16 @@ async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: fl
         await stream.start(START_UNIX_MS, 0, join=join)
 
     assert timeouts == [expected_timeout]
+
+
+@pytest.mark.parametrize(
+    "timeout_ms",
+    [AIRPLAY_START_ACK_TIMEOUT_MS, AIRPLAY_JOIN_START_ACK_TIMEOUT_MS],
+    ids=["plain", "join"],
+)
+def test_start_ack_window_covers_buffered_anchor_retries(timeout_ms: int) -> None:
+    """The acknowledgement window outlives cliairplay's buffered anchor retry span."""
+    assert timeout_ms > 5_500
 
 
 @pytest.mark.asyncio
@@ -1995,6 +2005,42 @@ async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
     pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+
+def test_native_control_failure_switches_automatic_player_to_compatibility() -> None:
+    """A terminal native control failure persists the compatibility route once."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+    )
+    player.provider.mass.create_task.assert_not_called()
+
+
+def test_native_control_failure_does_not_override_pinned_mode() -> None:
+    """A terminal native control failure leaves an explicit streaming mode unchanged."""
+    player = _make_player()
+    player.streaming_mode = STREAMING_MODE_AP2_PTP
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.create_task.assert_not_called()
+
+
+def test_unrelated_cli_error_does_not_switch_to_compatibility() -> None:
+    """A different runtime failure does not diagnose the native control route."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 audio send failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ import os
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import (
@@ -265,8 +266,8 @@ class SpotifyConnectProvider(PluginProvider):
         # pauses so the player leaves the playing state. decoded_audio_format tells
         # the core the PCM is s16le while audio_format keeps the Ogg/Vorbis source
         # codec for display; MA resamples to each player's format as needed.
-        # `-fflags nobuffer` keeps ffmpeg from buffering ahead on the resample path
-        # (we back-pressure the daemon to realtime in get_audio_stream).
+        # `-fflags nobuffer` keeps ffmpeg's own input buffering low so the
+        # controller's realtime pacer owns the (small, bounded) read-ahead.
         # expiration=0: never reuse a cached streamdetails so the active-device
         # check above re-runs on every play attempt.
         return StreamDetails(
@@ -289,12 +290,6 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Yield raw PCM from the go-librespot daemon's stdout for the live AudioSource.
 
-        We rate-pace the read at the source's native rate so go-librespot (whose
-        pipe backend is not realtime-paced) is back-pressured to ~realtime and
-        stays only a fraction of a second ahead. Without this, on the ffmpeg
-        resample path (when the player's PCM format differs from ours) nothing
-        throttles the daemon — it races seconds ahead and pause/skip lag badly.
-
         When playback pauses the daemon stops writing PCM; we then end the stream
         (clean EOF) so the consuming player leaves the playing state. The next
         ``playing`` event re-triggers playback. ``seek_position`` is ignored —
@@ -305,11 +300,13 @@ class SpotifyConnectProvider(PluginProvider):
         proc = self._proc
         if proc is None:
             raise AudioError("Spotify Connect daemon is not running")
-        fmt = self._decoded_audio_format
-        bytes_per_second = fmt.sample_rate * fmt.channels * (fmt.bit_depth // 8)
-        loop = self.mass.loop
-        start = loop.time()
-        streamed = 0
+        # No pacing here: the streams controller's realtime pacer (ffmpeg readrate
+        # with a small initial burst) is the single pacing authority for live
+        # sources. Backpressure through the stdout pipe bounds how far the daemon
+        # (whose pipe backend is not realtime-paced) runs ahead, while the burst
+        # headroom absorbs scheduling jitter that would otherwise underrun the
+        # player. Pacing a second time here would pin the feed to exactly realtime
+        # and starve that headroom.
         while True:
             try:
                 chunk = await asyncio.wait_for(
@@ -325,11 +322,6 @@ class SpotifyConnectProvider(PluginProvider):
             if not chunk:
                 return  # daemon stdout closed (process exited / restarting)
             yield chunk
-            # pace at native rate → back-pressure the daemon to ~realtime
-            streamed += len(chunk)
-            ahead = streamed / bytes_per_second - (loop.time() - start)
-            if ahead > 0:
-                await asyncio.sleep(ahead)
 
     async def on_source_selected(
         self,
@@ -625,7 +617,7 @@ class SpotifyConnectProvider(PluginProvider):
         :param source_ip: Local address of the player-facing interface, or None to
             advertise the Spotify Connect device on all interfaces.
         """
-        os.makedirs(self.cache_dir, exist_ok=True)
+        Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",

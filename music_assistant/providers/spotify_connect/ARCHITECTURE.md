@@ -23,7 +23,7 @@ its local HTTP + WebSocket API. Music Assistant needs **no** Spotify Web API cre
         │   GoLibrespotClient over its local HTTP + WS API:
         │   REST control (resume/pause/seek/volume) + /events (state, metadata)
         ▼
-   get_audio_stream  (CUSTOM stream: source-paced, ends on pause)
+   get_audio_stream  (CUSTOM stream: backpressured, ends on pause)
         │
         ▼
    MA streams controller  (ffmpeg resample, per player)
@@ -58,10 +58,12 @@ go-librespot ──s16le PCM──▶ stdout ──▶ get_audio_stream ──�
 
 - **`StreamType.CUSTOM`**: `get_audio_stream` reads the daemon's stdout and yields PCM. The
   subprocess pipe always has a reader, so go-librespot's non-blocking pipe open never fails,
-  and we control the byte stream (pacing it, and ending it cleanly on pause).
-- **Source pacing**: go-librespot's pipe backend is not realtime-paced, so `get_audio_stream`
-  paces the read at the native rate. This back-pressures the daemon to ~realtime, keeping it
-  only a fraction of a second ahead so transport commands land quickly.
+  and we control the byte stream (ending it cleanly on pause).
+- **Pacing**: the streams controller's realtime pacer (ffmpeg `-readrate` with a small
+  initial burst) is the single pacing authority. go-librespot's pipe backend is not
+  realtime-paced, but backpressure through the stdout pipe keeps the daemon only a
+  fraction of a second ahead, so transport commands land quickly, while the burst
+  headroom absorbs scheduling jitter that would otherwise underrun the player.
 - **Pause → clean EOF**: go-librespot keeps the pipe open while paused (it just stops writing),
   so `get_audio_stream` detects the gap and **ends the stream** — the player leaves the playing
   state (track preserved) and the next `playing` event re-streams. Resume works from both the

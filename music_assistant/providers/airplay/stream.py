@@ -79,6 +79,7 @@ CLI_STATUS_REFUSED: Final[int] = 403
 CLI_ERROR_START_FAILED: Final[str] = "start_failed"
 CLI_ERROR_FLUSH_FAILED: Final[str] = "flush_failed"
 CLI_ERROR_ANNOUNCE_FAILED: Final[str] = "announce_failed"
+CLI_NATIVE_CONTROL_FAILURE: Final[str] = "[ERROR] AirPlay 2 control channel failed"
 
 _CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
 _CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
@@ -264,6 +265,7 @@ class AirPlayStream:
         # stays a single support signal instead of repeating with every
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
+        self._native_control_failure_handled: bool = False
 
     @property
     def running(self) -> bool:
@@ -698,10 +700,9 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. A join's ack is held back whenever the receiver
-        # clock verification arms, so it gets a much wider window than a plain
-        # start, which acks within the command round-trip. A reported failure
-        # answers the wait immediately.
+        # re-align a group. Both windows cover the buffered anchor retries; a
+        # join may additionally hold its ack while receiver-clock verification
+        # is armed. A reported failure answers either wait immediately.
         ack_timeout = (
             AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
         ) / 1000
@@ -1581,6 +1582,9 @@ class AirPlayStream:
             self._parse_reanchor_status(line)
         elif "[STATUS] error " in line:
             self._parse_error_status(line)
+        elif CLI_NATIVE_CONTROL_FAILURE in line:
+            self._handle_native_control_failure()
+            player.logger.error("cliairplay: %s", line.strip())
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -1904,6 +1908,22 @@ class AirPlayStream:
             # handshake away rather than judging a secret, and a player with no
             # password would otherwise be left demanding one forever.
             self.player.set_password_invalid(True)
+
+    def _handle_native_control_failure(self) -> None:
+        """Switch an automatic native AirPlay 2 route to compatibility mode."""
+        if self._native_control_failure_handled:
+            return
+        self._native_control_failure_handled = True
+        if self.player.streaming_mode != STREAMING_MODE_AUTO:
+            return
+        self.player.logger.warning(
+            "%s stopped answering native AirPlay 2 control keepalives; switching this "
+            "player to compatibility mode for its next playback.",
+            self.player.display_name,
+        )
+        self.mass.config.set_raw_player_config_value(
+            self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+        )
 
     def _parse_anchor_corrected(self, line: str) -> None:
         """

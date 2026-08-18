@@ -1419,13 +1419,9 @@ class Player(ABC):
     @final
     def power_control(self) -> str:
         """Return the power control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_POWER_CONTROL)
+        conf = self.__stored_control_conf(CONF_POWER_CONTROL, PlayerFeature.POWER)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-            # validate that NATIVE is still backed by an actual POWER feature.
-            # this handles graceful degradation for players (e.g. group players)
-            # that previously advertised POWER but no longer do.
-            if conf == PLAYER_CONTROL_NATIVE and PlayerFeature.POWER not in self.supported_features:
-                return PLAYER_CONTROL_NONE
+            # the control type is explicitly set in the config, use that
             return str(conf)
         if conf and (_control := self.mass.players.get_player_control(str(conf))):
             # the control type is explicitly set to a player control,
@@ -1440,7 +1436,7 @@ class Player(ABC):
     @final
     def volume_control(self) -> str:
         """Return the volume control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_VOLUME_CONTROL)
+        conf = self.__stored_control_conf(CONF_VOLUME_CONTROL, PlayerFeature.VOLUME_SET)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
@@ -1466,7 +1462,7 @@ class Player(ABC):
     @final
     def mute_control(self) -> str:
         """Return the mute control type."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL)
+        conf = self.__stored_control_conf(CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE)
         if conf == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
             # fake mute is simulated by setting the volume to zero, so without a volume
             # control to drive there is no way to mute this player at all
@@ -1760,6 +1756,63 @@ class Player(ABC):
     def protocol_parent_id(self) -> str | None:
         """Return the parent player_id if this is a protocol player linked to a native player."""
         return self.__attr_protocol_parent_id
+
+    @property
+    def default_output_protocol_domain(self) -> str | None:
+        """
+        Return the protocol domain this player prefers as its default output, if any.
+
+        A player that has no native audio path of its own (e.g. a control/grouping shell
+        for a device whose playback runs over a linked protocol) can point the automatic
+        output selection at a specific protocol domain (such as ``dlna``). The base player
+        has no preference; an explicit user selection always overrides this default.
+        """
+        return None
+
+    @property
+    def grouping_locked(self) -> bool:
+        """
+        Return whether ALL grouping must be suppressed in this player's exposed state.
+
+        This is the broad, final lock: while it holds, ``SET_MEMBERS`` is withdrawn and no
+        group targets are offered in the final state, even ones a linked protocol player
+        would otherwise supply. It must therefore be reserved for a genuinely read-only
+        topology — for example a device in an externally-created cross-backend group that
+        Music Assistant keeps read-only — and NOT used merely because a device's own native
+        grouping capability is unavailable. A provider that only wants to disable its native
+        grouping path (e.g. while its control API is unreachable) should instead withhold the
+        native ``SET_MEMBERS`` from ``supported_features`` and return no native
+        ``can_group_with`` candidates, leaving core free to still group via a linked protocol.
+        """
+        return False
+
+    @property
+    def prefer_native_grouping(self) -> bool:
+        """
+        Return whether this player should group natively before any linked protocol.
+
+        A device that runs its own multiroom (e.g. a LinkPlay speaker exposed as a control
+        shell) should keep grouping on its native path rather than route it through a linked
+        AirPlay/DLNA protocol that merely happens to be its preferred playback output. When
+        this is set, grouping selection tries native grouping first; the usual compatibility
+        checks still decide whether native grouping is actually possible, and every other
+        player keeps the default protocol-first ordering. Playback output selection is
+        unaffected.
+        """
+        return False
+
+    def is_native_group_compatible(self, other: Player) -> bool:
+        """
+        Return whether this player can natively group with the given player.
+
+        Native grouping normally works between any two players of the same provider
+        instance. A provider that hosts several incompatible device backends behind a
+        single instance can narrow this so the grouping layer never routes a cross-backend
+        pair onto a native group it cannot form.
+
+        :param other: The player considered for a native group with this one.
+        """
+        return self.provider.instance_id == other.provider.instance_id
 
     @property
     @final
@@ -2261,11 +2314,29 @@ class Player(ABC):
         return None
 
     @final
+    def __stored_control_conf(self, conf_key: str, feature: PlayerFeature) -> ConfigValueType:
+        """
+        Return the stored control selection, dropping a NATIVE the player can no longer back.
+
+        A NATIVE selection is only meaningful while the player advertises the matching feature.
+        Dropping a stale one makes the caller fall back to its auto-select logic instead of
+        re-exposing a control the provider can no longer drive - the resolved control is what
+        the final feature set is derived from, so an unchecked value would put the feature back.
+
+        :param conf_key: Config key holding the control selection.
+        :param feature: Feature a NATIVE selection requires the player to advertise.
+        """
+        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(feature):
+            return None
+        return conf
+
+    @final
     def __control_for_output(
         self, feature: PlayerFeature, conf_key: str, output_protocol_id: str
     ) -> str:
         """Resolve the control owning the given feature for one specific output."""
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        conf = self.__stored_control_conf(conf_key, feature)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             return str(conf)
         if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
@@ -2986,6 +3057,10 @@ class Player(ABC):
             base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
+        if self.grouping_locked:
+            # A provider keeps this group read-only (e.g. an externally-created mixed group);
+            # withdraw grouping even if a linked protocol player would otherwise supply it.
+            base_features.discard(PlayerFeature.SET_MEMBERS)
         return base_features
 
     @cached_property
@@ -3011,6 +3086,11 @@ class Player(ABC):
                 return False
             if player.player_id == self.player_id:
                 return False  # Don't include self
+            if player.grouping_locked:
+                # The candidate keeps its own group read-only (e.g. an externally-created
+                # mixed group); never offer it as a target, including via a linked protocol
+                # that would otherwise reintroduce it.
+                return False
             # Don't include (playing) players that have group members (they are group leaders)
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
@@ -3021,6 +3101,11 @@ class Player(ABC):
 
         if self.__final_synced_to:
             # player is already synced/grouped, cannot group with others
+            return set()
+
+        if self.grouping_locked:
+            # A provider keeps this group read-only; offer no grouping targets, including
+            # any a linked protocol player would otherwise contribute.
             return set()
 
         expanded_can_group_with = self._expand_can_group_with()

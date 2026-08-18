@@ -90,6 +90,12 @@ CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 
+# Maximum wait for a provider source-stream slot before a speculative attempt gives up.
+STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
+
+# Total capacity budget when an actual playback start retries/reselects provider mappings.
+STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
+
 # Maximum seconds we wait for the buffer to catch up on a forward seek.
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20
@@ -100,3 +106,10 @@ DEFAULT_PORT: Final[int] = 8097
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+
+# StreamDetails.data key providers set to opt into the in-band title handoff.
+STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
+# StreamDetails.data key where the streams controller records the in-band (ICY)
+# stream title after an opted-in provider takes ownership of stream_metadata
+# (StreamDetails.stream_title is a derived view whose setter would overwrite it).
+STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"

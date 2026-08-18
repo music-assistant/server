@@ -40,7 +40,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
@@ -55,7 +55,9 @@ from music_assistant.constants import (
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_OUTPUT_CODEC,
+    CONF_PLAYERS,
     CONF_POWER_CONTROL,
+    CONF_PROTOCOL_PARENT_ID,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
 )
@@ -66,6 +68,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import curren
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.universal_player.player import UniversalPlayer
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
 
 
@@ -1108,6 +1111,518 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
         return default
 
     mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
+
+
+class TestRegisterFailureRollback:
+    """Test registration that fails while setting the player up."""
+
+    @staticmethod
+    def _stub_register_calls(mock_mass: MagicMock) -> None:
+        """Stub the awaited mass calls made during register."""
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.cache.get = AsyncMock(return_value=None)
+        mock_mass.config.get_player_config = AsyncMock(return_value=create_mock_config("Player 1"))
+        mock_mass.player_queues.on_player_register = AsyncMock()
+        mock_mass.player_queues.on_player_remove = MagicMock()
+
+    async def test_failed_config_load_leaves_no_stale_registration(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player whose config fails to load can be registered again afterwards."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        mock_mass.config.get_player_config = AsyncMock(side_effect=KeyError("no config"))
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            pytest.raises(KeyError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+        # the provider retries with a fresh player object once the device reappears
+        self._stub_register_calls(mock_mass)
+        retried = MockPlayer(provider, "player_1", "Player 1")
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            await controller.register(retried)
+
+        assert controller._players["player_1"] is retried
+        assert retried.initialized.is_set()
+
+    async def test_failed_config_hook_leaves_no_stale_registration(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player whose on_config_updated hook fails can be registered again afterwards."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(
+                player, "on_config_updated", AsyncMock(side_effect=BrokenPipeError("device gone"))
+            ),
+            pytest.raises(BrokenPipeError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+        retried = MockPlayer(provider, "player_1", "Player 1")
+        with patch(
+            "music_assistant.controllers.players.controller.enrich_device_mac_address",
+            AsyncMock(),
+        ):
+            await controller.register(retried)
+
+        assert controller._players["player_1"] is retried
+        assert retried.initialized.is_set()
+
+    async def test_failed_setup_after_unregister_reports_the_real_error(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The setup error survives an unregister that already dropped the player."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        async def _unregister_then_fail() -> None:
+            await controller.unregister("player_1")
+            raise BrokenPipeError("device gone")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", AsyncMock(side_effect=_unregister_then_fail)),
+            pytest.raises(BrokenPipeError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+    async def test_failure_after_the_player_was_added_keeps_it_registered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A failure after the player was announced leaves it registered."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        mock_mass.player_queues.on_player_register = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            await controller.register(player)
+
+        # PLAYER_ADDED was already signalled, so dropping the player now would
+        # remove it from every listing without a matching PLAYER_REMOVED
+        assert controller._players["player_1"] is player
+        assert player.initialized.is_set()
+
+    async def test_cancelled_setup_leaves_no_stale_registration(self, mock_mass: MagicMock) -> None:
+        """A registration cancelled while it runs can be registered again afterwards."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        setup_running = asyncio.Event()
+
+        async def _block_forever() -> None:
+            setup_running.set()
+            await asyncio.sleep(60)
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(player, "on_config_updated", AsyncMock(side_effect=_block_forever)),
+        ):
+            # stands in for a re-triggered provider discovery aborting the running task
+            task = asyncio.create_task(controller.register(player))
+            await setup_running.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert "player_1" not in controller._players
+
+    async def test_failed_setup_releases_the_player_resources(self, mock_mass: MagicMock) -> None:
+        """A player dropped after a failed setup is unloaded so it releases its resources."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        unload = AsyncMock()
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(
+                player, "on_config_updated", AsyncMock(side_effect=BrokenPipeError("device gone"))
+            ),
+            patch.object(player, "on_unload", unload),
+            pytest.raises(BrokenPipeError),
+        ):
+            await controller.register(player)
+
+        unload.assert_awaited_once()
+
+    async def test_failing_teardown_keeps_the_setup_error(self, mock_mass: MagicMock) -> None:
+        """A teardown that fails does not hide why the registration failed."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        with (
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+            patch.object(
+                player, "on_config_updated", AsyncMock(side_effect=BrokenPipeError("device gone"))
+            ),
+            patch.object(player, "on_unload", AsyncMock(side_effect=RuntimeError("teardown"))),
+            pytest.raises(BrokenPipeError),
+        ):
+            await controller.register(player)
+
+        assert "player_1" not in controller._players
+
+
+class TestRegisterOrUpdateTypeTransition:
+    """Tests for a registered player moving in or out of the protocol role."""
+
+    queue_ids: set[str]
+
+    def _prepare(self, mock_mass: MagicMock) -> PlayerController:
+        """Build a controller with the calls a re-registration makes stubbed out."""
+        mock_mass.loop = MagicMock()
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        # the queue registry is what a re-registration reads the role change off,
+        # so it is modelled instead of mocked out
+        self.queue_ids = set()
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: MagicMock() if queue_id in self.queue_ids else None
+        )
+        mock_mass.player_queues.on_player_register = AsyncMock(
+            side_effect=lambda player: self.queue_ids.add(player.player_id)
+        )
+        mock_mass.player_queues.on_player_remove = MagicMock(
+            side_effect=lambda player_id, **_kwargs: self.queue_ids.discard(player_id)
+        )
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        return controller
+
+    def _register(
+        self,
+        controller: PlayerController,
+        provider: MockProvider,
+        player_id: str,
+        type_: PlayerType,
+    ) -> MockPlayer:
+        """Add a player to the registry with its state calculated for the given type."""
+        player = MockPlayer(provider, player_id, player_id, type_)
+        player.set_initialized()
+        controller._players[player_id] = player
+        if type_ != PlayerType.PROTOCOL:
+            # register() gives every non-protocol player a queue
+            self.queue_ids.add(player_id)
+        # MockPlayer assigns the type after Player.__init__ built the initial state,
+        # so the state only reports it once it is recalculated
+        player.update_state(signal_event=False)
+        assert player.state.type is type_
+        return player
+
+    @staticmethod
+    def _signalled(mock_mass: MagicMock, event: EventType) -> bool:
+        """Return True if the given event was signalled."""
+        return any(
+            call_args.args and call_args.args[0] == event
+            for call_args in mock_mass.signal_event.call_args_list
+        )
+
+    async def test_protocol_to_player_registers_queue(self, mock_mass: MagicMock) -> None:
+        """A protocol player that becomes a standalone player gets a queue and is announced."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
+
+        player._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(player)
+
+        assert player.state.type is PlayerType.PLAYER
+        # without a queue the player is registered but cannot play anything
+        mock_mass.player_queues.on_player_register.assert_awaited_once_with(player)
+        assert self._signalled(mock_mass, EventType.PLAYER_ADDED)
+
+    async def test_protocol_to_player_keeps_state_pipeline_intact(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The regular state update still runs for the tick that changes the type."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
+        updates: list[dict[str, tuple[Any, Any]]] = []
+        controller.subscribe_player_state_update(lambda _player, changed: updates.append(changed))
+
+        player._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(player)
+
+        # the bridges and wait_for_player_update hang off this dispatch, and the changed
+        # values are consumed by it: a suppressed update is never replayed by a later one
+        assert any("type" in changed for changed in updates)
+
+    async def test_player_to_protocol_removes_queue(self, mock_mass: MagicMock) -> None:
+        """A player that becomes a protocol child loses its queue and is announced removed."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        player._attr_type = PlayerType.PROTOCOL
+        await controller.register_or_update(player)
+
+        assert player.state.type is PlayerType.PROTOCOL
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            "player_1", permanent=False
+        )
+        assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_leaving_protocol_role_survives_a_state_update_landing_first(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A state update between the provider's type change and this call is harmless."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        child._attr_type = PlayerType.PLAYER
+        # a debounced state update can fire while this call waits for the register lock,
+        # which makes the state report the new type before the transition is handled
+        child.update_state(signal_event=False)
+        assert child.state.type is PlayerType.PLAYER
+
+        await controller.register_or_update(child)
+
+        mock_mass.player_queues.on_player_register.assert_awaited_once_with(child)
+        assert self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert parent.linked_output_protocols == []
+
+    async def test_entering_protocol_role_survives_a_state_update_landing_first(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The reverse transition is handled with the state already reporting the new type."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        parent._attr_type = PlayerType.PROTOCOL
+        parent.update_state(signal_event=False)
+        assert parent.state.type is PlayerType.PROTOCOL
+
+        await controller.register_or_update(parent)
+
+        mock_mass.player_queues.on_player_remove.assert_called_once_with("parent", permanent=False)
+        assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
+    async def test_unchanged_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
+        """Re-registering a player without a type change does not touch its queue."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        await controller.register_or_update(player)
+
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_unchanged_protocol_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
+        """Re-registering a protocol player does not hand it a queue."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
+
+        await controller.register_or_update(player)
+
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_group_type_change_is_not_a_role_change(self, mock_mass: MagicMock) -> None:
+        """A player that turns into a group keeps its queue (Chromecast reports both)."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        player._attr_type = PlayerType.GROUP
+        await controller.register_or_update(player)
+
+        assert player.state.type is PlayerType.GROUP
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_protocol_to_player_unlinks_from_parent(self, mock_mass: MagicMock) -> None:
+        """A protocol player that becomes standalone is released by its parent."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
+        # a parent that keeps the link would still route audio to a player that is
+        # now standalone
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
+    async def test_protocol_to_player_unlinks_parent_cleared_ahead(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The parent is released even when the provider already dropped the live link."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+        # Sendspin clears protocol_parent_id before it announces the new type, so only
+        # the persisted link is left to find the parent by
+        cached_key = f"{CONF_PLAYERS}/child/values/{CONF_PROTOCOL_PARENT_ID}"
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: "parent" if key == cached_key else default
+        )
+        assert child.protocol_parent_id is None
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
+    async def test_protocol_to_player_clears_persisted_parent_link(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The persisted parent link is dropped so a restart cannot restore the old role."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        parent_key = f"{CONF_PLAYERS}/child/values/{CONF_PROTOCOL_PARENT_ID}"
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == parent_key:
+                return "parent"
+            # the parent id is only cleared for a player that still has a config
+            return {"provider": "test"} if key == f"{CONF_PLAYERS}/child" else default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
+        # a leftover parent id makes the startup repair pass heal the type back to protocol
+        mock_mass.config.set.assert_any_call(parent_key, None)
+
+    async def test_universal_parent_hands_over_to_the_promoted_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A universal parent hands its config to the player that replaces it."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+        universal_provider = MockProvider(
+            "universal_player", instance_id="universal_player", mass=mock_mass
+        )
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("Universal")
+        universal = UniversalPlayer(
+            cast("Any", universal_provider), "universal_1", "Universal", DeviceInfo(), ["child"]
+        )
+        universal.set_initialized()
+        controller._players["universal_1"] = universal
+        universal.update_state(signal_event=False)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("universal_1")
+        universal.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+        migrated: list[tuple[str, str]] = []
+
+        with patch.object(
+            controller,
+            "_migrate_universal_player_config",
+            side_effect=lambda old, new: migrated.append((old, new)),
+        ):
+            child._attr_type = PlayerType.PLAYER
+            await controller.register_or_update(child)
+
+        # a leftover active link makes the wrapper refuse the handover to the player it
+        # is being replaced by, stranding the user's settings on a player on its way out
+        assert migrated == [("universal_1", "child")]
+        assert child.protocol_parent_id is None
+
+    async def test_player_to_protocol_detaches_its_children(self, mock_mass: MagicMock) -> None:
+        """A player that becomes a protocol child releases the protocols it owned."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        parent._attr_type = PlayerType.PROTOCOL
+        await controller.register_or_update(parent)
+
+        # a protocol player cannot own protocol players of its own
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
 
 
 class TestCmdUngroupNewBranches:
@@ -3047,6 +3562,7 @@ class TestMuteControlGuard:
         mute_control: str,
         volume_control: str,
         controls: dict[str, PlayerControl] | None = None,
+        features: set[PlayerFeature] | None = None,
     ) -> tuple[PlayerController, MockPlayer]:
         """Build a controller with a single player using the given control config."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
@@ -3057,6 +3573,8 @@ class TestMuteControlGuard:
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
+        if features is not None:
+            player._attr_supported_features = features
         controller._players = {"player_1": player}
         controller._controls = controls or {}
         mock_mass.players = controller
@@ -3092,6 +3610,8 @@ class TestMuteControlGuard:
             mock_mass,
             mute_control=PLAYER_CONTROL_NATIVE,
             volume_control=PLAYER_CONTROL_NONE,
+            # native mute is only honored while the player advertises the feature
+            features={PlayerFeature.VOLUME_MUTE},
         )
         volume_mute = AsyncMock()
         player.volume_mute = volume_mute  # type: ignore[method-assign]
@@ -4984,6 +5504,132 @@ class TestUnregisterTeardown:
 
         assert "boom" not in controller._players
         assert player.unloaded
+
+
+class TestDeletePlayerConfigUserFilters:
+    """Test how a deleted player config is reflected in the user access filters."""
+
+    def test_removal_drops_the_player_from_the_filters(self, mock_mass: MagicMock) -> None:
+        """A removed player is dropped from the access filter of every user."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        controller.delete_player_config("sonos_1")
+
+        mock_mass.webserver.auth.remove_from_user_filters.assert_called_once_with(
+            player_ids=["sonos_1"]
+        )
+        mock_mass.webserver.auth.replace_player_in_user_filters.assert_not_called()
+
+    def test_replacement_hands_the_filters_to_the_new_player(self, mock_mass: MagicMock) -> None:
+        """A replaced player hands its access filter entries over to its replacement."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        controller.delete_player_config("up_old", replacement_player_id="sonos_1")
+
+        mock_mass.webserver.auth.replace_player_in_user_filters.assert_called_once_with(
+            "up_old", "sonos_1", removed_player_ids=["up_old"]
+        )
+        mock_mass.webserver.auth.remove_from_user_filters.assert_not_called()
+
+
+class TestDeletePlayerConfigGroupMemberships:
+    """Test how a deleted player config is reflected in the stored group member lists."""
+
+    @staticmethod
+    def _config_store(mock_mass: MagicMock) -> dict[str, Any]:
+        """Back the mocked config with a store holding a group that lists sonos_1."""
+        config_store: dict[str, Any] = {
+            "players": {
+                "group_1": {
+                    "values": {
+                        "group_members": ["sonos_1", "sonos_2"],
+                        "allowed_members": ["sonos_1"],
+                    }
+                },
+            },
+        }
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: config_store.get(key, default)
+        )
+        mock_mass.config.set = MagicMock(
+            side_effect=lambda key, value: config_store.__setitem__(key, value)
+        )
+        return config_store
+
+    def test_removal_drops_the_player_from_the_member_lists(self, mock_mass: MagicMock) -> None:
+        """A removed player is dropped from the member lists of every group."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+
+        controller.delete_player_config("sonos_1")
+
+        assert config_store["players/group_1/values/group_members"] == ["sonos_2"]
+        # the allow-list is left alone: emptying it would stop it restricting anything
+        assert "players/group_1/values/allowed_members" not in config_store
+
+    def test_replacement_hands_the_membership_to_the_new_player(self, mock_mass: MagicMock) -> None:
+        """A replaced player hands its group memberships over to its replacement."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+
+        controller.delete_player_config("sonos_1", replacement_player_id="sonos_3")
+
+        assert config_store["players/group_1/values/group_members"] == ["sonos_3", "sonos_2"]
+        assert config_store["players/group_1/values/allowed_members"] == ["sonos_3"]
+
+    async def test_permanent_unregister_drops_the_membership(self, mock_mass: MagicMock) -> None:
+        """A permanently removed player does not linger in a group's stored member list."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        controller._players = {"sonos_1": MockPlayer(provider, "sonos_1", "Sonos 1")}
+
+        await controller.unregister("sonos_1", permanent=True)
+
+        assert config_store["players/group_1/values/group_members"] == ["sonos_2"]
+
+    async def test_temporary_unregister_keeps_the_membership(self, mock_mass: MagicMock) -> None:
+        """A player that is only temporarily gone keeps its spot in the group."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        config_store = self._config_store(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        controller._players = {"sonos_1": MockPlayer(provider, "sonos_1", "Sonos 1")}
+
+        await controller.unregister("sonos_1")
+
+        assert "players/group_1/values/group_members" not in config_store
+
+    async def test_a_registered_group_re_reads_its_members(self, mock_mass: MagicMock) -> None:
+        """A registered group is told to re-read its members so its live list follows."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        self._config_store(mock_mass)
+        scheduled: list[Any] = []
+        mock_mass.create_task = MagicMock(side_effect=lambda task: scheduled.append(task))
+        group = MockPlayer(MockProvider("sync_group", mass=mock_mass), "group_1", "Group")
+        entry = ConfigEntry(key="group_members", type=ConfigEntryType.STRING, multi_value=True)
+        entry.value = ["sonos_1", "sonos_2"]
+        group.config.values = {"group_members": entry}
+        controller._players = {"group_1": group}
+
+        with (
+            patch.object(group, "on_config_updated", AsyncMock()) as mock_reload,
+            patch.object(group, "refresh_state") as mock_refresh,
+        ):
+            controller.delete_player_config("sonos_1")
+            for task in [t for t in scheduled if "_reload_group_members" in repr(t)]:
+                await task
+
+        # the in-place config copy is pruned before the group re-reads it
+        assert group.config.values["group_members"].value == ["sonos_2"]
+        mock_reload.assert_awaited_once()
+        mock_refresh.assert_called_once()
 
 
 class TestConfigChangeRestartsPlayback:

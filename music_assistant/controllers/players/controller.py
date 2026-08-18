@@ -1465,25 +1465,42 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # We use the 'initialized' attribute to indicate that the player
             # is still in the process of being registered so we can filter it out where needed.
             self._players[player_id] = player
-            # update state to ensure player.state reflects the final attributes
-            # (e.g. player type) set after super().__init__() in the player subclass,
-            # before we fetch config (which relies on state.type for entry resolution)
-            player.update_state(signal_event=False)
-            # ensure we fetch and set the latest/full config for the player
-            player_config = await self.mass.config.get_player_config(player_id)
-            if self._registration_aborted(player):
-                return
-            player.set_config(player_config)
-            # update state again now that config is loaded
-            player.update_state(signal_event=False)
-            self._save_underlying_player_id(player)
-            # call hook after the player is registered and config is set
-            await player.on_config_updated()
-            if self._registration_aborted(player):
-                return
+            try:
+                # update state to ensure player.state reflects the final attributes
+                # (e.g. player type) set after super().__init__() in the player subclass,
+                # before we fetch config (which relies on state.type for entry resolution)
+                player.update_state(signal_event=False)
+                # ensure we fetch and set the latest/full config for the player
+                player_config = await self.mass.config.get_player_config(player_id)
+                if self._registration_aborted(player):
+                    return
+                player.set_config(player_config)
+                # update state again now that config is loaded
+                player.update_state(signal_event=False)
+                self._save_underlying_player_id(player)
+                # call hook after the player is registered and config is set
+                await player.on_config_updated()
+                if self._registration_aborted(player):
+                    return
 
-            # Handle protocol linking
-            self._evaluate_protocol_links(player)
+                # Handle protocol linking
+                self._evaluate_protocol_links(player)
+            except Exception, asyncio.CancelledError:
+                # a player whose setup failed never becomes initialized, which hides it
+                # everywhere while it keeps blocking every later registration of the same id.
+                # Cancellation counts too: a re-triggered provider discovery aborts the task
+                # this runs in. Only roll back while the player is still ours: an unregister
+                # may have dropped it already, and it unloads the player itself.
+                if self._players.get(player_id) is player:
+                    del self._players[player_id]
+                    # players claim resources in their constructor (event subscriptions,
+                    # connections) that only on_unload releases. Best-effort, so a failing
+                    # teardown cannot mask the error that got us here.
+                    try:
+                        await player.on_unload()
+                    except Exception:
+                        self.logger.exception("Error unloading player %s", player.name)
+                raise
 
             # now we're ready to signal the player is added and available
             player.set_initialized()
@@ -1519,6 +1536,19 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # is still setting the player up
         async with self._register_lock:
             if (existing := self._players.get(player.player_id)) is not None:
+                # a protocol player is hidden behind its parent and owns no queue, every
+                # other player does. Reading the role the player is leaving off that
+                # published reality keeps it independent of when the player's state was
+                # last recalculated, which providers cannot control (they flip the type
+                # before this call).
+                was_protocol = self.mass.player_queues.get(player.player_id) is None
+                becomes_protocol = player.type == PlayerType.PROTOCOL
+                role_changed = becomes_protocol != was_protocol
+                if role_changed:
+                    # release the topology of the role the player is leaving
+                    self._cleanup_player_type_transition(
+                        existing, becomes_protocol=becomes_protocol
+                    )
                 self._players[player.player_id] = player
                 if existing is not player:
                     # a fresh instance starts out with a base config only, so it needs
@@ -1534,6 +1564,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 # the derived-transport edge may have been set/revoked after the
                 # initial registration (e.g. via a bridge claim)
                 self._save_underlying_player_id(player)
+                if role_changed:
+                    await self._finish_player_type_transition(player)
                 # Also schedule update when replacing existing player
                 self._schedule_update_all_players()
                 return
@@ -1560,7 +1592,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             task_id=task_id,
         )
 
-    async def unregister(self, player_id: str, permanent: bool = False) -> None:
+    async def unregister(
+        self,
+        player_id: str,
+        permanent: bool = False,
+        replacement_player_id: str | None = None,
+    ) -> None:
         """
         Unregister a player from the player controller.
 
@@ -1572,6 +1609,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         :param player_id: Player ID of the player to unregister.
         :param permanent: If True, remove the player permanently by deleting its config.
                           If False, the player config will not be removed.
+        :param replacement_player_id: Player ID that takes this player's place, only
+                                      used for a permanent removal.
         """
         player = self._players.get(player_id)
         if player is None:
@@ -1592,10 +1631,12 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             self.logger.exception("Error unloading player %s", player.name)
         if permanent:
             # player permanent removal: cleanup protocol links, delete config
-            # and signal PLAYER_REMOVED event
-            await self._cleanup_player_memberships(player_id)
+            # and signal PLAYER_REMOVED event.
+            # No group detach is issued here: the player is already out of the registry,
+            # so it is filtered out of every group's live member list, and its persisted
+            # membership is settled by delete_player_config below.
             self._cleanup_protocol_links(player)
-            self.delete_player_config(player_id)
+            self.delete_player_config(player_id, replacement_player_id)
             self.logger.info("Player removed: %s", player.name)
             if player.state.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
@@ -1642,7 +1683,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # We removed the player and can now clean up its config
         self.delete_player_config(player_id)
 
-    def delete_player_config(self, player_id: str) -> None:
+    def delete_player_config(
+        self, player_id: str, replacement_player_id: str | None = None
+    ) -> None:
         """
         Permanently delete a player's configuration, including its DSP and queue settings.
 
@@ -1653,8 +1696,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         returns as a brand new player once it is discovered again. Protocol players that
         are still registered or that already moved to another parent keep their config;
         registered ones are detached from the removed player and re-evaluated.
+        Any group that lists the player as a member follows the replacement, or loses
+        the member when there is none.
+
+        :param player_id: Player ID of the player to delete the configuration of.
+        :param replacement_player_id: Player ID that takes this player's place, so users
+                                      restricted to it and groups it belongs to follow
+                                      the replacement.
         """
         self._detach_protocol_children(player_id)
+        self._update_group_memberships(player_id, replacement_player_id)
         player_ids = [
             protocol_id
             for protocol_id in self.mass.config.get(CONF_PLAYERS, {})
@@ -1672,10 +1723,18 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             if self.get_player(pid) is None:
                 self.mass.player_queues.purge_saved_queue(pid)
         # a user access filter is an allow-list of player ids, so it must not be left
-        # pointing at a player whose config was just wiped
-        self.mass.create_task(
-            self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
-        )
+        # pointing at a player whose config was just wiped: a replaced player hands its
+        # entries over to its replacement, a removed one has them dropped
+        if replacement_player_id:
+            self.mass.create_task(
+                self.mass.webserver.auth.replace_player_in_user_filters(
+                    player_id, replacement_player_id, removed_player_ids=player_ids
+                )
+            )
+        else:
+            self.mass.create_task(
+                self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
+            )
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
@@ -2344,6 +2403,30 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             player.player_id,
         )
         return True
+
+    async def _finish_player_type_transition(self, player: Player) -> None:
+        """
+        Publish a registered player that moved in or out of the protocol role.
+
+        :param player: The player, with its new type already applied to its state.
+        """
+        self._evaluate_protocol_links(player)
+        if player.state.type == PlayerType.PROTOCOL:
+            # the player is hidden behind its parent from now on and no longer owns a queue.
+            # only the queue is dropped, never the playback: the player either just became a
+            # (hidden) bridge client with nothing playing on it, or is already serving its
+            # parent, where a stop would cut that parent's stream short. A protocol player
+            # has no active group of its own either, so there is nothing to detach here.
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
+            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+            return
+        # the player surfaces on its own, which leaves it unusable without a queue
+        self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+        await self.mass.player_queues.on_player_register(player)
+        if self._registration_aborted(player):
+            # the queue restore outlived the unregister that already cleaned it up,
+            # so drop the queue we just recreated for a player that is gone
+            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """

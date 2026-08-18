@@ -101,6 +101,11 @@ class ITunesPodcastsProvider(MusicProvider):
 
     throttler: ThrottlerManager
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         country_codes = await asyncio.to_thread(get_country_codes)
