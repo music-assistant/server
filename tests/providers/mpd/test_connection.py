@@ -65,7 +65,7 @@ async def test_failed_idle_connection_closes_the_command_connection(
 async def test_disconnect_cancels_a_pending_reconnect(
     make_mpd_player: Callable[..., MPDPlayer],
 ) -> None:
-    """Unloading a player must not leave a reconnect attempt armed."""
+    """Disconnecting must disarm a reconnect that is still waiting on its timer."""
     player = make_mpd_player()
     cast("MagicMock", player.mass.get_task).return_value = None
 
