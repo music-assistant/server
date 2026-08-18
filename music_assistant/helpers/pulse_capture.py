@@ -351,11 +351,15 @@ class PulseCaptureServer:
             with suppress(Exception):
                 await proc.close()
             raise
-        if (old_controller := self._controller) is not None:
-            with suppress(Exception):
-                await asyncio.to_thread(old_controller.close)
+        # publish the new controller and generation before disposing of the old
+        # controller, so teardown can always reach the live one even when the
+        # disposal await is cancelled
+        old_controller = self._controller
         self._controller = controller
         self._generation += 1
+        if old_controller is not None:
+            with suppress(Exception):
+                await asyncio.to_thread(old_controller.close)
         LOGGER.debug(
             "Private PulseAudio capture daemon ready on %s (generation %d)",
             self.server_address,

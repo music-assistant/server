@@ -532,6 +532,10 @@ class SoloistBinaryManager:
                 await asyncio.to_thread(self._write_metadata, metadata)
             except OSError as err:
                 LOGGER.warning("Unable to persist soloist install metadata: %s", err)
+                # stale metadata must not outlive the swap: it would pair the
+                # fresh binary with the previous build's expiry state
+                with suppress(OSError):
+                    await asyncio.to_thread(self._metadata_path.unlink, missing_ok=True)
             LOGGER.info("Installed soloist binary %s (%s)", metadata.version or "unknown", arch)
         finally:
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
@@ -720,6 +724,10 @@ class SoloistClient:
         :param on_event: Coroutine called with a :class:`SoloistEvent` per event.
         :raises SoloistError: The daemon has not published its endpoint (yet).
         """
+        if self._ws is not None and not self._ws.closed:
+            # pending acks are correlated per connection; a second concurrent
+            # listener would cross-resolve them
+            raise SoloistError("listen_events is already running")
         if (endpoint := await asyncio.to_thread(self._read_endpoint)) is None:
             raise SoloistError("soloist has not published its WebSocket endpoint (yet)")
         addr, port = endpoint
