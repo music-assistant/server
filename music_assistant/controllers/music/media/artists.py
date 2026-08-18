@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -1142,6 +1143,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    async def _validate_library_item_merge(self, target: Artist, source: Artist) -> None:
+        """Validate that two artists have the same role."""
+        await super()._validate_library_item_merge(target, source)
+        if target.artist_type != source.artist_type:
+            msg = (
+                f"Cannot merge artist '{source.name}' into '{target.name}': "
+                "artists must have the same role."
+            )
+            raise InvalidDataError(msg)
 
     async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove artist albums

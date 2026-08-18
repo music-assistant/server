@@ -2391,10 +2391,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         int(target_row["last_played"] or 0), int(source_row["last_played"] or 0)
                     ),
                     "timestamp_added": min(timestamps_added) if timestamps_added else 0,
-                    "timestamp_modified": max(
-                        int(target_row["timestamp_modified"] or 0),
-                        int(source_row["timestamp_modified"] or 0),
-                    ),
                 },
             )
             await self._merge_genre_mappings(target_id, source_id)

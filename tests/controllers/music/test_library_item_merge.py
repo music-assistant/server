@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType
+from music_assistant_models.enums import AlbumType, ArtistType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
@@ -555,6 +555,34 @@ async def test_genre_merge_rejects_different_taxonomies(mass: MusicAssistant) ->
 
     assert await mass.music.genres.get_library_item(target.item_id)
     assert await mass.music.genres.get_library_item(source.item_id)
+
+
+async def test_artist_merge_rejects_different_roles(mass: MusicAssistant) -> None:
+    """An artist merge cannot cross music and spoken-word roles."""
+    target = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Singer",
+            artist_type=ArtistType.SINGER,
+            provider_mappings={_mapping("target_instance", "target-artist")},
+        )
+    )
+    source = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Author",
+            artist_type=ArtistType.AUTHOR,
+            provider_mappings={_mapping("source_instance", "source-artist")},
+        )
+    )
+
+    with pytest.raises(InvalidDataError, match="same role"):
+        await mass.music.artists.merge_library_items(target.item_id, source.item_id)
+
+    assert await mass.music.artists.get_library_item(target.item_id)
+    assert await mass.music.artists.get_library_item(source.item_id)
 
 
 async def test_merge_retry_does_not_double_play_count(mass: MusicAssistant) -> None:
