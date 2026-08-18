@@ -103,6 +103,7 @@ def _make_streamdetails(
     *,
     audio_format: AudioFormat,
     decoded_audio_format: AudioFormat | None = None,
+    extra_input_args: list[str] | None = None,
 ) -> StreamDetails:
     return StreamDetails(
         provider="test_provider",
@@ -112,6 +113,7 @@ def _make_streamdetails(
         media_type=MediaType.AUDIO_SOURCE,
         stream_type=StreamType.NAMED_PIPE,
         path="/tmp/fake-fifo",  # noqa: S108
+        extra_input_args=extra_input_args or [],
     )
 
 
@@ -436,3 +438,48 @@ async def test_get_media_stream_keeps_caller_extra_input_args_intact(
 
     assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "600"]
     assert streamdetails.extra_input_args == [*_PROVIDER_INPUT_ARGS]
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_adds_realtime_pacing_for_audio_source(
+    patch_ffmpeg: type[_FakeFFMpeg],
+) -> None:
+    """A live AudioSource gets realtime pacing with a small initial burst of headroom."""
+    audio = _make_audio_controller()
+    await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [
+        "-readrate",
+        "1",
+        "-readrate_initial_burst",
+        "0.5",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_pacing_args",
+    [["-readrate", "1.0", "-readrate_initial_burst", "2"], ["-re"]],
+    ids=["readrate", "re"],
+)
+async def test_get_media_stream_respects_provider_pacing_args(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    provider_pacing_args: list[str],
+) -> None:
+    """Provider-supplied -re/-readrate args suppress the automatic AudioSource pacing."""
+    streamdetails = _make_streamdetails(
+        audio_format=AudioFormat(
+            content_type=ContentType.FLAC,
+            codec_type=ContentType.FLAC,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        ),
+        extra_input_args=list(provider_pacing_args),
+    )
+    audio = _make_audio_controller()
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == provider_pacing_args
