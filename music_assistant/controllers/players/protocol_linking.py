@@ -1602,11 +1602,18 @@ class ProtocolLinkingMixin:
         """
         if existing.state.type == PlayerType.PROTOCOL:
             # a provider may announce the new type with the live parent link already
-            # dropped, so take the persisted one to still reach the parent
-            if not existing.protocol_parent_id and (
-                parent_id := self._get_cached_protocol_parent_id(existing.player_id)
-            ):
-                existing.set_protocol_parent_id(parent_id)
+            # dropped, so fall back to the persisted one to still reach the parent
+            parent_id = existing.protocol_parent_id or self._get_cached_protocol_parent_id(
+                existing.player_id
+            )
+            if not parent_id:
+                return
+            parent = self.get_player(parent_id)
+            if parent is not None and parent.provider.domain == "universal_player":
+                # a universal parent is replaced by the player itself once the links are
+                # re-evaluated, which carries over its config and memberships first
+                return
+            existing.set_protocol_parent_id(parent_id)
             # unlink at the parent and drop the persisted parent id, which would
             # otherwise heal the player's type back to protocol
             self._cleanup_protocol_links(existing)
@@ -1614,8 +1621,9 @@ class ProtocolLinkingMixin:
             # is not registered (anymore) and only the cached link could be cleaned up
             existing.set_protocol_parent_id(None)
             return
-        # the player becomes a child itself: detach the protocol players it owned so
-        # they can find a new parent, and give up their ownership in its (kept) config
+        # the player becomes a child itself: detach the protocol players it owned so they
+        # can find a new parent, then give up their ownership in its (kept) config - the
+        # reverse of the removal path, which drops the ownership before the detach
         protocol_ids = set(self._get_known_protocol_ids(existing))
         self._cleanup_protocol_links(existing)
         self._remove_protocol_ids_from_parent(existing, protocol_ids)

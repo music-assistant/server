@@ -1266,6 +1266,53 @@ class TestRegisterOrUpdateTypeTransition:
         assert parent.linked_output_protocols == []
         assert child.protocol_parent_id is None
 
+    async def test_protocol_to_player_clears_persisted_parent_link(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The persisted parent link is dropped so a restart cannot restore the old role."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        parent_key = f"{CONF_PLAYERS}/child/values/{CONF_PROTOCOL_PARENT_ID}"
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == parent_key:
+                return "parent"
+            # the parent id is only cleared for a player that still has a config
+            return {"provider": "test"} if key == f"{CONF_PLAYERS}/child" else default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
+        # a leftover parent id makes the startup repair pass heal the type back to protocol
+        mock_mass.config.set.assert_any_call(parent_key, None)
+
+    async def test_universal_parent_is_left_to_the_link_evaluation(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A universal parent is replaced wholesale instead of being unlinked here."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        universal_provider = MockProvider(
+            "universal_player", instance_id="universal_player", mass=mock_mass
+        )
+        parent = self._register(controller, universal_provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
+        # unlinking here would strand the universal player before its config and group
+        # memberships are carried over to the player that replaces it
+        assert parent.linked_output_protocols != []
+        assert "parent" in controller._players
+
     async def test_player_to_protocol_detaches_its_children(self, mock_mass: MagicMock) -> None:
         """A player that becomes a protocol child releases the protocols it owned."""
         controller = self._prepare(mock_mass)

@@ -1527,7 +1527,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                     player.type,
                 )
                 if role_changed:
-                    # release the old topology while the player still reports its old type
+                    # release the old topology while the state still reports the old type
                     self._cleanup_player_type_transition(existing)
                 self._players[player.player_id] = player
                 if existing is not player:
