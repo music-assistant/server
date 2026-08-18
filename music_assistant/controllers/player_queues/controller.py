@@ -1178,12 +1178,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         queue_data: PlayerQueueData | None = None
         # try to restore previous state
-        if prev_state := await self.mass.cache.get(
-            key=queue_id,
-            provider=self.domain,
-            category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-        ):
-            try:
+        try:
+            if prev_state := await self.mass.cache.get(
+                key=queue_id,
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+            ):
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1191,14 +1191,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     default=[],
                 )
                 queue_data = PlayerQueueData.from_cache(prev_state, prev_items)
-            except Exception as err:
-                self.logger.warning(
-                    "Failed to restore the queue(items) for %s - %s",
-                    player.state.name,
-                    str(err),
-                )
-                # Reset to clean state on failure
-                queue_data = None
+        except Exception as err:
+            self.logger.warning(
+                "Failed to restore the queue(items) for %s - %s",
+                player.state.name,
+                str(err),
+            )
+            # Reset to clean state on failure
+            queue_data = None
         if queue_data is None:
             queue_data = PlayerQueueData(
                 queue=PlayerQueue(
