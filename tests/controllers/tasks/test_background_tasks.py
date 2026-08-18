@@ -29,6 +29,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.migrations import _migrate_metadata_maintenance_schedule
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
+    ALBUM_RECONCILIATION_TASK_ID,
     MISSING_ARTIST_METADATA_SCAN_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     THUMB_CACHE_CLEANUP_TASK_ID,
@@ -609,6 +610,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     artist_scan_task = tasks_controller.get_task(MISSING_ARTIST_METADATA_SCAN_TASK_ID)
     playlist_scan_task = tasks_controller.get_task(PLAYLIST_METADATA_SCAN_TASK_ID)
     thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
+    album_reconciliation_task = tasks_controller.get_task(ALBUM_RECONCILIATION_TASK_ID)
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
     assert cache_task.translation_owner == "core.cache"
@@ -644,6 +646,13 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert 0 <= artist_scan_task.schedule.minute <= 59
     assert artist_scan_task.schedule == playlist_scan_task.schedule
     assert thumb_cleanup_task.schedule == artist_scan_task.schedule
+
+    # Album reconciliation is bounded to a handful of albums per run, so it runs hourly
+    # instead of spread across the day like the other (MusicBrainz-hitting) scans.
+    assert album_reconciliation_task.translation_key == "background_task.reconcile_duplicate_albums"
+    assert album_reconciliation_task.translation_owner == "core.metadata"
+    assert album_reconciliation_task.metadata == {"task_domain": "metadata_album_reconciliation"}
+    assert album_reconciliation_task.schedule == TaskSchedule.hourly()
 
 
 async def test_music_sync_completion_queues_database_cleanup_background_task(
