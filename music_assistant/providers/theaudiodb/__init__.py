@@ -301,23 +301,6 @@ class AudioDbMetadataProvider(MetadataProvider):
             adb_album, "strDescription"
         )
         metadata.review = adb_album.get("strReview")
-        # images
-        if not self.config.get_value(CONF_ENABLE_IMAGES):
-            return metadata
-        metadata.images = UniqueList()
-        for key, img_type in IMG_MAPPING.items():
-            for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
-                if img := adb_album.get(f"{key}{postfix}"):
-                    metadata.images.append(
-                        MediaItemImage(
-                            type=img_type,
-                            path=img,
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    )
-                else:
-                    break
         # fill in some missing album info if needed
         if not album.year:
             album.year = int(adb_album.get("intYearReleased", "0"))
@@ -336,6 +319,23 @@ class AudioDbMetadataProvider(MetadataProvider):
                     album_artist.item_id,
                     album_artist,
                 )
+        # images
+        if not self.config.get_value(CONF_ENABLE_IMAGES):
+            return metadata
+        metadata.images = UniqueList()
+        for key, img_type in IMG_MAPPING.items():
+            for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+                if img := adb_album.get(f"{key}{postfix}"):
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
+                else:
+                    break
         return metadata
 
     async def __parse_track(self, track: Track, adb_track: dict[str, Any]) -> MediaItemMetadata:
@@ -351,23 +351,6 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.description, metadata.description_language = self._localized_field(
             adb_track, "strDescription"
         )
-        # images
-        if not self.config.get_value(CONF_ENABLE_IMAGES):
-            return metadata
-        metadata.images = UniqueList([])
-        for key, img_type in IMG_MAPPING.items():
-            for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
-                if img := adb_track.get(f"{key}{postfix}"):
-                    metadata.images.append(
-                        MediaItemImage(
-                            type=img_type,
-                            path=img,
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    )
-                else:
-                    break
         # update the artist mbid while at it
         for album_artist in track.artists:
             if not compare_strings(album_artist.name, adb_track["strArtist"]):
@@ -386,11 +369,31 @@ class AudioDbMetadataProvider(MetadataProvider):
             and not track.album.get_external_id(ExternalID.MB_RELEASEGROUP)
             and track.album.provider == "library"
             and isinstance(track.album, Album)
+            # a recording is shared by every release it appears on, so the album id is
+            # only ours to take when the matched record is for this album as well
+            and compare_strings(track.album.name, adb_track["strAlbum"], strict=False)
         ):
             track.album.add_external_id(
                 ExternalID.MB_RELEASEGROUP, adb_track["strMusicBrainzAlbumID"]
             )
             await self.mass.music.albums.update_item_in_library(track.album.item_id, track.album)
+        # images
+        if not self.config.get_value(CONF_ENABLE_IMAGES):
+            return metadata
+        metadata.images = UniqueList([])
+        for key, img_type in IMG_MAPPING.items():
+            for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+                if img := adb_track.get(f"{key}{postfix}"):
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
+                else:
+                    break
         return metadata
 
     def _localized_field(self, obj: dict[str, Any], prefix: str) -> tuple[str | None, str | None]:
