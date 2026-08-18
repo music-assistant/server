@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
-    from music_assistant.providers.spotify_connect.models import AudioChunkReader
+    from music_assistant.providers.spotify_connect.models import (
+        AudioChunkReader,
+        BackendStreamSource,
+    )
 
 
 class SpotifyConnectBackend(ABC):
@@ -40,6 +43,16 @@ class SpotifyConnectBackend(ABC):
     @abstractmethod
     async def stop(self) -> None:
         """Stop the backend and release all its resources."""
+
+    @abstractmethod
+    async def get_stream_source(self) -> BackendStreamSource:
+        """
+        Return how the streams controller should consume this backend's audio.
+
+        Called on every stream request; the result describes the live audio
+        delivery (stream type, optional pipe path and extra ffmpeg input
+        arguments). The delivered PCM is in ``decoded_audio_format``.
+        """
 
     @abstractmethod
     def get_audio_reader(self) -> AudioChunkReader | None:

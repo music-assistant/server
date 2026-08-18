@@ -14,12 +14,13 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     MediaType,
     PlaybackState,
     ProviderFeature,
     SourceControl,
-    StreamType,
 )
 from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioSource, ProviderMapping
@@ -29,12 +30,13 @@ from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
 from .backends.go_librespot import GoLibrespotBackend
+from .backends.soloist import VOLUME_MODE_PLAYER_ONLY, SoloistBackend
 from .models import BackendEventType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -45,6 +47,16 @@ if TYPE_CHECKING:
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
 DEFAULT_PUBLISH_NAME = "Music Assistant"
+
+# Backend selection (hidden for now; the setup flow change makes it user-facing).
+CONF_BACKEND = "backend"
+BACKEND_GO_LIBRESPOT = "go_librespot"
+BACKEND_SOLOIST = "soloist"
+
+# Soloist-specific options (hidden for now, see CONF_BACKEND).
+CONF_API_KEY = "soloist_api_key"
+CONF_SOLOIST_CONSENT = "soloist_download_consent"
+CONF_VOLUME_MODE = "volume_mode"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -98,14 +110,7 @@ class SpotifyConnectProvider(PluginProvider):
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
-        self._backend: SpotifyConnectBackend = GoLibrespotBackend(
-            mass,
-            instance_id=self.instance_id,
-            publish_name=self._publish_name,
-            name=self.name,
-            logger=self.logger,
-            event_callback=self._handle_backend_event,
-        )
+        self._backend: SpotifyConnectBackend = self._create_backend()
         self.logger.debug(
             "Init plugin with name '%s' for player '%s' with instance id '%s'",
             self.name,
@@ -151,7 +156,38 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return runtime options for this provider."""
-        return (CONF_ENTRY_WARN_PREVIEW,)
+        # The backend selection and the soloist options stay hidden for now:
+        # the upcoming setup flow change makes them user-facing.
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_BACKEND,
+                type=ConfigEntryType.STRING,
+                default_value=BACKEND_GO_LIBRESPOT,
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_SOLOIST_CONSENT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_MODE,
+                type=ConfigEntryType.STRING,
+                default_value=VOLUME_MODE_PLAYER_ONLY,
+                required=False,
+                hidden=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -192,25 +228,24 @@ class SpotifyConnectProvider(PluginProvider):
         # playback back (makes us the active device) before audio is pulled.
         if not self._playing and not self._spotify_session_active and not self._last_context_uri:
             raise self._not_active_error()
-        # CUSTOM: the core pulls PCM from get_audio_stream. Reading the backend's
-        # audio pipe means a consumer is always attached, and it lets us end the
-        # stream cleanly when playback pauses so the player leaves the playing
-        # state. decoded_audio_format tells the core the PCM format while
-        # audio_format keeps the source codec for display; MA resamples to each
-        # player's format as needed.
-        # `-fflags nobuffer` keeps ffmpeg's own input buffering low so the
-        # controller's realtime pacer owns the (small, bounded) read-ahead.
+        # The backend describes how its audio is consumed: CUSTOM (the core pulls
+        # PCM from get_audio_stream) or a named pipe read directly by ffmpeg.
+        # decoded_audio_format tells the core the PCM format while audio_format
+        # keeps the source codec for display; MA resamples to each player's
+        # format as needed.
         # expiration=0: never reuse a cached streamdetails so the active-device
         # check above re-runs on every play attempt.
+        stream_source = await self._backend.get_stream_source()
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=self._backend.audio_format,
             decoded_audio_format=self._backend.decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,
-            stream_type=StreamType.CUSTOM,
+            stream_type=stream_source.stream_type,
+            path=stream_source.path,
             stream_metadata=self._stream_metadata,
-            extra_input_args=["-fflags", "nobuffer"],
+            extra_input_args=stream_source.extra_input_args,
             expiration=0,
         )
 
@@ -222,10 +257,12 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Yield raw PCM from the backend's audio pipe for the live AudioSource.
 
-        When playback pauses the backend stops writing PCM; we then end the
-        stream (clean EOF) so the consuming player leaves the playing state. The
-        next ``playing`` event re-triggers playback. ``seek_position`` is ignored —
-        seeking is handled upstream by Spotify, not by replaying the bytestream.
+        Only used for backends with a CUSTOM stream source (NAMED_PIPE backends
+        are read directly by the streams controller). When playback pauses the
+        backend stops writing PCM; we then end the stream (clean EOF) so the
+        consuming player leaves the playing state. The next ``playing`` event
+        re-triggers playback. ``seek_position`` is ignored — seeking is handled
+        upstream by Spotify, not by replaying the bytestream.
         """
         if streamdetails.item_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {streamdetails.item_id}")
@@ -383,6 +420,31 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to send volume command to backend: %s", err)
             raise
+
+    def _create_backend(self) -> SpotifyConnectBackend:
+        """Construct the configured Spotify Connect backend implementation."""
+        if self.config.get_value(CONF_BACKEND) == BACKEND_SOLOIST:
+            return SoloistBackend(
+                self.mass,
+                instance_id=self.instance_id,
+                publish_name=self._publish_name,
+                name=self.name,
+                logger=self.logger,
+                event_callback=self._handle_backend_event,
+                api_key=cast("str", self.config.get_value(CONF_API_KEY) or ""),
+                consent=bool(self.config.get_value(CONF_SOLOIST_CONSENT)),
+                volume_mode=cast(
+                    "str", self.config.get_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY
+                ),
+            )
+        return GoLibrespotBackend(
+            self.mass,
+            instance_id=self.instance_id,
+            publish_name=self._publish_name,
+            name=self.name,
+            logger=self.logger,
+            event_callback=self._handle_backend_event,
+        )
 
     def _not_active_error(self) -> AudioError:
         """Build the localized 'not the active Spotify device' error, naming this device."""
@@ -544,6 +606,17 @@ class SpotifyConnectProvider(PluginProvider):
             return
         if event.type is BackendEventType.FATAL_ERROR:
             self.unload_with_error(event.error or "Spotify Connect backend failed")
+            return
+        if event.type is BackendEventType.ERROR:
+            # non-fatal backend error: surface it in the log only
+            self.logger.warning("Spotify Connect backend error: %s", event.error)
+            return
+        if event.type is BackendEventType.AUTH_REQUIRED:
+            # the backend lost its Spotify login; re-authentication runs through
+            # the setup flow, so only surface it here
+            self.logger.warning(
+                "Spotify Connect backend for %s requires (re)authentication", self.name
+            )
             return
 
         # Remember the latest context/track so we can take playback back if the

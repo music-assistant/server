@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from music_assistant_models.enums import StreamType
 
 
 class BackendEventType(StrEnum):
@@ -27,10 +31,29 @@ class BackendEventType(StrEnum):
     # the backend lost its Spotify connection (e.g. daemon exit) and will recover
     # on its own; any session/playback state is gone until a new SESSION_ACTIVE
     CONNECTION_LOST = "connection_lost"
+    # a non-fatal backend error worth surfacing (message in the ``error`` field)
+    ERROR = "error"
+    # the backend lost its Spotify authentication and needs the user to log in again
+    AUTH_REQUIRED = "auth_required"
     # the backend failed permanently and the provider must unload with an error
     FATAL_ERROR = "fatal_error"
     # any other backend activity; carries at most refreshed context/track uris
     OTHER = "other"
+
+
+@dataclass(slots=True, frozen=True)
+class BackendStreamSource:
+    """
+    How a backend delivers its audio to the streams controller.
+
+    ``path`` is only set for path-based stream types (e.g. NAMED_PIPE); CUSTOM
+    sources deliver their audio through the backend's audio reader instead.
+    ``extra_input_args`` are passed to ffmpeg for the audio input.
+    """
+
+    stream_type: StreamType
+    path: str | None = None
+    extra_input_args: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -61,7 +84,7 @@ class BackendEvent:
     playback back after the user moved the active device away. ``position`` is
     the elapsed time in seconds (POSITION events), ``volume`` a 0-100
     percentage (VOLUME events) and ``error`` the failure description
-    (FATAL_ERROR events).
+    (ERROR and FATAL_ERROR events).
     """
 
     type: BackendEventType

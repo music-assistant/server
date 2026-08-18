@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, SourceControl
+from music_assistant_models.enums import ContentType, MediaType, SourceControl, StreamType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
@@ -26,6 +26,7 @@ from music_assistant.providers.spotify_connect.backends.go_librespot import (
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendStreamSource,
     BackendTrackMetadata,
 )
 from music_assistant.providers.spotify_connect.provider import (
@@ -76,6 +77,13 @@ class FakeBackend(SpotifyConnectBackend):
     async def stop(self) -> None:
         """Record the stop call."""
         self.calls.append(("stop", None))
+
+    async def get_stream_source(self) -> BackendStreamSource:
+        """Return the same CUSTOM stream source the go-librespot backend uses."""
+        return BackendStreamSource(
+            stream_type=StreamType.CUSTOM,
+            extra_input_args=["-fflags", "nobuffer"],
+        )
 
     def get_audio_reader(self) -> AudioChunkReader | None:
         """Return no audio reader (audio is not exercised in these tests)."""
@@ -446,6 +454,34 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
     await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
 
     assert backend.calls == [("resume", None), ("set_volume", 25)]
+
+
+async def test_get_stream_details_built_from_backend_stream_source() -> None:
+    """StreamDetails mirror the backend's stream source (identical to the legacy output)."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    details = await provider.get_stream_details(AUDIO_SOURCE_ID, MediaType.AUDIO_SOURCE)
+
+    assert details.provider == _INSTANCE_ID
+    assert details.item_id == AUDIO_SOURCE_ID
+    assert details.media_type is MediaType.AUDIO_SOURCE
+    assert details.stream_type is StreamType.CUSTOM
+    assert details.path is None
+    assert details.extra_input_args == ["-fflags", "nobuffer"]
+    assert details.audio_format is backend.audio_format
+    assert details.decoded_audio_format is backend.decoded_audio_format
+    assert details.stream_metadata is provider._stream_metadata
+    assert details.expiration == 0
+
+
+async def test_go_librespot_stream_source_is_custom_with_nobuffer() -> None:
+    """The go-librespot backend keeps its exact pre-refactor stream delivery."""
+    source = await object.__new__(GoLibrespotBackend).get_stream_source()
+
+    assert source.stream_type is StreamType.CUSTOM
+    assert source.path is None
+    assert source.extra_input_args == ["-fflags", "nobuffer"]
 
 
 def _make_backend() -> GoLibrespotBackend:

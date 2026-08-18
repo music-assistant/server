@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import AsyncProcess
@@ -34,6 +34,7 @@ from music_assistant.providers.spotify_connect.helpers import (
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendStreamSource,
     BackendTrackMetadata,
 )
 
@@ -156,6 +157,16 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+
+    async def get_stream_source(self) -> BackendStreamSource:
+        """Return the CUSTOM stream source, consumed through the audio reader."""
+        # CUSTOM: the core pulls PCM through get_audio_reader. `-fflags nobuffer`
+        # keeps ffmpeg's own input buffering low so the controller's realtime
+        # pacer owns the (small, bounded) read-ahead.
+        return BackendStreamSource(
+            stream_type=StreamType.CUSTOM,
+            extra_input_args=["-fflags", "nobuffer"],
+        )
 
     def get_audio_reader(self) -> AudioChunkReader | None:
         """
