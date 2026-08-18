@@ -151,6 +151,9 @@ class SoloistBackend(SpotifyConnectBackend):
         # PA sink names end up in space-delimited module arguments and env vars
         self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", instance_id)
         self._binary: Path | None = None
+        # digest of the build the running daemon was spawned from; the shared
+        # install can move ahead of it when a sibling instance updates first
+        self._build_sha: str | None = None
         self._server: PulseCaptureServer | None = None
         self._sink: PipeSink | None = None
         self._sink_generation: int = -1
@@ -215,7 +218,9 @@ class SoloistBackend(SpotifyConnectBackend):
         """Start the backend and its supervised soloist daemon."""
         # setup errors (unsupported platform, missing consent, download failure,
         # expired build) propagate so the provider load fails with a clear error
-        self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(self._consent)
+        manager = SoloistBinaryManager(self.mass)
+        self._binary = await manager.ensure_fresh(self._consent)
+        self._build_sha = manager.diagnostics().get("sha256")
         self._server = await get_pulse_capture_server(self.mass).acquire()
         try:
             await self._ensure_fresh_sink()
@@ -556,9 +561,9 @@ class SoloistBackend(SpotifyConnectBackend):
         try:
             # force: the daemon itself reported expiry, so the recently-verified
             # fast path must not hand back the same binary
-            self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(
-                self._consent, force=True
-            )
+            manager = SoloistBinaryManager(self.mass)
+            self._binary = await manager.ensure_fresh(self._consent, force=True)
+            self._build_sha = manager.diagnostics().get("sha256")
         except BuildExpiredError:
             await self._event_callback(
                 BackendEvent(
@@ -582,14 +587,16 @@ class SoloistBackend(SpotifyConnectBackend):
             await asyncio.sleep(BINARY_REFRESH_INTERVAL_S)
             try:
                 manager = SoloistBinaryManager(self.mass)
-                # a replaced build keeps the same install path, so detect it
-                # through the install metadata's archive digest instead
-                old_sha = manager.diagnostics().get("sha256")
+                # a replaced build keeps the same install path, so compare the
+                # install metadata's digest against the build this daemon runs
+                # (a sibling instance may have updated the shared install)
                 binary = await manager.ensure_fresh(self._consent)
-                if binary == self._binary and manager.diagnostics().get("sha256") == old_sha:
+                new_sha = manager.diagnostics().get("sha256")
+                if binary == self._binary and new_sha == self._build_sha:
                     continue
                 self.logger.info("A fresh soloist build was installed; restarting the daemon")
                 self._binary = binary
+                self._build_sha = new_sha
                 await self._close_daemon_for_respawn()
             except asyncio.CancelledError:
                 raise

@@ -226,6 +226,10 @@ async def test_start_wires_binary_capture_and_supervisors(
         def __init__(self, mass: Any) -> None:
             """Accept the mass argument like the real manager."""
 
+        def diagnostics(self) -> dict[str, Any]:
+            """Report the installed build's digest."""
+            return {"installed": True, "sha256": "sha-1"}
+
         async def ensure_fresh(self, consent: bool) -> Path:
             """Record the consent flag and hand out a fake binary path."""
             consents.append(consent)
@@ -331,6 +335,10 @@ async def test_exit_code_10_refreshes_binary_before_restart(
 
         def __init__(self, mass: Any) -> None:
             """Accept the mass argument like the real manager."""
+
+        def diagnostics(self) -> dict[str, Any]:
+            """Report the replacement build's digest."""
+            return {"installed": True, "sha256": "sha-v2"}
 
         async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
             """Serve the replacement build."""
@@ -812,6 +820,7 @@ async def test_binary_refresh_loop_respawns_on_new_build(
     monkeypatch.setattr(soloist_backend, "BINARY_REFRESH_INTERVAL_S", 0)
     proc: Any = _FakeProc()
     backend._proc = proc
+    backend._build_sha = "sha-old"
     checks: list[bool] = []
     sha = {"value": "sha-old"}
 
@@ -850,6 +859,45 @@ async def test_binary_refresh_loop_respawns_on_new_build(
     # digest triggered exactly one intentional daemon restart
     assert len(checks) >= 3
     assert all(checks)  # ensure_fresh is always called with the consent flag
+
+
+async def test_binary_refresh_loop_picks_up_sibling_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build installed by a sibling instance onto the shared path still triggers a respawn."""
+    backend, _events = _runner_backend()
+    monkeypatch.setattr(soloist_backend, "BINARY_REFRESH_INTERVAL_S", 0)
+    proc: Any = _FakeProc()
+    backend._proc = proc
+    # this instance spawned its daemon from the old build; a sibling instance
+    # already replaced the shared install before this loop's first check
+    backend._build_sha = "sha-old"
+
+    class _FakeManager:
+        """Fake binary manager whose shared install was updated by a sibling."""
+
+        def __init__(self, mass: Any) -> None:
+            """Accept the mass argument like the real manager."""
+
+        def diagnostics(self) -> dict[str, Any]:
+            """Report the sibling-installed build's digest."""
+            return {"installed": True, "sha256": "sha-new"}
+
+        async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
+            """Return the (already fresh) shared install path."""
+            return Path("/fake/bin/soloist")
+
+    monkeypatch.setattr(soloist_backend, "SoloistBinaryManager", _FakeManager)
+    loop_task = asyncio.get_running_loop().create_task(backend._binary_refresh_loop())
+
+    async with asyncio.timeout(1.0):
+        while proc.closed == 0:
+            await asyncio.sleep(0)
+    loop_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await loop_task
+
+    assert backend._build_sha == "sha-new"
     assert proc.closed == 1
     assert backend._respawn_requested is True
     assert backend._binary == Path("/fake/bin/soloist")
@@ -1160,6 +1208,10 @@ async def test_start_failure_releases_capture_server(
     class _FakeManager:
         def __init__(self, mass: Any) -> None:
             """Accept the mass argument like the real manager."""
+
+        def diagnostics(self) -> dict[str, Any]:
+            """Report the installed build's digest."""
+            return {"installed": True, "sha256": "sha-1"}
 
         async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
             """Hand out a fake binary path."""

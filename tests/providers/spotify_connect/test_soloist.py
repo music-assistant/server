@@ -868,12 +868,14 @@ async def test_force_refresh_bypasses_verification_cache(tmp_path: Path) -> None
     archive = _build_archive(tmp_path / "a.tar.gz", {"soloist": _elf_binary("x86_64")})
     manager, session = _make_manager(tmp_path, _serve_archive(archive))
     await manager.ensure_fresh(consent=True)
-    # within the cache window a plain call short-circuits...
+    # age the install into the update window: a real re-verification is now
+    # observable as an update check against the CDN
+    _age_metadata(tmp_path)
+    # within the cache window a plain call still short-circuits...
     session.requests.clear()
     await manager.ensure_fresh(consent=True)
     assert session.requests == []
-    # ...but a forced call re-verifies (the fake install is fresh so no download)
-    calls_before = len(session.requests)
+    # ...but a forced call re-verifies against the CDN (same build: no download)
     await manager.ensure_fresh(consent=True, force=True)
     assert soloist._last_verified is not None
-    assert len(session.requests) >= calls_before
+    assert [method for method, _ in session.requests] == ["HEAD"]

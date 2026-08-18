@@ -148,9 +148,10 @@ class SpotifyConnectProvider(PluginProvider):
         # arrives during the debounce so we don't act on stale state from a dying
         # session.
         self._pending_play_media_task: asyncio.Task[None] | None = None
-        # holds the in-flight deferred stop of a paused player (pipe-fed
-        # backends only); cancelled when a 'playing' event arrives before it
-        # ran, so a quick resume is not killed by the late stop.
+        # holds the in-flight stop of a paused player (pipe-fed backends
+        # only); the stop dispatches right away, but a 'playing' event cancels
+        # it while it is still in flight (a slow player can hold it for up to
+        # 10s), so a resume is never killed by a stop landing late.
         self._pending_pause_stop_task: asyncio.Task[None] | None = None
         self._last_session_active_time: float = 0
         self._last_volume_sent: int | None = None
@@ -593,7 +594,7 @@ class SpotifyConnectProvider(PluginProvider):
 
     def _schedule_pause_stop(self, player_id: str) -> None:
         """
-        Schedule the deferred stop of the paused player, replacing a pending one.
+        Dispatch the stop of the paused player, replacing a still-pending one.
 
         :param player_id: The player currently consuming the live source.
         """
@@ -719,8 +720,9 @@ class SpotifyConnectProvider(PluginProvider):
             return
         elif event.type is BackendEventType.PLAYING:
             self._playing = True
-            # A quick resume can arrive while the deferred pause-stop is still
-            # pending; cancel it so it doesn't kill the restarted stream.
+            # A resume can arrive while the pause-stop is still in flight on a
+            # slow player; cancel it so it doesn't kill the restarted stream.
+            # (a stop that already completed is fine: play_media below restarts)
             self._cancel_pending_pause_stop()
             # Externally triggered playback: kick a play_media on the target MA
             # player so the audio reaches a speaker. Deferred so a rapid
