@@ -1116,25 +1116,42 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
 class TestRegisterOrUpdateTypeTransition:
     """Tests for a registered player moving in or out of the protocol role."""
 
-    @staticmethod
-    def _prepare(mock_mass: MagicMock) -> PlayerController:
+    queue_ids: set[str]
+
+    def _prepare(self, mock_mass: MagicMock) -> PlayerController:
         """Build a controller with the calls a re-registration makes stubbed out."""
         mock_mass.loop = MagicMock()
         mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
-        mock_mass.player_queues.on_player_register = AsyncMock()
-        mock_mass.player_queues.on_player_remove = MagicMock()
+        # the queue registry is what a re-registration reads the role change off,
+        # so it is modelled instead of mocked out
+        self.queue_ids = set()
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: MagicMock() if queue_id in self.queue_ids else None
+        )
+        mock_mass.player_queues.on_player_register = AsyncMock(
+            side_effect=lambda player: self.queue_ids.add(player.player_id)
+        )
+        mock_mass.player_queues.on_player_remove = MagicMock(
+            side_effect=lambda player_id, **_kwargs: self.queue_ids.discard(player_id)
+        )
         controller = PlayerController(mock_mass)
         mock_mass.players = controller
         return controller
 
-    @staticmethod
     def _register(
-        controller: PlayerController, provider: MockProvider, player_id: str, type_: PlayerType
+        self,
+        controller: PlayerController,
+        provider: MockProvider,
+        player_id: str,
+        type_: PlayerType,
     ) -> MockPlayer:
         """Add a player to the registry with its state calculated for the given type."""
         player = MockPlayer(provider, player_id, player_id, type_)
         player.set_initialized()
         controller._players[player_id] = player
+        if type_ != PlayerType.PROTOCOL:
+            # register() gives every non-protocol player a queue
+            self.queue_ids.add(player_id)
         # MockPlayer assigns the type after Player.__init__ built the initial state,
         # so the state only reports it once it is recalculated
         player.update_state(signal_event=False)
@@ -1195,11 +1212,73 @@ class TestRegisterOrUpdateTypeTransition:
         )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
 
+    async def test_leaving_protocol_role_survives_a_state_update_landing_first(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A state update between the provider's type change and this call is harmless."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        child._attr_type = PlayerType.PLAYER
+        # a debounced state update can fire while this call waits for the register lock,
+        # which makes the state report the new type before the transition is handled
+        child.update_state(signal_event=False)
+        assert child.state.type is PlayerType.PLAYER
+
+        await controller.register_or_update(child)
+
+        mock_mass.player_queues.on_player_register.assert_awaited_once_with(child)
+        assert self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert parent.linked_output_protocols == []
+
+    async def test_entering_protocol_role_survives_a_state_update_landing_first(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The reverse transition is handled with the state already reporting the new type."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        parent._attr_type = PlayerType.PROTOCOL
+        parent.update_state(signal_event=False)
+        assert parent.state.type is PlayerType.PROTOCOL
+
+        await controller.register_or_update(parent)
+
+        mock_mass.player_queues.on_player_remove.assert_called_once_with("parent", permanent=False)
+        assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
     async def test_unchanged_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
         """Re-registering a player without a type change does not touch its queue."""
         controller = self._prepare(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        await controller.register_or_update(player)
+
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_unchanged_protocol_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
+        """Re-registering a protocol player does not hand it a queue."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
 
         await controller.register_or_update(player)
 
