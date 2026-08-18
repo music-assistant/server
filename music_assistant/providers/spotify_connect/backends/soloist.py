@@ -76,6 +76,16 @@ CACHE_SIZE_MB: Final = 512
 MAX_RESTART_ATTEMPTS: Final = 5
 RESTART_DELAY_S: Final = 2
 
+# Proactive binary refresh interval: soloist builds expire 90 days after their
+# build date, so a daily check swaps in a fresh build long before a long-lived
+# instance would hit the expiry.
+BINARY_REFRESH_INTERVAL_S: Final = 24 * 3600
+
+# How often the supervisor checks whether the pulse daemon restarted (which
+# invalidates the capture sink), so the sink is replaced proactively instead
+# of on the (side-effect-free) stream request.
+GENERATION_WATCH_INTERVAL_S: Final = 5
+
 # playback_state/playback_changed status values mapped to normalized events;
 # undocumented values degrade to OTHER.
 _STATUS_EVENTS: Final[dict[str, BackendEventType]] = {
@@ -150,6 +160,8 @@ class SoloistBackend(SpotifyConnectBackend):
         self._stop_called: bool = False
         self._daemon_task: asyncio.Task[None] | None = None
         self._events_task: asyncio.Task[None] | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._watcher_task: asyncio.Task[None] | None = None
         self._proc: AsyncProcess | None = None
         self._restart_error_count = 0
         # set when a daemon close is intentional (sink replaced), so the
@@ -219,6 +231,11 @@ class SoloistBackend(SpotifyConnectBackend):
             # across daemon restarts).
             self._daemon_task = self.mass.create_task(self._daemon_runner())
             self._events_task = self.mass.create_task(self._events_runner())
+            # Two housekeeping loops: a daily binary refresh (builds expire 90
+            # days after their build date) and a watcher replacing the capture
+            # sink after a pulse daemon restart.
+            self._refresh_task = self.mass.create_task(self._binary_refresh_loop())
+            self._watcher_task = self.mass.create_task(self._generation_watcher())
         except BaseException:
             # a failed startup aborts the provider load before unload() would
             # ever run — release everything acquired so far ourselves
@@ -229,13 +246,15 @@ class SoloistBackend(SpotifyConnectBackend):
     async def stop(self) -> None:
         """Stop the daemon, its supervisors and the capture resources (idempotent)."""
         self._stop_called = True
-        for task in (self._events_task, self._daemon_task):
+        for task in (self._events_task, self._daemon_task, self._refresh_task, self._watcher_task):
             if task and not task.done():
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
         self._events_task = None
         self._daemon_task = None
+        self._refresh_task = None
+        self._watcher_task = None
         if (proc := self._proc) is not None:
             self._proc = None
             await proc.close()
@@ -253,11 +272,20 @@ class SoloistBackend(SpotifyConnectBackend):
         """
         Return the NAMED_PIPE stream source delivering the capture sink's PCM.
 
+        Side-effect-free (it also runs from queue preload): the sink is only
+        read here — (re)creation is owned by the daemon supervisor and the
+        generation watcher.
+
         ffmpeg reads the FIFO directly and is the single pacing owner:
         ``-readrate 1`` paces the read to realtime with a small initial burst
         as jitter headroom — nothing else may sleep-pace this audio path.
+
+        :raises AudioError: No usable capture sink is currently available.
         """
-        sink = await self._ensure_fresh_sink()
+        sink = self._sink
+        server = self._server
+        if sink is None or server is None or self._sink_generation != server.generation:
+            raise AudioError("Spotify Connect capture sink is not available")
         return BackendStreamSource(
             stream_type=StreamType.NAMED_PIPE,
             path=str(sink.fifo_path),
@@ -338,6 +366,9 @@ class SoloistBackend(SpotifyConnectBackend):
         """
         Return the capture sink, replacing it when the pulse daemon restarted.
 
+        Only called from the supervisor paths (daemon spawn), never from the
+        side-effect-free stream request.
+
         :raises AudioError: The backend is (being) stopped.
         """
         async with self._sink_lock:
@@ -352,13 +383,46 @@ class SoloistBackend(SpotifyConnectBackend):
                 await self._sink.unload()
             self._sink = await PipeSink.create(self._server, self._sink_prefix)
             self._sink_generation = self._server.generation
-            # the daemon plays into the sink named in its spawn env (PULSE_SINK), so
-            # close a running process to make the supervisor respawn it against the
-            # recreated sink (flagged as intentional: not a daemon failure)
-            if (proc := self._proc) is not None:
-                self._respawn_requested = True
-                await proc.close()
+            # the daemon plays into the sink named in its spawn env (PULSE_SINK),
+            # so a running process must respawn against the recreated sink
+            await self._close_daemon_for_respawn()
             return self._sink
+
+    async def _recover_sink(self) -> None:
+        """
+        Fail-closed recovery: drop the sink and daemon so the supervisor rebuilds both.
+
+        Used when the current sink can no longer be trusted (its compensation
+        state is unknown after a failed volume call, or the pulse daemon
+        restarted underneath it): audio through such a sink risks a stale
+        reciprocal gain of up to 100x, so both the sink and the daemon are
+        torn down and recreated by the daemon supervisor.
+        """
+        async with self._sink_lock:
+            if self._stop_called:
+                return
+            if (sink := self._sink) is not None:
+                self._sink = None
+                with suppress(Exception):
+                    await sink.unload()
+            await self._close_daemon_for_respawn()
+
+    async def _close_daemon_for_respawn(self) -> None:
+        """Close a running daemon so its supervisor respawns it right away (not a failure)."""
+        if (proc := self._proc) is not None:
+            self._respawn_requested = True
+            await proc.close()
+
+    async def _generation_watcher(self) -> None:
+        """Proactively replace the capture sink when the pulse daemon restarted."""
+        while True:
+            await asyncio.sleep(GENERATION_WATCH_INTERVAL_S)
+            server = self._server
+            if server is None or self._sink is None:
+                continue
+            if self._sink_generation != server.generation:
+                self.logger.info("Pulse daemon restart detected; recreating the capture sink")
+                await self._recover_sink()
 
     def _daemon_args(self) -> list[str]:
         """
@@ -474,7 +538,12 @@ class SoloistBackend(SpotifyConnectBackend):
             try:
                 await sink.set_volume(100)
             except Exception as err:
-                self.logger.warning("Failed to reset capture sink volume: %s", err)
+                # fail closed: a stale reciprocal gain may still be active on
+                # the sink — recreate sink and daemon rather than clipping
+                self.logger.warning(
+                    "Failed to reset capture sink volume (%s); recreating capture sink", err
+                )
+                await self._recover_sink()
 
     async def _refresh_expired_binary(self) -> bool:
         """
@@ -506,6 +575,26 @@ class SoloistBackend(SpotifyConnectBackend):
             # transient refresh problem: keep restarting, bounded by the failure cap
             self.logger.warning("Unable to refresh the expired soloist build: %s", err)
         return True
+
+    async def _binary_refresh_loop(self) -> None:
+        """Periodically refresh the soloist binary ahead of its 90-day build expiry."""
+        while True:
+            await asyncio.sleep(BINARY_REFRESH_INTERVAL_S)
+            try:
+                manager = SoloistBinaryManager(self.mass)
+                # a replaced build keeps the same install path, so detect it
+                # through the install metadata's archive digest instead
+                old_sha = manager.diagnostics().get("sha256")
+                binary = await manager.ensure_fresh(self._consent)
+                if binary == self._binary and manager.diagnostics().get("sha256") == old_sha:
+                    continue
+                self.logger.info("A fresh soloist build was installed; restarting the daemon")
+                self._binary = binary
+                await self._close_daemon_for_respawn()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                self.logger.warning("Periodic soloist binary refresh failed: %s", err)
 
     async def _events_runner(self) -> None:
         """Keep the soloist events websocket connected, reconnecting as needed."""
@@ -577,7 +666,15 @@ class SoloistBackend(SpotifyConnectBackend):
                 try:
                     await self._sink.set_volume(sink_pct)
                 except Exception as err:
-                    self.logger.warning("Failed to set capture sink volume: %s", err)
+                    # fail closed: the compensation state is now unknown, so
+                    # recreate sink and daemon and do NOT forward the volume —
+                    # the player must not adopt a value whose compensation
+                    # never applied
+                    self.logger.warning(
+                        "Failed to set capture sink volume (%s); recreating capture sink", err
+                    )
+                    await self._recover_sink()
+                    return
             await self._event_callback(
                 self._make_event(BackendEventType.VOLUME, volume=max(0, volume))
             )

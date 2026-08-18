@@ -148,6 +148,10 @@ class SpotifyConnectProvider(PluginProvider):
         # arrives during the debounce so we don't act on stale state from a dying
         # session.
         self._pending_play_media_task: asyncio.Task[None] | None = None
+        # holds the in-flight deferred stop of a paused player (pipe-fed
+        # backends only); cancelled when a 'playing' event arrives before it
+        # ran, so a quick resume is not killed by the late stop.
+        self._pending_pause_stop_task: asyncio.Task[None] | None = None
         self._last_session_active_time: float = 0
         self._last_volume_sent: int | None = None
         # Last context/track URIs seen on the event stream. Used to take playback
@@ -208,6 +212,7 @@ class SpotifyConnectProvider(PluginProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._cancel_pending_play_media()
+        self._cancel_pending_pause_stop()
         await self._backend.stop()
 
     @property
@@ -586,6 +591,29 @@ class SpotifyConnectProvider(PluginProvider):
             task.cancel()
         self._pending_play_media_task = None
 
+    def _schedule_pause_stop(self, player_id: str) -> None:
+        """
+        Schedule the deferred stop of the paused player, replacing a pending one.
+
+        :param player_id: The player currently consuming the live source.
+        """
+        self._cancel_pending_pause_stop()
+        task = self.mass.create_task(self._stop_paused_player(player_id))
+        self._pending_pause_stop_task = task
+        task.add_done_callback(self._on_pause_stop_done)
+
+    def _cancel_pending_pause_stop(self) -> None:
+        """Cancel any pending deferred stop of a paused player."""
+        task = self._pending_pause_stop_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._pending_pause_stop_task = None
+
+    def _on_pause_stop_done(self, task: asyncio.Task[None]) -> None:
+        """Drop the pause-stop handle once its task finished (unless already replaced)."""
+        if self._pending_pause_stop_task is task:
+            self._pending_pause_stop_task = None
+
     async def _deferred_play_media_fire(self) -> None:
         """
         Trigger play_media after a short debounce.
@@ -656,21 +684,7 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.warning("Spotify Connect backend error: %s", event.error)
             return
         if event.type is BackendEventType.AUTH_REQUIRED:
-            # the backend lost its Spotify login mid-session: stop treating the
-            # device as active and unload with an auth error so the UI flags
-            # the provider and routes the user through the setup flow
-            self._playing = False
-            self._spotify_session_active = False
-            self.logger.warning(
-                "Spotify Connect backend for %s requires (re)authentication", self.name
-            )
-            self.unload_with_error(
-                LoginFailed(
-                    "Spotify authentication required",
-                    translation_key="soloist_auth_required",
-                    translation_owner=self.translation_owner,
-                )
-            )
+            self._handle_auth_required()
             return
 
         # Remember the latest context/track so we can take playback back if the
@@ -705,6 +719,9 @@ class SpotifyConnectProvider(PluginProvider):
             return
         elif event.type is BackendEventType.PLAYING:
             self._playing = True
+            # A quick resume can arrive while the deferred pause-stop is still
+            # pending; cancel it so it doesn't kill the restarted stream.
+            self._cancel_pending_pause_stop()
             # Externally triggered playback: kick a play_media on the target MA
             # player so the audio reaches a speaker. Deferred so a rapid
             # playing/active burst from a reconnecting session can cancel it.
@@ -732,7 +749,7 @@ class SpotifyConnectProvider(PluginProvider):
                 and not self._backend.stream_ends_on_pause
                 and (player_id := self._active_player_id)
             ):
-                self.mass.create_task(self._stop_paused_player(player_id))
+                self._schedule_pause_stop(player_id)
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(event.metadata)
@@ -751,6 +768,22 @@ class SpotifyConnectProvider(PluginProvider):
                 self.instance_id,
                 self._stream_metadata,
             )
+
+    def _handle_auth_required(self) -> None:
+        """Handle a lost Spotify login: reset session state and unload with an auth error."""
+        # the backend lost its Spotify login mid-session: stop treating the
+        # device as active and unload with an auth error so the UI flags
+        # the provider and routes the user through the setup flow
+        self._playing = False
+        self._spotify_session_active = False
+        self.logger.warning("Spotify Connect backend for %s requires (re)authentication", self.name)
+        self.unload_with_error(
+            LoginFailed(
+                "Spotify authentication required",
+                translation_key="soloist_auth_required",
+                translation_owner=self.translation_owner,
+            )
+        )
 
     def _apply_metadata(self, metadata: BackendTrackMetadata) -> None:
         """Update the live StreamMetadata from a normalized metadata event."""

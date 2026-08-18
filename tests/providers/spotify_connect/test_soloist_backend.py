@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -77,11 +78,15 @@ class _FakeSink:
         self.unloaded = 0
         # when set (and not yet signalled), set_volume blocks on this gate
         self.gate: asyncio.Event | None = None
+        # when set, set_volume raises this instead of recording the change
+        self.set_volume_error: Exception | None = None
 
     async def set_volume(self, volume_pct: float) -> None:
         """Record a volume change, optionally blocking on the gate first."""
         if self.gate is not None:
             await self.gate.wait()
+        if self.set_volume_error is not None:
+            raise self.set_volume_error
         self.volumes.append(volume_pct)
 
     async def unload(self) -> None:
@@ -245,7 +250,12 @@ async def test_start_wires_binary_capture_and_supervisors(
     assert backend._client.data_dir == backend._data_dir
     assert backend._data_dir.is_dir()
     assert backend._cache_dir.is_dir()
-    assert tasks == ["_daemon_runner", "_events_runner"]
+    assert tasks == [
+        "_daemon_runner",
+        "_events_runner",
+        "_binary_refresh_loop",
+        "_generation_watcher",
+    ]
 
 
 async def test_start_setup_errors_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -650,41 +660,60 @@ async def test_get_stream_source_named_pipe_with_readrate_pacing() -> None:
     assert source.extra_input_args == ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
 
-async def test_stale_pulse_generation_recreates_sink(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pulse daemon restart replaces the sink and respawns the soloist process."""
+async def test_get_stream_source_stale_generation_raises_without_recovery() -> None:
+    """A stale sink fails the (side-effect-free) stream request; recovery is not run."""
     backend, _events = _make_backend()
     server: Any = _FakeServer()
     server.generation = 3
-    old_sink: Any = _FakeSink("old")
-    new_sink: Any = _FakeSink("new")
+    sink: Any = _FakeSink("old")
     proc: Any = _FakeProc()
     backend._server = server
-    backend._sink = old_sink
+    backend._sink = sink
     backend._sink_generation = 2  # the pulse daemon restarted since sink creation
     backend._proc = proc
-    created: list[str] = []
 
-    async def _create(_server: Any, prefix: str) -> Any:
-        created.append(prefix)
-        return new_sink
+    with pytest.raises(AudioError, match="not available"):
+        await backend.get_stream_source()
 
-    monkeypatch.setattr(soloist_backend, "PipeSink", SimpleNamespace(create=_create))
-
-    source = await backend.get_stream_source()
-
-    assert created == [_INSTANCE_ID]
-    assert old_sink.unloaded == 1
-    assert backend._sink is new_sink
-    assert backend._sink_generation == 3
-    # the daemon must be respawned to play into the recreated sink
-    assert proc.closed == 1
-    assert source.path == str(new_sink.fifo_path)
+    # pure read: nothing was unloaded, closed or flagged for respawn
+    assert sink.unloaded == 0
+    assert backend._sink is sink
+    assert proc.closed == 0
+    assert backend._respawn_requested is False
 
 
-async def test_concurrent_stream_source_creates_single_sink(
+async def test_generation_watcher_recovers_stale_sink(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watcher notices a pulse daemon restart and drops sink + daemon for rebuild."""
+    backend, _events = _runner_backend()
+    monkeypatch.setattr(soloist_backend, "GENERATION_WATCH_INTERVAL_S", 0)
+    server: Any = backend._server
+    sink: Any = backend._sink
+    proc: Any = _FakeProc()
+    backend._proc = proc
+    watcher = asyncio.get_running_loop().create_task(backend._generation_watcher())
+    # a fresh generation passes several watch cycles untouched
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert sink.unloaded == 0
+
+    server.generation += 1
+    async with asyncio.timeout(1.0):
+        while proc.closed == 0:
+            await asyncio.sleep(0)
+
+    # the sink is dropped; the daemon supervisor recreates it before the respawn
+    assert sink.unloaded == 1
+    assert backend._sink is None
+    assert backend._respawn_requested is True
+    watcher.cancel()
+    with suppress(asyncio.CancelledError):
+        await watcher
+
+
+async def test_concurrent_ensure_fresh_sink_creates_single_sink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Concurrent get_stream_source calls replace a stale sink exactly once."""
+    """Concurrent supervisor calls replace a stale sink exactly once."""
     backend, _events = _make_backend()
     server: Any = _FakeServer()
     server.generation = 5
@@ -692,7 +721,7 @@ async def test_concurrent_stream_source_creates_single_sink(
     backend._server = server
     backend._sink = old_sink
     backend._sink_generation = 4  # stale: the pulse daemon restarted
-    created: list[_FakeSink] = []
+    created: list[Any] = []
     gate = asyncio.Event()
 
     async def _create(_server: Any, _prefix: str) -> Any:
@@ -703,15 +732,15 @@ async def test_concurrent_stream_source_creates_single_sink(
 
     monkeypatch.setattr(soloist_backend, "PipeSink", SimpleNamespace(create=_create))
     loop = asyncio.get_running_loop()
-    task1 = loop.create_task(backend.get_stream_source())
-    task2 = loop.create_task(backend.get_stream_source())
+    task1 = loop.create_task(backend._ensure_fresh_sink())
+    task2 = loop.create_task(backend._ensure_fresh_sink())
     for _ in range(5):
         await asyncio.sleep(0)
     gate.set()
-    source1, source2 = await asyncio.gather(task1, task2)
+    sink1, sink2 = await asyncio.gather(task1, task2)
 
     assert len(created) == 1
-    assert source1.path == source2.path == str(created[0].fifo_path)
+    assert sink1 is sink2 is created[0]
     assert old_sink.unloaded == 1
 
 
@@ -722,7 +751,7 @@ async def test_get_stream_source_after_stop_raises_clean_error() -> None:
     backend._server = server
     await backend.stop()
 
-    with pytest.raises(AudioError, match="stopping"):
+    with pytest.raises(AudioError, match="not available"):
         await backend.get_stream_source()
 
 
@@ -738,6 +767,92 @@ async def test_spawn_resets_stale_volume_state(monkeypatch: pytest.MonkeyPatch) 
 
     assert backend._spotify_volume == 100
     assert sink.volumes == [100]
+
+
+async def test_failed_unity_reset_fails_closed() -> None:
+    """A failed unity reset drops sink and daemon: a stale gain must never clip audio."""
+    backend, _events = _runner_backend(volume_mode=VOLUME_MODE_SYNC_SPOTIFY)
+    sink: Any = backend._sink
+    sink.set_volume_error = RuntimeError("pulse gone")
+    proc: Any = _FakeProc()
+    backend._proc = proc
+
+    await backend._reset_volume_state(sink)
+
+    assert sink.unloaded == 1
+    assert backend._sink is None
+    assert backend._respawn_requested is True
+    assert proc.closed == 1
+
+
+async def test_failed_compensation_fails_closed_and_suppresses_volume_event() -> None:
+    """A failed compensation set recovers sink + daemon and never forwards the VOLUME event."""
+    backend, events = _make_backend(volume_mode=VOLUME_MODE_SYNC_SPOTIFY)
+    sink: Any = _FakeSink()
+    sink.set_volume_error = RuntimeError("pulse gone")
+    proc: Any = _FakeProc()
+    backend._sink = sink
+    backend._proc = proc
+
+    await backend._handle_event(_volume_event(50))
+
+    # the player must not adopt a volume whose compensation is unknown
+    assert events == []
+    assert sink.unloaded == 1
+    assert backend._sink is None
+    assert backend._respawn_requested is True
+    assert proc.closed == 1
+
+
+async def test_binary_refresh_loop_respawns_on_new_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daily refresh survives failures and restarts the daemon once a new build lands."""
+    backend, _events = _runner_backend()
+    monkeypatch.setattr(soloist_backend, "BINARY_REFRESH_INTERVAL_S", 0)
+    proc: Any = _FakeProc()
+    backend._proc = proc
+    checks: list[bool] = []
+    sha = {"value": "sha-old"}
+
+    class _FakeManager:
+        """Fake binary manager: fails once, idles once, then installs a new build."""
+
+        def __init__(self, mass: Any) -> None:
+            """Accept the mass argument like the real manager."""
+
+        def diagnostics(self) -> dict[str, Any]:
+            """Report the currently installed build's digest."""
+            return {"installed": True, "sha256": sha["value"]}
+
+        async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
+            """Fail the first check, keep the build on the second, replace it on the third."""
+            checks.append(consent)
+            if len(checks) == 1:
+                raise OSError("cdn offline")
+            if len(checks) >= 3:
+                # a replacement build installs onto the SAME path; only the
+                # install metadata's digest changes
+                sha["value"] = "sha-new"
+            return Path("/fake/bin/soloist")
+
+    monkeypatch.setattr(soloist_backend, "SoloistBinaryManager", _FakeManager)
+    loop_task = asyncio.get_running_loop().create_task(backend._binary_refresh_loop())
+
+    async with asyncio.timeout(1.0):
+        while proc.closed == 0:
+            await asyncio.sleep(0)
+    loop_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await loop_task
+
+    # failed check + unchanged check passed without a respawn; the changed
+    # digest triggered exactly one intentional daemon restart
+    assert len(checks) >= 3
+    assert all(checks)  # ensure_fresh is always called with the consent flag
+    assert proc.closed == 1
+    assert backend._respawn_requested is True
+    assert backend._binary == Path("/fake/bin/soloist")
 
 
 async def test_stderr_redacts_api_key(
@@ -761,7 +876,7 @@ async def test_stderr_redacts_api_key(
 async def test_intentional_respawn_skips_failure_accounting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A sink-replacement respawn restarts immediately and never counts as a failure."""
+    """A sink recovery respawn restarts immediately and never counts as a failure."""
     backend, _events = _runner_backend()
     server: Any = backend._server
     proc1 = _FakeProc(block_stderr=True)
@@ -776,18 +891,21 @@ async def test_intentional_respawn_skips_failure_accounting(
         while backend._proc is None:
             await asyncio.sleep(0)
 
-    # the pulse daemon restarted: the next stream request replaces the sink and
-    # intentionally closes the running daemon so it respawns against it
+    # the pulse daemon restarted: the recovery routine (as run by the watcher)
+    # drops the sink and intentionally closes the running daemon
     server.generation += 1
-    source = await backend.get_stream_source()
-    assert source.path == str(new_sink.fifo_path)
+    await backend._recover_sink()
     assert proc1.closed >= 1
-    # the supervisor respawns without the restart delay (no RESTART_DELAY patch:
-    # a counted failure would make this wait time out)
+    # the supervisor recreates the sink and respawns without the restart delay
+    # (no RESTART_DELAY patch: a counted failure would make this wait time out)
     async with asyncio.timeout(1.0):
         while len(spawned) < 2:
             await asyncio.sleep(0)
 
+    source = await backend.get_stream_source()
+    assert source.path == str(new_sink.fifo_path)
+    assert backend._sink is new_sink
+    assert backend._sink_generation == server.generation
     assert backend._restart_error_count == 0
     assert backend._respawn_requested is False
     backend._stop_called = True

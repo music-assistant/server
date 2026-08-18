@@ -9,6 +9,7 @@ and commands flow out through the backend methods — no network, no processes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -164,6 +165,7 @@ def _make_provider(
     provider._playing = playing
     provider._spotify_session_active = session_active
     provider._pending_play_media_task = None
+    provider._pending_pause_stop_task = None
     provider._last_session_active_time = 0
     provider._last_volume_sent = last_volume_sent
     provider._last_context_uri = last_context_uri
@@ -612,6 +614,9 @@ async def test_paused_stops_player_when_stream_does_not_end() -> None:
     assert stopped == ["player-1"]
     # the claim survives so the next 'playing' event can resume playback
     assert provider._active_player_id == "player-1"
+    # the finished stop task's handle is dropped again
+    await asyncio.sleep(0)
+    assert provider._pending_pause_stop_task is None
 
 
 async def test_duplicate_paused_events_stop_player_once() -> None:
@@ -636,3 +641,65 @@ async def test_duplicate_paused_events_stop_player_once() -> None:
     await asyncio.sleep(0)
 
     assert stopped == ["player-1"]
+
+
+async def test_playing_cancels_pending_pause_stop() -> None:
+    """A quick resume cancels the in-flight pause-stop so it can't kill the new stream."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(
+        backend, playing=True, active_player_id="player-1", in_use_by_queue="queue1"
+    )
+    stop_started = asyncio.Event()
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stop_started.set()
+        await asyncio.sleep(3600)  # an unresponsive player holds the stop in flight
+        stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+    task = provider._pending_pause_stop_task
+    assert task is not None
+    async with asyncio.timeout(1.0):
+        await stop_started.wait()
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+
+    assert provider._pending_pause_stop_task is None
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert stopped == []  # the stale stop never reached the player
+
+
+async def test_paused_replaces_pending_pause_stop() -> None:
+    """A new pause-stop supersedes a still-pending one instead of piling up."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(backend, playing=True, active_player_id="player-1")
+    mass.players.cmd_stop = AsyncMock()
+    stale: Any = MagicMock()
+    stale.done.return_value = False
+    provider._pending_pause_stop_task = stale
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+
+    stale.cancel.assert_called_once()
+    assert provider._pending_pause_stop_task is not stale
+    # let the replacement stop task run to completion (and drop its handle)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert provider._pending_pause_stop_task is None

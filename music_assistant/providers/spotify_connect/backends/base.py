@@ -59,9 +59,10 @@ class SpotifyConnectBackend(ABC):
         """
         Return how the streams controller should consume this backend's audio.
 
-        Called on every stream request; the result describes the live audio
-        delivery (stream type, optional pipe path and extra ffmpeg input
-        arguments). The delivered PCM is in ``decoded_audio_format``.
+        Called on every stream request — including queue preload, so this must
+        be side-effect-free. The result describes the live audio delivery
+        (stream type, optional pipe path and extra ffmpeg input arguments).
+        The delivered PCM is in ``decoded_audio_format``.
         """
 
     @abstractmethod
