@@ -70,6 +70,7 @@ class MPDPlayer(Player):
         self._client: MPDClient | None = None
         self._idle_client: MPDClient | None = None
         self._idle_task: asyncio.Task[None] | None = None
+        self._reconnect_task_id: str = f"mpd_reconnect_{self.player_id}"
         self._attr_needs_setup: bool = False
         self._attr_setup_reason: str | None = None
 
@@ -123,7 +124,6 @@ class MPDPlayer(Player):
         self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)
         self._attr_needs_setup = False
         self._attr_setup_reason = None
-        await self._disconnect()
         await self._connect()
 
     async def run_setup_flow(self, session: SetupSession) -> None:
@@ -150,6 +150,8 @@ class MPDPlayer(Player):
 
     async def _connect(self) -> None:
         """Establish both MPD connections and start the idle loop."""
+        # a failed attempt or a dead idle loop can leave connected clients behind
+        await self._disconnect()
         try:
             self._client = MPDClient()
             await self._client.connect(self.host, self.port)
@@ -176,6 +178,7 @@ class MPDPlayer(Player):
             self.update_state()
 
         except CommandError as err:
+            await self._disconnect()
             if err.errno in (FailureResponseCode.PASSWORD, FailureResponseCode.PERMISSION):
                 self.logger.warning(
                     "Authentication failed for MPD at %s:%s — configure password in player settings",
@@ -192,13 +195,15 @@ class MPDPlayer(Player):
                 self.update_state()
                 self.reconnect()
         except (MPDError, OSError) as err:
+            await self._disconnect()
             self.logger.warning("Failed to connect to MPD at %s:%s: %s", self.host, self.port, err)
             self._attr_available = False
             self.update_state()
             self.reconnect()
 
     async def _disconnect(self) -> None:
-        """Disconnect both MPD clients and cancel the idle loop task."""
+        """Cancel any pending reconnect, stop the idle loop and disconnect both MPD clients."""
+        self.mass.cancel_timer(self._reconnect_task_id)
         if self._idle_task:
             self._idle_task.cancel()
             self._idle_task = None
@@ -210,8 +215,7 @@ class MPDPlayer(Player):
 
     def reconnect(self) -> None:
         """Schedule a reconnect attempt, deduplicating any pending reconnect tasks."""
-        task_id = f"mpd_reconnect_{self.player_id}"
-        self.mass.call_later(RECONNECT_DELAY, self._connect, task_id=task_id)
+        self.mass.call_later(RECONNECT_DELAY, self._connect, task_id=self._reconnect_task_id)
 
     # ------------------------------------------------------------------
     # Background idle loop
