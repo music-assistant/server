@@ -1068,10 +1068,18 @@ class ProtocolLinkingMixin:
             # A derived protocol rides on another output, so a base and everything riding
             # on it can only move together: refusing one of them holds back the group.
             for group in self._group_protocol_links(player):
+                # A device that kept its id across a type change is listed as a protocol
+                # of the wrapper that replaces it. It cannot move onto itself, so leaving
+                # it in would mark it refused and abort the takeover below.
+                movable = [
+                    entry for entry in group if entry[1].player_id != native_player.player_id
+                ]
+                if not movable:
+                    continue
                 domains = {
                     protocol_player.player_id: linked.protocol_domain
                     or protocol_player.provider.domain
-                    for linked, protocol_player in group
+                    for linked, protocol_player in movable
                 }
                 if any(
                     self._parent_has_active_protocol_from_domain(
@@ -1081,7 +1089,7 @@ class ProtocolLinkingMixin:
                 ):
                     refused_protocol_ids.update(domains.keys())
                     continue
-                for _, protocol_player in group:
+                for _, protocol_player in movable:
                     protocol_player.set_protocol_parent_id(None)
                     self._add_protocol_link(
                         native_player, protocol_player, domains[protocol_player.player_id]
