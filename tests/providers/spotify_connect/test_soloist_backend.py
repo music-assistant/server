@@ -818,6 +818,25 @@ async def test_failed_compensation_fails_closed_and_suppresses_volume_event() ->
     assert proc.closed == 1
 
 
+async def test_failed_compensation_drops_the_playback_snapshot() -> None:
+    """A snapshot whose volume resync triggered recovery is not forwarded as playback state."""
+    backend, events = _make_backend(volume_mode=VOLUME_MODE_SYNC_SPOTIFY)
+    sink: Any = _FakeSink()
+    sink.set_volume_error = RuntimeError("pulse gone")
+    proc: Any = _FakeProc()
+    backend._sink = sink
+    backend._proc = proc
+
+    await backend._handle_event(
+        _event("playback_state", SoloistPlaybackState(status="playing", volume=50))
+    )
+
+    # no PLAYING against the torn-down sink; the respawned daemon reports fresh state
+    assert events == []
+    assert backend._sink is None
+    assert proc.closed == 1
+
+
 async def test_binary_refresh_loop_respawns_on_new_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -996,6 +1015,8 @@ async def test_playback_state_volume_pins_in_player_only() -> None:
     backend, events = _make_backend(volume_mode=VOLUME_MODE_PLAYER_ONLY)
     client = AsyncMock()
     backend._client = client
+    sink: Any = _FakeSink()
+    backend._sink = sink
 
     await backend._handle_event(
         _event("playback_state", SoloistPlaybackState(status="playing", volume=80))

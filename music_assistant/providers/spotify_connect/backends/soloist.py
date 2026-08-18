@@ -642,6 +642,10 @@ class SoloistBackend(SpotifyConnectBackend):
             # carries the daemon's current volume; resync the pin/compensation
             # before forwarding the playback event itself
             await self._handle_volume_changed(event.data.volume)
+            if self._sink is None:
+                # fail-closed recovery tore down the capture path; drop this
+                # stale snapshot — the respawned daemon reports fresh state
+                return
         if (
             isinstance(event.data, SoloistPlaybackState)
             and (item := event.data.item) is not None
@@ -684,6 +688,10 @@ class SoloistBackend(SpotifyConnectBackend):
             # raw sink gain (sink_pct = 10000 / spotify_pct) so the FIFO always
             # carries unity-gain audio, then forward the volume for the MA
             # player to apply (subject to the provider's dedupe/grace policy).
+            # NOTE: the percentage reciprocal is the exact linear inverse
+            # because pulse's software volume is cubic in the percentage too
+            # (pa_sw_volume_to_linear(p) = (p/100)^3) — validated by capture
+            # measurement, do not "fix" this to an explicit cube.
             if self._sink is not None:
                 # explicit zero handling: no reciprocal exists, silence the sink
                 sink_pct = 0.0 if volume <= 0 else round(10000 / volume, 2)
