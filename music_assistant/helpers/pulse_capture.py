@@ -358,19 +358,18 @@ class PulseCaptureServer:
             raise RuntimeError("Timeout waiting for the pulseaudio daemon socket") from None
 
     async def _supervise(self) -> None:
-        """Restart the daemon (with bounded backoff) for as long as it is refcounted."""
+        """Restart the daemon (with bounded backoff) until the supervisor is cancelled."""
         backoff = _RESTART_BACKOFF_INITIAL
         while True:
-            if (proc := self._proc) is None:
-                return
-            try:
-                async for line in proc.iter_stderr():
-                    LOGGER.debug("pulseaudio: %s", line)
-            except Exception as err:
-                LOGGER.debug("pulseaudio log reader stopped: %s", err)
-            await proc.close()
-            if self._proc is proc:
-                self._proc = None
+            if (proc := self._proc) is not None:
+                try:
+                    async for line in proc.iter_stderr():
+                        LOGGER.debug("pulseaudio: %s", line)
+                except Exception as err:
+                    LOGGER.debug("pulseaudio log reader stopped: %s", err)
+                await proc.close()
+                if self._proc is proc:
+                    self._proc = None
             LOGGER.warning(
                 "Private PulseAudio capture daemon exited unexpectedly, restarting in %.1fs",
                 backoff,
@@ -455,12 +454,16 @@ class PipeSink:
             f"format={CAPTURE_SAMPLE_FORMAT} rate={CAPTURE_SAMPLE_RATE} "
             f"channels={CAPTURE_CHANNELS}"
         )
+        # snapshot before the load: a restart during the load would otherwise
+        # pair a module index from the dead daemon with the new generation,
+        # and a later unload could hit an unrelated module on the replacement
+        generation = server.generation
         module_index = await server._load_module("module-pipe-sink", argument)
         if module_index is None:
             raise RuntimeError(f"Failed to load module-pipe-sink for {sink_name}")
-        # no await between the load and the generation snapshot: an interleaved
-        # daemon restart here would pair the new sink with the wrong generation
-        return cls(server, sink_name, fifo_path, module_index, server.generation)
+        if server.generation != generation:
+            raise RuntimeError(f"capture daemon restarted while creating sink {sink_name}")
+        return cls(server, sink_name, fifo_path, module_index, generation)
 
     @property
     def sink_name(self) -> str:
@@ -485,7 +488,8 @@ class PipeSink:
         if self._generation != self._server.generation:
             LOGGER.debug("Ignoring volume for stale sink %s", self._sink_name)
             return
-        await self._server._set_sink_volume_raw(self._sink_name, volume_pct)
+        if not await self._server._set_sink_volume_raw(self._sink_name, volume_pct):
+            raise RuntimeError(f"Failed to set volume on capture sink {self._sink_name}")
 
     async def suspend(self) -> None:
         """Suspend the sink (its FIFO stops producing audio until resumed)."""
@@ -505,7 +509,10 @@ class PipeSink:
         module_index = self._module_index
         self._module_index = None
         if module_index is not None and self._generation == self._server.generation:
-            await self._server._unload_module(module_index)
+            # best effort: a failure usually means the daemon/module is already
+            # gone, and a restart reclaims all modules anyway
+            if not await self._server._unload_module(module_index):
+                LOGGER.warning("Failed to unload capture sink module %s", self._sink_name)
         with suppress(OSError):
             await asyncio.to_thread(self._fifo_path.unlink)
 

@@ -157,8 +157,13 @@ def _install_dir(tmp_path: Path) -> Path:
     return tmp_path / "storage" / "soloist"
 
 
-def _age_metadata(tmp_path: Path, days: float = 100.0) -> None:
-    """Rewrite the persisted install metadata as if the build were days old."""
+def _age_metadata(tmp_path: Path, days: float = 80.0) -> None:
+    """
+    Rewrite the persisted install metadata as if the build were days old.
+
+    The default lands inside the update window (76 days) while staying short of
+    the hard 90-day expiry, so the install counts as refreshable-but-valid.
+    """
     meta_path = _install_dir(tmp_path) / "soloist.meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     aged = time.time() - days * 86400
@@ -709,6 +714,13 @@ async def test_event_dispatch_tolerates_malformed_and_unknown(tmp_path: Path) ->
     assert volume.volume == 7
 
 
+async def _wait_connected(client: SoloistClient) -> None:
+    """Wait until the client's events WebSocket is connected."""
+    async with asyncio.timeout(5.0):
+        while not client.connected:
+            await asyncio.sleep(0.01)
+
+
 async def test_commands_have_documented_shape(tmp_path: Path) -> None:
     """Command senders produce the documented wire frames (with clamped values)."""
     _publish_endpoint(tmp_path)
@@ -719,10 +731,7 @@ async def test_commands_have_documented_shape(tmp_path: Path) -> None:
         return
 
     listen_task = asyncio.create_task(client.listen_events(on_event))
-    for _ in range(10):
-        if client.connected:
-            break
-        await asyncio.sleep(0)
+    await _wait_connected(client)
 
     await client.play("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M")
     await client.resume()
@@ -766,10 +775,7 @@ async def test_command_awaits_result(tmp_path: Path) -> None:
         events.append(event)
 
     listen_task = asyncio.create_task(client.listen_events(on_event))
-    for _ in range(10):
-        if client.connected:
-            break
-        await asyncio.sleep(0)
+    await _wait_connected(client)
 
     command_task = asyncio.create_task(client.activate(await_result=True))
     await asyncio.sleep(0)
@@ -789,3 +795,22 @@ async def test_commands_require_connection(tmp_path: Path) -> None:
 
     with pytest.raises(SoloistError, match="not connected"):
         await client.pause()
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_expired_by_timestamp_is_replaced(tmp_path: Path) -> None:
+    """An install past the 90-day build expiry is replaced even though it still runs."""
+    build_a = _build_archive(
+        tmp_path / "a.tar.gz", {"soloist": _elf_binary("x86_64", marker=b"GOOD-BUILD-A")}
+    )
+    build_b = _build_archive(
+        tmp_path / "b.tar.gz", {"soloist": _elf_binary("x86_64", marker=b"GOOD-BUILD-B")}
+    )
+    manager, session = _make_manager(tmp_path, _serve_archive(build_a, etag='"v1"'))
+    await manager.ensure_binary(consent=True)
+    _age_metadata(tmp_path, days=100.0)
+    session.handler = _serve_archive(build_b, etag='"v2"')
+
+    path = await manager.ensure_fresh(consent=True)
+
+    assert b"GOOD-BUILD-B" in path.read_bytes()

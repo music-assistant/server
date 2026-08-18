@@ -35,6 +35,7 @@ import aiofiles
 from aiohttp import ClientError, ClientTimeout, ClientWebSocketResponse, WSMsgType
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import InvalidFieldValue, MissingField
+from music_assistant_models.errors import MusicAssistantError
 from yarl import URL
 
 from music_assistant.constants import MASS_LOGGER_NAME
@@ -91,6 +92,10 @@ _ELF_IDENT: Final[dict[str, tuple[int, int]]] = {
     "x86_64": (2, 0x3E),  # 64-bit, EM_X86_64
 }
 
+# Every SoloistBinaryManager instance manages the same shared install paths, so
+# the single-flight install lock is shared process-wide as well.
+_INSTALL_LOCK: Final = asyncio.Lock()
+
 _VERSION_CMD_TIMEOUT: Final[float] = 10.0
 _DOWNLOAD_TIMEOUT: Final[float] = 300.0
 _HEAD_TIMEOUT: Final[float] = 30.0
@@ -108,7 +113,7 @@ _WS_HEARTBEAT: Final[float] = 30.0
 _COMMAND_RESULT_TIMEOUT: Final[float] = 10.0
 
 
-class SoloistError(Exception):
+class SoloistError(MusicAssistantError):
     """Base error for all soloist helper failures."""
 
 
@@ -321,7 +326,6 @@ class SoloistBinaryManager:
         self._binary_path = self._install_dir / "soloist"
         self._previous_path = self._install_dir / "soloist.prev"
         self._metadata_path = self._install_dir / "soloist.meta.json"
-        self._lock = asyncio.Lock()
 
     @property
     def binary_path(self) -> Path:
@@ -342,8 +346,8 @@ class SoloistBinaryManager:
         :raises BuildExpiredError: The freshly downloaded build has already expired.
         """
         arch = _resolve_architecture()
-        async with self._lock:
-            if await self._installed_returncode() == 0:
+        async with _INSTALL_LOCK:
+            if await self._installed_returncode() == 0 and not self._installed_expired():
                 return self._binary_path
             await self._install_with_consent(consent, arch)
             return self._binary_path
@@ -368,13 +372,13 @@ class SoloistBinaryManager:
             replacement could be obtained.
         """
         arch = _resolve_architecture()
-        async with self._lock:
+        async with _INSTALL_LOCK:
             returncode = await self._installed_returncode()
             if returncode not in (0, EXIT_CODE_BUILD_EXPIRED):
                 # missing or broken install: plain (re)install
                 await self._install_with_consent(consent, arch)
                 return self._binary_path
-            expired = returncode == EXIT_CODE_BUILD_EXPIRED
+            expired = returncode == EXIT_CODE_BUILD_EXPIRED or self._installed_expired()
             if not expired and (not consent or not self._due_for_update()):
                 return self._binary_path
             if expired and not consent:
@@ -434,6 +438,17 @@ class SoloistBinaryManager:
         except OSError, TimeoutError:
             return None
         return returncode
+
+    def _installed_expired(self) -> bool:
+        """
+        Return whether the installed build's known build timestamp has expired.
+
+        Defense in depth next to the exit-code check: whether ``--version``
+        itself reports expiry is not documented, so an expired-by-timestamp
+        build is refused even when the binary still runs.
+        """
+        metadata = self._read_metadata()
+        return metadata is not None and _build_expired(metadata.build_timestamp)
 
     def _due_for_update(self) -> bool:
         """Return whether the installed build is old enough to look for an update."""
@@ -592,8 +607,13 @@ class SoloistBinaryManager:
             with suppress(OSError):
                 await asyncio.to_thread(_rollback)
             raise InvalidArchiveError(f"soloist --version exited with code {returncode}")
+        version_raw = output.decode("utf-8", errors="replace").strip()
+        if _build_expired(_parse_build_timestamp(version_raw)):
+            with suppress(OSError):
+                await asyncio.to_thread(_rollback)
+            raise BuildExpiredError("the downloaded soloist build has already expired")
         await asyncio.to_thread(_commit)
-        return output.decode("utf-8", errors="replace").strip()
+        return version_raw
 
     def _read_metadata(self) -> _BinaryMetadata | None:
         """Return the persisted install metadata, if present and readable."""
@@ -969,6 +989,11 @@ def _validate_elf_header(binary_path: Path, arch: str) -> None:
     ei_class, e_machine = _ELF_IDENT[arch]
     if header[4] != ei_class or int.from_bytes(header[18:20], "little") != e_machine:
         raise InvalidArchiveError(f"soloist binary does not match architecture {arch}")
+
+
+def _build_expired(build_timestamp: float | None) -> bool:
+    """Return whether a build timestamp (when known) has passed the 90-day expiry."""
+    return build_timestamp is not None and build_timestamp + _BUILD_EXPIRY_SECONDS <= time.time()
 
 
 def _parse_version_token(version_output: str) -> str | None:
