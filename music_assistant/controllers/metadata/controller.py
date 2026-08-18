@@ -500,8 +500,8 @@ class MetaDataController(
     async def _reconcile_duplicate_albums(self) -> None:
         """Enrich and re-match a small batch of sparse or possibly duplicated albums."""
         update_current_task_progress_text("Searching for albums needing reconciliation")
-        # albums that are still unknown-typed keep retrying at the normal REFRESH_INTERVAL
-        # cadence (e.g. after a transient provider outage), rather than only ever once
+        # candidates keep retrying at the normal REFRESH_INTERVAL cadence (e.g. after a
+        # transient provider outage), rather than only ever once
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"({DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' "
@@ -524,13 +524,14 @@ class MetaDataController(
                 # match has full album details to work with, then re-fetch the now-enriched
                 # library row before re-matching: match_providers merges a confirmed mapping
                 # into an existing duplicate through the safe add_provider_mappings path
-                await self._update_album_metadata(album, force_refresh=False)
-                reconciled_album = await self.mass.music.albums.get_library_item(album.item_id)
+                try:
+                    await self._update_album_metadata(album, force_refresh=False)
+                    reconciled_album = await self.mass.music.albums.get_library_item(album.item_id)
+                except MediaNotFoundError:
+                    # both rows of a duplicate pair can share a batch, so this row may
+                    # already have been merged into its duplicate earlier in the run
+                    continue
                 await self.mass.music.albums.match_providers(reconciled_album)
-            except MediaNotFoundError:
-                # both rows of a duplicate pair can share a batch, so this row may
-                # already have been merged into its duplicate earlier in the run
-                continue
             except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
                 report_current_task_failure(f"{album.name}: {err}")
                 self.logger.warning(
@@ -608,7 +609,7 @@ def _duplicate_album_sibling_guard() -> str:
     """Return a query part that selects albums which may be a duplicate of another library row."""
     own_version = f"LOWER(TRIM(COALESCE({DB_TABLE_ALBUMS}.version,'')))"
     dup_version = "LOWER(TRIM(COALESCE(dup.version,'')))"
-    # mirrors the cases the album comparison does not already rule out: a missing
+    # approximates the cases the album comparison does not already rule out: a missing
     # version on either side (providers often omit the edition of a remaster), and
     # wording that is a whole-word subset of the other's ("2011 Remaster" vs "Deluxe
     # Edition 2011 Remaster"). Both leave the editions undecided, which is what the
