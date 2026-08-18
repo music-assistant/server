@@ -19,6 +19,7 @@ from .provider import (
     CONF_PUBLISH_NAME,
     DEFAULT_PUBLISH_NAME,
     PLAYER_ID_AUTO,
+    SUPPORTED_FEATURES,
     SpotifyConnectProvider,
 )
 
@@ -34,6 +35,7 @@ __all__ = [
     "CONF_PUBLISH_NAME",
     "DEFAULT_PUBLISH_NAME",
     "PLAYER_ID_AUTO",
+    "SUPPORTED_FEATURES",
     "SpotifyConnectProvider",
     "setup",
 ]

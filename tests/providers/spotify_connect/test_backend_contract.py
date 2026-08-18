@@ -13,12 +13,16 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import ContentType, SourceControl
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.providers.spotify_connect import provider as provider_mod
 from music_assistant.providers.spotify_connect.backends.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.backends.go_librespot import (
+    GoLibrespotBackend,
+)
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
@@ -32,8 +36,6 @@ from music_assistant.providers.spotify_connect.provider import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    import pytest
 
     from music_assistant.providers.spotify_connect.models import AudioChunkReader
 
@@ -444,3 +446,89 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
     await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
 
     assert backend.calls == [("resume", None), ("set_volume", 25)]
+
+
+def _make_backend() -> GoLibrespotBackend:
+    """Build a bare backend instance, enough to exercise event translation."""
+    return object.__new__(GoLibrespotBackend)
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "expected"),
+    [
+        ("active", BackendEventType.SESSION_ACTIVE),
+        ("inactive", BackendEventType.SESSION_INACTIVE),
+        ("playing", BackendEventType.PLAYING),
+        ("paused", BackendEventType.PAUSED),
+        ("stopped", BackendEventType.STOPPED),
+        ("will_play", BackendEventType.OTHER),
+        ("some_future_event", BackendEventType.OTHER),
+    ],
+)
+def test_translate_event_maps_lifecycle_types(raw_type: str, expected: BackendEventType) -> None:
+    """Raw lifecycle events map to their normalized type, unknown types to OTHER."""
+    event = _make_backend()._translate_event(
+        raw_type, {"context_uri": "spotify:playlist:ctx", "uri": "spotify:track:t1"}
+    )
+    assert event.type is expected
+    assert event.context_uri == "spotify:playlist:ctx"
+    assert event.track_uri == "spotify:track:t1"
+
+
+def test_translate_event_maps_metadata_fields() -> None:
+    """Metadata fields map 1:1 with millisecond durations converted to seconds."""
+    event = _make_backend()._translate_event(
+        "metadata",
+        {
+            "uri": "spotify:track:t1",
+            "name": "Track Title",
+            "artist_names": ["Main Artist", "Feat Artist"],
+            "album_name": "The Album",
+            "album_cover_url": "http://img.invalid/c.jpg",
+            "duration": 215500,
+            "position": 32900,
+        },
+    )
+    assert event.type is BackendEventType.METADATA
+    metadata = event.metadata
+    assert metadata is not None
+    assert metadata.track_uri == "spotify:track:t1"
+    assert metadata.title == "Track Title"
+    assert metadata.artist == "Main Artist"
+    assert metadata.album == "The Album"
+    assert metadata.image_url == "http://img.invalid/c.jpg"
+    assert metadata.duration == 215
+    assert metadata.position == 32
+
+
+def test_translate_event_maps_seek_position_ms_to_seconds() -> None:
+    """Seek events carry the position converted from milliseconds to whole seconds."""
+    event = _make_backend()._translate_event("seek", {"position": 61999})
+    assert event.type is BackendEventType.POSITION
+    assert event.position == 61
+
+
+@pytest.mark.parametrize(
+    ("value", "max_value", "expected_pct"),
+    [
+        (0, 100, 0),
+        (50, 100, 50),
+        (100, 100, 100),
+        (33, 100, 33),
+        (10, 16, 62),  # non-default scale, truncating conversion
+    ],
+)
+def test_translate_event_scales_volume_to_percentage(
+    value: int, max_value: int, expected_pct: int
+) -> None:
+    """Volume events translate the daemon's 0..max scale to a 0-100 percentage."""
+    event = _make_backend()._translate_event("volume", {"value": value, "max": max_value})
+    assert event.type is BackendEventType.VOLUME
+    assert event.volume == expected_pct
+
+
+def test_translate_event_volume_without_value_is_other() -> None:
+    """A volume event without a value carries no volume and degrades to OTHER."""
+    event = _make_backend()._translate_event("volume", {"max": 100})
+    assert event.type is BackendEventType.OTHER
+    assert event.volume is None

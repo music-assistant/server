@@ -315,7 +315,12 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 # provider so a dead/restarting daemon isn't treated as active and
                 # controllable; a fresh 'active' event re-establishes it on reconnect.
                 self._proc = None
-                await self._event_callback(BackendEvent(BackendEventType.CONNECTION_LOST))
+                try:
+                    await self._event_callback(BackendEvent(BackendEventType.CONNECTION_LOST))
+                except Exception:
+                    # never let a callback error replace a propagating
+                    # cancellation or kill the daemon supervisor
+                    self.logger.exception("Error while handling daemon exit")
             if self._stop_called:
                 break
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)
