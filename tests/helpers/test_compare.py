@@ -525,6 +525,22 @@ def test_compare_album_evidence_standalone_separator_between_words_is_drift() ->
     assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
 
 
+def test_compare_album_evidence_ep_and_single_of_the_same_name_stay_distinct() -> None:
+    """Two titles naming a different format are separate releases, whatever base they share."""
+    album_a = _album(name="Stargazing - EP", year=2023)
+    album_b = _album(item_id="2", provider="test2", name="Stargazing - Single", year=2023)
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+
+    # either spelling still matches the plain title, which names no format at all
+    for name in ("Stargazing - EP", "Stargazing - Single"):
+        album_a = _album(name=name, year=2023)
+        album_b = _album(item_id="2", provider="test2", name="Stargazing", year=2023)
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), name
+
+
 def test_compare_album_evidence_punctuation_only_title_whitespace_drift_matches() -> None:
     """Whitespace drift within a punctuation-only title does not block a match."""
     album_a = _album(name="( )")

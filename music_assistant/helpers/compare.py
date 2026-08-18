@@ -70,7 +70,7 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
 _ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
 # the trailing retail suffix (any dash style) as it appears in a raw album title
 _ALBUM_SUFFIX_PATTERN = re.compile(
-    rf"\s+[-\u2013\u2014]\s+(?:{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$", re.IGNORECASE
+    rf"\s+[-\u2013\u2014]\s+(?P<suffix>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$", re.IGNORECASE
 )
 # normalizing a title drops the separator, so the suffix survives as a plain trailing
 # fragment of the name key ("Foo - EP" -> "fooep"): appending one of these to a key
@@ -749,6 +749,12 @@ def compare_version(base_version: str, compare_version: str) -> bool:
 
 def compare_album_name(base_name: str, compare_name: str) -> bool:
     """Return True if two album titles are the same identity, ignoring formatting drift."""
+    base_suffix = _album_retail_suffix(base_name)
+    compare_suffix = _album_retail_suffix(compare_name)
+    if base_suffix and compare_suffix and base_suffix != compare_suffix:
+        # both titles name their format and they disagree: an EP is not the single of
+        # the same name, however much of the title the two share
+        return False
     return compare_strings(
         strip_album_retail_suffix(base_name), strip_album_retail_suffix(compare_name)
     )
@@ -782,6 +788,12 @@ def _normalize_version_tokens(value: str) -> tuple[str, ...]:
         _VERSION_WORD_ALIASES.get(token, token) for token in re.findall(r"[^\W_]+", stripped_value)
     )
     return tuple(sorted({token for token in tokens if token not in _VERSION_IGNORE_WORDS}))
+
+
+def _album_retail_suffix(name: str) -> str:
+    """Return the retail suffix an album title spells out, or an empty string."""
+    match = _ALBUM_SUFFIX_PATTERN.search(name)
+    return match.group("suffix").casefold() if match else ""
 
 
 def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:

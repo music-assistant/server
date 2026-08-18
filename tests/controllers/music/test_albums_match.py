@@ -826,7 +826,7 @@ async def test_insert_match_is_io_free_without_candidates() -> None:
 
 
 async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
-    """A plain title is sought under every retail suffix, a suffixed one only under its own."""
+    """An album is sought under its plain title and every spelled-out retail suffix."""
 
     async def searched_names(harness: _InsertHarness, name: str) -> list[str]:
         assert (
@@ -836,14 +836,10 @@ async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
         params = harness.get_library_items_by_query.await_args_list[-1].kwargs["extra_query_params"]
         return list(params["search_names"])
 
+    expected = ["stargazing", "stargazingep", "stargazingsingle"]
     with _insert_harness(candidates=[]) as harness:
-        assert await searched_names(harness, "Stargazing") == [
-            "stargazing",
-            "stargazingep",
-            "stargazingsingle",
-        ]
-        # a title spelling out one suffix is a different release from one spelling out another
-        assert await searched_names(harness, "Stargazing - EP") == ["stargazing", "stargazingep"]
+        assert await searched_names(harness, "Stargazing") == expected
+        assert await searched_names(harness, "Stargazing - EP") == expected
 
 
 async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
