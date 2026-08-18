@@ -233,9 +233,14 @@ class PulseCaptureServer:
         async with self._lock:
             if self._refcount == 0:
                 return
-            self._refcount -= 1
-            if self._refcount == 0:
-                await self._stop()
+            if self._refcount > 1:
+                self._refcount -= 1
+                return
+            # last consumer: only commit the zero refcount once teardown
+            # finished, so a cancelled/failed stop can be retried and a
+            # concurrent acquire cannot start a second daemon meanwhile
+            await self._stop()
+            self._refcount = 0
 
     def child_env(self, sink_name: str) -> dict[str, str]:
         """

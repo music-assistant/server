@@ -1,10 +1,11 @@
 """
 Shared helpers for Spotify Soloist, Spotify's official headless Connect client for Linux.
 
-This module is provider-neutral infrastructure, consumed by multiple provider
-backends. It manages a single shared install of the ``soloist`` binary under the
-server's storage dir and offers a typed client for the daemon's local WebSocket
-API (see https://developer.spotify.com/documentation/soloist).
+Owned by the Spotify Connect provider and deliberately provider-neutral: the
+Spotify music provider reuses these helpers instead of shipping a second
+implementation. It manages a single shared install of the ``soloist`` binary
+under the server's storage dir and offers a typed client for the daemon's local
+WebSocket API (see https://developer.spotify.com/documentation/soloist).
 
 SECURITY NOTE: the soloist daemon takes the user's personal API key on its
 command line. This module never sees or logs that key, and callers that manage
@@ -45,7 +46,7 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.soloist")
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.providers.spotify_connect.soloist")
 
 # Official per-architecture release archives (docs: reference/downloads-and-updates).
 CDN_URL_TEMPLATE: Final[str] = "https://soloist-builds.spotifycdn.com/soloist_release_{arch}.tar.gz"
@@ -513,7 +514,12 @@ class SoloistBinaryManager:
                 version=_parse_version_token(version_raw),
                 build_timestamp=_parse_build_timestamp(version_raw),
             )
-            await asyncio.to_thread(self._write_metadata, metadata)
+            # metadata is advisory (diagnostics + refresh hints): the binary is
+            # already validated and installed, so never fail the install over it
+            try:
+                await asyncio.to_thread(self._write_metadata, metadata)
+            except OSError as err:
+                LOGGER.warning("Unable to persist soloist install metadata: %s", err)
             LOGGER.info("Installed soloist binary %s (%s)", metadata.version or "unknown", arch)
         finally:
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
@@ -562,11 +568,22 @@ class SoloistBinaryManager:
         """
         Atomically install the new binary and verify it actually runs.
 
-        The previous binary is kept as ``soloist.prev`` and restored when the
-        replacement fails validation.
+        Shielded from cancellation so the install always reaches a consistent
+        end state (committed or rolled back) even when the caller goes away.
 
         :return: The raw ``--version`` output of the installed binary.
         """
+        inner = asyncio.ensure_future(self._swap_in_and_validate_inner(new_binary))
+        try:
+            return await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            # the inner install continues to a consistent end state (committed
+            # or rolled back); consume its late result so nothing goes unlogged
+            inner.add_done_callback(_consume_install_result)
+            raise
+
+    async def _swap_in_and_validate_inner(self, new_binary: Path) -> str:
+        """Perform the swap/validate/rollback sequence (see _swap_in_and_validate)."""
 
         def _swap_in() -> None:
             new_binary.chmod(0o755)
@@ -812,7 +829,9 @@ class SoloistClient:
         Send a command frame, optionally waiting for its ``command_result`` ack.
 
         Acks carry only the command name (no request id), so concurrent calls of
-        the same command resolve in FIFO order with no per-call correlation.
+        the same command resolve in FIFO order with no per-call correlation, and
+        an ack for a fire-and-forget send of the same command can resolve an
+        awaited call early — avoid mixing both styles for one command.
         Never wait for an ack from inside an ``on_event`` callback: the ack is
         delivered by the same event loop, so the wait can only time out.
 
@@ -989,6 +1008,12 @@ def _validate_elf_header(binary_path: Path, arch: str) -> None:
     ei_class, e_machine = _ELF_IDENT[arch]
     if header[4] != ei_class or int.from_bytes(header[18:20], "little") != e_machine:
         raise InvalidArchiveError(f"soloist binary does not match architecture {arch}")
+
+
+def _consume_install_result(fut: asyncio.Future[str]) -> None:
+    """Log the outcome of an install that finished after its caller was cancelled."""
+    if (exc := fut.exception()) is not None and not isinstance(exc, asyncio.CancelledError):
+        LOGGER.warning("soloist install finished with an error after cancellation: %s", exc)
 
 
 def _build_expired(build_timestamp: float | None) -> bool:

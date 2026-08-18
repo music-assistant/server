@@ -11,6 +11,7 @@ import platform
 import tarfile
 import time
 from collections.abc import AsyncGenerator, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, cast
@@ -18,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import pytest
 from aiohttp import ClientError, WSMessage, WSMsgType
 
-from music_assistant.helpers import soloist
-from music_assistant.helpers.soloist import (
+from music_assistant.providers.spotify_connect import soloist
+from music_assistant.providers.spotify_connect.soloist import (
     BuildExpiredError,
     ConsentRequiredError,
     DownloadFailedError,
@@ -40,7 +41,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 _CDN_URL = "https://soloist-builds.spotifycdn.com/soloist_release_{arch}.tar.gz"
-_VERSION_OUTPUT = b"soloist version 1.2.3\nbuild 2026-08-13T10:00:00Z linux/x86_64"
+# build timestamp relative to now so the fake build never ages past the 90-day expiry
+_VERSION_OUTPUT = (
+    f"soloist version 1.2.3\nbuild {datetime.now(tz=UTC):%Y-%m-%dT%H:%M:%SZ} linux/x86_64"
+).encode()
 
 
 def _elf_binary(arch: str, marker: bytes = b"GOOD") -> bytes:
