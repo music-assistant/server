@@ -929,6 +929,7 @@ class MusicProvider(Provider):
         # process deletions (= no longer in library)
         update_current_task_progress_text("Checking library deletions")
         controller = self.mass.music.get_controller(media_type)
+        prev_library_items: list[int] | None
         if self._sync_incomplete:
             # a skipped item is missing from cur_db_ids just like a deleted one, but it is
             # still in the provider's library, so deleting it would throw away valid content
@@ -936,8 +937,16 @@ class MusicProvider(Provider):
                 summary = f"{self._sync_item_failures} item(s) could not be synced"
                 self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
                 report_current_task_failure(f"Deletions skipped: {summary}")
+            # merge this run's id's into the stored ones instead of replacing them: that
+            # keeps both the deletions this run could not tell apart from its own failures
+            # and the items it saw for the first time, so a later complete run finds either
+            if prev_library_items := await self.mass.cache.get(
+                key=media_type.value,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+            ):
+                cur_db_ids.update(prev_library_items)
         elif self.library_sync_deletions_enabled():
-            prev_library_items: list[int] | None
             if prev_library_items := await self.mass.cache.get(
                 key=media_type.value,
                 provider=self.instance_id,
@@ -976,17 +985,13 @@ class MusicProvider(Provider):
                                 db_id, library_item.provider_mappings
                             )
                         await asyncio.sleep(0)  # yield to eventloop
-        if not self._sync_incomplete:
-            # store current list of id's in cache so we can track changes. an incomplete run
-            # must keep the previous (complete) list: overwriting it with one that is missing
-            # both the skipped and the genuinely deleted items would drop the deletions this
-            # run could not process, leaving them undetectable on any later run
-            await self.mass.cache.set(
-                key=media_type.value,
-                data=list(cur_db_ids),
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
-            )
+        # store current list of id's in cache so we can track changes
+        await self.mass.cache.set(
+            key=media_type.value,
+            data=list(cur_db_ids),
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+        )
         update_current_task_progress_text("Finalizing library sync")
 
     def _update_sync_task_item_status(
@@ -1053,10 +1058,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_artists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
-            sync_details = await self.mass.music.artists.get_library_item_sync_details(
-                prov_item.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.artists.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1114,10 +1119,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_albums():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ALBUM, item_count, prov_item.name)
-            sync_details = await self.mass.music.albums.get_library_item_sync_details(
-                prov_item.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.albums.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1180,10 +1185,10 @@ class MusicProvider(Provider):
             await self.get_album_tracks(prov_album_id), start=1
         ):
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            sync_details = await self.mass.music.tracks.get_library_item_sync_details(
-                prov_track.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.tracks.get_library_item_sync_details(
+                    prov_track.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1263,13 +1268,13 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_audiobooks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
-            sync_details = cast(
-                "AudiobookSyncDetails | None",
-                await self.mass.music.audiobooks.get_library_item_sync_details(
-                    prov_item.provider_mappings,
-                ),
-            )
             try:
+                sync_details = cast(
+                    "AudiobookSyncDetails | None",
+                    await self.mass.music.audiobooks.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
+                )
                 self._validate_audiobook_author_narrator_types(prov_item)
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
@@ -1359,10 +1364,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_playlists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PLAYLIST, item_count, prov_item.name)
-            library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
-            )
             try:
+                library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not library_item:
@@ -1433,10 +1438,10 @@ class MusicProvider(Provider):
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
             controller = self.mass.music.get_controller(prov_track.media_type)
-            sync_details = await controller.get_library_item_sync_details(
-                prov_track.provider_mappings,
-            )
             try:
+                sync_details = await controller.get_library_item_sync_details(
+                    prov_track.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1477,13 +1482,13 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_tracks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_item.name)
-            sync_details = cast(
-                "TrackSyncDetails | None",
-                await self.mass.music.tracks.get_library_item_sync_details(
-                    prov_item.provider_mappings,
-                ),
-            )
             try:
+                sync_details = cast(
+                    "TrackSyncDetails | None",
+                    await self.mass.music.tracks.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
+                )
                 if not sync_details and not prov_item.available:
                     # skip unavailable tracks
                     # TODO: do we want to search for substitutes at this point ?
@@ -1542,10 +1547,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_podcasts():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PODCAST, item_count, prov_item.name)
-            sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
-                prov_item.provider_mappings,
-            )
             try:
+                sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1602,10 +1607,10 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_radios():
             item_count += 1
             self._update_sync_task_item_status(MediaType.RADIO, item_count, prov_item.name)
-            library_item = await self.mass.music.radio.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
-            )
             try:
+                library_item = await self.mass.music.radio.get_library_item_by_prov_mappings(
+                    prov_item.provider_mappings,
+                )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not library_item:

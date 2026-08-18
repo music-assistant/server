@@ -212,7 +212,7 @@ async def test_expected_error_also_holds_back_deletions() -> None:
 
 async def test_incomplete_run_keeps_the_previous_id_snapshot() -> None:
     """
-    A run that skipped items must not overwrite the cached id's.
+    A run that skipped items merges into the cached id's instead of replacing them.
 
     Those id's are what a later run compares against; replacing them with an incomplete
     set would drop the deletions this run could not process.
@@ -223,7 +223,8 @@ async def test_incomplete_run_keeps_the_previous_id_snapshot() -> None:
 
     await provider.sync_library(MediaType.ALBUM)
 
-    mass.cache.set.assert_not_called()
+    # 99 (gone from the provider) and 2 (failed this run) both survive for the next run
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3, 99]
 
 
 async def test_deletions_not_reported_when_disabled() -> None:
@@ -267,3 +268,44 @@ async def test_payload_bearing_error_is_clipped() -> None:
 def test_our_own_errors_are_reported_verbatim() -> None:
     """Our own error messages are already short and stay unchanged."""
     assert describe_sync_error(MediaNotFoundError("album not found")) == "album not found"
+
+
+async def test_incomplete_run_keeps_newly_seen_items() -> None:
+    """An item first seen on an incomplete run is still tracked for later cleanup."""
+    # 1 and 2 were known before; 3 is new in this run
+    mass = _build_mass(prev_library_ids=[1, 2])
+    provider = _build_provider(mass)
+    _fail_add_for(mass, "album_2")
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    assert 3 in mass.cache.set.await_args.kwargs["data"]
+
+
+async def test_item_lookup_failure_skips_only_that_item() -> None:
+    """A failure while resolving an item's mappings skips the item, not the whole sync."""
+    mass = _build_mass()
+    provider = _build_provider(mass)
+    lookups = {"album_2": TypeError("bad provider mapping")}
+
+    async def get_sync_details(mappings: Any) -> Any:
+        del mappings
+        return None
+
+    calls: list[str] = []
+
+    async def sync_details_for(prov_mappings: Any) -> Any:
+        del prov_mappings
+        item_id = ALBUM_IDS[len(calls)]
+        calls.append(item_id)
+        if err := lookups.get(item_id):
+            raise err
+        return await get_sync_details(None)
+
+    mass.music.albums.get_library_item_sync_details = AsyncMock(side_effect=sync_details_for)
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    # all three were reached, and the two healthy ones were still added
+    assert calls == list(ALBUM_IDS)
+    assert _synced_album_ids(mass) == ["album_1", "album_3"]
