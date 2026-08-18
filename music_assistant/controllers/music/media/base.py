@@ -624,11 +624,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
+        if prov.type != ProviderType.MUSIC:
+            return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
-        if not self.mass.music.library_supported(prov, self.media_type):
-            # assume library supported also means that this mediatype is supported
+        if self.media_type not in prov.supported_media_types:
             return []
         searchresult = await prov.search(
             search_query,

@@ -2966,7 +2966,7 @@ class StreamsAudio:
             and provider.is_streaming_provider
             and ProviderFeature.SEARCH in provider.supported_features
             and provider.domain not in known_domains
-            and self.mass.music.library_supported(provider, MediaType.TRACK)
+            and MediaType.TRACK in provider.supported_media_types
         )
 
     def _has_alternative_match_providers(self, media_item: Track) -> bool:

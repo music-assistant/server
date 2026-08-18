@@ -85,6 +85,18 @@ class InternetArchiveProvider(MusicProvider):
         """Return True if provider is a streaming provider."""
         return True
 
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # catalogue access is search/browse only, there are no library items at all
+        return {
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.AUDIOBOOK,
+            MediaType.PODCAST,
+        }
+
     @throttle_with_retries
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Make a GET request and return JSON response with throttling."""

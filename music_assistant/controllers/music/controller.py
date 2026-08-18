@@ -121,7 +121,7 @@ from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE, MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -2265,21 +2265,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Return whether the provider declares LIBRARY support for the given media type."""
         if provider.type != ProviderType.MUSIC:
             return False
-        if media_type == MediaType.ARTIST:
-            return provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS)
-        if media_type == MediaType.ALBUM:
-            return provider.supports_feature(ProviderFeature.LIBRARY_ALBUMS)
-        if media_type == MediaType.TRACK:
-            return provider.supports_feature(ProviderFeature.LIBRARY_TRACKS)
-        if media_type == MediaType.PLAYLIST:
-            return provider.supports_feature(ProviderFeature.LIBRARY_PLAYLISTS)
-        if media_type == MediaType.RADIO:
-            return provider.supports_feature(ProviderFeature.LIBRARY_RADIOS)
-        if media_type == MediaType.AUDIOBOOK:
-            return provider.supports_feature(ProviderFeature.LIBRARY_AUDIOBOOKS)
-        if media_type == MediaType.PODCAST:
-            return provider.supports_feature(ProviderFeature.LIBRARY_PODCASTS)
-        return False
+        if (feature := LIBRARY_FEATURE_BY_MEDIA_TYPE.get(media_type)) is None:
+            return False
+        return provider.supports_feature(feature)
 
     def library_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
         """Return whether the provider supports library add/remove for the given media type."""

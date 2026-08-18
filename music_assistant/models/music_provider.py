@@ -72,6 +72,16 @@ DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
 MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 
+LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
+    MediaType.ARTIST: ProviderFeature.LIBRARY_ARTISTS,
+    MediaType.ALBUM: ProviderFeature.LIBRARY_ALBUMS,
+    MediaType.TRACK: ProviderFeature.LIBRARY_TRACKS,
+    MediaType.PLAYLIST: ProviderFeature.LIBRARY_PLAYLISTS,
+    MediaType.RADIO: ProviderFeature.LIBRARY_RADIOS,
+    MediaType.AUDIOBOOK: ProviderFeature.LIBRARY_AUDIOBOOKS,
+    MediaType.PODCAST: ProviderFeature.LIBRARY_PODCASTS,
+}
+
 
 @dataclass
 class SyncRunState:
@@ -223,6 +233,22 @@ class MusicProvider(Provider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """
+        Return the media types this provider can serve.
+
+        Defaults to the media types the provider declares library support for.
+        Override for providers that can serve (search/stream) media types they
+        cannot list as library items, so they are eligible for search-based
+        lookups such as cross-provider matching and versions.
+        """
+        return {
+            media_type
+            for media_type, feature in LIBRARY_FEATURE_BY_MEDIA_TYPE.items()
+            if feature in self.supported_features
+        }
 
     @property
     def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
