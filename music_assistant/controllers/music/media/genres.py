@@ -1387,6 +1387,10 @@ class GenreController(MediaControllerBase[Genre]):
         )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    async def _merge_library_item_references(self, target_id: int, source_id: int) -> None:
+        """Transfer media mappings and exclusions owned by a merged genre."""
+        await self._merge_genre_references(target_id, source_id)
+
     async def _bulk_scan_media_genres(self) -> None:
         """
         Bulk-scan all media items and rebuild genre mappings using CTE.

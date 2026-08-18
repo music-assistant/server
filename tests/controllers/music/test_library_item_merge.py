@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType
@@ -10,6 +10,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     Genre,
     ProviderMapping,
     Track,
@@ -26,7 +27,10 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
 )
-from music_assistant.controllers.music.media.base import MediaControllerBase
+from music_assistant.controllers.music.media.base import (
+    SUPPRESS_MEDIA_ITEM_UPDATES,
+    MediaControllerBase,
+)
 from music_assistant.mass import MusicAssistant
 
 
@@ -337,6 +341,15 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
         source_artist,
         source_album,
     )
+    await mass.music.database.insert(
+        DB_TABLE_ALBUM_TRACKS,
+        {
+            "track_id": int(target.item_id),
+            "album_id": int(source_album.item_id),
+            "disc_number": 7,
+            "track_number": 8,
+        },
+    )
 
     await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
 
@@ -356,8 +369,169 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
             DB_TABLE_TRACK_ARTISTS, {"track_id": int(target.item_id)}
         )
     } == {int(target_artist.item_id), int(source_artist.item_id)}
+    source_album_track = await mass.music.database.get_row(
+        DB_TABLE_ALBUM_TRACKS,
+        {"track_id": int(target.item_id), "album_id": int(source_album.item_id)},
+    )
+    assert source_album_track is not None
+    assert source_album_track["disc_number"] == 7
+    assert source_album_track["track_number"] == 8
     with pytest.raises(MediaNotFoundError):
         await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+
+async def test_audiobook_merge_keeps_per_user_resume_state(mass: MusicAssistant) -> None:
+    """An audiobook merge leaves resume transfer to the library playlog merge."""
+    target = await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Target Book",
+            duration=3600,
+            provider_mappings={_mapping("target_instance", "target-book")},
+        )
+    )
+    source = await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Source Book",
+            duration=3600,
+            provider_mappings={_mapping("source_instance", "source-book")},
+        )
+    )
+    await _add_playlog(
+        mass,
+        target.item_id,
+        "library",
+        MediaType.AUDIOBOOK,
+        timestamp=20,
+        seconds_played=20,
+        user_initiated=False,
+    )
+    await _add_playlog(
+        mass,
+        source.item_id,
+        "library",
+        MediaType.AUDIOBOOK,
+        timestamp=30,
+        seconds_played=30,
+        user_initiated=True,
+    )
+
+    with patch.object(
+        mass.music.audiobooks,
+        "_set_playlog",
+        wraps=mass.music.audiobooks._set_playlog,
+    ) as set_playlog:
+        await mass.music.audiobooks.merge_library_items(target.item_id, source.item_id)
+
+    assert isinstance(set_playlog, AsyncMock)
+    set_playlog.assert_not_awaited()
+    playlog = await mass.music.database.get_row(
+        DB_TABLE_PLAYLOG,
+        {
+            "item_id": target.item_id,
+            "provider": "library",
+            "media_type": MediaType.AUDIOBOOK.value,
+            "userid": "test-user",
+        },
+    )
+    assert playlog is not None
+    assert playlog["timestamp"] == 30
+    assert playlog["seconds_played"] == 30
+    assert playlog["user_initiated"] == 1
+
+
+async def test_genre_merge_transfers_genre_references(mass: MusicAssistant) -> None:
+    """A genre merge reassigns every media mapping and exclusion to the target genre."""
+    target = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Target Genre", provider_mappings=set())
+    )
+    source = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Source Genre", provider_mappings=set())
+    )
+    await mass.music.database.insert(
+        DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+        {
+            "genre_id": int(target.item_id),
+            "media_id": 1,
+            "media_type": MediaType.TRACK.value,
+            "alias": "target",
+            "is_derived": True,
+            "is_manual": False,
+        },
+    )
+    await mass.music.database.insert(
+        DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+        {
+            "genre_id": int(source.item_id),
+            "media_id": 1,
+            "media_type": MediaType.TRACK.value,
+            "alias": "source",
+            "is_derived": False,
+            "is_manual": True,
+        },
+    )
+    await mass.music.database.insert(
+        DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
+        {
+            "genre_id": int(source.item_id),
+            "media_id": 2,
+            "media_type": MediaType.TRACK.value,
+        },
+    )
+
+    await mass.music.genres.merge_library_items(target.item_id, source.item_id)
+
+    genre_mapping = await mass.music.database.get_row(
+        DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+        {
+            "genre_id": int(target.item_id),
+            "media_id": 1,
+            "media_type": MediaType.TRACK.value,
+        },
+    )
+    assert genre_mapping is not None
+    assert dict(genre_mapping) == {
+        "genre_id": int(target.item_id),
+        "media_id": 1,
+        "media_type": MediaType.TRACK.value,
+        "alias": "source",
+        "is_derived": 1,
+        "is_manual": 1,
+    }
+    assert await mass.music.database.get_row(
+        DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
+        {
+            "genre_id": int(target.item_id),
+            "media_id": 2,
+            "media_type": MediaType.TRACK.value,
+        },
+    )
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": int(source.item_id)}
+    )
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": int(source.item_id)}
+    )
+
+
+async def test_merge_honors_outer_event_suppression(mass: MusicAssistant) -> None:
+    """A merge inside a suppressed update scope does not emit item events."""
+    target = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Target Genre", provider_mappings=set())
+    )
+    source = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Source Genre", provider_mappings=set())
+    )
+    token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+    try:
+        with patch.object(mass, "signal_event") as signal_event:
+            await mass.music.genres.merge_library_items(target.item_id, source.item_id)
+    finally:
+        SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
+    signal_event.assert_not_called()
 
 
 async def _assert_album_merge_result(

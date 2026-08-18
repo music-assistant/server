@@ -2362,7 +2362,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             source_mappings = source_item.provider_mappings
             source_item.provider_mappings = set()
             try:
-                await self._update_library_item(target_id, source_item)
+                await self._update_library_item_for_merge(target_id, source_item)
             finally:
                 source_item.provider_mappings = source_mappings
 
@@ -2384,6 +2384,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 },
             )
             await self._merge_genre_mappings(target_id, source_id)
+            await self._merge_library_item_references(target_id, source_id)
             await self._merge_library_playlog(target_id, source_id)
             await self._merge_library_item_relations(target_id, source_id)
             await self.mass.music.database.execute_write(
@@ -2400,9 +2401,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         finally:
             SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
 
-        self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, source_item.uri, source_item)
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, merged_item.uri, merged_item)
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, source_item.uri, source_item)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, merged_item.uri, merged_item)
         return merged_item
+
+    async def _update_library_item_for_merge(self, item_id: int, update: ItemCls) -> None:
+        """Merge model state into an existing library item."""
+        await self._update_library_item(item_id, update)
 
     async def _merge_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Transfer relations that reference the merged media item."""
@@ -2426,6 +2432,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         elif self.media_type == MediaType.TRACK:
             await self._move_relation_rows(DB_TABLE_ALBUM_TRACKS, "track_id", target_id, source_id)
             await self._move_relation_rows(DB_TABLE_TRACK_ARTISTS, "track_id", target_id, source_id)
+
+    async def _merge_library_item_references(self, target_id: int, source_id: int) -> None:
+        """Transfer references to the source item owned by specialized controllers."""
+        return
 
     async def _merge_genre_mappings(self, target_id: int, source_id: int) -> None:
         """Transfer genre mappings and exclusions to the target item."""
@@ -2471,6 +2481,46 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
             {"media_id": source_id, "media_type": self.media_type.value},
+        )
+
+    async def _merge_genre_references(self, target_id: int, source_id: int) -> None:
+        """Transfer media mappings and exclusions that point to the source genre."""
+        values = {"target_id": target_id, "source_id": source_id}
+        await self.mass.music.database.execute_write(
+            f"""
+            INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
+                genre_id, media_id, media_type, alias, is_derived, is_manual
+            )
+            SELECT :target_id, media_id, media_type, alias, is_derived, is_manual
+            FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}
+            WHERE genre_id = :source_id
+            ON CONFLICT(genre_id, media_id, media_type) DO UPDATE SET
+                alias = CASE
+                    WHEN excluded.is_manual AND NOT is_manual
+                    THEN COALESCE(excluded.alias, alias)
+                    ELSE COALESCE(alias, excluded.alias)
+                END,
+                is_derived = is_derived OR excluded.is_derived,
+                is_manual = is_manual OR excluded.is_manual
+            """,
+            values,
+        )
+        await self.mass.music.database.execute_write(
+            f"""
+            INSERT OR IGNORE INTO {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(
+                genre_id, media_id, media_type
+            )
+            SELECT :target_id, media_id, media_type
+            FROM {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}
+            WHERE genre_id = :source_id
+            """,
+            values,
+        )
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": source_id}
+        )
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": source_id}
         )
 
     async def _merge_library_playlog(self, target_id: int, source_id: int) -> None:
