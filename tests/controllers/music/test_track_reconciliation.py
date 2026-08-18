@@ -665,6 +665,23 @@ async def test_a_merge_asks_for_another_pass() -> None:
     assert ctrl._track_reconciliation_rescan_due
 
 
+async def test_a_failed_pair_asks_for_another_pass() -> None:
+    """A pair that failed on something transient is looked at again rather than dropped."""
+    ctrl = _bare_controller([{"item_id_1": 1, "item_id_2": 2}])
+
+    with (
+        patch.object(
+            ctrl,
+            "_merge_duplicate_track_pair",
+            AsyncMock(side_effect=MusicAssistantError("transient")),
+        ),
+        patch(_REPORT_FAILURE),
+    ):
+        await ctrl._reconcile_duplicate_tracks()
+
+    assert ctrl._track_reconciliation_rescan_due
+
+
 async def test_a_run_without_merges_asks_for_nothing() -> None:
     """A walk that changed nothing has no reason to start over."""
     ctrl = _bare_controller([{"item_id_1": 1, "item_id_2": 2}])

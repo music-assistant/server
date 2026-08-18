@@ -2753,6 +2753,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             update_current_task_progress_text("No duplicate tracks found")
             return
         merged = 0
+        retry_due = False
         examined = cursor
         try:
             for index, row in enumerate(rows, 1):
@@ -2768,6 +2769,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     # an earlier merge in this batch already absorbed one of the two rows
                     pass
                 except MusicAssistantError as err:
+                    # a pair that failed on something transient deserves another look
+                    retry_due = True
                     report_current_task_failure(str(err))
                     self.logger.warning(
                         "Error while reconciling duplicate tracks %s and %s: %s",
@@ -2790,7 +2793,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # it a duplicate of a row this walk has already passed, so ask for another pass
             self._set_track_reconciliation_state(
                 None if walked_to_end else examined,
-                self._track_reconciliation_rescan_due or merged > 0,
+                self._track_reconciliation_rescan_due or merged > 0 or retry_due,
             )
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
 
