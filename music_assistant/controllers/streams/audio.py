@@ -58,7 +58,7 @@ from music_assistant_models.errors import (
     QueueEmpty,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.media_items import Album, AudioFormat, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
@@ -2856,9 +2856,18 @@ class StreamsAudio:
                     discovered: set[str] = set()
                     if match_pending:
                         match_pending = False
-                        discovered = await self._discover_alternative_provider_mappings(
-                            queue_item, busy_instances, max(deadline - loop.time(), 0)
-                        )
+                        try:
+                            discovered = await self._discover_alternative_provider_mappings(
+                                queue_item, busy_instances, max(deadline - loop.time(), 0)
+                            )
+                        except Exception as err:
+                            # discovery is best-effort: any failure falls back to the
+                            # final blocking wait instead of replacing the typed error
+                            self.logger.warning(
+                                "Alternative provider search for %s failed: %s",
+                                queue_item.name,
+                                err,
+                            )
                     if discovered:
                         all_candidate_instances.update(discovered)
                     else:
@@ -2990,18 +2999,14 @@ class StreamsAudio:
         if not isinstance(media_item, Track):
             return set()
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
-        candidates: list[MusicProvider] = []
-        for provider in self.mass.music.providers:
-            if (
-                not self._is_match_candidate_provider(provider, known_domains)
-                or provider.instance_id in busy_instances
-                or not provider.has_available_stream_slot
-            ):
-                continue
-            # one instance per domain: a found mapping widens to sibling instances anyway
-            known_domains.add(provider.domain)
-            candidates.append(provider)
-        if not candidates:
+        eligible = [
+            provider
+            for provider in self.mass.music.providers
+            if self._is_match_candidate_provider(provider, known_domains)
+            and provider.instance_id not in busy_instances
+            and provider.has_available_stream_slot
+        ]
+        if not eligible:
             return set()
         # mirror the playback user's provider steering for the search order
         if (
@@ -3011,32 +3016,42 @@ class StreamsAudio:
             and playback_user.provider_filter
         ):
             preferred = set(playback_user.provider_filter)
-            candidates.sort(key=lambda provider: provider.instance_id not in preferred)
+            eligible.sort(key=lambda provider: provider.instance_id not in preferred)
+        # one instance per domain: a found mapping widens to sibling instances anyway
+        candidates: list[MusicProvider] = []
+        for provider in eligible:
+            if provider.domain in known_domains:
+                continue
+            known_domains.add(provider.domain)
+            candidates.append(provider)
+        # the track's own album is free, sufficient evidence for the strict compare and
+        # avoids match_provider's multi-provider album lookup on every call
+        ref_albums = [media_item.album] if isinstance(media_item.album, Album) else []
         matches: list[ProviderMapping] = []
         try:
             async with asyncio.timeout(min(STREAM_SLOT_MATCH_TIMEOUT, remaining)):
                 for provider in candidates:
-                    if matches := await self.mass.music.tracks.match_provider(
-                        media_item, provider, strict=True
-                    ):
+                    # one failing provider must not end the search on the others
+                    try:
+                        matches = await self.mass.music.tracks.match_provider(
+                            media_item, provider, strict=True, ref_albums=ref_albums
+                        )
+                    except Exception as err:
+                        self.logger.debug("Searching a match on %s failed: %s", provider.name, err)
+                        continue
+                    if matches:
                         break
-        except (TimeoutError, MusicAssistantError, aiohttp.ClientError) as err:
-            self.logger.debug(
-                "Searching an alternative provider for %s failed: %s", media_item.name, err
-            )
+        except TimeoutError:
+            self.logger.debug("Searching an alternative provider for %s timed out", media_item.name)
         if not matches:
             return set()
         media_item.provider_mappings.update(matches)
         if media_item.provider == "library":
-            try:
-                # persist so future plays have the mapping ahead of time
-                await self.mass.music.tracks.add_provider_mappings(media_item.item_id, matches)
-            except MusicAssistantError as err:
-                # a failed write-back must not fail the rescue; the mapping still
-                # serves this playback from memory
-                self.logger.warning(
-                    "Failed to persist discovered mapping for %s: %s", media_item.name, err
-                )
+            # persist in the background so future plays have the mapping ahead of time;
+            # cancellation of this playback must never interrupt the library write
+            self.mass.create_task(
+                self.mass.music.tracks.add_provider_mappings(media_item.item_id, matches)
+            )
         self.logger.info(
             "All known sources for %s are at their stream limit, "
             "using a matching track found on %s",

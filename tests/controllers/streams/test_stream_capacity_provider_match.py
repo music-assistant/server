@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +19,7 @@ from music_assistant.models.music_provider import MusicProvider, ProviderStreamL
 
 BUSY_INSTANCE = "spotify--busy"
 MATCH_INSTANCE = "tidal--match"
+FAILING_INSTANCE = "qobuz--failing"
 ITEM_ID = "item-1"
 MATCHED_ITEM_ID = "item-on-tidal"
 
@@ -98,6 +101,13 @@ def _mass(providers: dict[str, MagicMock]) -> MagicMock:
     mass.music.library_supported.return_value = True
     mass.music.tracks.match_provider = AsyncMock(return_value=[])
     mass.music.tracks.add_provider_mappings = AsyncMock()
+
+    def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.get_running_loop().create_task(coro)
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        return task
+
+    mass.create_task.side_effect = _schedule
     return mass
 
 
@@ -132,6 +142,8 @@ async def test_saturated_single_mapping_is_rescued_by_a_cross_provider_match(
     assert waits == [0, 0]
     mass.music.tracks.match_provider.assert_awaited_once()
     assert mass.music.tracks.match_provider.await_args.args[1] is providers[MATCH_INSTANCE]
+    # strictness is what prevents ever playing the wrong track
+    assert mass.music.tracks.match_provider.await_args.kwargs["strict"] is True
     # a non-library track keeps the mapping in memory only
     mass.music.tracks.add_provider_mappings.assert_not_awaited()
 
@@ -239,7 +251,39 @@ async def test_a_library_track_persists_the_discovered_mapping(
     result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
 
     assert result is expected_buffer
+    # the write-back runs as a background task, detached from this playback request
+    await asyncio.sleep(0)
     mass.music.tracks.add_provider_mappings.assert_awaited_once_with("42", [matched_mapping])
+
+
+async def test_one_failing_provider_does_not_end_the_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider that errors while searching is skipped in favor of the next one."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, quality=ContentType.FLAC))
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FAILING_INSTANCE: _music_provider(FAILING_INSTANCE),
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    mass = _mass(providers)
+    matched_mapping = _mapping(MATCH_INSTANCE, item_id=MATCHED_ITEM_ID)
+    # a raw (non MusicAssistantError) provider bug must be contained as well
+    mass.music.tracks.match_provider = AsyncMock(
+        side_effect=[KeyError("unexpected api response"), [matched_mapping]]
+    )
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert mass.music.tracks.match_provider.await_count == 2
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == MATCH_INSTANCE
 
 
 async def test_a_failed_mapping_write_back_does_not_fail_the_rescue(
@@ -271,6 +315,7 @@ async def test_a_failed_mapping_write_back_does_not_fail_the_rescue(
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
     assert queue_item.streamdetails.provider == MATCH_INSTANCE
+    await asyncio.sleep(0)
     mass.music.tracks.add_provider_mappings.assert_awaited_once()
 
 
