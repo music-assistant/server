@@ -16,7 +16,12 @@ from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.external_ids import external_id_lookup_values, is_valid_barcode
+from music_assistant.helpers.external_ids import (
+    external_id_lookup_values,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -294,9 +299,9 @@ class MusicbrainzProvider(MetadataProvider):
         :param isrc: ISRC of the recording, with or without separators.
         :return: Recordings tagged with this ISRC, or empty list if not found.
         """
-        safe_isrc = isrc.replace("-", "").strip()
-        if not safe_isrc.isalnum():
+        if not is_valid_isrc(isrc):
             return []
+        safe_isrc = normalize_external_id(ExternalID.ISRC, isrc)
         # the isrc resource rejects inc= parameters and already carries the release dates
         result = await self._api_client.get_data(f"isrc/{safe_isrc}")
         if not result or not (recordings := result.get("recordings")):

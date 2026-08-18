@@ -112,6 +112,21 @@ def test_compare_version() -> None:
     assert compare.compare_version("Deluxe 2022 Remaster", "2022 Remaster") is False
 
 
+def test_compare_version_deduplicates_repeated_tokens() -> None:
+    """Repeated wording inside one version string does not block a match."""
+    assert (
+        compare.compare_version("Deluxe [2022 Remaster] 2022 Remaster", "Deluxe 2022 Remaster")
+        is True
+    )
+
+
+def test_compare_version_ignores_hi_res_wording() -> None:
+    """Quality-only wording (hi-res) is ignored wherever it appears in a version."""
+    assert compare.compare_version("Remastered", "Remastered Hi-Res Version") is True
+    assert compare.compare_version("Hi-Res Version", "") is True
+    assert compare.compare_version("Hi-Res", "Remastered") is False
+
+
 def test_compare_artist() -> None:
     """Test artist comparison."""
     artist_a = media_items.Artist(
@@ -393,6 +408,39 @@ def test_compare_album_evidence_name_accent_and_apostrophe_variants_match() -> N
     assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
 
 
+def test_compare_album_evidence_name_hyphenation_vs_spacing_matches() -> None:
+    """A hyphenated title matches its spaced or joined spelling across providers."""
+    album_a = _album(name="Trans-Europe Express")
+    album_b = _album(item_id="2", provider="test2", name="Trans Europe Express")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+    album_a = _album(name="Hell - On")
+    album_b = _album(item_id="2", provider="test2", name="Hell-On")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_name_retail_suffix_stripped() -> None:
+    """An Apple-style ' - EP'/' - Single' retail suffix does not block a match."""
+    for suffix in (" - EP", " - Single", " \u2013 EP"):
+        album_a = _album(name=f"Album A{suffix}")
+        album_b = _album(item_id="2", provider="test2", name="Album A")
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), suffix
+
+
+def test_compare_album_evidence_punctuation_only_title_whitespace_drift_matches() -> None:
+    """Whitespace drift within a punctuation-only title does not block a match."""
+    album_a = _album(name="( )")
+    album_b = _album(item_id="2", provider="test2", name="()")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+    # different punctuation-only titles are still different albums
+    album_a = _album(name="\u00f7")
+    album_b = _album(item_id="2", provider="test2", name="=")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+
+
 def test_compare_album_evidence_unrelated_punctuation_only_titles_stay_distinct() -> None:
     """Two different titles that both normalize to nothing must not be treated as equal."""
     album_a = _album(name="...")
@@ -425,6 +473,39 @@ def test_compare_album_evidence_ambiguous_version_without_tracks_is_insufficient
     )
     # the compatibility wrapper stays conservative and does not merge on insufficient evidence
     assert compare.compare_album(base_item, compare_item) is False
+
+
+def test_compare_album_evidence_barcode_resolves_edition_ambiguity() -> None:
+    """A shared retail barcode resolves ambiguous edition wording into a match."""
+    barcode = {(ExternalID.BARCODE, "0724354283857")}
+    base_item = _album(version="2022 Remaster", external_ids=barcode)
+    compare_item = _album(item_id="2", provider="test2", version="Deluxe 2022 Remaster")
+    compare_item.external_ids = barcode
+
+    assert (
+        compare.compare_album_evidence(base_item, compare_item) == compare.AlbumMatchEvidence.MATCH
+    )
+
+    # the same corroboration applies when comparing against a minimized ItemMapping
+    mapping = media_items.ItemMapping(
+        item_id="3",
+        provider="test3",
+        name="Album A",
+        version="Deluxe 2022 Remaster",
+        external_ids=barcode,
+    )
+    assert (
+        compare.compare_album_evidence(base_item, mapping, strict=False)
+        == compare.AlbumMatchEvidence.MATCH
+    )
+
+    # a conflicting tracklist fingerprint still overrides the barcode corroboration
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=_tracklist(8), compare_tracks=_tracklist(14)
+        )
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )
 
 
 def test_compare_album_evidence_subset_wording_with_recording_conflict_is_no_match() -> None:
@@ -739,6 +820,14 @@ def test_compare_external_ids_checks_all_unique_values() -> None:
     assert compare.compare_external_ids(base_ids, compare_ids, ExternalID.MB_ALBUM) is True
 
 
+def test_compare_external_ids_truncated_barcode_matches_full_value() -> None:
+    """A truncated 13-digit GTIN-14 (Qobuz) matches another provider's full barcode."""
+    base_ids = {(ExternalID.BARCODE, "0060252758365")}
+    compare_ids = {(ExternalID.BARCODE, "00602527583655")}
+
+    assert compare.compare_external_ids(base_ids, compare_ids, ExternalID.BARCODE) is True
+
+
 def test_compare_track() -> None:  # noqa: PLR0915
     """Test track comparison."""
     track_a = media_items.Track(
@@ -910,11 +999,51 @@ def test_compare_track() -> None:  # noqa: PLR0915
     assert compare.compare_track(track_a, track_b) is True
 
 
+def test_compare_track_missing_disc_number_assumes_disc_one() -> None:
+    """A track without a disc number tag still makes the exact albumtrack match on disc 1."""
+
+    def _albumtrack(item_id: str, provider: str, disc_number: int) -> media_items.Track:
+        return media_items.Track(
+            item_id=item_id,
+            provider=provider,
+            name="Track A",
+            duration=300,
+            disc_number=disc_number,
+            track_number=5,
+            artists=media_items.UniqueList(
+                [media_items.ItemMapping(item_id="1", provider=provider, name="Artist A")]
+            ),
+            album=media_items.ItemMapping(item_id="1", provider=provider, name="Album A"),
+            provider_mappings={
+                media_items.ProviderMapping(
+                    item_id=item_id, provider_domain=provider, provider_instance=provider
+                )
+            },
+        )
+
+    untagged = _albumtrack("1", "test1", disc_number=0)
+    disc_one = _albumtrack("2", "test2", disc_number=1)
+    # durations differ beyond every fallback tolerance: only the albumtrack path can match
+    disc_one.duration = 320
+    assert compare.compare_track(untagged, disc_one) is True
+
+    # an unknown disc number only ever assumes disc 1, never a higher disc
+    disc_two = _albumtrack("3", "test2", disc_number=2)
+    disc_two.duration = 320
+    assert compare.compare_track(untagged, disc_two) is False
+
+
 def test_compare_strings_case_insensitive_fuzzy() -> None:
     """Test that non-strict fuzzy matching is fully case-insensitive."""
     # These differ slightly ("Feat." vs "FT.") so create_safe_string won't match,
     # falling through to SequenceMatcher which must compare both strings lowered.
     assert compare.compare_strings("Track Feat. John", "TRACK FT. JOHN", strict=False) is True
+
+
+def test_loose_compare_strings_containment_both_directions() -> None:
+    """Partial containment matches regardless of which side has the extra wording."""
+    assert compare.loose_compare_strings("Some Track", "Some Track (Acoustic)") is True
+    assert compare.loose_compare_strings("Some Track (Acoustic)", "Some Track") is True
 
 
 def test_compare_radio() -> None:
