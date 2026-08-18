@@ -34,14 +34,22 @@ its local HTTP + WebSocket API. Music Assistant needs **no** Spotify Web API cre
 
 ### Key components
 
-- **go-librespot subprocess** (`_daemon_runner`): launched with `--config_dir <cache_dir>`;
-  decodes the Ogg Vorbis stream and writes raw PCM to its **stdout** (`audio_backend: pipe`,
-  `audio_output_pipe: /dev/stdout`). Exposes a loopback HTTP + WebSocket API on a free port,
-  one per instance. Supervised — restarts on exit, `unload_with_error`s after repeated failures.
-- **`GoLibrespotClient`** (`client.py`): REST control (`POST /player/{resume,pause,next,prev,
-  seek,volume,play}`) plus the `/events` WebSocket, which pushes `{"type": ..., "data": ...}`
-  messages for session/playback/metadata/volume state. `204 No Content` means "no active
-  session" and is treated as a no-op.
+- **`SpotifyConnectProvider`** (`provider.py`): the MA-facing half — AudioSource and
+  StreamDetails, target-player selection and the queue claim, the play_media debounce,
+  take-back-playback, volume sync policy and live StreamMetadata. Backend-agnostic: it
+  consumes only the normalized `BackendEvent`s defined in `models.py` and drives playback
+  through the `SpotifyConnectBackend` contract (`backends/base.py`: start/stop, play/resume/
+  pause/next/previous/seek/set_volume, audio formats and a PCM chunk-read API).
+- **go-librespot backend** (`backends/go_librespot.py`, `_daemon_runner`): launches the daemon
+  with `--config_dir <cache_dir>`; it decodes the Ogg Vorbis stream and writes raw PCM to its
+  **stdout** (`audio_backend: pipe`, `audio_output_pipe: /dev/stdout`). Exposes a loopback
+  HTTP + WebSocket API on a free port, one per instance. Supervised — restarts on exit, emits
+  a fatal event (→ `unload_with_error`) after repeated failures. Translates the raw websocket
+  events into normalized `BackendEvent`s.
+- **`GoLibrespotClient`** (`clients/go_librespot.py`): REST control (`POST /player/{resume,pause,
+  next,prev,seek,volume,play}`) plus the `/events` WebSocket, which pushes `{"type": ...,
+  "data": ...}` messages for session/playback/metadata/volume state. `204 No Content` means
+  "no active session" and is treated as a no-op.
 - **AudioSource MediaItem**: a single live item browsable under the global "Live Inputs" node,
   played through the standard `play_media` flow (like a radio station). `exclusive=True`,
   `allow_external_trigger=True`. Transport capabilities are statically enabled — go-librespot's
@@ -95,8 +103,9 @@ recognising the same device); zeroconf enabled (advertised on the streams bind i
 
 ## Event handling
 
-A self-healing WebSocket listener (`_events_runner`) reconnects across daemon restarts and
-dispatches `/events` messages:
+A self-healing WebSocket listener (`_events_runner`, in the go-librespot backend) reconnects
+across daemon restarts, translates `/events` messages into normalized `BackendEvent`s and
+hands them to the provider, which acts on them:
 
 | Event | Action |
 |-------|--------|
