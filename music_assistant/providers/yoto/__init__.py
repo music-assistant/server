@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-import aiohttp
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -120,7 +119,7 @@ class YotoProvider(MusicProvider):
         """
         return Artist(
             item_id=prov_artist_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=prov_artist_id,
             provider_mappings={
                 ProviderMapping(
@@ -207,28 +206,6 @@ class YotoProvider(MusicProvider):
             can_seek=True,
         )
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
-        """
-        Return the audio stream for multi-track chapters.
-
-        :param streamdetails: StreamDetails object containing stream info.
-        :param seek_position: Seek position in seconds.
-        """
-        if streamdetails.stream_type != StreamType.CUSTOM or not isinstance(
-            streamdetails.data, dict
-        ):
-            return
-
-        for url in streamdetails.data.get("track_urls", []):
-            async with self.mass.http_session.get(
-                url, timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.content.iter_chunked(64 * 1024):
-                    yield chunk
-
     def _parse_album(self, card: YotoCard) -> Album:
         """
         Parse Yoto card into a Music Assistant Album.
@@ -300,11 +277,10 @@ class YotoProvider(MusicProvider):
                 t.duration for t in chapter.tracks.values() if isinstance(t.duration, (int, float))
             )
 
-        chapter_cover = chapter.icon
         album_cover = (
             album.metadata.images[0].path if (album.metadata and album.metadata.images) else None
         )
-        track_cover = chapter_cover or album_cover
+        track_cover = album_cover if album_cover else chapter.icon
 
         format_str = None
         if chapter.tracks:

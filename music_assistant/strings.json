@@ -395,6 +395,10 @@
       "description": "Authenticate using browser cookies from passport.yandex.ru.",
       "action_label": "Login with Cookies"
     },
+    "client_id": {
+      "label": "Client ID",
+      "description": "The OAuth application Client ID used for authentication"
+    },
     "remember_session": {
       "label": "Remember session (auto-refresh token)",
       "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires — toggling this off after logging in immediately drops the stored long-lived tokens."
