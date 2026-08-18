@@ -263,10 +263,11 @@ async def test_reconcile_duplicate_albums_selects_siblings_whatever_the_edition(
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
 
 
+@pytest.mark.parametrize(("first_title", "second_title"), [("!!!", "!!!"), ("( )", "()")])
 async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the_same(
-    mass: MusicAssistant,
+    mass: MusicAssistant, first_title: str, second_title: str
 ) -> None:
-    """Titles that normalize to nothing still pair up when their raw spelling matches."""
+    """Titles that normalize to nothing pair up on their raw spelling, ignoring spacing."""
     artist = await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
@@ -279,10 +280,32 @@ async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the
             },
         )
     )
-    first = await _add_album(mass, "!!!", artist, provider_instance="spotify_1")
-    second = await _add_album(mass, "!!!", artist, provider_instance="qobuz_1")
+    first = await _add_album(mass, first_title, artist, provider_instance="spotify_1")
+    second = await _add_album(mass, second_title, artist, provider_instance="qobuz_1")
 
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+async def test_reconcile_duplicate_albums_ignores_other_albums_by_the_same_artist(
+    mass: MusicAssistant,
+) -> None:
+    """Sharing an artist is not enough; the titles have to match too."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Radiohead",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    await _add_album(mass, "Kid A", artist, provider_instance="spotify_1")
+    await _add_album(mass, "Amnesiac", artist, provider_instance="qobuz_1")
+
+    assert await _reconciled_ids(mass) == set()
 
 
 async def test_reconcile_duplicate_albums_ignores_same_title_by_other_artist(
