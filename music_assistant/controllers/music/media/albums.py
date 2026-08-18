@@ -52,6 +52,17 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz.models import MusicBrainzBarcodeRelease
 
 
+# expected failures from a provider album-track lookup: a missing item or a transient
+# provider/transport outage. Either leaves that tracklist unavailable so the (best-effort,
+# multi-provider) match can continue rather than aborting the whole operation.
+_ALBUM_TRACK_LOOKUP_ERRORS = (
+    MediaNotFoundError,
+    RetriesExhausted,
+    TimeoutError,
+    aiohttp.ClientError,
+)
+
+
 @dataclass
 class _BaseTracksMemo:
     """Single-slot memo for a base album tracklist, shared across match candidates."""
@@ -719,8 +730,14 @@ class AlbumsController(MediaControllerBase[Album]):
             compare_tracks = await self._get_provider_album_tracks(
                 prov_album.item_id, prov_album.provider
             )
-        except MediaNotFoundError:
-            # the candidate tracklist is gone: treat it as absent and let MusicBrainz decide
+        except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+            # the candidate tracklist is unavailable: treat it as absent and let MusicBrainz decide
+            self.logger.debug(
+                "Album tracks unavailable for %s on %s: %s",
+                prov_album.item_id,
+                prov_album.provider,
+                err,
+            )
             compare_tracks = []
         evidence = compare_album_evidence(
             db_album,
@@ -776,7 +793,14 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_tracks = await self._get_provider_album_tracks(
                     mapping.item_id, mapping.provider_instance
                 )
-            except MediaNotFoundError:
+            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+                # this mapping's tracklist is unavailable: try the next existing mapping
+                self.logger.debug(
+                    "Base album tracks unavailable for %s on %s: %s",
+                    mapping.item_id,
+                    mapping.provider_instance,
+                    err,
+                )
                 continue
             if album_tracks_have_positions(provider_tracks):
                 return provider_tracks

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import ExternalID
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -178,7 +178,7 @@ def _harness(
     *,
     search_results: Sequence[Album],
     provider_items: dict[str, Album],
-    provider_album_tracks: dict[str, list[Track] | MediaNotFoundError] | None = None,
+    provider_album_tracks: dict[str, list[Track] | Exception] | None = None,
     musicbrainz: Mock | None = None,
     loaded_instances: Sequence[str] = ("tidal_1",),
     provider_registry: dict[str, Mock] | None = None,
@@ -218,7 +218,7 @@ def _harness(
 
     async def _album_tracks(item_id: str, _provider: str) -> list[Track]:
         result = album_tracks.get(item_id, [])
-        if isinstance(result, MediaNotFoundError):
+        if isinstance(result, Exception):
             raise result
         return list(result)
 
@@ -410,6 +410,33 @@ async def test_base_mapping_not_found_is_skipped() -> None:
     assert harness.album_track_calls() == ["gone", "ok", "s1"]
 
 
+async def test_base_mapping_transient_error_is_skipped() -> None:
+    """A transient base tracklist failure skips to the next mapping."""
+    base = _library_album(
+        version="2022 Remaster",
+        mappings=[
+            ProviderMapping(item_id="flaky", provider_domain="aaa", provider_instance="aaa_1"),
+            ProviderMapping(item_id="ok", provider_domain="bbb", provider_instance="bbb_1"),
+        ],
+    )
+    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster")
+    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster")
+    with _harness(
+        search_results=[sparse],
+        provider_items={"s1": full},
+        provider_album_tracks={
+            "flaky": RetriesExhausted("flaky"),
+            "ok": _tracklist(14),
+            "s1": _tracklist(14),
+        },
+        loaded_instances=("aaa_1", "bbb_1"),
+    ) as harness:
+        matches = await harness.ctrl.match_provider(base, _provider())
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    assert harness.album_track_calls() == ["flaky", "ok", "s1"]
+
+
 async def test_base_mapping_skipped_when_exact_instance_not_loaded() -> None:
     """A mapping whose exact instance is not loaded is skipped, never a same-domain fallback."""
     base = _library_album(
@@ -446,6 +473,24 @@ async def test_candidate_tracklist_not_found_falls_through_to_musicbrainz() -> N
         search_results=[sparse],
         provider_items={"s1": full},
         provider_album_tracks={"base-prov": _tracklist(14), "s1": MediaNotFoundError("s1")},
+        musicbrainz=musicbrainz,
+    ) as harness:
+        matches = await harness.ctrl.match_provider(base, _provider())
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    musicbrainz.get_releases_by_barcode.assert_awaited()
+
+
+async def test_candidate_tracklist_transient_error_falls_through_to_musicbrainz() -> None:
+    """A transient candidate tracklist failure is treated as absent so MusicBrainz can decide."""
+    musicbrainz = _mb(**{BASE_BARCODE: [_mb_release("rel-1", "rg-1")]})
+    base = _library_album(version="2022 Remaster", barcodes=[BASE_BARCODE])
+    sparse = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[BASE_BARCODE])
+    full = _album("s1", "spotify_1", version="Deluxe 2022 Remaster", barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[sparse],
+        provider_items={"s1": full},
+        provider_album_tracks={"base-prov": _tracklist(14), "s1": TimeoutError()},
         musicbrainz=musicbrainz,
     ) as harness:
         matches = await harness.ctrl.match_provider(base, _provider())
