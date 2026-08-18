@@ -1465,25 +1465,42 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             # We use the 'initialized' attribute to indicate that the player
             # is still in the process of being registered so we can filter it out where needed.
             self._players[player_id] = player
-            # update state to ensure player.state reflects the final attributes
-            # (e.g. player type) set after super().__init__() in the player subclass,
-            # before we fetch config (which relies on state.type for entry resolution)
-            player.update_state(signal_event=False)
-            # ensure we fetch and set the latest/full config for the player
-            player_config = await self.mass.config.get_player_config(player_id)
-            if self._registration_aborted(player):
-                return
-            player.set_config(player_config)
-            # update state again now that config is loaded
-            player.update_state(signal_event=False)
-            self._save_underlying_player_id(player)
-            # call hook after the player is registered and config is set
-            await player.on_config_updated()
-            if self._registration_aborted(player):
-                return
+            try:
+                # update state to ensure player.state reflects the final attributes
+                # (e.g. player type) set after super().__init__() in the player subclass,
+                # before we fetch config (which relies on state.type for entry resolution)
+                player.update_state(signal_event=False)
+                # ensure we fetch and set the latest/full config for the player
+                player_config = await self.mass.config.get_player_config(player_id)
+                if self._registration_aborted(player):
+                    return
+                player.set_config(player_config)
+                # update state again now that config is loaded
+                player.update_state(signal_event=False)
+                self._save_underlying_player_id(player)
+                # call hook after the player is registered and config is set
+                await player.on_config_updated()
+                if self._registration_aborted(player):
+                    return
 
-            # Handle protocol linking
-            self._evaluate_protocol_links(player)
+                # Handle protocol linking
+                self._evaluate_protocol_links(player)
+            except Exception, asyncio.CancelledError:
+                # a player whose setup failed never becomes initialized, which hides it
+                # everywhere while it keeps blocking every later registration of the same id.
+                # Cancellation counts too: a re-triggered provider discovery aborts the task
+                # this runs in. Only roll back while the player is still ours: an unregister
+                # may have dropped it already, and it unloads the player itself.
+                if self._players.get(player_id) is player:
+                    del self._players[player_id]
+                    # players claim resources in their constructor (event subscriptions,
+                    # connections) that only on_unload releases. Best-effort, so a failing
+                    # teardown cannot mask the error that got us here.
+                    try:
+                        await player.on_unload()
+                    except Exception:
+                        self.logger.exception("Error unloading player %s", player.name)
+                raise
 
             # now we're ready to signal the player is added and available
             player.set_initialized()
