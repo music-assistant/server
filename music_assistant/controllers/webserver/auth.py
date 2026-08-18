@@ -1248,10 +1248,15 @@ class AuthenticationManager:
             updates["provider_filter"] = json_dumps(provider_filter)
 
         if updates:
-            await self.database.update("users", {"user_id": target_user.user_id}, updates)
-            self.webserver.update_active_user_filters(
-                target_user.user_id, player_filter=player_filter, provider_filter=provider_filter
-            )
+            # the lock the automatic rewrites take as well, so a player or provider that is
+            # being removed cannot overwrite the filters an admin just saved
+            async with self._user_filter_lock:
+                await self.database.update("users", {"user_id": target_user.user_id}, updates)
+                self.webserver.update_active_user_filters(
+                    target_user.user_id,
+                    player_filter=player_filter,
+                    provider_filter=provider_filter,
+                )
             # Refresh target user to get updated filters
             refreshed_user = await self.get_user(target_user.user_id)
             if not refreshed_user:
