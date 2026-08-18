@@ -17,6 +17,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.helpers.pulse_capture import volume_pct_to_amplitude
 from music_assistant.helpers.util import join_task
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
@@ -40,7 +41,6 @@ from .constants import (
     DEVICE_UUID_NAMESPACE,
     VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
-    volume_pct_to_amplitude,
 )
 
 if sys.platform == "linux":
