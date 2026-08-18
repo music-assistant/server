@@ -1014,7 +1014,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             msg = "Cannot merge a library item into itself"
             raise InvalidDataError(msg)
         async with self._db_add_lock:
-            return await self._merge_library_items(target_id, source_id)
+            return await self._merge_library_items_batched(target_id, source_id)
 
     @final
     async def add_provider_mappings(
@@ -1048,7 +1048,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     conflicting_item.item_id,
                     library_item.item_id,
                 )
-                library_item = await self._merge_library_items(db_id, int(conflicting_item.item_id))
+                library_item = await self._merge_library_items_batched(
+                    db_id, int(conflicting_item.item_id)
+                )
 
             new_mappings = mappings.difference(library_item.provider_mappings)
             if not new_mappings:
@@ -2337,7 +2339,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         return sql_query
 
-    async def _merge_library_items(self, target_id: int, source_id: int) -> ItemCls:
+    async def _merge_library_items(self, target_id: int, source_id: int) -> tuple[ItemCls, ItemCls]:
         """Merge the source library item into the target while the controller lock is held."""
         target_item = await self.get_library_item(target_id)
         source_item = await self.get_library_item(source_id)
@@ -2401,6 +2403,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         finally:
             SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
 
+        return source_item, merged_item
+
+    async def _merge_library_items_batched(self, target_id: int, source_id: int) -> ItemCls:
+        """Merge library items while batching the transfer's database writes."""
+        async with self.mass.music.database.deferred_commit():
+            source_item, merged_item = await self._merge_library_items(target_id, source_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
             self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, source_item.uri, source_item)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, merged_item.uri, merged_item)
