@@ -188,6 +188,18 @@ WHERE (t1.item_id > :cursor_item_id_1
 ORDER BY t1.item_id, t2.item_id
 """
 
+# Returns the edition of every equally titled album the two tracks both appear on, so the
+# candidate pair can be held to agreeing on the edition and not just on the album title.
+_SHARED_ALBUM_EDITIONS_QUERY = f"""
+SELECT al1.version AS version_1, al2.version AS version_2
+FROM {DB_TABLE_ALBUM_TRACKS} at1
+JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
+JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = :item_id_2
+JOIN {DB_TABLE_ALBUMS} al2
+  ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
+WHERE at1.track_id = :item_id_1
+"""
+
 
 class MusicController(MusicDatabaseSetupMixin, CoreController):
     """Several helpers around the musicproviders."""
@@ -2755,6 +2767,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
 
+    async def _albums_agree_on_edition(self, item_id_1: int, item_id_2: int) -> bool:
+        """
+        Check that two tracks share an album whose edition matches as well as its title.
+
+        :param item_id_1: Library ID of the first track.
+        :param item_id_2: Library ID of the second track.
+        """
+        # the candidate query can only compare album titles, and an edition is held apart
+        # from the title: without this an original and its remaster or deluxe edition look
+        # like the same album whenever neither track carries a version of its own
+        rows = await self.database.get_rows_from_query(
+            _SHARED_ALBUM_EDITIONS_QUERY,
+            {"item_id_1": item_id_1, "item_id_2": item_id_2},
+        )
+        return any(compare_version(row["version_1"], row["version_2"]) for row in rows)
+
     async def _merge_duplicate_track_pair(self, item_id_1: int, item_id_2: int) -> bool:
         """
         Merge two candidate rows if they are confirmed to be the same track.
@@ -2771,6 +2799,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # explicitly: without it a remaster, remix or radio edit of equal length would be
         # accepted as the original.
         if not compare_version(track_1.version, track_2.version):
+            return False
+        if not await self._albums_agree_on_edition(item_id_1, item_id_2):
             return False
         if not compare_track(track_1, track_2, strict=False):
             return False

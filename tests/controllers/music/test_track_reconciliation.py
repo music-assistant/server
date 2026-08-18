@@ -106,29 +106,24 @@ async def _add_track(
     )
 
 
-async def _rename_to_duplicate(mass: MusicAssistant, track: Track) -> None:
+async def _make_titles_look_alike(mass: MusicAssistant, track: Track, title: str) -> None:
     """
-    Rewrite a track row's title to the shared duplicate title.
+    Give a track row its final title plus the shared normalized title.
 
-    Fixture tracks are inserted under unique names so that insert-time matching keeps them
-    as separate rows; this reproduces the end state of a library where matching failed.
+    Fixture tracks are inserted under unique titles so that insert-time matching keeps them
+    as separate rows; equalizing search_name afterwards reproduces the end state of a library
+    where that matching failed.
     """
+    normalized = create_safe_string(_DUPLICATE_NAME, True, True)
     await mass.music.database.update(
         DB_TABLE_TRACKS,
         {"item_id": int(track.item_id)},
         {
-            "name": _DUPLICATE_NAME,
-            "sort_name": _DUPLICATE_NAME.lower(),
-            "search_name": create_safe_string(_DUPLICATE_NAME, True, True),
-            "search_sort_name": create_safe_string(_DUPLICATE_NAME, True, True),
+            "name": title,
+            "sort_name": title.lower(),
+            "search_name": normalized,
+            "search_sort_name": normalized,
         },
-    )
-
-
-async def _set_track_title(mass: MusicAssistant, track: Track, name: str) -> None:
-    """Give a track row a raw title, leaving its normalized title untouched."""
-    await mass.music.database.update(
-        DB_TABLE_TRACKS, {"item_id": int(track.item_id)}, {"name": name}
     )
 
 
@@ -142,6 +137,8 @@ async def _build_duplicate_pair(
     second_album_name: str = "Shared Album",
     first_explicit: bool | None = None,
     second_explicit: bool | None = None,
+    first_title: str = _DUPLICATE_NAME,
+    second_title: str = _DUPLICATE_NAME,
 ) -> tuple[Track, Track]:
     """Create two same-titled library tracks that differ only as the parameters say."""
     artist_1 = await _add_artist(mass, "spotify_instance")
@@ -161,8 +158,8 @@ async def _build_duplicate_pair(
         track_number=second_track_number,
         explicit=second_explicit,
     )
-    await _rename_to_duplicate(mass, track_1)
-    await _rename_to_duplicate(mass, track_2)
+    await _make_titles_look_alike(mass, track_1, first_title)
+    await _make_titles_look_alike(mass, track_2, second_title)
     return track_1, track_2
 
 
@@ -221,12 +218,53 @@ async def test_merges_despite_disagreement_on_the_explicit_flag(mass: MusicAssis
         await mass.music.tracks.get_library_item(track_2.item_id)
 
 
+async def test_keeps_an_album_edition_apart_from_the_original(mass: MusicAssistant) -> None:
+    """An edition lives on the album, not the track, so equal track titles are not enough."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    album_id = (
+        await mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(track_2.item_id)}
+        )
+    )[0]["album_id"]
+    await mass.music.database.update(
+        DB_TABLE_ALBUMS, {"item_id": album_id}, {"version": "2014 Remaster"}
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_merges_across_an_ignorable_album_edition(mass: MusicAssistant) -> None:
+    """A quality label like Hi-Res is not a different edition, so it must not block a merge."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    album_id = (
+        await mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(track_2.item_id)}
+        )
+    )[0]["album_id"]
+    await mass.music.database.update(
+        DB_TABLE_ALBUMS, {"item_id": album_id}, {"version": "Hi-Res Version"}
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 async def test_keeps_differently_titled_tracks_apart(mass: MusicAssistant) -> None:
     """Titles that only look alike once normalized still have to survive the full compare."""
-    track_1, track_2 = await _build_duplicate_pair(mass)
-    # both normalize to the same search_name, so the candidate query pairs them up
-    await _set_track_title(mass, track_1, "Song, One")
-    await _set_track_title(mass, track_2, "Song One!")
+    # both titles normalize to the same search_name, so the candidate query pairs them up
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, first_title="Song, One", second_title="Song One!"
+    )
 
     await mass.music._reconcile_duplicate_tracks()
 
