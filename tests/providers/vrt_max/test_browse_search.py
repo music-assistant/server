@@ -7,15 +7,17 @@ from unittest.mock import AsyncMock
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import BrowseFolder, Podcast, Radio
 
-from music_assistant.providers.vrt_max import (
+from music_assistant.providers.vrt_max.constants import (
     BROWSE_PODCASTS,
     BROWSE_RADIO_PROGRAMS,
     BROWSE_RADIOS,
+)
+from music_assistant.providers.vrt_max.helpers import STATIONS, VrtEpisode, VrtProgramTile, VrtRow
+from music_assistant.providers.vrt_max.provider import (
     VrtMaxProvider,
     _encode,
     _program_id_from_episode,
 )
-from music_assistant.providers.vrt_max.helpers import STATIONS, VrtEpisode, VrtProgramTile, VrtRow
 
 from .conftest import async_gen
 

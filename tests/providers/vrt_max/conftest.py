@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 from music_assistant_models.enums import ProviderType
 
-from music_assistant.providers.vrt_max import SUPPORTED_FEATURES, VrtMaxProvider
+from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 from tests.common import use_real_create_task
 
 _T = TypeVar("_T")
@@ -31,7 +31,7 @@ def provider() -> VrtMaxProvider:
     config.name = "VRT MAX"
     config.enabled = True
     config.get_value.side_effect = lambda key, default=None: {}.get(key, default)
-    prov = VrtMaxProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    prov = VrtMaxProvider(mass, manifest, config)
     prov._client = MagicMock()
     prov._auth = Mock()
     prov._auth.enabled = False

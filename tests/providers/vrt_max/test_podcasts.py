@@ -9,7 +9,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ItemMapping
 
-from music_assistant.providers.vrt_max import _MAX_TRACKLIST_EPISODES, VrtMaxProvider
+from music_assistant.providers.vrt_max.constants import MAX_TRACKLIST_EPISODES
 from music_assistant.providers.vrt_max.helpers import (
     VrtApiError,
     VrtChapter,
@@ -18,6 +18,7 @@ from music_assistant.providers.vrt_max.helpers import (
     VrtProgram,
     VrtSeason,
 )
+from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 
 from .conftest import async_gen, async_gen_then_raise
 
@@ -117,7 +118,7 @@ async def test_get_podcast_episodes_podcast_has_no_tracklist(provider: VrtMaxPro
 
 
 async def test_get_podcast_episodes_caps_tracklist_fetches(provider: VrtMaxProvider) -> None:
-    """Tracklist attachment is capped at _MAX_TRACKLIST_EPISODES, even for a long archive."""
+    """Tracklist attachment is capped at MAX_TRACKLIST_EPISODES, even for a long archive."""
     program = VrtProgram(
         RADIO_PROGRAM_ID, "Show", seasons=(VrtSeason(title="S1", component_id="comp-s1"),)
     )
@@ -133,10 +134,10 @@ async def test_get_podcast_episodes_caps_tracklist_fetches(provider: VrtMaxProvi
     episodes = [ep async for ep in provider.get_podcast_episodes(RADIO_PROGRAM_ID)]
 
     assert len(episodes) == 60
-    assert provider._client.get_episode_chapters.call_count == _MAX_TRACKLIST_EPISODES
-    for episode in episodes[:_MAX_TRACKLIST_EPISODES]:
+    assert provider._client.get_episode_chapters.call_count == MAX_TRACKLIST_EPISODES
+    for episode in episodes[:MAX_TRACKLIST_EPISODES]:
         assert episode.metadata.chapters is not None
-    for episode in episodes[_MAX_TRACKLIST_EPISODES:]:
+    for episode in episodes[MAX_TRACKLIST_EPISODES:]:
         assert episode.metadata.chapters is None
 
 

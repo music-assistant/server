@@ -7,8 +7,8 @@ from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Radio
 
-from music_assistant.providers.vrt_max import VrtMaxProvider
 from music_assistant.providers.vrt_max.helpers import STATIONS, STATIONS_BY_ID
+from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 
 
 def test_stations_table_integrity() -> None:

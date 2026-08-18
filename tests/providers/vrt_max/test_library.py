@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock
 import pytest
 from music_assistant_models.enums import MediaType
 
-from music_assistant.providers.vrt_max import VrtMaxProvider
 from music_assistant.providers.vrt_max.helpers import (
     STATIONS_BY_ID,
     VrtApiError,
     VrtNotFoundError,
     VrtProgram,
 )
+from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 
 from .conftest import async_gen
 

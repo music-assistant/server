@@ -8,7 +8,6 @@ import pytest
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 
-from music_assistant.providers.vrt_max import VrtMaxProvider
 from music_assistant.providers.vrt_max.helpers import (
     VrtApiError,
     VrtAuthError,
@@ -16,6 +15,7 @@ from music_assistant.providers.vrt_max.helpers import (
     VrtResumeTarget,
     VrtStreamInfo,
 )
+from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 
 EPISODE_ID = "/vrtmax/podcasts/radio-1/h/pod/1/1--ep/"
 

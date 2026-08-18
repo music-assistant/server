@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from music_assistant.providers.vrt_max import (
+from music_assistant.providers.vrt_max.provider import (
     _decode,
     _encode,
     _has_tracklist,
