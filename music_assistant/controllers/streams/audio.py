@@ -43,6 +43,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    ProviderFeature,
     ProviderType,
     StreamType,
     VolumeNormalizationMode,
@@ -100,6 +101,7 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
     STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
@@ -426,6 +428,7 @@ class StreamsAudio:
         seek_position_ms: int = 0,
         reason: str = "",
         capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
+        allow_provider_match: bool = True,
     ) -> AudioBuffer:
         """
         Return a ready AudioBuffer for the given queue item.
@@ -437,6 +440,8 @@ class StreamsAudio:
         :param seek_position_ms: Position in milliseconds to start from.
         :param reason: Caller context for logging (e.g. 'prepare_next', 'streaming').
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
+        :param allow_provider_match: Whether an on-demand cross-provider match may widen
+            the candidates when all are saturated.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
@@ -445,7 +450,7 @@ class StreamsAudio:
             self._audio_buffer_locks[lock_key] = buffer_lock
         async with buffer_lock:
             return await self._get_audio_buffer(
-                queue_item, seek_position_ms, reason, capacity_wait_timeout
+                queue_item, seek_position_ms, reason, capacity_wait_timeout, allow_provider_match
             )
 
     async def get_media_stream(
@@ -2744,6 +2749,7 @@ class StreamsAudio:
         seek_position_ms: int,
         reason: str,
         capacity_wait_timeout: float,
+        allow_provider_match: bool,
     ) -> AudioBuffer:
         """
         Create or reuse a ready AudioBuffer within one queue-item preparation lock.
@@ -2752,6 +2758,8 @@ class StreamsAudio:
         :param seek_position_ms: Position in milliseconds to start from.
         :param reason: Caller context for logging.
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
+        :param allow_provider_match: Whether an on-demand cross-provider match may widen
+            the candidates when all are saturated.
         """
         loop = asyncio.get_running_loop()
         # the playback intent lives on the details we start from; keep it across a reselection
@@ -2775,6 +2783,13 @@ class StreamsAudio:
         }
         if initial_streamdetails is not None:
             all_candidate_instances.add(initial_streamdetails.provider)
+        # a track may also exist on streaming providers it has no mapping for yet; such a
+        # match is only searched once, and only when every known candidate is saturated
+        match_pending = (
+            allow_provider_match
+            and isinstance(queue_item.media_item, Track)
+            and self._has_alternative_match_providers(queue_item.media_item)
+        )
 
         deadline = loop.time() + capacity_wait_timeout
         busy_instances: set[str] = set()
@@ -2818,7 +2833,9 @@ class StreamsAudio:
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
             source_wait = (
-                0.0 if (not final_pass and (alternatives_left or busy_instances)) else remaining
+                0.0
+                if (not final_pass and (alternatives_left or busy_instances or match_pending))
+                else remaining
             )
             try:
                 return await AudioBuffer.get_buffer(
@@ -2836,9 +2853,18 @@ class StreamsAudio:
                 if final_pass or loop.time() >= deadline:
                     raise
                 if all_candidate_instances.issubset(busy_instances):
-                    # every candidate is saturated: one last blocking wait on the best one
-                    busy_instances.clear()
-                    final_pass = True
+                    discovered: set[str] = set()
+                    if match_pending:
+                        match_pending = False
+                        discovered = await self._discover_alternative_provider_mappings(
+                            queue_item, busy_instances, max(deadline - loop.time(), 0)
+                        )
+                    if discovered:
+                        all_candidate_instances.update(discovered)
+                    else:
+                        # every candidate is saturated: one last blocking wait on the best one
+                        busy_instances.clear()
+                        final_pass = True
                 queue_item.streamdetails = None
             except AudioError:
                 if last_capacity_error is None or final_pass:
@@ -2916,6 +2942,112 @@ class StreamsAudio:
         if not providers:
             self.logger.debug("Skipping %s - provider not available", mapping)
         return providers
+
+    def _is_match_candidate_provider(
+        self, provider: MusicProvider, known_domains: set[str]
+    ) -> bool:
+        """
+        Return whether a provider is eligible to search a track match on.
+
+        :param provider: Music provider to check.
+        :param known_domains: Provider domains the track already has mappings for.
+        """
+        return (
+            provider.available
+            and provider.is_streaming_provider
+            and ProviderFeature.SEARCH in provider.supported_features
+            and provider.domain not in known_domains
+            and self.mass.music.library_supported(provider, MediaType.TRACK)
+        )
+
+    def _has_alternative_match_providers(self, media_item: Track) -> bool:
+        """
+        Return whether any configured streaming provider could carry an unmapped match.
+
+        :param media_item: Track whose existing mappings define the known provider domains.
+        """
+        known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
+        return any(
+            self._is_match_candidate_provider(provider, known_domains)
+            for provider in self.mass.music.providers
+        )
+
+    async def _discover_alternative_provider_mappings(
+        self, queue_item: QueueItem, busy_instances: set[str], remaining: float
+    ) -> set[str]:
+        """
+        Search other streaming providers for the queue item's track and widen its mappings.
+
+        A found mapping is added to the media item (and persisted for library items) so the
+        capacity reselection can continue on the discovered provider.
+
+        :param queue_item: Queue item whose track should be matched on another provider.
+        :param busy_instances: Provider instances already known to be saturated.
+        :param remaining: Seconds left of the caller's capacity budget.
+        :return: Provider instances able to serve the discovered mappings.
+        """
+        media_item = queue_item.media_item
+        if not isinstance(media_item, Track):
+            return set()
+        known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
+        candidates: list[MusicProvider] = []
+        for provider in self.mass.music.providers:
+            if (
+                not self._is_match_candidate_provider(provider, known_domains)
+                or provider.instance_id in busy_instances
+                or not provider.has_available_stream_slot
+            ):
+                continue
+            # one instance per domain: a found mapping widens to sibling instances anyway
+            known_domains.add(provider.domain)
+            candidates.append(provider)
+        if not candidates:
+            return set()
+        # mirror the playback user's provider steering for the search order
+        if (
+            (pq_data := self.mass.player_queues.queue_data_or_none(queue_item.queue_id))
+            and pq_data.userid
+            and (playback_user := await self.mass.webserver.auth.get_user(pq_data.userid))
+            and playback_user.provider_filter
+        ):
+            preferred = set(playback_user.provider_filter)
+            candidates.sort(key=lambda provider: provider.instance_id not in preferred)
+        matches: list[ProviderMapping] = []
+        try:
+            async with asyncio.timeout(min(STREAM_SLOT_MATCH_TIMEOUT, remaining)):
+                for provider in candidates:
+                    if matches := await self.mass.music.tracks.match_provider(
+                        media_item, provider, strict=True
+                    ):
+                        break
+        except (TimeoutError, MusicAssistantError, aiohttp.ClientError) as err:
+            self.logger.debug(
+                "Searching an alternative provider for %s failed: %s", media_item.name, err
+            )
+        if not matches:
+            return set()
+        media_item.provider_mappings.update(matches)
+        if media_item.provider == "library":
+            try:
+                # persist so future plays have the mapping ahead of time
+                await self.mass.music.tracks.add_provider_mappings(media_item.item_id, matches)
+            except MusicAssistantError as err:
+                # a failed write-back must not fail the rescue; the mapping still
+                # serves this playback from memory
+                self.logger.warning(
+                    "Failed to persist discovered mapping for %s: %s", media_item.name, err
+                )
+        self.logger.info(
+            "All known sources for %s are at their stream limit, "
+            "using a matching track found on %s",
+            media_item.name,
+            matches[0].provider_domain,
+        )
+        return {
+            provider.instance_id
+            for mapping in matches
+            for provider in self._get_mapping_providers(mapping)
+        }
 
     async def _request_streamdetails(
         self,

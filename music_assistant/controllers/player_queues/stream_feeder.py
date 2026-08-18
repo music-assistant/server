@@ -77,6 +77,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item,
                     reason="prepare_next",
                     capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+                    # speculative preparation gives up softly, so it must stay cheap:
+                    # leave the cross-provider search to the actual playback start
+                    allow_provider_match=False,
                 )
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
