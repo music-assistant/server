@@ -76,9 +76,12 @@ async def test_stream_slot_is_scoped_per_provider_instance() -> None:
     async with first.acquire_stream_slot(0.1):
         assert not first.has_available_stream_slot
         assert second.has_available_stream_slot
-        with pytest.raises(ProviderStreamLimitError):
+        with pytest.raises(ProviderStreamLimitError) as exc_info:
             async with first.acquire_stream_slot(0):
                 pytest.fail("A second source slot was unexpectedly acquired")
+        # the error must carry the localizable reason (provider name + limit) for API clients
+        assert exc_info.value.translation_key == "provider_stream_limit"
+        assert exc_info.value.translation_args == ["Test Provider", 1]
 
     assert first.has_available_stream_slot
 
