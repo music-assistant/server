@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import fields
 from typing import cast
 from unittest.mock import MagicMock
@@ -10,10 +11,11 @@ from music_assistant_models.enums import EventType, ProviderType
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderInstance
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.provider import Provider
 
 
-def _make_base_provider() -> Provider:
+def _make_base_provider(log_level: str = "GLOBAL") -> Provider:
     """Construct a minimal base Provider with stubbed mass/manifest/config."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -22,7 +24,7 @@ def _make_base_provider() -> Provider:
     config = MagicMock()
     config.name = "Test Provider"
     config.instance_id = "test_instance"
-    config.get_value = MagicMock(return_value="GLOBAL")
+    config.get_value = MagicMock(return_value=log_level)
     return Provider(mass, manifest, config, supported_features=set())
 
 
@@ -91,3 +93,45 @@ def test_unload_with_error_forwards_exception() -> None:
     mass.call_later.assert_called_once_with(
         1, mass.unload_provider_with_error, "test_instance", err
     )
+
+
+async def test_config_change_arms_the_reload_under_the_load_task_id() -> None:
+    """A config change arms the reload so a (re)load starting first cancels it."""
+    provider = _make_base_provider()
+    config = MagicMock()
+    config.instance_id = "test_instance"
+    await provider.update_config(config, {"values/some_setting"})
+    mass = cast("MagicMock", provider.mass)
+    mass.call_later.assert_called_once_with(
+        1, mass.load_provider_config, config, task_id="load_provider_test_instance"
+    )
+
+
+def test_verbose_log_level_stays_scoped_to_the_provider() -> None:
+    """A provider on VERBOSE logs its own records without un-gating unrelated loggers."""
+    logging.addLevelName(VERBOSE_LOG_LEVEL, "VERBOSE")
+    root_logger = logging.getLogger()
+    # a library that never gets an explicit level, so it follows the root logger
+    third_party_logger = logging.getLogger("test_unconfigured_library")
+    emitted: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            emitted.append(record.name)
+
+    handler = _CaptureHandler()
+    previous_root_level = root_logger.level
+    root_logger.setLevel(logging.INFO)
+    try:
+        provider = _make_base_provider("VERBOSE")
+        assert provider.logger.level == VERBOSE_LOG_LEVEL
+        assert root_logger.level == logging.INFO
+        assert not third_party_logger.isEnabledFor(logging.DEBUG)
+
+        # the provider's own records must still reach the root handlers
+        root_logger.addHandler(handler)
+        provider.logger.log(VERBOSE_LOG_LEVEL, "verbose record")
+        assert emitted == [provider.logger.name]
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(previous_root_level)

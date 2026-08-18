@@ -22,26 +22,6 @@ INSTANCE_ID = "tidal_test"
 
 
 @pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider for manager-level tests."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.country_code = "US"
-    provider.api = AsyncMock()
-    provider.logger = Mock()
-
-    # Mock mass
-    provider.mass = Mock()
-    provider.mass.config.get_provider_configs = AsyncMock(return_value=[])
-    provider.mass.metadata.locale = "en_US"
-    provider.mass.cache.set = AsyncMock()
-
-    return provider
-
-
-@pytest.fixture
 def recommendation_manager(provider_mock: Mock) -> TidalRecommendationManager:
     """Return a TidalRecommendationManager instance."""
     return TidalRecommendationManager(provider_mock)
@@ -217,6 +197,33 @@ async def test_manager_builds_payload_folders(
 
         # Should fetch pages
         assert mock_get_page.call_count >= 1
+
+
+async def test_manager_filters_out_video_modules(
+    recommendation_manager: TidalRecommendationManager,
+) -> None:
+    """Test video modules never surface, by VIDEO_LIST type or a video-mentioning title."""
+    parser = Mock()
+    parser.modules = [
+        {"title": "Video Playlists", "type": "PLAYLIST_LIST"},  # title-based drop
+        {"title": "New Videos", "type": "VIDEO_LIST"},  # both
+        {"title": "Clips", "type": "VIDEO_LIST"},  # type-based drop
+        {"title": "Playlists", "type": "PLAYLIST_LIST"},  # survives
+    ]
+    parser.get_module_items.return_value = (
+        [Mock(item_id="p1", name="P1")],
+        MediaType.PLAYLIST,
+    )
+
+    with patch.object(
+        recommendation_manager, "get_page_content", new_callable=AsyncMock
+    ) as mock_get_page:
+        mock_get_page.return_value = parser
+
+        recommendations = await recommendation_manager.get_recommendations()
+
+    names = {r.name for r in recommendations}
+    assert names == {"Playlists"}
 
 
 async def test_manager_strips_at_symbol_when_multiple_instances(

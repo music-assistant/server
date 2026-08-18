@@ -29,8 +29,10 @@ from music_assistant_models.errors import InvalidCommand, MusicAssistantError
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
@@ -192,6 +194,7 @@ class SqueezelitePlayer(Player):
             CONF_ENTRY_DISPLAY,
             CONF_ENTRY_VISUALIZATION,
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
 
     async def volume_set(self, volume_level: int) -> None:
@@ -322,9 +325,7 @@ class SqueezelitePlayer(Player):
         # Per-member output_codec: classic Squeezeboxes silently fail on fixed flac in sync (#5506).
         async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients():
-                member_codec = self.mass.config.get_raw_player_config_value(
-                    slimplayer.player_id, CONF_OUTPUT_CODEC, "flac"
-                )
+                member_codec = self._get_member_output_codec(slimplayer.player_id, media)
                 url = f"{base_url}&fmt={member_codec}&child_player_id={slimplayer.player_id}"
                 tg.create_task(
                     self._handle_play_url_for_slimplayer(
@@ -482,7 +483,7 @@ class SqueezelitePlayer(Player):
             "album": media.album,
             "artist": media.artist,
             "image_url": media.image_url,
-            "duration": media.duration,
+            "duration": media.stream_duration or media.duration,
             "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
@@ -765,6 +766,18 @@ class SqueezelitePlayer(Player):
                 slimplayer := self._provider.slimproto.get_player(member_id)
             ):
                 yield slimplayer
+
+    def _get_member_output_codec(self, member_player_id: str, media: PlayerMedia) -> str:
+        """Return the stream format to request for a sync group member."""
+        if media.media_type == MediaType.AUDIO_SOURCE:
+            member_player = self.mass.players.get_player(member_player_id)
+            if member_player and member_player.config.get_value(
+                CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False
+            ):
+                return "wav"
+        return self.mass.config.get_raw_player_config_value(
+            member_player_id, CONF_OUTPUT_CODEC, "flac"
+        )
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:

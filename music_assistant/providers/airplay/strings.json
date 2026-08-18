@@ -1,8 +1,8 @@
 {
   "config_entries": {
-    "force_raop": {
-      "label": "Force RAOP protocol",
-      "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."
+    "streaming_mode": {
+      "label": "Streaming mode",
+      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nMusic Assistant automatically pins a safer route after a conclusive failure: 'AirPlay 2 - NTP timing' when an offered PTP clock never answers, or 'AirPlay 2 - compatibility mode' when the native control channel repeatedly fails. The next playback uses that route; set it back to Automatic to retry the original route."
     },
     "encryption": {
       "label": "Enable encryption",
@@ -15,6 +15,21 @@
     "ignore_volume": {
       "label": "Ignore volume reports sent by the device itself",
       "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
+    },
+    "buffer_depth": {
+      "label": "Audio buffer depth",
+      "description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips and pauses. Automatic picks a default suited to the device.",
+      "options": {
+        "0": "Automatic",
+        "500": "500 ms",
+        "750": "750 ms",
+        "1000": "1000 ms",
+        "1500": "1500 ms",
+        "1750": "1750 ms",
+        "2000": "2000 ms",
+        "2500": "2500 ms",
+        "3000": "3000 ms"
+      }
     },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
@@ -34,6 +49,10 @@
     },
     "pair_now": {
       "label": "Set up now"
+    },
+    "verbose_ptp_logging": {
+      "label": "Verbose PTP daemon logging",
+      "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."
     }
   },
   "setup_flow": {
@@ -44,6 +63,10 @@
     "pair_password": {
       "title": "Enter the device password",
       "description": "This device is protected with a password. Enter it below to connect."
+    },
+    "streaming_repair_offer": {
+      "title": "Pair again (optional)",
+      "description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing."
     },
     "companion_offer": {
       "title": "Set up remote control (optional)",
@@ -66,12 +89,15 @@
     }
   },
   "errors": {
-    "invalid_pin": "Enter the numeric PIN shown on the screen of your device."
+    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+    "connection_refused": "The device refused the connection. Run the setup for this player to pair it again.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}.",
+    "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
+    "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
+    "pairing_wrong_pin": "The device rejected the PIN. Start pairing again and enter the new code shown on its screen."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."
-  },
-  "errors": {
-    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }

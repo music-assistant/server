@@ -22,7 +22,10 @@
 #   success — no dependency changes, or changes reviewed/auto-approved
 #   pending — dependency changes detected, analysis in progress (set by init job)
 #   failure — awaiting maintainer review (overridable via /approve-dependencies)
-#   error   — analysis failed, high-risk packages or known vulnerabilities
+#   error   — analysis failed, or high-risk packages / known vulnerabilities the PR
+#             introduces. The analysis scans the whole installed environment and
+#             compares its findings against the branch the PR targets, so ones that
+#             already exist there are reported but never gate the PR
 #             (NOT overridable via /approve-dependencies; requires a re-run or fix)
 #
 # The `init` job runs on `pull_request_target` for EVERY PR (the analysis
@@ -113,7 +116,8 @@ jobs:
             });
 
   report:
-    # Only report for runs triggered by pull requests
+    # Only report for runs triggered by pull requests, so a workflow_run whose
+    # originating event was a push/merge can never post a status.
     if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -125,6 +129,9 @@ jobs:
     steps:
       # Resolve the PR(s) and all trusted facts from the head commit. head_sha is
       # set by GitHub from the workflow_run event and cannot be forged by the PR.
+      # It comes from the payload, not from `github.sha`/`github.ref`: a
+      # workflow_run job is stamped with the default branch tip, which is
+      # unrelated to the PR being reported on.
       # Commit statuses are per-SHA, so if several open PRs share this head
       # commit the gate must consider ALL of them (strictest result wins).
       - name: Resolve pull request (trusted)
@@ -220,7 +227,7 @@ jobs:
       # status step reports as an error instead.
       - name: Download security reports
         if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: security-reports
           run-id: ${{ github.event.workflow_run.id }}
@@ -316,9 +323,13 @@ jobs:
             echo "" >> security_report.md
 
             if [ "$PIP_AUDIT" == "fail" ]; then
-              echo "- ❌ **Vulnerability Scan**: Failed - Known vulnerabilities detected" >> security_report.md
-            else
+              echo "- ❌ **Vulnerability Scan**: Known vulnerabilities introduced by this PR" >> security_report.md
+            elif [ "$PIP_AUDIT" == "preexisting" ]; then
+              echo "- ⚠️  **Vulnerability Scan**: Known vulnerabilities found, but none introduced by this PR" >> security_report.md
+            elif [ "$PIP_AUDIT" == "pass" ]; then
               echo "- ✅ **Vulnerability Scan**: Passed - No known vulnerabilities" >> security_report.md
+            else
+              echo "- ❌ **Vulnerability Scan**: The scan could not be completed" >> security_report.md
             fi
 
             if [ "$TRUSTED_SOURCES" == "fail" ]; then
@@ -434,22 +445,31 @@ jobs:
             const resultsPresent = process.env.RESULTS_PRESENT === 'true';
             const isHighRisk = process.env.SAFETY_STATUS === 'high_risk';
             const hasVulns = process.env.PIP_AUDIT === 'fail';
+            const scanFailed = process.env.PIP_AUDIT === 'scan_failed';
 
             let state = 'success';
             let description = 'No dependency changes to review';
 
-            if (!analysisOk) {
+            if (!prs.some(p => p.deps_changed)) {
+              // The analysis also runs for PRs that only touch a manifest's
+              // metadata. With no dependency to review there is nothing to gate,
+              // and its findings cover the whole environment, not these PRs.
+              core.info(`No dependency changes in ${prs.map(p => `#${p.number}`).join(', ')}; reporting success.`);
+            } else if (!analysisOk) {
               state = 'error';
               description = 'Dependency security analysis failed - re-run the Dependency Security Check workflow';
             } else if (!resultsPresent) {
               state = 'error';
               description = 'Dependency security scan results missing - re-run the Dependency Security Check workflow';
+            } else if (scanFailed) {
+              state = 'error';
+              description = 'Dependency security scan could not be completed - re-run the Dependency Security Check workflow';
             } else if (isHighRisk) {
               state = 'error';
               description = 'High-risk packages detected - security review required';
             } else if (hasVulns) {
               state = 'error';
-              description = 'Known vulnerabilities detected';
+              description = 'Known vulnerabilities introduced by this PR';
             } else {
               // Every open PR sharing this head commit must pass the gate
               const blocked = prs.find(p =>
@@ -459,7 +479,7 @@ jobs:
                 description = prs.length > 1
                   ? `Awaiting maintainer review on PR #${blocked.number} (add "dependencies-reviewed" label)`
                   : 'Awaiting maintainer review (add "dependencies-reviewed" label)';
-              } else if (prs.some(p => p.deps_changed)) {
+              } else {
                 state = 'success';
                 description = prs.every(p => !p.deps_changed || p.is_automated)
                   ? 'Automated dependency update - approved'
@@ -472,7 +492,7 @@ jobs:
               context: 'Dependency Security Review', description,
             });
 
-            if (analysisOk && resultsPresent && !isHighRisk && !hasVulns) {
+            if (analysisOk && resultsPresent && !scanFailed && !isHighRisk && !hasVulns) {
               for (const pr of prs) {
                 if (pr.deps_changed && pr.is_automated && !pr.has_review_label) {
                   await github.rest.issues.addLabels({

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Concatenate, cast
 from aiohttp import ClientConnectionError, ClientPayloadError, ClientTimeout
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
 
-_LIBRARY_PAGE_SIZE = 50
+_LIBRARY_PAGE_SIZE = 100
 
 _PAGE_TRUNCATION_RETRIES = 3
 
@@ -53,11 +54,30 @@ def _retry_transient_transport_errors[ClientT, **P, R](
     return wrapper
 
 
+def _raise_on_auth_error(status: int, endpoint: str) -> None:
+    """
+    Raise LoginFailed when Apple rejected our credentials.
+
+    Apple answers a revoked or expired music user token with 401/403 on every endpoint,
+    so this surfaces as an auth error the user can act on instead of a bare HTTP error.
+
+    :param status: The HTTP status code returned by Apple.
+    :param endpoint: The endpoint that was called, used in the error message.
+    """
+    if status in (401, 403):
+        raise LoginFailed(
+            f"Apple Music denied access to {endpoint}: the account needs to be signed in again"
+        )
+
+
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
-    # period=0.25 -> 4 req/s. Raise it if Apple starts returning 429s.
-    throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=15)
+    # period=0.25 -> 4 req/s. Apple throttles per developer account, so 429s follow the
+    # fleet-wide load on the bundled token, not our rate - and they clear within a second.
+    # 8 attempts keep the 1/2/4/8/16/32/64s ladder spanning ~2 minutes, so a sustained
+    # throttle (or outage) is still ridden out instead of failing the request in ~15s.
+    throttler = ThrottlerManager(rate_limit=1, period=0.25, retry_attempts=8, initial_backoff=1)
 
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize the API client."""
@@ -86,6 +106,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404 and "limit" in kwargs and "offset" in kwargs:
                 return {}
             if response.status == 404:
@@ -125,6 +146,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
@@ -148,6 +170,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
@@ -174,6 +197,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:

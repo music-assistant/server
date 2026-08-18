@@ -13,7 +13,7 @@ from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
@@ -43,6 +43,10 @@ PLAYER_FEATURES = {
 class HeosPlayer(Player):
     """HeosPlayer in Music Assistant."""
 
+    # HEOS keeps a source it loaded itself reported as paused once the app walked away,
+    # and pushes no event when that session goes stale.
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+
     _heos: Heos
     _heos_queue: Heos
     _device: PyHeosPlayer
@@ -58,6 +62,9 @@ class HeosPlayer(Player):
 
         self._device: PyHeosPlayer = device
         self._ma_controls_playback = False
+        self._ma_playback_starting = False
+        self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.player_id}"
+        self._on_unload_callbacks.append(self._cancel_ma_playback_transition)
         self._queue_cleanup_lock = asyncio.Lock()
         self._queue_cleanup_pending = False
 
@@ -216,6 +223,14 @@ class HeosPlayer(Player):
             )
             return
 
+        if self._ma_playback_starting:
+            self.logger.debug(
+                "[%s] Ignoring now playing change while MA playback starts: %s",
+                self._device.name,
+                now_playing,
+            )
+            return
+
         # Only update if we're not playing from our queue
         # HEOS does not make a distinction on source ID when playing from a DLNA server, USB stick,
         # generic URL (like MA), or other local source.
@@ -238,6 +253,7 @@ class HeosPlayer(Player):
             else:
                 self._attr_active_source = str(now_playing.source_id)
 
+            # HEOS reports position and duration in milliseconds, PlayerMedia expects seconds
             self._attr_current_media = PlayerMedia(
                 uri=now_playing.media_id or media_uri_from_now_playing_media(now_playing),
                 media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE.get(
@@ -248,9 +264,13 @@ class HeosPlayer(Player):
                 artist=now_playing.artist,
                 album=now_playing.album,
                 image_url=now_playing.image_url,
-                duration=now_playing.duration,
+                duration=int(now_playing.duration / 1000) if now_playing.duration else None,
                 source_id=str(now_playing.source_id),
-                elapsed_time=now_playing.current_position,
+                elapsed_time=(
+                    int(now_playing.current_position / 1000)
+                    if now_playing.current_position is not None
+                    else None
+                ),
                 elapsed_time_last_updated=(
                     now_playing.current_position_updated.timestamp()
                     if now_playing.current_position_updated
@@ -264,7 +284,9 @@ class HeosPlayer(Player):
         now_playing = self._device.now_playing_media
 
         self._attr_elapsed_time = (
-            now_playing.current_position / 1000 if now_playing.current_position else None
+            now_playing.current_position / 1000
+            if now_playing.current_position is not None
+            else None
         )
         self._attr_elapsed_time_last_updated = (
             now_playing.current_position_updated.timestamp()
@@ -323,10 +345,13 @@ class HeosPlayer(Player):
         )
 
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        self._cancel_ma_playback_transition()
+        self._ma_playback_starting = True
         self._ma_controls_playback = True
         try:
             await self._device.play_url(url)
         except HeosError as err:
+            self._cancel_ma_playback_transition()
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False
             raise PlayerCommandFailed("Failed to start playback.") from err
@@ -334,6 +359,12 @@ class HeosPlayer(Player):
         self._attr_current_media = media
         self._attr_active_source = self.player_id
         self._queue_cleanup_pending = True
+
+        self.mass.call_later(
+            5,
+            self._finish_ma_playback_transition,
+            task_id=self._ma_playback_transition_timer_id,
+        )
 
         self.update_state()
 
@@ -445,6 +476,18 @@ class HeosPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""
         self.logger.debug("[%s] Selecting source %s", self._device.name, source)
+        self._cancel_ma_playback_transition()
         self._ma_controls_playback = False
         self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
+
+    def _cancel_ma_playback_transition(self) -> None:
+        """Cancel the transition to MA-controlled playback."""
+        self.mass.cancel_timer(self._ma_playback_transition_timer_id)
+        self._ma_playback_starting = False
+
+    def _finish_ma_playback_transition(self) -> None:
+        """Apply the latest HEOS state after MA playback starts."""
+        self._ma_playback_starting = False
+        self._update_player_current_media()
+        self.update_state()

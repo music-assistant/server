@@ -15,6 +15,7 @@ from music_assistant.providers.loudness_analysis.provider import (
     MIN_DURATION_SECONDS,
     LoudnessAnalysisProvider,
     LoudnessSessionData,
+    _parse_ebur128_metrics,
 )
 
 
@@ -229,3 +230,55 @@ async def test_post_analysis_skips_when_loudness_missing(
     await provider.post_analysis(streamdetails, analysis)
 
     write_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# true peak measurement tests
+# ---------------------------------------------------------------------------
+
+# verbatim ffmpeg output, do not hand-edit
+_FFMPEG_SUMMARY_WITH_PEAK = [
+    "[Parsed_ebur128_0 @ 0x8b8c05080] Summary:",
+    "",
+    "  Integrated loudness:",
+    "    I:         -21.8 LUFS",
+    "    Threshold: -31.8 LUFS",
+    "",
+    "  Loudness range:",
+    "    LRA:         0.0 LU",
+    "    Threshold: -41.8 LUFS",
+    "    LRA low:   -21.8 LUFS",
+    "    LRA high:  -21.8 LUFS",
+    "",
+    "  True peak:",
+    "    Peak:      -18.1 dBFS",
+]
+
+
+def test_parse_metrics_extracts_true_peak_from_ffmpeg_summary() -> None:
+    """All three metrics must be parsed from a real ebur128 summary."""
+    integrated, lra, true_peak = _parse_ebur128_metrics(_FFMPEG_SUMMARY_WITH_PEAK)
+
+    assert integrated == -21.8
+    assert lra == 0.0
+    assert true_peak == -18.1
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_requests_peak_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ebur128 only reports true peak when explicitly asked, so the filter must request it."""
+    provider = _make_provider()
+    streamdetails = MagicMock()
+    streamdetails.volume_normalization_mode = None
+
+    fake_ffmpeg = MagicMock()
+    fake_ffmpeg.start = AsyncMock()
+    ffmpeg_cls = MagicMock(return_value=fake_ffmpeg)
+    monkeypatch.setattr("music_assistant.providers.loudness_analysis.provider.FFMpeg", ffmpeg_cls)
+
+    assert await provider._start_analysis("session-peak", streamdetails, MagicMock()) is True
+
+    filter_params = ffmpeg_cls.call_args.kwargs["filter_params"]
+    assert any("peak=true" in param for param in filter_params)

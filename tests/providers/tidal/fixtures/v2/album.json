@@ -1,0 +1,175 @@
+{
+  "data": {
+    "id": "58756127",
+    "type": "albums",
+    "attributes": {
+      "title": "Lukas Graham (Blue Album) (International Version)",
+      "barcodeId": "00602547852748",
+      "numberOfVolumes": 1,
+      "numberOfItems": 11,
+      "duration": "PT40M5S",
+      "explicit": false,
+      "ai": false,
+      "releaseDate": "2015-05-29",
+      "copyright": {
+        "text": "© 2016 Then We Take The World / Copenhagen Records / Universal Music"
+      },
+      "popularity": 0.7480961442649546,
+      "accessType": "PUBLIC",
+      "availability": [
+        "STREAM",
+        "DJ"
+      ],
+      "mediaTags": [
+        "LOSSLESS"
+      ],
+      "externalLinks": [
+        {
+          "href": "https://tidal.com/browse/album/58756127",
+          "meta": {
+            "type": "TIDAL_SHARING"
+          }
+        }
+      ],
+      "type": "ALBUM",
+      "albumType": "ALBUM",
+      "version": "International Version",
+      "createdAt": "2016-03-25T03:36:55Z"
+    },
+    "relationships": {
+      "artists": {
+        "data": [
+          {
+            "id": "4184211",
+            "type": "artists"
+          }
+        ],
+        "links": {
+          "self": "/albums/58756127/relationships/artists?countryCode=AT&locale=en-US"
+        }
+      },
+      "genres": {
+        "data": [],
+        "links": {
+          "self": "/albums/58756127/relationships/genres?countryCode=AT&locale=en-US"
+        }
+      },
+      "coverArt": {
+        "data": [
+          {
+            "id": "iWOu0yW0IPMMti8ralux",
+            "type": "artworks"
+          }
+        ],
+        "links": {
+          "self": "/albums/58756127/relationships/coverArt?countryCode=AT&locale=en-US"
+        }
+      }
+    }
+  },
+  "links": {
+    "self": "/albums/58756127?include=artists%2CcoverArt%2Cgenres&countryCode=AT&locale=en-US"
+  },
+  "included": [
+    {
+      "id": "4184211",
+      "type": "artists",
+      "attributes": {
+        "name": "Lukas Graham",
+        "popularity": 0.8177526593208313,
+        "externalLinks": [
+          {
+            "href": "https://www.facebook.com/LukasGraham",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "http://instagram.com/lukasinstagraham",
+            "meta": {
+              "type": "INSTAGRAM"
+            }
+          },
+          {
+            "href": "https://www.twitter.com/LukeTheDuke_",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/4184211",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "iWOu0yW0IPMMti8ralux",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#775434",
+          "blurHash": "ULM7cP9G_29E?wxv%L%1~ojXD+NK_1ocE3xv",
+          "status": "OK"
+        }
+      }
+    }
+  ]
+}

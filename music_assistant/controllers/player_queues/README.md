@@ -102,6 +102,17 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
 - **Media-time vs stream-time.** The queue's elapsed time is stored in media-time (usable directly
   as a resume position), whereas the player reports stream-time (post-atempo). The two are bridged
   by scaling with the current item's playback speed.
+- **Shuffle does not outlive the media it was set for.** The options that start playing right away
+  (*play* and *replace*) begin a new listening session and play their media in order, unless the
+  caller asks for shuffle explicitly or the user switched shuffle on moments earlier — tracked by
+  the runtime-only `shuffle_set_at` stamp, which is never restored from cache and is consumed by the
+  play command that reads it. Switching shuffle off goes through `set_shuffle`, so the items that
+  stay in the queue are restored to their original order rather than left shuffled behind a queue
+  that now reads unshuffled. The options that only stage items for later (*add* / *next* /
+  *replace next*) leave the shuffle state alone. A dynamic queue is exempt: it is an always-on
+  smart mix and forces shuffle on. *Replace next* is the only staging option that can take that
+  dynamic source away, so it is the one exception: it switches the imposed shuffle back off, which
+  `_enter_dynamic_mode` restores if the new media leaves the queue dynamic.
 
 ## State and Persistence
 
@@ -110,8 +121,8 @@ keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and h
 server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
 `sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
 previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
-last-counted-play marker, the flow-buffer-completed session, and the current stream session's id,
-flow play-log and next-enqueued item id.
+last-counted-play marker, the shuffle-intent stamp, the flow-buffer-completed session, and the
+current stream session's id, flow play-log and next-enqueued item id.
 
 `PlayerQueueData` owns the pair's (de)serialization; the wire `PlayerQueue` carries no cache logic of
 its own. Durable state is persisted to the cache controller under two categories — queue state (a
@@ -185,14 +196,19 @@ Two distinct refill paths share the same "running low" trigger:
   recently-heard artists back, then best-effort spaces the assembled batch so adjacent tracks avoid
   sharing an artist (seam-aware against the current tail). A "radio" is just a dynamic playlist from
   the `radio_playlist` provider.
-- **Autoplay** refills using the per-queue configured mode, owned by `autoplay.py`: similar tracks
-  (seeded from the enqueued items), an infinite library mix (genre-biased, least-played), a chosen
-  playlist, or an automatic mode that tries similar first and falls back to the library mix. The
-  mode is read from the per-queue config; the playlist for playlist-mode is a per-queue config value.
+- **Autoplay** is the single "keep going" switch; what it appends is dispatched on the media type of
+  the queue's last item, since that is the item the appended ones follow. Music continues with the
+  per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),
+  an infinite library mix (genre-biased, least-played), a chosen playlist, or an automatic mode that
+  tries similar first and falls back to the library mix. The mode is read from the per-queue config;
+  the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook instead
+  continues with its own successor — the next episode of the podcast, the next book in the collection
+  — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
+  (radio, audio source) have no natural end, so Autoplay does not apply to them at all.
 
 Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, recency-gated allocation)
-→ appended `QueueItem`s; autoplay flag → `Autoplay` (mode-based selection) → appended
-`QueueItem`s.
+→ appended `QueueItem`s; autoplay flag → media-type dispatch → `Autoplay` (mode-based selection) or
+the next episode/book → appended `QueueItem`s.
 
 ## Track Resolution
 
@@ -229,16 +245,17 @@ player_queues/
 ├── base.py         # _PlayerQueuesBase(CoreController): the shared base the three logic mixins extend;
 │                   #   declares the per-queue state, the helper services and the core-op signatures
 │                   #   so each mixin type-checks on its own
-├── constants.py    # config keys + default values for enqueue options and artist/album selection
-│                   #   modes, the autoplay/crossfade config keys, plus the two cache category
-│                   #   identifiers (queue state, queue items)
+├── constants.py    # config keys + default values for enqueue options, artist/album selection
+│                   #   modes and client click actions, the autoplay/crossfade config keys, plus the
+│                   #   two cache category identifiers (queue state, queue items)
 ├── autoplay.py     # Autoplay + AutoplayMode: resolves the per-queue autoplay mode and
 │                   #   produces the next batch of tracks for the library-/playlist-based modes
 ├── smart_shuffle.py # SmartShuffle: recency-aware, well-spaced ordering of the upcoming items
 ├── managed_pool.py # ManagedPool: bounded dynamic-source pool, topped up + recency-gated, with
 │                   #   finite sources materialized to play through once
 ├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/
-│                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue
+│                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue, plus
+│                   #   the successor (next episode/book) of an item that finished playing
 ├── queue_loader.py # QueueLoaderMixin: applies the enqueue option, loads single items, resume-from-
 │                   #   playlog, next-index, and the dynamic/autoplay queue refills
 ├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-
@@ -268,16 +285,21 @@ music) ship without one.
 ## Configuration
 
 As a core module, the controller exposes config entries (returned through the standard core-config
-mechanism) that configure default enqueue behaviour, in two groups:
+mechanism) that configure default enqueue behaviour, in three groups:
 
 - **Per-media-type default enqueue option** — for artist, album, track, genre, live sources, and
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
   prefer library, all tracks).
+- **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
+  clicked (*browse* or *play*), and what the play button on a track row inside an album
+  or playlist starts (*play from here* or *play track*).
 
-These values are read back at enqueue time to decide how a given media item is turned into queue
-items. The config keys and their default values live in `constants.py`.
+The first two groups are read back at enqueue time to decide how a given media item is turned into
+queue items. The click actions are **not read by the server at all**: they live here so every client
+resolves the same behaviour from one discoverable, translated schema instead of each defining its
+own local preferences. The config keys and their default values live in `constants.py`.
 
 Separately, the controller exposes **per-queue** config entries (via `get_queue_config_entries`,
 surfaced by the Config Controller) grouped into categories: *autoplay* (the refill mode and, for

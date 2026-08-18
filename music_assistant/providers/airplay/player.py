@@ -8,8 +8,7 @@ import ipaddress
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -28,34 +27,45 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
 
+from . import announce
 from .constants import (
-    AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
-    AIRPLAY_RAOP_SETUP_LEAD_MS,
+    AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
-    CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
+    CONF_PASSWORD_INVALID,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
+    CONF_STREAMING_MODE,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
     PASSWORD_BIT,
     PIN_REQUIRED,
     RAOP_DISCOVERY_TYPE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
+    STREAMING_MODE_AUTO,
+    STREAMING_MODE_RAOP,
     StreamingProtocol,
 )
 from .helpers import (
+    default_buffer_depth,
+    get_decoded_property,
     is_apple_device,
     is_macos_device,
+    parse_airplay_features,
     player_id_to_mac_address,
     supports_airplay2,
 )
@@ -102,6 +112,7 @@ class AirPlayPlayer(Player):
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
+        self._rejoin_task: asyncio.Task[None] | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -122,23 +133,71 @@ class AirPlayPlayer(Player):
     def protocol(self) -> StreamingProtocol:
         """Get the streaming protocol to use/prefer for this player."""
         # AirPlay 2 whenever the device can speak it and RAOP is not being forced;
-        # RAOP for legacy receivers (or when the force-RAOP escape hatch is set).
-        if self._is_airplay2_capable and not self._force_raop_active:
+        # RAOP for legacy receivers (or when the RAOP streaming mode is set).
+        if self._is_airplay2_capable and self.streaming_mode != STREAMING_MODE_RAOP:
             return StreamingProtocol.AIRPLAY2
         return StreamingProtocol.RAOP
+
+    @property
+    def streaming_mode(self) -> str:
+        """
+        Return the effective per-player streaming mode.
+
+        Automatic unless the (advanced) streaming-mode setting pins a lane the
+        device actually offers; a stored value the device no longer advertises
+        falls back to Automatic rather than forcing an impossible route.
+        """
+        value = str(self.config.get_value(CONF_STREAMING_MODE, STREAMING_MODE_AUTO))
+        offered = {option.value for option in self.streaming_mode_options}
+        return value if value in offered else STREAMING_MODE_AUTO
+
+    @property
+    def streaming_mode_options(self) -> list[ConfigValueOption]:
+        """
+        Return the streaming-mode options this device can actually offer.
+
+        Every option is an escape from the automatic AirPlay 2 route, gated on
+        the device's own advertisements: the AirPlay 2 lanes need AirPlay 2
+        capability (PTP timing additionally needs the SupportsPTP bit), and
+        legacy RAOP needs an advertised _raop service to fall back to. A
+        RAOP-only device has no alternative lane and keeps Automatic only,
+        which hides the entry entirely. Apple receivers get every lane except
+        NTP timing — they render silence on an NTP-timed realtime stream
+        (hardware-measured). Of their lanes, the compatibility flow and
+        legacy RAOP are the escapes for networks where the PTP ports are
+        blocked; pinning PTP is an explicit choice of the normal lane.
+        """
+        options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
+        if not self._is_airplay2_capable:
+            return options
+        apple = is_apple_device(self.device_info.manufacturer, self.device_info.model)
+        features = parse_airplay_features(self._advertised_features)
+        if (features >> 41) & 1:
+            options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
+        if not apple:
+            options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
+        options.append(
+            ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
+        )
+        if self.raop_discovery_info is not None:
+            options.append(ConfigValueOption(STREAMING_MODE_RAOP, "AirPlay 1 (RAOP)"))
+        return options
 
     @property
     def protocol_override(self) -> StreamingProtocol | None:
         """
         Return the user-forced streaming protocol, or None for automatic selection.
 
-        The only override a user can set is the "force RAOP" escape hatch (offered
-        for AirPlay-2-capable non-Apple receivers whose AirPlay 2 implementation
-        misbehaves). Otherwise the cliairplay binary resolves the route itself from
-        the mDNS TXT records (--protocol auto) and the ``protocol`` property above
-        only reflects MA's own planning heuristic (timing, ports).
+        Only the RAOP streaming mode forces the protocol outright; the AirPlay 2
+        modes stay on the AirPlay 2 protocol and pin the flow/timing through the
+        binary's --protocol/--timing arguments instead. Otherwise the cliairplay
+        binary resolves the route itself from the mDNS TXT records (--protocol
+        auto) and the ``protocol`` property above only reflects MA's own planning
+        heuristic (timing, ports).
         """
-        return StreamingProtocol.RAOP if self._force_raop_active else None
+        if self.streaming_mode == STREAMING_MODE_RAOP:
+            return StreamingProtocol.RAOP
+        return None
 
     @property
     def hires_playback_enabled(self) -> bool:
@@ -161,13 +220,15 @@ class AirPlayPlayer(Player):
     @property
     def needs_setup(self) -> bool:
         """Return if the player needs setup."""
-        if self._requires_pin_pairing() or (
-            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
-        ):
+        # A stored password satisfies password protection on its own (the binary
+        # authenticates with it directly; stored credentials are only its
+        # fallback), so the password side is fully covered by the check above.
+        if self.needs_password_setup:
+            return True
+        if self._requires_pin_pairing():
             # Credentials for either protocol keep the player usable: the binary
-            # picks the best route for the credentials it has. The pairing section
-            # in the player config still offers pairing for the active protocol
-            # (e.g. to upgrade a legacy RAOP pairing to AirPlay 2).
+            # picks the best route for the credentials it has. Re-running the setup
+            # flow from the player settings offers replacing a stored pairing.
             if not (
                 self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
                 or self.get_setup_value(CONF_RAOP_CREDENTIALS)
@@ -178,7 +239,58 @@ class AirPlayPlayer(Player):
     @property
     def setup_reason(self) -> str | None:
         """Return why the player needs setup, or None when it is ready to use."""
-        return "pairing_required" if self.needs_setup else None
+        if not self.needs_setup:
+            return None
+        return "password_required" if self.needs_password_setup else "pairing_required"
+
+    @property
+    def password_required(self) -> bool:
+        """Return if the device announces that it is password protected."""
+        # Two announcement forms, verified against live devices (including Apple
+        # TVs, which raise the password bit only while a password is actually
+        # set): receivers publish the password bit in sf/flags and/or the classic
+        # pw boolean. Enforcement can also exist WITHOUT any announcement (stale
+        # TXT after the password was enabled); that case is caught at connect
+        # time via password_invalid.
+        if self._get_flags() & PASSWORD_BIT:
+            return True
+        if raop_info := self.raop_discovery_info:
+            return (raop_info.decoded_properties.get("pw") or "").lower() == "true"
+        return False
+
+    @property
+    def password_invalid(self) -> bool:
+        """Return if the device rejected the stored password on its last connect."""
+        return bool(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_PASSWORD_INVALID, False
+            )
+        )
+
+    @property
+    def needs_password_setup(self) -> bool:
+        """Return if the device password still has to be entered through the setup flow."""
+        # The password is only ever entered through the setup flow, so both a
+        # device that announces password protection without one stored and a
+        # password the device rejected must send the user back into that flow.
+        if self.password_invalid:
+            return True
+        return self.password_required and not self.config.get_value(CONF_PASSWORD)
+
+    def set_password_invalid(self, invalid: bool) -> None:
+        """
+        Persist (or clear) the marker that the device rejected the stored password.
+
+        :param invalid: True when the device rejected the password, False once a
+            connect succeeded or a new password was stored.
+        """
+        if self.password_invalid == invalid:
+            # keeps a successful connect from writing the config on every stream
+            return
+        self.mass.config.set_raw_player_config_value(self.player_id, CONF_PASSWORD_INVALID, invalid)
+        # needs_setup/setup_reason are part of the player's own state inputs, so a
+        # plain update publishes the (dis)appeared setup action to the clients.
+        self.update_state()
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -195,7 +307,23 @@ class AirPlayPlayer(Player):
         # could fall through to a linked native player's pause (e.g. a Sonos acting as
         # an AirPlay receiver), which only pauses the sync leader while the other
         # members keep playing.
-        return {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
+        features = {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
+        # A player with a Sendspin bridge CONFIGURED still announces natively
+        # whenever there is a stream to mix into: its own (session-backed)
+        # AirPlay stream, or the bridge's stream while Sendspin plays through
+        # it. Only a bridged player with neither hides the feature - a
+        # dedicated announcement session on it would race the bridge for the
+        # device, so those announcements keep their existing routing (the
+        # generic flow via the Sendspin parent).
+        prov = cast("AirPlayProvider", self.provider)
+        bridge = prov.bridge_manager.get_bridge(self.player_id)
+        if (
+            bridge is not None
+            and not bridge.owns_airplay_stream
+            and not (self.stream is not None and self.stream.running and self.stream.session)
+        ):
+            features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+        return features
 
     @property
     def can_group_with(self) -> set[str]:
@@ -210,11 +338,20 @@ class AirPlayPlayer(Player):
         }
 
     @property
-    def wait_start(self) -> int:
-        """Get the setup lead required by an externally timed audio source."""
-        if self.protocol == StreamingProtocol.RAOP:
-            return AIRPLAY_RAOP_SETUP_LEAD_MS
-        return AIRPLAY_AP2_SETUP_LEAD_MS
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: members are attached to this player's own stream session."""
+        return True
+
+    @property
+    def live_session_members(self) -> list[str]:
+        """Return the id's of the players the running stream session feeds."""
+        # group membership is bookkeeping that outlives the session: a member can be
+        # dropped from the session (write failures) or never make it in (a refused
+        # late join) while still being listed as part of the group, and without a
+        # session there is nobody to render with at all
+        if self.stream and self.stream.running and self.stream.session:
+            return [x.player_id for x in self.stream.session.sync_clients]
+        return []
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -222,19 +359,22 @@ class AirPlayPlayer(Player):
         # interactive setup flow (run_setup_flow) and stored in the player's setup_data.
         base_entries: list[ConfigEntry] = []
 
-        # Effective RAOP state from the current (stored) force-RAOP setting, so the
+        # Effective RAOP state from the current (stored) streaming mode, so the
         # RAOP-only entries show/hide consistently with it.
-        is_raop = self._force_raop_active or not self._is_airplay2_capable
+        is_raop = self.protocol == StreamingProtocol.RAOP
 
-        # "Force RAOP" escape hatch: only for AirPlay-2-capable non-Apple receivers
-        # (see _force_raop_available). Framed as a per-device workaround for a
-        # misbehaving AirPlay 2 implementation, not a general protocol choice.
-        if self._force_raop_available:
+        # Streaming-mode escape hatch: a per-device pin of the protocol/timing
+        # lane for receivers whose automatic route misbehaves. Only offered
+        # when the device actually has a lane to choose (Apple receivers are
+        # always native AirPlay 2 with PTP and get no entry).
+        mode_options = self.streaming_mode_options
+        if len(mode_options) > 1:
             base_entries.append(
                 ConfigEntry(
-                    key=CONF_FORCE_RAOP,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
+                    key=CONF_STREAMING_MODE,
+                    type=ConfigEntryType.STRING,
+                    options=mode_options,
+                    default_value=STREAMING_MODE_AUTO,
                     category="protocol_generic",
                     advanced=True,
                 )
@@ -256,8 +396,11 @@ class AirPlayPlayer(Player):
                 type=ConfigEntryType.SECURE_STRING,
                 default_value=None,
                 required=False,
-                # the device password is only consumed by the RAOP flow
-                hidden=not is_raop,
+                # Storage (and encryption) vehicle only: the device password is
+                # entered through the setup flow, which is also what a wrong
+                # password sends the user back to. A hidden entry keeps its stored
+                # value across config saves (the frontend never submits it).
+                hidden=True,
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -267,6 +410,38 @@ class AirPlayPlayer(Player):
                 default_value=False,
                 category="protocol_generic",
                 advanced=True,
+            ),
+            # Receiver-queue depth presets. The range reaches past the standard
+            # 2 s receiver buffer because that figure is only what the binary
+            # assumes for a device that reports no window of its own, and the
+            # deepest starving devices ask for more than the assumption. The
+            # default comes from the device-family table, and Automatic resolves
+            # through that same table at stream time, so selecting it never
+            # downgrades an affected device.
+            ConfigEntry(
+                key=CONF_BUFFER_DEPTH,
+                type=ConfigEntryType.INTEGER,
+                options=[
+                    ConfigValueOption(0),
+                    ConfigValueOption(500),
+                    ConfigValueOption(750),
+                    ConfigValueOption(1000),
+                    ConfigValueOption(1500),
+                    ConfigValueOption(1750),
+                    ConfigValueOption(2000),
+                    ConfigValueOption(2500),
+                    ConfigValueOption(3000),
+                ],
+                default_value=default_buffer_depth(
+                    self.device_info.manufacturer or "",
+                    self.device_info.model or "",
+                    get_decoded_property(self.airplay_discovery_info, "fv")
+                    if self.airplay_discovery_info
+                    else None,
+                ),
+                category="protocol_generic",
+                advanced=True,
+                requires_reload=True,
             ),
         ]
 
@@ -284,6 +459,9 @@ class AirPlayPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to player."""
+        # an explicit stop (including power-off routed as stop) is user intent:
+        # drop any pending automatic re-join
+        self.cancel_group_rejoin()
         async with self._lock:
             if self.stream and self.stream.session:
                 # forward stop to the entire stream session
@@ -291,8 +469,8 @@ class AirPlayPlayer(Player):
             elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
                 self.player_id
             ):
-                # Sendspin bridge active: trigger full bridge cleanup
-                # which stops streaming, kills the CLI, and cancels writer tasks
+                # Sendspin bridge active: it tears the transport down straight
+                # away and takes the player out of the Sendspin session
                 pass
             elif self.stream and self.stream.running:
                 # Fallback: stop protocol directly
@@ -302,23 +480,32 @@ class AirPlayPlayer(Player):
             self.update_state()
 
     async def play(self) -> None:
-        """Send PLAY (unpause) command to player."""
-        if self.group_members or self.synced_to:
+        """Handle PLAY (unpause) command on the player."""
+        session = self.stream.session if self.stream and self.stream.running else None
+        if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
-            # member cannot restart the group in sync. Resume via the queue
+            # member cannot restart the group in sync, and a parked member is
+            # held with nothing being fed until a re-anchor - which ACTION=PLAY
+            # does not carry, so it would report playback over silence. The park
+            # outlives the group, so a player left alone by an ungroup is keyed
+            # on the park itself, not on its membership. Resume via the queue
             # instead: play_media flushes and re-anchors every parked member at
             # one shared instant. The queue can belong to a linked native parent
             # (for example Sonos), so resolve it instead of using the AirPlay ID.
             active_queue = self.mass.players.get_active_queue(self)
             if active_queue is None:
                 raise PlayerCommandFailed(
-                    f"Cannot resume grouped AirPlay player {self.display_name} without an active queue"
+                    f"Cannot resume AirPlay player {self.display_name} without an active queue"
                 )
             await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
             return
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY")
+                if await self.stream.send_cli_command("ACTION=PLAY"):
+                    # Resuming re-anchors playout; the binary zeroes its own
+                    # re-anchor total on resume, so drop the tracked shift to
+                    # keep the server and binary baselines aligned.
+                    self.stream.reset_reanchor_shift()
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -348,6 +535,9 @@ class AirPlayPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        # the player is being (re)purposed on purpose: drop any pending
+        # automatic re-join left over from an unexpected stream loss
+        self.cancel_group_rejoin()
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways
@@ -378,7 +568,7 @@ class AirPlayPlayer(Player):
                     for member in self.stream.session.sync_clients:
                         self.mass.call_later(
                             1,
-                            member._on_player_media_updated,
+                            member.on_player_media_updated,
                             task_id=f"player_media_updated_{member.player_id}",
                         )
                     return
@@ -405,15 +595,29 @@ class AirPlayPlayer(Player):
                 media,
             )
             await stream_session.start(audio_source)
-            self._attr_elapsed_time = time.time() - stream_session.start_time
-            self._attr_elapsed_time_last_updated = time.time()
             self._transitioning = False
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """
+        Play an announcement natively: mixed over live playback, or as its own session.
+
+        :param announcement: Details of the announcement that needs to be played.
+        :param volume_level: Optional volume level for the announcement.
+        """
+        # The lock windows live inside the orchestration: the dispatch decision
+        # and session mutations hold self._lock like play_media does, while the
+        # multi-second clip waits run outside it (see announce.py).
+        await announce.play_announcement(self, announcement, volume_level)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        # Record before sending: the connect-time volume push reads this attribute,
+        # so a send that suspends first would let that push send the stale level.
+        self._attr_volume_level = volume_level
         if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
-        self._attr_volume_level = volume_level
         self.update_state()
         # store last state in playerconfig
         self.mass.config.set_raw_player_config_value(
@@ -450,12 +654,20 @@ class AirPlayPlayer(Player):
             # handle removals first
             if player_ids_to_remove:
                 if self.player_id in player_ids_to_remove:
-                    if stream_session and len(stream_session.sync_clients) > 1:
-                        # Other clients remain: remove only this leader client,
-                        # session continues for remaining players (dynamic leader switch)
+                    # Callers only ask for this leader alone or for the whole group at once.
+                    # A partial self+subset removal would need the other requested members
+                    # released here as well, instead of returning right after the leader.
+                    remaining_members = [
+                        member_id
+                        for member_id in self._attr_group_members
+                        if member_id != self.player_id and member_id not in player_ids_to_remove
+                    ]
+                    if stream_session and remaining_members:
+                        # Members stay behind: remove only this leader client,
+                        # the session continues for the remaining players
                         await stream_session.remove_client(self, reason="leader removed from group")
                     elif stream_session:
-                        # Last client, stop the whole session
+                        # The whole group is being removed, tear the session down
                         await stream_session.stop()
                     self._attr_group_members = []
                     self.update_state()
@@ -523,6 +735,15 @@ class AirPlayPlayer(Player):
                     # (e.g. after a dynamic leader switch where the stream continues)
                     if child_player_to_add not in stream_session.sync_clients:
                         await stream_session.add_client(child_player_to_add)
+                elif self.active_output_protocol not in (None, "native"):
+                    # Members can only be attached to this player's own stream session, which
+                    # does not exist while it renders through one of its output protocols.
+                    self.logger.warning(
+                        "%s joined the group of %s while that player renders through another "
+                        "output protocol: there is no stream session to join, so it stays silent",
+                        child_player_to_add.display_name if child_player_to_add else player_id,
+                        self.display_name,
+                    )
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly
@@ -603,6 +824,17 @@ class AirPlayPlayer(Player):
         # Ignore state updates from old/stale streams
         if stream is not None and stream != self.stream:
             return
+        # The stream reclaims the device: an external (Companion-observed)
+        # source snapshot can leak in during a brief stream-restart window and
+        # would otherwise stick, freezing the UI on a stale "external source"
+        # view while we stream. While MA streams, the stream is the sole
+        # authority on this player's state.
+        active_source = getattr(self, "_attr_active_source", None)
+        if active_source is not None and active_source in getattr(self, "_external_source_ids", ()):
+            media = getattr(self, "_attr_current_media", None)
+            if media is not None and media.source_id == active_source:
+                self._attr_current_media = None
+            self._attr_active_source = None
         if state is not None:
             self._attr_playback_state = state
         if elapsed_time is not None:
@@ -632,31 +864,40 @@ class AirPlayPlayer(Player):
             bit_depth=24,
         )
 
-    def sync_volume_level(self) -> None:
+    @property
+    def owns_volume(self) -> bool:
         """
-        Sync volume from parent player if needed.
+        Return True if this output is the resolved owner of its own volume.
 
-        AirPlay players only report their volume level when we are actually streaming to them
-        and we remember the last used/reported volume level in the player config by default
-        but if we have a parent player, that may know better about the current volume level,
-        so we try to sync from that parent player if possible
+        AirPlay volume is the receiver's own volume: setting it writes through to the
+        device and persists there after the session ends. It may therefore only be set
+        when no other control owns the volume of this output.
         """
-        if (
-            self.protocol_parent_id
-            and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
-            and parent_player.state.volume_level is not None
-        ):
-            if self._has_native_protocol_parent:
-                # Native parent volume is on the receiver/amplifier scale.
-                # Keep the AirPlay child volume learned from DACP feedback instead.
-                return
-            if self._attr_volume_level == parent_player.state.volume_level:
-                return
-            self._attr_volume_level = parent_player.state.volume_level
-            self.mass.config.set_raw_player_config_value(
-                self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
-            )
-            self.update_state()
+        if not (parent_id := self.protocol_parent_id):
+            # a standalone AirPlay player has no other interface to defer to
+            return True
+        if not (parent_player := self.mass.players.get_player(parent_id)):
+            return True
+        return self._control_routes_to_self(parent_player.volume_control_for_output(self.player_id))
+
+    def release_foreign_mute_latch(self) -> None:
+        """Clear our mute latch when another control owns the mute of this output."""
+        if not self._attr_volume_muted:
+            # nothing latched, so nothing that could silence this stream
+            return
+        if not (parent_id := self.protocol_parent_id):
+            return
+        if not (parent_player := self.mass.players.get_player(parent_id)):
+            return
+        if self._control_routes_to_self(parent_player.mute_control_for_output(self.player_id)):
+            # our own mute, applied through the parent
+            return
+        # The mute belongs to a control that does not own this output (a sibling interface,
+        # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
+        # unmute clears, so leaving it set would report a mute we do not own and turn the
+        # next volume command into a silent one.
+        self._attr_volume_muted = False
+        self.update_state()
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player config is updated."""
@@ -667,19 +908,63 @@ class AirPlayPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        self.cancel_group_rejoin()
         if self.stream:
             # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
                 await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
 
-    @property
-    def _has_native_protocol_parent(self) -> bool:
-        """Return True if this AirPlay protocol player is linked to a native parent."""
-        if not self.protocol_parent_id:
-            return False
-        parent_player = self.mass.players.get_player(self.protocol_parent_id)
-        return bool(parent_player and parent_player.volume_control == PLAYER_CONTROL_NATIVE)
+    def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
+        """
+        Schedule a bounded automatic re-join of this player to its still-active group.
+
+        Used when this player's stream process died unexpectedly while it was part
+        of a playing sync group (e.g. the device rode out a network blackout): the
+        player is re-added to the group's live session through the regular
+        late-join path after a short backoff. Any user action on the player (or it
+        joining a session by other means) cancels the re-join; when the group is
+        no longer playing, its membership was changed meanwhile or the device is
+        offline, the re-join is abandoned and the player simply stays idle.
+
+        :param candidate_ids: Player ids that led or shared the group at the
+            moment the stream was lost, used to resolve the re-join target (the
+            leadership may transfer while the backoff runs).
+        """
+        self.cancel_group_rejoin()
+        self.logger.info(
+            "Scheduling automatic re-join of %s to its group after unexpected stream loss",
+            self.display_name,
+        )
+        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids))
+
+    def cancel_group_rejoin(self) -> None:
+        """Cancel any pending automatic group re-join attempts for this player."""
+        rejoin_task = self._rejoin_task
+        self._rejoin_task = None
+        # never self-cancel: the re-join attempt itself flows through the same
+        # session (re)start paths that call this to clear stale schedules
+        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+            rejoin_task.cancel()
+
+    def on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if not self.stream or not self.stream.running:
+            return
+        metadata = self.state.current_media
+        if not metadata:
+            return
+        progress = int(metadata.corrected_elapsed_time or 0)
+        self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
+    def _control_routes_to_self(self, control: str) -> bool:
+        """Return True if the given (resolved) control routes to this player."""
+        if control == self.player_id:
+            return True
+        # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward to us
+        if control_player := self.mass.players.get_player(control):
+            return control_player.underlying_player_id == self.player_id
+        return False
 
     def _get_flags(self) -> int:
         # Flags are either present via "sf" or "flags". Taken from pyatv.protocols.airplay.utils.
@@ -705,14 +990,6 @@ class AirPlayPlayer(Player):
         Adapted from pyatv.protocols.airplay.utils.get_pairing_requirement.
         """
         return bool(self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED))
-
-    def _requires_password_pairing(self) -> bool:
-        """
-        Check if this device requires password authentication.
-
-        Password can be used for pairing instead of interactive PIN entry.
-        """
-        return bool(self._get_flags() & PASSWORD_BIT)
 
     def _get_credentials_key(self, protocol: StreamingProtocol) -> str:
         """Get the config key for credentials for given protocol."""
@@ -748,51 +1025,58 @@ class AirPlayPlayer(Player):
             return False
         return supports_airplay2(self._advertised_features) or not self.raop_discovery_info
 
-    @property
-    def _force_raop_available(self) -> bool:
-        """
-        Return whether the "force RAOP" escape hatch applies to this device.
-
-        Offered only for AirPlay-2-capable non-Apple receivers that also advertise
-        a RAOP service to fall back to. Genuine Apple devices are always AirPlay 2,
-        while RAOP-only and AirPlay-2-only devices have nothing to force.
-        """
-        return (
-            self._is_airplay2_capable
-            and self.raop_discovery_info is not None
-            and not is_apple_device(self.device_info.manufacturer, self.device_info.model)
-        )
-
-    @property
-    def _force_raop_active(self) -> bool:
-        """Return whether RAOP is being forced through the escape-hatch toggle."""
-        return self._force_raop_available and bool(self.config.get_value(CONF_FORCE_RAOP, False))
-
     async def _run_streaming_pairing(
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Pair the streaming protocol (RAOP or AirPlay 2), unless already paired.
+        Pair the streaming protocol (RAOP or AirPlay 2) and collect the device password.
 
-        Credentials for either protocol keep the player usable, so this no-ops when
-        any are already stored (e.g. when the flow is re-launched from the player
-        settings). The obtained credentials are added to ``collected`` under the
-        protocol-specific key.
+        The two are evaluated independently: a device that is already paired can
+        still be missing its password (or have had it rejected), which is exactly
+        the state a receiver ends up in when it gains password protection after
+        it was set up.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
-        if self.get_setup_value(CONF_AIRPLAY_CREDENTIALS) or self.get_setup_value(
-            CONF_RAOP_CREDENTIALS
-        ):
-            return
+        password_collected = await self._run_protocol_pairing(session, collected)
+        if not password_collected and self.needs_password_setup:
+            await self._ask_device_password(session)
+
+    async def _run_protocol_pairing(
+        self, session: SetupSession, collected: dict[str, ConfigValueType]
+    ) -> bool:
+        """
+        Pair the streaming protocol (RAOP or AirPlay 2), unless already paired.
+
+        When the device requires pairing this runs it, re-offering it as a skippable
+        step when credentials are already stored (so a re-launched flow can replace a
+        stale pairing). When the device requires no pairing, any leftover credentials
+        are cleared: they would keep forcing the pair-verify route, which some
+        receivers (e.g. HomePods after their password was removed) accept while
+        refusing to actually output audio. The obtained credentials are added to
+        ``collected`` under the protocol-specific key.
+
+        :param session: The setup flow session used to interact with the user.
+        :param collected: The values collected so far; updated in place.
+        :return: Whether the device password was collected as part of the pairing.
+        """
         pin_pairing = self._requires_pin_pairing()
         # a password only replaces PIN pairing on the native AirPlay 2 flow
-        password_pairing = (
-            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
-        )
+        password_pairing = self.password_required and self.protocol == StreamingProtocol.AIRPLAY2
         if not (pin_pairing or password_pairing):
-            return
+            for cred_key in (CONF_AIRPLAY_CREDENTIALS, CONF_RAOP_CREDENTIALS):
+                if self.get_setup_value(cred_key) is not None:
+                    collected[cred_key] = None
+            return False
+        already_paired = bool(
+            self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
+            or self.get_setup_value(CONF_RAOP_CREDENTIALS)
+        )
+        if already_paired and not await self._offer_optional_pairing(
+            session, "streaming_repair_offer"
+        ):
+            return False
 
         protocol = self.protocol
         cred_key = self._get_credentials_key(protocol)
@@ -824,15 +1108,68 @@ class AirPlayPlayer(Player):
                     step_id=step_id,
                     errors=errors,
                 )
-                credentials = await pairing.finish_pairing(pin=str(values[field_key]))
+                entered_value = str(values[field_key])
+                credentials = await pairing.finish_pairing(pin=entered_value)
             except PlayerCommandFailed as err:
+                # leave a default-level trace: the flow swallows the error into
+                # the re-served form, which support logs otherwise never show
+                self.logger.warning("Pairing with %s failed: %s", self.display_name, err)
                 errors = {"base": err.translation_key or str(err)}
                 continue
             finally:
                 # tears down the subprocess on retry, success and abort (cancellation)
                 await pairing.close()
             collected[cred_key] = credentials
-            return
+            if password_pairing:
+                # The device password authenticates every later stream too (the
+                # binary's transient leg), so keep it next to the credentials
+                # instead of discarding it with the setup form.
+                self._store_device_password(entered_value)
+            return password_pairing
+
+    async def _ask_device_password(self, session: SetupSession) -> None:
+        """
+        Ask for the device password and store it, without attempting any pairing.
+
+        Covers the devices that have no pairing to do: a legacy RAOP receiver, and
+        an already paired device whose password is missing or was rejected. There
+        is no live session to validate the entry against, so a wrong password only
+        surfaces on the next connect - which marks the player as needing setup again.
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_PAIRING_PASSWORD,
+                    type=ConfigEntryType.SECURE_STRING,
+                    required=True,
+                    category="protocol_generic",
+                )
+            ],
+            step_id="pair_password",
+        )
+        self._store_device_password(str(values[CONF_PAIRING_PASSWORD]))
+
+    async def _offer_optional_pairing(self, session: SetupSession, step_id: str) -> bool:
+        """
+        Ask whether to run the offered (optional) pairing now.
+
+        :param session: The setup flow session used to interact with the user.
+        :param step_id: The (i18n) step id describing the offered pairing.
+        """
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_PAIR_NOW,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=False,
+                    category="protocol_generic",
+                )
+            ],
+            step_id=step_id,
+        )
+        return bool(values[CONF_PAIR_NOW])
 
     async def _prepare_streaming_pairing(
         self, protocol: StreamingProtocol, *, pin_pairing: bool
@@ -906,16 +1243,6 @@ class AirPlayPlayer(Player):
             device_id=device_id,
         )
 
-    def _on_player_media_updated(self) -> None:
-        """Handle callback when the current media of the player is updated."""
-        if not self.stream or not self.stream.running:
-            return
-        metadata = self.state.current_media
-        if not metadata:
-            return
-        progress = int(metadata.corrected_elapsed_time or 0)
-        self.mass.create_task(self.stream.send_metadata(progress, metadata))
-
     async def _get_session_pcm_format(
         self, sync_clients: list[AirPlayPlayer], media: PlayerMedia
     ) -> AudioFormat:
@@ -956,6 +1283,138 @@ class AirPlayPlayer(Player):
             if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
         return sync_clients
+
+    async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
+        """Re-join this player to its group's live session after a bounded backoff."""
+        max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if (
+                self.group_members
+                or (self.stream and self.stream.running)
+                or self.playback_state != PlaybackState.IDLE
+                # synced into a group outside the original one = deliberate regroup.
+                # Still pointing at an original candidate is fine: a static group
+                # keeps the sync membership while only the session lost this player.
+                or (self.synced_to and self.synced_to not in candidate_ids)
+            ):
+                # the player was grouped or repurposed by other means meanwhile
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is active again",
+                    self.display_name,
+                )
+                return
+            if not self.available:
+                # the device is offline: an attempt cannot succeed and the user
+                # may well have switched it off on purpose
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is unavailable",
+                    self.display_name,
+                )
+                return
+            target = self._resolve_rejoin_target(candidate_ids)
+            if target is None:
+                # the group may be between sessions (e.g. a track change); keep
+                # trying until the attempts run out
+                self.logger.debug(
+                    "Automatic group re-join attempt %d/%d for %s: no playing group found",
+                    attempt,
+                    max_attempts,
+                    self.display_name,
+                )
+                continue
+            # When the sync membership survived the stream loss (a static group,
+            # where membership is configuration), only the running session needs
+            # healing; a group command would no-op on the existing membership.
+            heal_session = (
+                target.stream.session
+                if self.player_id in target.group_members and target.stream is not None
+                else None
+            )
+            try:
+                if heal_session is not None:
+                    await heal_session.add_client(self)
+                else:
+                    await self.mass.players.cmd_group(self.player_id, target.player_id)
+            except Exception as err:
+                self.logger.warning(
+                    "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
+                    self.display_name,
+                    target.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                continue
+            # A failed late-join is swallowed inside the grouping path (the player
+            # then holds group membership without a live stream), so verify the
+            # session actually carries this player before declaring success.
+            if (
+                self.stream
+                and self.stream.running
+                and self.stream.session
+                and self in self.stream.session.sync_clients
+            ):
+                self.logger.info(
+                    "Automatically re-joined %s to the group of %s after stream loss",
+                    self.display_name,
+                    target.display_name,
+                )
+                return
+            self.logger.warning(
+                "Automatic re-join of %s did not produce a running stream (attempt %d/%d)",
+                self.display_name,
+                attempt,
+                max_attempts,
+            )
+            if heal_session is None:
+                # undo the group membership this attempt created so a retry (or
+                # a manual regroup) starts from a clean join
+                await self.mass.players.cmd_ungroup(self.player_id)
+        self.logger.warning(
+            "Giving up on automatic group re-join for %s after %d attempt(s); "
+            "the player stays idle",
+            self.display_name,
+            max_attempts,
+        )
+
+    def _resolve_rejoin_target(self, candidate_ids: list[str]) -> AirPlayPlayer | None:
+        """Resolve which player now carries the group's actively playing session."""
+        for candidate_id in candidate_ids:
+            candidate = self.mass.players.get_player(candidate_id)
+            if candidate is None or candidate is self:
+                continue
+            if not isinstance(candidate, AirPlayPlayer):
+                continue
+            if candidate.synced_to:
+                # the candidate was absorbed into another group since the loss
+                # (user intent): never follow the old group's players elsewhere.
+                # A leadership transfer inside the original group is still found:
+                # the promoted member is itself one of the candidates.
+                continue
+            if not candidate.available:
+                continue
+            # only a PLAYING session can absorb a late joiner: a parked (paused)
+            # session has no live timeline to anchor against
+            if candidate.playback_state != PlaybackState.PLAYING:
+                continue
+            if not (candidate.stream and candidate.stream.running and candidate.stream.session):
+                continue
+            return candidate
+        return None
+
+    def _store_device_password(self, password: str) -> None:
+        """
+        Persist a device password so every later stream can authenticate with it.
+
+        :param password: The plaintext password entered by the user.
+        """
+        self.mass.config.set_raw_player_config_value(
+            self.player_id, CONF_PASSWORD, self.mass.config.encrypt_string(password)
+        )
+        # a freshly entered password deserves a clean slate: the reject marker
+        # would otherwise keep the player in "needs setup" until the next connect
+        self.set_password_invalid(False)
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):

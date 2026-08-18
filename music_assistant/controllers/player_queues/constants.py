@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from music_assistant_models.enums import MediaType
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -21,6 +23,24 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_ep
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION = "default_enqueue_option_collection"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
+
+CONF_DEFAULT_CLICK_ACTION_ARTIST = "default_click_action_artist"
+CONF_DEFAULT_CLICK_ACTION_ALBUM = "default_click_action_album"
+CONF_DEFAULT_CLICK_ACTION_TRACK = "default_click_action_track"
+CONF_DEFAULT_CLICK_ACTION_GENRE = "default_click_action_genre"
+CONF_DEFAULT_CLICK_ACTION_RADIO = "default_click_action_radio"
+CONF_DEFAULT_CLICK_ACTION_PLAYLIST = "default_click_action_playlist"
+
+CLICK_ACTION_BROWSE = "browse"
+CLICK_ACTION_PLAY = "play"
+CLICK_ACTION_DEFAULT_VALUE = CLICK_ACTION_BROWSE
+
+CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK = "default_play_action_album_track"
+CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK = "default_play_action_playlist_track"
+
+PLAY_ACTION_PLAY_FROM_HERE = "play_from_here"
+PLAY_ACTION_PLAY_TRACK = "play_track"
+PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
 
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
@@ -63,6 +83,12 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
+# How long a user's shuffle toggle stays "fresh" enough to carry over into the next media the user
+# starts. Turning shuffle on and then pressing play is a deliberate "shuffle this" gesture and must
+# be honoured; a shuffle left on by an earlier listening session must not silently reorder the album
+# the user just picked. Only bridges the gap between the two clicks, so it is deliberately short.
+SHUFFLE_INTENT_WINDOW = 300
+
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
@@ -80,3 +106,11 @@ QUEUE_CACHE_SAVE_DELAY = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
+
+# Media types that may reach us without a duration, so one determined while streaming is applied.
+# Radio and audio sources would wrongly become seekable. Tracks always carry a duration and a
+# rounded value would affect crossfade and gapless timing.
+PROBED_DURATION_MEDIA_TYPES = (
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)

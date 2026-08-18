@@ -16,15 +16,25 @@ from music_assistant_models.enums import (
     PlayerType,
     SourceControl,
     StreamType,
+    VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
+from music_assistant_models.media_items import (
+    AudioFormat,
+    AudioSource,
+    ProviderMapping,
+    SoundEffect,
+)
+from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.constants import CONF_VOLUME_NORMALIZATION_TARGET
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.plugin import PluginProvider
 from tests.common import MockPlayer, MockProvider
 
@@ -39,7 +49,9 @@ def mock_mass() -> MagicMock:
     mass.loop = None
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.signal_event = MagicMock()
     mass.get_providers = MagicMock(return_value=[])
@@ -139,15 +151,16 @@ class _FakePluginProvider:
     async def get_audio_sources(self) -> list[AudioSource]:
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         # Side-effect-free: ownership is claimed in on_source_selected. This
         # mirrors the contract every real plugin implements so preload paths
         # can fetch streamdetails without blocking a later handoff.
-        if source_id != self._audio_source.item_id:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        del media_type
+        if item_id != self._audio_source.item_id:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=_audio_format(),
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
@@ -231,14 +244,14 @@ class TestAudioSourceContract:
         # without blocking a later cross-queue handoff at the actual stream
         # request. See PluginProvider.get_stream_details docstring.
         prov = _FakePluginProvider(_audio_source())
-        sd = await prov.get_stream_details("main", "queue_a")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert sd.stream_type == StreamType.CUSTOM
         assert sd.stream_metadata is not None
         assert prov._in_use_by_queue is None
         # Calling it again from a different queue must also be side-effect-free
         # — no busy raise, no claim — so preload from any queue is safe.
-        sd2 = await prov.get_stream_details("main", "queue_b")
+        sd2 = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd2.media_type == MediaType.AUDIO_SOURCE
         assert prov._in_use_by_queue is None
 
@@ -252,17 +265,17 @@ class TestAudioSourceContract:
 
     @pytest.mark.asyncio
     async def test_get_stream_details_unknown_source_raises_not_found(self) -> None:
-        """An unknown source_id should surface as MediaNotFoundError."""
+        """An unknown item_id should surface as MediaNotFoundError."""
         prov = _FakePluginProvider(_audio_source())
         with pytest.raises(MediaNotFoundError):
-            await prov.get_stream_details("bogus", "queue_a")
+            await prov.get_stream_details("bogus", MediaType.AUDIO_SOURCE)
 
     @pytest.mark.asyncio
     async def test_get_audio_stream_releases_lock_in_finally(self) -> None:
         """When the audio generator exits, the queue lock should be released."""
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        sd = await prov.get_stream_details("main", "queue_a")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         gen = prov.get_audio_stream(sd)
         await gen.__anext__()
         await gen.aclose()
@@ -287,13 +300,13 @@ class TestAudioSourceContract:
         # the previous queue's state because it does not claim or check.
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert prov._in_use_by_queue == "queue_a"
         # Different queue selects the source (cross-queue handoff).
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
         assert prov._in_use_by_queue == "queue_b"
         # get_stream_details for the new queue still succeeds — no busy raise.
-        sd = await prov.get_stream_details("main", "queue_b")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
 
     @pytest.mark.asyncio
@@ -301,7 +314,7 @@ class TestAudioSourceContract:
         """on_source_unselected releases the claim when the session id matches."""
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         await prov.on_source_unselected("main", "queue_a", "session_1")
         assert prov._in_use_by_queue is None
         assert prov._active_session_id is None
@@ -313,10 +326,10 @@ class TestAudioSourceContract:
         # has already taken over. The session-id guard must reject it.
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         # Handoff: B selects the source with a fresh session id, releasing A's claim
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
-        await prov.get_stream_details("main", "queue_b")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert prov._in_use_by_queue == "queue_b"
         # Now queue A's late unselect (with the OLD session id) fires — must no-op
         await prov.on_source_unselected("main", "queue_a", "session_1")
@@ -335,7 +348,7 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Stream 1 starts
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        sd = await prov.get_stream_details("main", "queue_a")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         gen1 = prov.get_audio_stream(sd)
         await gen1.__anext__()
         # Same-queue reconnect arrives before stream 1's generator finishes
@@ -362,7 +375,7 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Request 1 — full lifecycle
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         await prov.on_source_unselected("main", "queue_a", "session_1")
         # Read into a locally-typed var so mypy's literal narrowing doesn't
         # chain across the next await (which mutates the attribute it can't see).
@@ -389,11 +402,11 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Queue A is actively streaming
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert prov._in_use_by_queue == "queue_a"
         # Queue B's preload fetches streamdetails — must NOT raise busy, must
         # NOT alter ownership.
-        sd = await prov.get_stream_details("main", "queue_b")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert prov._in_use_by_queue == "queue_a"
         # Queue B's actual stream request fires on_source_selected, which
@@ -413,7 +426,7 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Request 1 starts streaming
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         # Request 2 (reconnect) arrives BEFORE request 1's finally runs.
         # Same queue + same player → no handoff branch, just a fresh session id.
         await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
@@ -922,3 +935,97 @@ class TestAudioSourceLibraryRejection:
         controller.mass = MagicMock()
         with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
             await controller.add_item_to_library("stale_plugin://audio_source/main")
+
+
+# ------------------------------------------------ streamdetails dispatch for plugin-owned items
+
+
+def _register_stub_plugin(
+    mass: MusicAssistant, provider_cls: type[PluginProvider], *, instance_id: str
+) -> PluginProvider:
+    """Instantiate a real PluginProvider subclass with a stub manifest/config and register it."""
+    manifest = MagicMock()
+    manifest.domain = instance_id
+    config = MagicMock()
+    config.instance_id = instance_id
+    config.get_value = MagicMock(return_value="GLOBAL")
+    provider = provider_cls(mass, manifest, config)
+    # get_provider() only returns providers marked available; the real load pipeline sets
+    # this after handle_async_init, which we skip here.
+    provider.available = True
+    mass._providers[instance_id] = provider
+    return provider
+
+
+def _ready_streams_audio(mass: MusicAssistant) -> StreamsAudio:
+    """
+    Attach a minimal streams/player_queues stand-in to `mass` and return its StreamsAudio.
+
+    mass_minimal only wires config/cache/discovery; get_stream_details also reads
+    mass.streams (volume-normalization config) and mass.player_queues (preferred-provider
+    lookup), so dispatch tests stub those in directly rather than booting the full server.
+    """
+    mass.player_queues = MagicMock()
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=None)
+    mass.streams = MagicMock()
+    mass.streams.get_config_value = MagicMock(
+        side_effect=lambda key, *_a, **_k: (
+            -14
+            if key == CONF_VOLUME_NORMALIZATION_TARGET
+            else VolumeNormalizationMode.DISABLED.value
+        )
+    )
+    mass.streams.audio = StreamsAudio(mass)
+    return mass.streams.audio  # type: ignore[no-any-return]
+
+
+def _queue_item_for_sound_effect(
+    *, queue_id: str, provider_instance: str, item_id: str
+) -> QueueItem:
+    """Build a QueueItem wrapping a SoundEffect owned by `provider_instance`."""
+    media_item = SoundEffect(
+        item_id=item_id,
+        provider=provider_instance,
+        name="Clip",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_instance,
+                provider_instance=provider_instance,
+            )
+        },
+    )
+    return QueueItem(
+        queue_id=queue_id, queue_item_id=item_id, name="Clip", duration=None, media_item=media_item
+    )
+
+
+async def test_plugin_owned_sound_effect_uses_plugin_stream_details(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A SOUND_EFFECT owned by a plugin provider is served by the plugin hook."""
+    received: list[tuple[str, MediaType]] = []
+
+    class ClipPlugin(PluginProvider):
+        async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+            received.append((item_id, media_type))
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=AudioFormat(content_type=ContentType.MP3),
+                media_type=media_type,
+                stream_type=StreamType.HTTP,
+                path="http://example.invalid/clip.mp3",
+                duration=12,
+            )
+
+    audio = _ready_streams_audio(mass_minimal)
+    plugin = _register_stub_plugin(mass_minimal, ClipPlugin, instance_id="clipper")
+    queue_item = _queue_item_for_sound_effect(
+        queue_id="player_a", provider_instance=plugin.instance_id, item_id="clip_007"
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item)
+
+    assert received == [("clip_007", MediaType.SOUND_EFFECT)]
+    assert streamdetails.media_type == MediaType.SOUND_EFFECT

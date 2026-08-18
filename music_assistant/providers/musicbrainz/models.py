@@ -79,6 +79,7 @@ class MusicBrainzArtist(DataClassDictMixin):
     sort_name: str
 
     # optional fields
+    type: str | None = None
     aliases: list[MusicBrainzAlias] | None = None
     tags: list[MusicBrainzTag] | None = None
     relations: list[MusicBrainzRelation] | None = None

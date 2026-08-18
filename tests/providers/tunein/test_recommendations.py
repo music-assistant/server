@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.media_items import UniqueList
 
 from music_assistant.providers.tunein import TuneInProvider
+from tests.common import use_real_create_task
 
 TRENDING_DATA = {
     "body": [
@@ -38,6 +39,7 @@ def _install_cache_mocks(provider: TuneInProvider) -> None:
         return_value=(None, False, False)
     )
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    use_real_create_task(provider.mass)
 
 
 def _install_fake_cache(provider: TuneInProvider) -> list[asyncio.Future[Any]]:

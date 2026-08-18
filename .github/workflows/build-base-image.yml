@@ -51,16 +51,26 @@ jobs:
           GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
         run: |
           mkdir -p widevine_cdm
+          # the Accept header must not end in "+json": gh then runs the response
+          # through its JSON handling, which fails on the binary client_id.bin
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             "repos/music-assistant/appvars/contents/widevine_cdm_client/private_key.pem" \
             > widevine_cdm/private_key.pem
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             "repos/music-assistant/appvars/contents/widevine_cdm_client/client_id.bin" \
             > widevine_cdm/client_id.bin
+          # a request GitHub declines to serve raw comes back as the JSON metadata
+          # envelope with a 200, which would end up in the image unnoticed
+          for file in widevine_cdm/private_key.pem widevine_cdm/client_id.bin; do
+            if [ ! -s "$file" ] || [ "$(head -c 1 "$file")" = "{" ]; then
+              echo "Downloaded $file is empty or not the raw file content" >&2
+              exit 1
+            fi
+          done
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

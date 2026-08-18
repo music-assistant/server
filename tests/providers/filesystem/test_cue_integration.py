@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.cue import (
     CUE_TRACK_ID_DELIMITER,
     CueSheetHandler,
+    cue_metadata_checksum,
     make_cue_track_id,
     parse_cue_track_id,
 )
@@ -191,8 +193,8 @@ class TestReadCueFile:
         assert not content.startswith("\ufeff")
 
     @pytest.mark.asyncio
-    async def test_decodes_non_utf8_tolerantly(self, tmp_path: Path) -> None:
-        """Non-UTF-8 bytes are decoded without raising."""
+    async def test_decodes_latin1_bytes(self, tmp_path: Path) -> None:
+        """Bytes that are not valid UTF-8 keep their accented characters."""
         # 0xFC is "ü" in Latin-1 but invalid as a UTF-8 continuation byte
         (tmp_path / "a.cue").write_bytes(b'TITLE "M\xfcller"\n')
         provider = _make_provider(base_path=str(tmp_path))
@@ -205,10 +207,51 @@ class TestReadCueFile:
             file_size=(tmp_path / "a.cue").stat().st_size,
         )
         content = await provider._cue.read_cue_file(cue_item)
-        # ASCII surroundings are preserved; the non-UTF-8 byte may be replaced
-        # or decoded depending on what chardet detects
-        assert "TITLE" in content
-        assert "ller" in content
+        assert content == 'TITLE "Müller"\n'
+
+    @pytest.mark.asyncio
+    async def test_reads_cyrillic_cue_sheet(self, tmp_path: Path) -> None:
+        """
+        A CUE sheet in the local ANSI codepage keeps its titles readable.
+
+        Russian rips ship their CUE sheets in cp1251, so the titles have to come
+        through as Cyrillic instead of replacement characters (support #6093).
+        """
+        cue = 'PERFORMER "Король и Шут"\nTITLE "Как в старой сказке"\n'
+        (tmp_path / "a.cue").write_bytes(cue.encode("cp1251"))
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_item = FileSystemItem(
+            filename="a.cue",
+            relative_path="a.cue",
+            absolute_path=str(tmp_path / "a.cue"),
+            is_dir=False,
+            checksum="1",
+            file_size=(tmp_path / "a.cue").stat().st_size,
+        )
+        content = await provider._cue.read_cue_file(cue_item)
+        assert content == cue
+
+
+class TestLoadCueSheet:
+    """Tests for parsed CUE sheet caching."""
+
+    @pytest.mark.asyncio
+    async def test_versions_cache_entries(self, tmp_path: Path) -> None:
+        """Parsed metadata uses a checksum that changes with CUE handling."""
+        cue_item = _make_cue_item(tmp_path, SAMPLE_CUE)
+        provider = _make_provider(base_path=str(tmp_path))
+        cache_get = cast("AsyncMock", provider.mass.cache.get)
+        cache_set = cast("AsyncMock", provider.mass.cache.set)
+
+        await provider._cue.load_cue_sheet(cue_item)
+
+        expected_checksum = cue_metadata_checksum(cue_item.checksum)
+        get_call = cache_get.await_args
+        set_call = cache_set.await_args
+        assert get_call is not None
+        assert set_call is not None
+        assert get_call.kwargs["checksum"] == expected_checksum
+        assert set_call.kwargs["checksum"] == expected_checksum
 
 
 class TestFindCueAudioFile:
@@ -349,6 +392,8 @@ class TestParseCueTracks:
         assert len(set(ids)) == 3
         for track, num in zip(tracks, [1, 2, 3], strict=True):
             assert track.item_id == make_cue_track_id(cue_item.relative_path, num)
+            mapping = next(iter(track.provider_mappings))
+            assert mapping.details == cue_metadata_checksum(cue_item.checksum)
         # ISRC from CUE propagates to each track
         for track in tracks:
             isrcs = [v for k, v in track.external_ids if k == ExternalID.ISRC]
@@ -803,7 +848,7 @@ class TestClassifyScanItemCue:
         provider: LocalFileSystemProvider,
         item: FileSystemItem,
         *,
-        cue_file_checksums: dict[str, str] | None = None,
+        cue_file_checksums: dict[str, set[str]] | None = None,
     ) -> tuple[
         list[tuple[FileSystemItem, str | None]],
         list[FileSystemItem],
@@ -833,7 +878,7 @@ class TestClassifyScanItemCue:
         items, unchanged, cur, stems = self._classify(
             provider,
             cue_item,
-            cue_file_checksums={"album.cue": "checksum-v1"},
+            cue_file_checksums={"album.cue": {cue_metadata_checksum("checksum-v1")}},
         )
         assert items == []
         assert unchanged == [cue_item]
@@ -847,9 +892,37 @@ class TestClassifyScanItemCue:
         items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
-            cue_file_checksums={"album.cue": "checksum-v1"},
+            cue_file_checksums={"album.cue": {cue_metadata_checksum("checksum-v1")}},
+        )
+        assert items == [(cue_item, cue_metadata_checksum("checksum-v1"))]
+        assert unchanged == []
+
+    def test_legacy_checksum_forces_metadata_refresh(self) -> None:
+        """An unversioned mapping is reprocessed even when the file is unchanged."""
+        provider = _make_provider()
+        cue_item = self._cue_item("checksum-v1")
+        items, unchanged, _, _ = self._classify(
+            provider,
+            cue_item,
+            cue_file_checksums={"album.cue": {"checksum-v1"}},
         )
         assert items == [(cue_item, "checksum-v1")]
+        assert unchanged == []
+
+    def test_mixed_checksums_force_metadata_refresh(self) -> None:
+        """A partially refreshed CUE is reprocessed until every track is current."""
+        provider = _make_provider()
+        cue_item = self._cue_item("checksum-v1")
+        previous_checksums = {
+            "checksum-v1",
+            cue_metadata_checksum("checksum-v1"),
+        }
+        items, unchanged, _, _ = self._classify(
+            provider,
+            cue_item,
+            cue_file_checksums={"album.cue": previous_checksums},
+        )
+        assert items == [(cue_item, min(previous_checksums))]
         assert unchanged == []
 
     def test_new_cue_has_no_prior_checksum(self) -> None:

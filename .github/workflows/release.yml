@@ -46,9 +46,9 @@ on:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.5.4"
-  BASE_IMAGE_VERSION_BETA: "1.6.0"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
+  BASE_IMAGE_VERSION_STABLE: "1.6.1"
+  BASE_IMAGE_VERSION_BETA: "1.6.1"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.6.1"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -458,7 +458,7 @@ jobs:
           GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
         run: |
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             "repos/music-assistant/appvars/contents/app_secrets.json" \
             > source/music_assistant/helpers/app_secrets.json
 
@@ -501,7 +501,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Preserve release assets
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -543,7 +543,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore release assets
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -835,13 +835,13 @@ jobs:
 
       - name: Restore release assets
         if: needs.resolve.outputs.release_state != 'published'
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1042,7 +1042,7 @@ jobs:
 
       - name: Restore draft assets
         if: steps.publication_state.outputs.already_published != 'true'
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -1193,7 +1193,7 @@ jobs:
           done
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1239,7 +1239,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1432,6 +1432,7 @@ jobs:
         env:
           CHANNEL: ${{ inputs.channel }}
         run: |
+          dev_folder=""
           case "$CHANNEL" in
             stable)
               folder="music_assistant"
@@ -1441,9 +1442,12 @@ jobs:
               ;;
             nightly)
               folder="music_assistant_nightly"
+              # the dev add-on is built from the nightly image, so it follows this release
+              dev_folder="music_assistant_dev"
               ;;
           esac
           echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"
 
       - name: Update add-on release
         env:
@@ -1465,9 +1469,20 @@ jobs:
             --notes "$RUNNER_TEMP/release-notes.md" \
             --retain 3
 
+      - name: Update dev add-on version
+        if: steps.channel.outputs.dev_folder != ''
+        env:
+          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py set-addon-version \
+            --config "addon-repo/$DEV_FOLDER/config.yaml" \
+            --version "$VERSION"
+
       - name: Commit add-on update
         env:
           ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
+          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
           APP_SLUG: ${{ steps.app.outputs.slug }}
           APP_USER_ID: ${{ steps.app.outputs.user_id }}
           ADDON_BRANCH: ${{ steps.addon_repository.outputs.default_branch }}
@@ -1476,6 +1491,9 @@ jobs:
         run: |
           cd addon-repo
           git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
+          if [ -n "$DEV_FOLDER" ]; then
+            git add "$DEV_FOLDER/config.yaml"
+          fi
           if git diff --cached --quiet; then
             echo "Add-on $ADDON_FOLDER already references $VERSION"
             exit 0
@@ -1569,7 +1587,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             repos/music-assistant/app.music-assistant.io/contents/channels.json \
             > "$RUNNER_TEMP/channels.json"
           current_version=$(jq -r \

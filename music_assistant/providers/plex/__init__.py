@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import random
 import warnings
@@ -65,7 +64,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.tags import async_parse_tags, clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -93,6 +92,7 @@ from music_assistant.providers.plex.constants import (
     ERR_NO_ARTIST_FOR_TRACK,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
+    MAX_TOP_TRACKS,
     MIX_CACHE_EXPIRATION,
     MIX_ITEM_PREFIX,
     RECOMMENDATIONS_HUB_PARAMS,
@@ -902,28 +902,19 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get top tracks for the given artist using Plex artist radio/station."""
+        """Get top tracks for the given artist."""
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             return []
-
+        plex_artist = await self._get_data(prov_artist_id, PlexArtist)
         try:
-            plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-            # Get the artist radio station which contains top/popular tracks
-            if station := await self._run_async(plex_artist.station):
-                # Get tracks from the station
-                station_tracks = await self._run_async(station.items)
-                tracks = []
-                for plex_track in station_tracks[:25]:  # Limit to 25 top tracks
-                    if track := await self._parse_track(plex_track):
-                        tracks.append(track)
-                self.logger.debug(
-                    "Retrieved %d top tracks for artist %s", len(tracks), prov_artist_id
-                )
-                return tracks
-            self.logger.warning("No station available for artist %s", prov_artist_id)
-        except Exception as err:
-            self.logger.warning("Error getting top tracks for artist %s: %s", prov_artist_id, err)
-        return []
+            plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_artist.popularTracks))
+        except plexapi.exceptions.NotFound:
+            # PlexArtist.popularTracks() relies on Plex's advanced filters API.
+            # Some Plex servers return no filtering metadata, making plexapi
+            # raise 'Unknown libtype "artist"'. Fall back to ranking the artist's
+            # own tracks, which does not depend on the filters API.
+            plex_tracks = await self._rank_artist_tracks(plex_artist)
+        return [await self._parse_track(plex_track) for plex_track in plex_tracks[:MAX_TOP_TRACKS]]
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -1083,6 +1074,25 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         err,
                     )
 
+    async def _rank_artist_tracks(self, plex_artist: PlexArtist) -> list[PlexTrack]:
+        """
+        Rank an artist's own tracks by popularity, keeping one version per title.
+
+        :param plex_artist: The Plex artist to rank the tracks of.
+        """
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_artist.tracks))
+        best_per_title: dict[str, PlexTrack] = {}
+        for plex_track in plex_tracks:
+            if not plex_track.ratingCount:
+                # ratingCount is the Last.fm scrobble count popularTracks() ranks on,
+                # so a track without one has no rank. viewCount is local plays instead.
+                continue
+            title = (plex_track.title or "").casefold()
+            best = best_per_title.get(title)
+            if best is None or plex_track.ratingCount > best.ratingCount:
+                best_per_title[title] = plex_track
+        return sorted(best_per_title.values(), key=lambda track: track.ratingCount, reverse=True)
+
     async def _run_async(
         self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
     ) -> RetType:
@@ -1239,9 +1249,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             album.metadata.release_date = plex_album.originallyAvailableAt
         if (explicit := get_explicit(plex_album)) is not None:
             album.metadata.explicit = explicit
-        if mbid := get_musicbrainz_id(plex_album):
-            with contextlib.suppress(InvalidDataError):
-                album.mbid = mbid
+        if mbid := clean_mbid(
+            get_musicbrainz_id(plex_album), f"album {plex_album.title}", self.logger
+        ):
+            album.mbid = mbid
 
         album.artists.append(
             self._get_item_mapping(
@@ -1282,9 +1293,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             artist.metadata.style = next(
                 (style.tag for style in plex_artist.styles if style.tag), None
             )
-        if mbid := get_musicbrainz_id(plex_artist):
-            with contextlib.suppress(InvalidDataError):
-                artist.mbid = mbid
+        if mbid := clean_mbid(
+            get_musicbrainz_id(plex_artist), f"artist {plex_artist.title}", self.logger
+        ):
+            artist.mbid = mbid
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
@@ -1479,9 +1491,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             track.metadata.mood = next((mood.tag for mood in plex_track.moods if mood.tag), None)
         if (explicit := get_explicit(plex_track)) is not None:
             track.metadata.explicit = explicit
-        if mbid := get_musicbrainz_id(plex_track):
-            with contextlib.suppress(InvalidDataError):
-                track.mbid = mbid
+        if mbid := clean_mbid(
+            get_musicbrainz_id(plex_track), f"track {plex_track.title}", self.logger
+        ):
+            track.mbid = mbid
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle

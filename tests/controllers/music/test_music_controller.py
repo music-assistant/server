@@ -6,16 +6,18 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import SoundEffect
+from music_assistant_models.media_items import Radio, SoundEffect, Track
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import CONF_RESET_DB
 from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
@@ -76,6 +78,23 @@ async def test_setup_runs_vacuum_when_reclaimable(music: MusicController) -> Non
     ):
         await music._setup_database()
     mock_vacuum.assert_awaited_once_with()
+
+
+async def test_reset_db_action_reports_its_outcome(music: MusicController) -> None:
+    """The reset-database action reports its outcome instead of re-rendering the config form."""
+    with (
+        patch.object(music, "_reset_database", AsyncMock()) as mock_reset,
+        patch.object(music.mass.cache, "clear", AsyncMock()) as mock_clear,
+        patch.object(music, "start_sync", AsyncMock()) as mock_sync,
+    ):
+        result = await music.handle_config_action(CONF_RESET_DB)
+
+    mock_reset.assert_awaited_once()
+    mock_clear.assert_awaited_once()
+    mock_sync.assert_awaited_once()
+    assert isinstance(result, ConfigActionResult)
+    assert result.translation_key == f"{CONF_RESET_DB}.result"
+    assert result.open_url is None
 
 
 def test_database_setup_mixin_applied() -> None:
@@ -149,3 +168,149 @@ async def test_add_to_library_rejects_stale_sound_effect_uri() -> None:
     controller.mass = MagicMock()
     with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
         await controller.add_item_to_library("stale_provider://sound_effect/rain.mp3")
+
+
+async def test_get_item_passes_sound_effect_type_to_builtin_provider() -> None:
+    """Builtin instance URIs keep the parsed SOUND_EFFECT media type."""
+    controller = MusicController.__new__(MusicController)
+    sound_effect = _sound_effect()
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock(return_value=sound_effect)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.SOUND_EFFECT,
+        "http://example.com/intro.mp3",
+        "builtin_1",
+    )
+
+    assert result is sound_effect
+    builtin_provider.parse_item.assert_awaited_once_with(
+        "http://example.com/intro.mp3",
+        requested_media_type=MediaType.SOUND_EFFECT,
+    )
+
+
+async def test_get_item_builtin_radio_keeps_user_supplied_details() -> None:
+    """A builtin radio URI resolves through get_radio so it stays a radio station."""
+    controller = MusicController.__new__(MusicController)
+    radio = Radio(
+        item_id="http://stream.example.com",
+        provider="builtin",
+        name="My Station",
+        provider_mappings=set(),
+    )
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock()
+    builtin_provider.get_radio = AsyncMock(return_value=radio)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.RADIO,
+        "http://stream.example.com",
+        "builtin_1",
+    )
+
+    assert result is radio
+    builtin_provider.get_radio.assert_awaited_once_with("http://stream.example.com")
+    builtin_provider.parse_item.assert_not_awaited()
+
+
+async def test_get_item_builtin_track_keeps_user_supplied_details() -> None:
+    """A builtin track URI resolves through get_track so it stays a track."""
+    controller = MusicController.__new__(MusicController)
+    track = Track(
+        item_id="http://media.example.com/song.mp3",
+        provider="builtin",
+        name="My Song",
+        provider_mappings=set(),
+    )
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock()
+    builtin_provider.get_track = AsyncMock(return_value=track)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.TRACK,
+        "http://media.example.com/song.mp3",
+        "builtin_1",
+    )
+
+    assert result is track
+    builtin_provider.get_track.assert_awaited_once_with("http://media.example.com/song.mp3")
+    builtin_provider.parse_item.assert_not_awaited()
+
+
+async def test_get_item_builtin_unknown_type_still_parses_url() -> None:
+    """A plain URL of unknown media type is probed by the builtin provider."""
+    controller = MusicController.__new__(MusicController)
+    radio = Radio(
+        item_id="http://stream.example.com",
+        provider="builtin",
+        name="My Station",
+        provider_mappings=set(),
+    )
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock(return_value=radio)
+    builtin_provider.get_radio = AsyncMock()
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.UNKNOWN,
+        "http://stream.example.com",
+        "builtin_1",
+    )
+
+    assert result is radio
+    builtin_provider.parse_item.assert_awaited_once_with(
+        "http://stream.example.com",
+        requested_media_type=MediaType.UNKNOWN,
+    )
+    builtin_provider.get_radio.assert_not_awaited()
+
+
+async def test_get_item_builtin_playlist_instance_uses_playlist_controller() -> None:
+    """Builtin instance playlists should still resolve through the playlist controller."""
+    controller = MusicController.__new__(MusicController)
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock()
+    playlist_controller = MagicMock()
+    playlist_item = MagicMock()
+    playlist_controller.get = AsyncMock(return_value=playlist_item)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+    controller.get_controller = MagicMock(return_value=playlist_controller)  # type: ignore[method-assign]
+
+    result = await controller.get_item(
+        MediaType.PLAYLIST,
+        "playlist_123",
+        "builtin_1",
+    )
+
+    assert result is playlist_item
+    builtin_provider.parse_item.assert_not_awaited()
+    controller.get_controller.assert_called_once_with(MediaType.PLAYLIST)
+    playlist_controller.get.assert_awaited_once_with(
+        item_id="playlist_123",
+        provider_instance_id_or_domain="builtin_1",
+        allow_update_metadata=True,
+    )

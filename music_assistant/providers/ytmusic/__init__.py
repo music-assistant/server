@@ -51,6 +51,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
+from ytmusicapi.parsers.podcasts import Description
 
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
@@ -58,7 +59,12 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
+from music_assistant.helpers.util import (
+    import_module_in_thread,
+    infer_album_type,
+    install_package,
+    parse_title_and_version,
+)
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -267,6 +273,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         parsed_results.tracks = tracks
         parsed_results.podcasts = podcasts
         return parsed_results
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        try:
+            await super().sync_library(media_type)
+        except LoginFailed as err:
+            # Every following sync fails the same way until the cookie is replaced,
+            # so hand the provider back to the user for re-authentication.
+            if self.available:
+                self.unload_with_error(err)
+            raise
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
@@ -937,7 +954,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         raw_playlist_id = playlist_obj["id"]
         playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
-        is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
+        is_editable = playlist_obj.get("owned", playlist_obj.get("privacy", "") == "PRIVATE")
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
         # So suffix with the instance id to make them unique
         if playlist_id in YT_PERSONAL_PLAYLISTS:
@@ -1099,7 +1116,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             duration_sec = parse_str_duration(duration)
             episode.duration = int(duration_sec)
         if description := episode_obj.get("description"):
-            episode.metadata.description = description
+            # the single episode endpoint returns a Description object instead of a string
+            episode.metadata.description = (
+                description.text if isinstance(description, Description) else description
+            )
         if thumbnails := episode_obj.get("thumbnails"):
             episode.metadata.images = self._parse_thumbnails(thumbnails)
         if release_date := episode_obj.get("date"):
@@ -1224,6 +1244,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await install_package(package_name)
         # verify if the yt_dlp package is usable
         try:
-            await asyncio.to_thread(importlib.import_module, "yt_dlp")
+            await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")

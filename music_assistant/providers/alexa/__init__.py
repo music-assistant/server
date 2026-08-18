@@ -55,6 +55,7 @@ ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
+    "play_audio_nl-NL": "speel audio af op music assistant",
     "play_audio_default": "ask music assistant to play audio",
 }
 
@@ -332,7 +333,7 @@ class AlexaPlayer(Player):
         self._attr_current_media = media
         self.update_state()
 
-    def _on_player_media_updated(self) -> None:
+    def on_player_media_updated(self) -> None:
         """
         Handle callback when the current media of the player is updated.
 
@@ -405,6 +406,7 @@ class AlexaProvider(PlayerProvider):
                     ConfigValueOption("fr-CA"),
                     ConfigValueOption("it-IT"),
                     ConfigValueOption("pt-BR"),
+                    ConfigValueOption("nl-NL"),
                 ],
                 default_value="en-US",  # choose a sensible default
             ),

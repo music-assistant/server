@@ -41,7 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.cue_sheet import CueSheet, CueTrack, parse_cue_sheet
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.helpers.tags import AudioTags, async_parse_tags
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.util import detect_charset
 
 from .constants import CACHE_CATEGORY_CUE_SHEETS, TRACK_EXTENSIONS
@@ -51,6 +51,9 @@ if TYPE_CHECKING:
     from . import LocalFileSystemProvider
 
 CUE_TRACK_ID_DELIMITER = "::track"
+
+# Bump when CUE decoding or parsing changes so cached and library metadata are refreshed.
+_CUE_METADATA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +67,15 @@ class _TrackBuildContext:
     track_genres: set[str] | None  # fallback genres from the audio file
     album: Album | None
     album_performers: tuple[str, ...]  # sheet-level PERFORMER values, fallback for track artists
+
+
+def cue_metadata_checksum(file_checksum: str | None) -> str:
+    """
+    Return the checksum for metadata derived from a CUE sheet.
+
+    :param file_checksum: The checksum of the source CUE file.
+    """
+    return f"{_CUE_METADATA_VERSION}:{file_checksum}"
 
 
 def make_cue_track_id(cue_relative_path: str, track_number: int) -> str:
@@ -139,11 +151,12 @@ class CueSheetHandler:
         """
         # cached by (path, checksum) so unchanged CUE files skip the file read
         provider = self.provider
+        metadata_checksum = cue_metadata_checksum(cue_item.checksum)
         cached = await provider.mass.cache.get(
             key=cue_item.relative_path,
             provider=provider.instance_id,
             category=CACHE_CATEGORY_CUE_SHEETS,
-            checksum=cue_item.checksum,
+            checksum=metadata_checksum,
             default=None,
         )
         if cached is not None:
@@ -155,7 +168,7 @@ class CueSheetHandler:
             data=asdict(sheet),
             provider=provider.instance_id,
             category=CACHE_CATEGORY_CUE_SHEETS,
-            checksum=cue_item.checksum,
+            checksum=metadata_checksum,
             expiration=3600 * 24 * 365,
         )
         return sheet
@@ -479,7 +492,7 @@ class CueSheetHandler:
                     provider_domain=provider.domain,
                     provider_instance=provider.instance_id,
                     audio_format=ctx.audio_format,
-                    details=cue_item.checksum,
+                    details=cue_metadata_checksum(cue_item.checksum),
                     in_library=True,
                 )
             },
@@ -495,9 +508,9 @@ class CueSheetHandler:
             track.album = ctx.album
         for isrc in cue_track.isrcs:
             track.external_ids.add((ExternalID.ISRC, isrc))
-        if cue_track.musicbrainz_recordingid:
-            # the setter runs UUID validation and keeps external_ids in sync
-            track.mbid = cue_track.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(cue_track.musicbrainz_recordingid, cue_item.relative_path):
+            # the setter keeps external_ids in sync
+            track.mbid = recording_mbid
         if cue_track.musicbrainz_releasetrackid:
             track.external_ids.add((ExternalID.MB_TRACK, cue_track.musicbrainz_releasetrackid))
         if ctx.embedded_image is not None:

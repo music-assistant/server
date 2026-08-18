@@ -22,6 +22,9 @@ from music_assistant.providers.airplay_receiver import setup_flow as airplay_flo
 from music_assistant.providers.ariacast_receiver import (
     CONF_ARIACAST_NAME,
 )
+from music_assistant.providers.ariacast_receiver import (
+    CONF_MASS_PLAYER_ID as ARIACAST_PLAYER_ID,
+)
 from music_assistant.providers.ariacast_receiver import setup_flow as ariacast_flow
 from music_assistant.providers.spotify_connect import (
     CONF_MASS_PLAYER_ID as SPOTIFY_PLAYER_ID,
@@ -123,7 +126,7 @@ async def _wait_finished(session: SetupSession) -> None:
             "ariacast_receiver",
             ariacast_flow,
             {
-                AIRPLAY_PLAYER_ID: "kitchen",
+                ARIACAST_PLAYER_ID: "kitchen",
                 CONF_ARIACAST_NAME: "Kitchen AriaCast",
             },
         ),

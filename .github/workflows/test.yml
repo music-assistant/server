@@ -12,6 +12,7 @@ on:
     branches:
       - stable
       - dev
+  merge_group:
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -29,6 +30,7 @@ env:
 
 concurrency:
   group: test-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  # Not merge_group: a cancelled run reports no check, hanging the queue entry until timeout.
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
@@ -49,7 +51,8 @@ jobs:
       # On PRs, run only the tests affected by the changed files: a PR touching a
       # single provider runs just that provider's tests. A change to shared code
       # (incl. translations under music_assistant/), dependencies or the CI itself
-      # runs the full suite, as do pushes, manual runs and reusable-workflow calls.
+      # runs the full suite, as do pushes, merge groups, manual runs and
+      # reusable-workflow calls.
       # PRs that only touch docs or other non-code files run nothing.
       - name: Determine test scope
         id: scope
@@ -122,33 +125,36 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.mode != 'skip' }}
     runs-on: ubuntu-latest
+    # Same base as the production image (Dockerfile.base), so apt ffmpeg is the same
+    # 7.1.x line we ship; ubuntu-latest's apt only has 6.1. Keep the Python tag in
+    # sync with .python-version.
+    container: python:3.14-slim-trixie
     # Backstop: a hung test process should fail in minutes, not sit at the 6h job cap.
     timeout-minutes: 30
 
     steps:
-      - name: Check out code from GitHub
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-      - name: Set up Python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version-file: ".python-version"
-          check-latest: true
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
-      # ffmpeg also pulls in libchromaprint1, which acoustid_lookup imports.
       - name: Cache apt packages
         uses: actions/cache@v6
         with:
           path: ~/.cache/apt-packages
-          key: apt-ffmpeg-${{ runner.os }}
-      - name: Install ffmpeg
+          key: apt-ffmpeg-${{ runner.os }}-trixie
+      # git must be present before checkout, or it degrades to a REST tarball download;
+      # build-essential + libssl-dev are needed to build aiolibdatachannel from its git
+      # source; curl + gpg are needed by the codecov action; libportaudio2 is needed by
+      # the local audio tests on the sounddevice backend, which skip rather than fail
+      # without it
+      - name: Install ffmpeg and build tools
         run: |
           # Restore cached .deb files to apt cache (if any)
-          sudo cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          sudo apt-get update && sudo apt-get install -y ffmpeg libchromaprint1
+          cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          apt-get update && apt-get install -y ffmpeg libportaudio2 git build-essential libssl-dev curl gpg
           # Save .deb files for next run
           mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Install uv
         run: pip install uv
       - name: Cache uv packages
@@ -163,11 +169,19 @@ jobs:
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
-        # `-o addopts=` clears the default "--cov music_assistant" so the scope applies.
+        # --dist loadfile keeps each test file on one xdist worker: snapshot updates
+        # never race on an .ambr file and module-scoped fixtures are reused.
+        # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
+        # crash leaves the controller blocked on its event queue forever, so the job only
+        # ends at its 30m cap with no summary. Shutting down instead fails in seconds and
+        # names the crashing test; a crashed worker invalidates the run either way.
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
           COV_PATHS: ${{ needs.changes.outputs.cov_paths }}
+          # aiolibdatachannel's _native.so doesn't link libstdc++ itself; the production
+          # image resolves it via its jemalloc LD_PRELOAD, here we preload it directly
+          LD_PRELOAD: libstdc++.so.6
         run: |
           if [ "$MODE" = "partial" ]; then
             targets="$TEST_PATHS"
@@ -177,6 +191,10 @@ jobs:
             targets="tests/"
             cov="--cov=music_assistant"
           fi
+          # the container runs as root, which bypasses file permission bits and breaks
+          # tests exercising permission-denied paths; run pytest as an unprivileged user
+          useradd -m tester
+          chown -R tester:tester .
           # -p numpy: pre-import numpy before pytest-cov starts coverage. Scoping
           # --cov to a submodule (partial mode) makes coverage import the parent
           # music_assistant package inside its sys_modules_saved() block, which then
@@ -184,7 +202,9 @@ jobs:
           # extension and creates a second _NoValue sentinel, breaking ndarray
           # reductions (sum/mean) on py3.14. Loading numpy as an early plugin keeps
           # it in the saved snapshot so it is never evicted.
-          pytest -p numpy -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+          setpriv --reuid=tester --regid=tester --init-groups \
+            env HOME=/home/tester \
+            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7

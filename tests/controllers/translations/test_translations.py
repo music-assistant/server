@@ -11,11 +11,21 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.background_task import BackgroundTask
-from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ProviderConfig,
+)
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    FlowStepType,
+    MediaType,
+    ProviderType,
+)
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
@@ -29,7 +39,9 @@ from music_assistant.controllers.translations import (
     _format,
     _locale_candidates,
 )
+from scripts import build_translations as build_translations_module
 from scripts.build_translations import (
+    _find_duplicate_keys,
     _flatten_into,
     _resolve_references,
     build_translations_source,
@@ -37,6 +49,7 @@ from scripts.build_translations import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
 
 def _make_controller() -> TranslationController:
@@ -107,6 +120,51 @@ def test_resolve_references_missing_target_raises() -> None:
         _resolve_references(
             {"provider.deezer.media.x.name": "[%key:common::media::does::not::exist%]"}
         )
+
+
+def test_find_duplicate_keys() -> None:
+    """Duplicated object keys are reported with their full key path, at any nesting depth."""
+    assert _find_duplicate_keys(b'{"a": "1", "b": {"c": "2"}}') == []
+    # two blocks with the same name at the top level (parsers keep only the last one)
+    assert _find_duplicate_keys(b'{"errors": {"a": "1"}, "other": {}, "errors": {"b": "2"}}') == [
+        "errors"
+    ]
+    assert _find_duplicate_keys(b'{"errors": {"pin": "a", "pin": "b"}}') == ["errors.pin"]
+    assert _find_duplicate_keys(b'{"a": [{"k": "1", "k": "2"}, {"k": "3"}]}') == ["a[0].k"]
+    assert _find_duplicate_keys(b'{"a": "1", "a": "2", "b": {"x": "1", "x": "2"}}') == [
+        "a",
+        "b.x",
+    ]
+
+
+def test_build_translations_duplicate_key_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A duplicated key in an authoring file fails the build, naming the file and key path."""
+    strings_file = tmp_path / "strings.json"
+    strings_file.write_bytes(b'{"errors": {"pin": "a"}, "errors": {"pin": "b"}}')
+    monkeypatch.setattr(
+        build_translations_module,
+        "_collect_source_files",
+        lambda: [("provider.foo.", str(strings_file))],
+    )
+    with pytest.raises(ValueError, match=r"Duplicate strings\.json key\(s\):[\s\S]*: errors"):
+        build_translations_source()
+
+
+def test_build_translations_malformed_file_names_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An authoring file that fails to parse is reported with its file path."""
+    strings_file = tmp_path / "strings.json"
+    strings_file.write_bytes(b'{"errors": ')
+    monkeypatch.setattr(
+        build_translations_module,
+        "_collect_source_files",
+        lambda: [("provider.foo.", str(strings_file))],
+    )
+    with pytest.raises(ValueError, match=r"strings\.json: "):
+        build_translations_source()
 
 
 def test_candidate_keys_common_rewrite() -> None:
@@ -453,6 +511,60 @@ def test_core_owned_strings_moved_out_of_common() -> None:
     # genuinely shared network config (built by several modules) stays in common
     assert "common.config_entries.bind_ip.label" in source
     assert "common.config_entries.bind_port.label" in source
+
+
+def test_setup_flow_finish_library_sync_is_shared() -> None:
+    """
+    The FINISH step explaining the initial library import resolves for any music provider.
+
+    The copy is authored once in common, so a provider that ships no strings of its own still
+    gets it via the owner -> common fallback.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    step = SetupFlowStep(
+        flow_id="test",
+        step_id="finish_library_sync",
+        type=FlowStepType.FINISH,
+        translation_owner="provider.qobuz",
+    )
+    with _active_resolver(ctrl, None):
+        serialized = step.to_dict()
+    assert (
+        serialized["description"]
+        == ctrl._source["common.setup_flow.finish_library_sync.description"]
+    )
+
+
+def test_config_action_result_localized_serialization() -> None:
+    """ConfigActionResult resolves its message from the owner's config_actions group."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    result = ConfigActionResult(
+        translation_key="clear_cache.result", translation_owner="core.cache"
+    )
+    # no resolver -> no message yet, machinery kept for internal round-trips
+    plain = result.to_dict()
+    assert plain["message"] is None
+    assert plain["translation_key"] == "clear_cache.result"
+    # resolver bound -> message filled from the owner's strings, machinery stripped
+    with _active_resolver(ctrl, None):
+        localized = result.to_dict()
+    assert localized["message"] == "The cache has been cleared"
+    for machinery_key in ("translation_key", "translation_args", "translation_owner"):
+        assert machinery_key not in localized
+
+
+def test_config_action_result_keys_are_authored() -> None:
+    """Every migrated action result key resolves under its owning core module."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    cases = [
+        ("clear_cache.result", "core.cache", "The cache has been cleared"),
+        ("reset_db.result", "core.music", "The database has been reset."),
+    ]
+    for key, owner, expected in cases:
+        assert ctrl.get_translation(f"config_actions.{key}", owner=owner) == expected
 
 
 def test_error_result_message_localized_serialization() -> None:

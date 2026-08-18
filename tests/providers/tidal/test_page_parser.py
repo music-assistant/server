@@ -13,17 +13,6 @@ FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 PAGE_FIXTURES = list(FIXTURES_DIR.glob("pages/*.json"))
 
 
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.logger = Mock()
-    return provider
-
-
 @pytest.mark.parametrize("example", PAGE_FIXTURES, ids=lambda val: str(val.stem))
 def test_page_parser(example: pathlib.Path, provider_mock: Mock) -> None:
     """Test page parser with fixtures."""

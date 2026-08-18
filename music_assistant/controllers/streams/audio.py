@@ -30,12 +30,19 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPFilter, DSPState
+from music_assistant_models.dsp import (
+    AudioChannel,
+    ConvolutionFilter,
+    DSPConfig,
+    DSPFilter,
+    DSPState,
+)
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    ProviderType,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -68,6 +75,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DSP_IRS_DIRNAME,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -91,6 +99,8 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
@@ -113,14 +123,23 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
-from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
-from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from music_assistant.helpers.playlists import (
+    HLS_CONTENT_TYPES,
+    PLAYLIST_CONTENT_TYPES,
+    PLAYLIST_READ_TIMEOUT,
+    IsHLSPlaylist,
+    PlaylistItem,
+    parse_m3u,
+    parse_playlist_data,
+    read_playlist_body,
+)
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -291,6 +310,7 @@ class StreamsAudio:
             # Remember the last AudioError so we can re-raise its (actionable)
             # message instead of the generic MediaNotFoundError below.
             last_audio_error: AudioError | None = None
+            attempted: set[tuple[str, str]] = set()
             for allow_other_provider in (False, True):
                 if streamdetails:
                     break
@@ -306,26 +326,27 @@ class StreamsAudio:
                         and prov_media.provider_instance not in preferred_providers
                     ):
                         continue
+                    # the second pass is there to widen to providers the steering held back,
+                    # not to give a mapping a second chance: without a user provider filter
+                    # the first pass already tried them all, so re-attempting one just buys
+                    # the same failure at the cost of another provider round-trip
+                    attempt = (prov_media.provider_instance, prov_media.item_id)
+                    if attempt in attempted:
+                        continue
                     # guard that provider is available
                     provider = mass.get_provider(prov_media.provider_instance)
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
-                    # get streamdetails from provider; AudioSource items come from a
-                    # PluginProvider which carries a different signature (queue-scoped
-                    # context rather than media_type) — branch on provider type.
+                    attempted.add(attempt)
+                    # get streamdetails from provider; music and plugin providers
+                    # share this signature, so either type can own the item.
                     try:
                         BYPASS_THROTTLER.set(True)
-                        if media_item.media_type == MediaType.AUDIO_SOURCE:
-                            plugin_prov = cast("PluginProvider", provider)
-                            streamdetails = await plugin_prov.get_stream_details(
-                                prov_media.item_id, queue_item.queue_id
-                            )
-                        else:
-                            music_prov = cast("MusicProvider", provider)
-                            streamdetails = await music_prov.get_stream_details(
-                                prov_media.item_id, media_item.media_type
-                            )
+                        stream_prov = cast("MusicProvider | PluginProvider", provider)
+                        streamdetails = await stream_prov.get_stream_details(
+                            prov_media.item_id, media_item.media_type
+                        )
                     except AudioError as err:
                         last_audio_error = err
                         self.logger.warning(str(err))
@@ -361,12 +382,16 @@ class StreamsAudio:
                     )
                     streamdetails.stream_metadata_update_interval = 5
 
-        if streamdetails.duration is None:
+        # providers report an unknown duration as either None or 0
+        if not streamdetails.duration:
             if queue_item.media_item and queue_item.media_item.duration:
                 streamdetails.duration = queue_item.media_item.duration
             elif queue_item.duration:
                 streamdetails.duration = queue_item.duration
-        if seek_position and (not streamdetails.allow_seek or not streamdetails.duration):
+        if seek_position and not streamdetails.allow_seek:
+            self.logger.warning("seeking is not possible on this stream!")
+            seek_position = 0
+        elif seek_position and not streamdetails.duration:
             self.logger.warning("seeking is not possible on duration-less streams!")
             seek_position = 0
 
@@ -439,7 +464,12 @@ class StreamsAudio:
         mass = self.mass
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
-        extra_input_args = streamdetails.extra_input_args or []
+        # copy: the args below are appended per call, while the StreamDetails is cached on
+        # the queue item and reused across calls (retry, seek, background analysis)
+        extra_input_args = list(streamdetails.extra_input_args or [])
+        # the branches below zero out seek_position where the seek is delegated to the
+        # source itself, so keep the requested position for the duration writeback
+        requested_seek_position = seek_position
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -471,33 +501,10 @@ class StreamsAudio:
             # For IN_BAND (OGG/Opus) radio streams, use chained OGG handler.
             # This handles the chained OGG format by stitching logical bitstreams together
             # so FFmpeg sees a single continuous stream. Metadata is extracted in-band.
-            def _on_inband_metadata(metadata: dict[str, str]) -> None:
-                """Handle metadata extracted from the OGG stream."""
-                title = metadata.get("title", "")
-                artist = metadata.get("artist", "")
-                album = metadata.get("album", "")
-                if not artist and " - " in title:
-                    artist, title = title.split(" - ", 1)
-                if title or artist:
-                    if artist and title:
-                        stream_title = f"{artist} - {title}"
-                    elif title:
-                        stream_title = title
-                    else:
-                        stream_title = artist
-                    cleaned_title = clean_stream_title(stream_title)
-                    if cleaned_title and cleaned_title != streamdetails.stream_title:
-                        self.logger.log(VERBOSE_LOG_LEVEL, "In-band metadata: %s", cleaned_title)
-                        streamdetails.stream_title = cleaned_title
-                        self._update_radio_stream_metadata(
-                            streamdetails,
-                            artist=artist or None,
-                            title=title or cleaned_title,
-                            album=album or None,
-                        )
-
             audio_source = get_chained_ogg_stream(
-                mass, streamdetails.path, metadata_callback=_on_inband_metadata
+                mass,
+                streamdetails.path,
+                metadata_callback=partial(self._handle_inband_metadata, streamdetails),
             )
             seek_position = 0  # seeking not possible on radio streams
         elif stream_type == StreamType.HLS:
@@ -643,8 +650,9 @@ class StreamsAudio:
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration
-            if finished and not seek_position and seconds_received:
+            # store accurate duration, but only for a playthrough from the very start:
+            # a seeked stream yields the remaining audio, not the item's full length
+            if finished and not requested_seek_position and seconds_received:
                 streamdetails.duration = int(seconds_received)
 
             logger.log(
@@ -673,6 +681,8 @@ class StreamsAudio:
 
         stream_type = StreamType.HTTP
         timeout = ClientTimeout(total=None, connect=10, sock_read=5)
+        playlist_data: bytes | None = None
+        playlist_charset: str | None = None
 
         try:
             async with self._connect_radio_stream(
@@ -682,23 +692,45 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
+                # media types are case insensitive, the comparisons below are all lower case
+                content_type = headers.get("content-type", "").lower()
+                # a server declaring HLS settles it: a media playlist is free to carry none
+                # of the tags the parser recognises an HLS playlist by
+                is_hls = any(hls_type in content_type for hls_type in HLS_CONTENT_TYPES)
+                if not is_hls and (
+                    url.endswith((".m3u", ".m3u8", ".pls"))
+                    or ".m3u?" in url
+                    or ".m3u8?" in url
+                    or ".pls?" in url
+                    or any(
+                        playlist_type in content_type for playlist_type in PLAYLIST_CONTENT_TYPES
+                    )
+                ):
+                    # take the playlist from this very response: a separate request would
+                    # go out with another user agent and stricter TLS than the rest of the
+                    # radio paths, so a host could answer it differently
+                    try:
+                        # the probe has no total timeout, so bound the body on its own:
+                        # a server trickling bytes would otherwise stall resolving for hours
+                        async with asyncio.timeout(PLAYLIST_READ_TIMEOUT):
+                            playlist_data = await read_playlist_body(resp.content)
+                    except aiohttp.ClientError as err:
+                        # the endpoint answered as a playlist, so a truncated body is a bad
+                        # playlist - not a reason to fall back to streaming the URL directly
+                        raise InvalidDataError(f"Error while fetching playlist {url}") from err
+                    playlist_charset = resp.charset
 
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
-            elif headers.get("content-type", "") in ("application/ogg", "audio/ogg"):
+            elif is_hls:
+                stream_type = StreamType.HLS
+            elif content_type in ("application/ogg", "audio/ogg"):
                 # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
                 stream_type = StreamType.IN_BAND
 
-            if (
-                url.endswith((".m3u", ".m3u8", ".pls"))
-                or ".m3u?" in url
-                or ".m3u8?" in url
-                or ".pls?" in url
-                or "audio/x-mpegurl" in headers.get("content-type", "")
-                or "audio/x-scpls" in headers.get("content-type", "")
-            ):
+            if playlist_data is not None:
                 try:
-                    substreams = await fetch_playlist(mass, url)
+                    substreams = await parse_playlist_data(url, playlist_data, playlist_charset)
                     if not any(x for x in substreams if x.length):
                         for line in substreams:
                             if not line.is_url:
@@ -940,8 +972,8 @@ class StreamsAudio:
         ) as resp:
             resp.raise_for_status()
             raw_data = await resp.read()
-            encoding = resp.charset or await detect_charset(raw_data)
-            master_m3u_data = raw_data.decode(encoding)
+            encoding = await detect_charset(raw_data, preferred=resp.charset)
+            master_m3u_data = raw_data.decode(encoding, errors="replace")
         substreams = parse_m3u(master_m3u_data)
         # There is a chance that we did not get a master playlist with subplaylists
         # but just a single master/sub playlist with the actual audio stream(s)
@@ -968,116 +1000,6 @@ class StreamsAudio:
             base_path = url.rsplit("/", 1)[0]
             substream.path = base_path + "/" + substream.path
         return substream
-
-    async def get_http_stream(
-        self,
-        url: str,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-        verify_ssl: bool = True,
-    ) -> AsyncGenerator[bytes]:
-        """Get audio stream from HTTP."""
-        mass = self.mass
-        self.logger.debug(
-            "Start HTTP stream for %s (seek_position %s)", streamdetails.uri, seek_position
-        )
-        if seek_position:
-            assert streamdetails.duration, "Duration required for seek requests"
-        http_session = mass.http_session if verify_ssl else mass.http_session_no_ssl
-        # try to get filesize with a head request
-        seek_supported = streamdetails.can_seek
-        if seek_position or not streamdetails.size:
-            async with http_session.head(
-                encoded_request_url(url), allow_redirects=True, headers=HTTP_HEADERS
-            ) as resp:
-                resp.raise_for_status()
-                if size := resp.headers.get("Content-Length"):
-                    streamdetails.size = int(size)
-                seek_supported = resp.headers.get("Accept-Ranges") == "bytes"
-        # headers
-        headers = {**HTTP_HEADERS}
-        timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
-        skip_bytes = 0
-        if seek_position and streamdetails.size:
-            assert streamdetails.duration is not None  # for type checking
-            skip_bytes = int(streamdetails.size / streamdetails.duration * seek_position)
-            headers["Range"] = f"bytes={skip_bytes}-{streamdetails.size}"
-
-        # seeking an unknown or container format is not supported due to the (moov) headers
-        if seek_position and (
-            not seek_supported
-            or streamdetails.audio_format.content_type
-            in (ContentType.UNKNOWN, ContentType.M4A, ContentType.M4B)
-        ):
-            self.logger.warning(
-                "Seeking in %s (%s) not possible.",
-                streamdetails.uri,
-                streamdetails.audio_format.output_format_str,
-            )
-            seek_position = 0
-            streamdetails.seek_position = 0
-
-        # start the streaming from http
-        bytes_received = 0
-        async with http_session.get(
-            encoded_request_url(url), allow_redirects=True, headers=headers, timeout=timeout
-        ) as resp:
-            is_partial = resp.status == 206
-            if seek_position and not is_partial:
-                raise InvalidDataError("HTTP source does not support seeking!")
-            resp.raise_for_status()
-            async for chunk in resp.content.iter_any():
-                bytes_received += len(chunk)
-                yield chunk
-
-        # store size on streamdetails for later use
-        if not streamdetails.size:
-            streamdetails.size = bytes_received
-        self.logger.debug(
-            "Finished HTTP stream for %s (transferred %s/%s bytes)",
-            streamdetails.uri,
-            bytes_received,
-            streamdetails.size,
-        )
-
-    async def get_file_stream(
-        self,
-        filename: str,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-    ) -> AsyncGenerator[bytes]:
-        """Get audio stream from local accessible file."""
-        if seek_position:
-            assert streamdetails.duration, "Duration required for seek requests"
-        if not streamdetails.size:
-            stat = await asyncio.to_thread(os.stat, filename)
-            streamdetails.size = stat.st_size
-
-        # seeking an unknown or container format is not supported due to the (moov) headers
-        if seek_position and (
-            streamdetails.audio_format.content_type
-            in (ContentType.UNKNOWN, ContentType.M4A, ContentType.M4B, ContentType.MP4)
-        ):
-            self.logger.warning(
-                "Seeking in %s (%s) not possible.",
-                streamdetails.uri,
-                streamdetails.audio_format.output_format_str,
-            )
-            seek_position = 0
-            streamdetails.seek_position = 0
-
-        chunk_size = calculate_content_length(streamdetails.audio_format)
-        async with aiofiles.open(streamdetails.data, "rb") as _file:
-            if seek_position:
-                assert streamdetails.duration is not None  # for type checking
-                seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
-                await _file.seek(seek_pos)
-            # yield chunks of data from file
-            while True:
-                data = await _file.read(chunk_size)
-                if not data:
-                    break
-                yield data
 
     async def get_multi_file_stream(
         self,
@@ -1150,7 +1072,7 @@ class StreamsAudio:
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
         """
-        filter_params: list[str] = []
+        filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_player(player_id)
         destination_player_id = (
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
@@ -1181,8 +1103,21 @@ class StreamsAudio:
         if dsp.enabled:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
+            ir_dir = os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
+            known_ir_ids = {record["ir_id"] for record in self.mass.config.get_dsp_irs()}
             for dsp_filter in enabled_filters:
-                params = filter_to_ffmpeg_params(dsp_filter, input_format)
+                if isinstance(dsp_filter, ConvolutionFilter) and dsp_filter.ir_id:
+                    # ffmpeg fails to open the graph if the impulse response file is gone,
+                    # which costs the player all audio, so drop the filter instead
+                    if dsp_filter.ir_id not in known_ir_ids:
+                        self.logger.warning(
+                            "Skipping the convolution filter of player %s: "
+                            "impulse response %s is not stored",
+                            player_id,
+                            dsp_filter.ir_id,
+                        )
+                        continue
+                params = filter_to_ffmpeg_params(dsp_filter, input_format, ir_dir=ir_dir)
                 if not params:
                     continue
                 filter_params.extend(params)
@@ -1192,12 +1127,29 @@ class StreamsAudio:
 
         channel_value = self._get_output_channels(player, player_id)
         source_channel = None
-        if channel_value == "left":
-            source_channel = AudioChannel.FL
-            filter_params.append("pan=mono|c0=FL")
-        elif channel_value == "right":
-            source_channel = AudioChannel.FR
-            filter_params.append("pan=mono|c0=FR")
+        channel_mix = ""
+        # a single channel source is already the downmix and holds no FL/FR to select
+        # from, where a pan would silently resolve every gain to zero
+        if input_format.channels > 1:
+            if channel_value == "left":
+                source_channel = AudioChannel.FL
+                channel_mix = "FL"
+            elif channel_value == "right":
+                source_channel = AudioChannel.FR
+                channel_mix = "FR"
+            elif channel_value == "mono":
+                # both source channels feed the downmix, so report ALL to keep the
+                # output from ever being presented as bit perfect
+                source_channel = AudioChannel.ALL
+                channel_mix = "0.5*FL+0.5*FR"
+        if channel_mix:
+            # the pan runs in the command that emits the handoff format, and it feeds
+            # every channel of it explicitly: leaving ffmpeg to upmix from a single
+            # channel costs 3 dB through its rematrix
+            if (handoff_format or output_format).channels == 1:
+                filter_params.append(f"pan=mono|c0={channel_mix}")
+            else:
+                filter_params.append(f"pan=stereo|c0={channel_mix}|c1={channel_mix}")
 
         output_details = AudioOutputDetails(
             player_ids=sorted(destination_player_ids),
@@ -1291,9 +1243,9 @@ class StreamsAudio:
         rate the player supports that is <= the source rate, so the source is never
         upsampled. The bit depth follows the source unless audio processing
         (crossfade, volume normalization, DSP) is active — those need F32 headroom
-        to avoid clipping/precision loss. Realtime AudioSource items skip all
-        processing and get a pure passthrough format (source rate/bit depth when
-        the player supports them).
+        to avoid clipping/precision loss. Surround sources are folded down to stereo.
+        Realtime AudioSource items skip all processing and get a pure passthrough
+        format (source rate/bit depth when the player supports them).
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
@@ -1321,7 +1273,10 @@ class StreamsAudio:
             sample_rate=output_sample_rate,
             content_type=content_type,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # fold surround sources down to stereo right at the decode step: no
+            # output format carries more than two channels, so a wider PCM format
+            # only makes every bytes-to-seconds sum on the stream come out short
+            channels=min(streamdetails.audio_format.channels, 2),
         )
         if crossfade_enabled or overlay_active:
             pcm_format.channels = 2
@@ -1506,6 +1461,13 @@ class StreamsAudio:
             the crossfade path to keep a track's replayed intro and its body on the same mode.
         :param session_id: Queue session that owns processing-detail updates.
         """
+        streamdetails = queue_item.streamdetails
+        assert streamdetails
+
+        # streamdetails are cached and reused for retries; reset this before any
+        # media-type-specific dispatch so AudioSource failures do not stick.
+        streamdetails.stream_error = False
+
         if queue_item.media_type == MediaType.AUDIO_SOURCE:
             async for chunk in self.get_audio_source_stream(
                 queue_item=queue_item,
@@ -1514,9 +1476,6 @@ class StreamsAudio:
             ):
                 yield chunk
             return
-
-        streamdetails = queue_item.streamdetails
-        assert streamdetails
         filter_params: list[str] = []
 
         logger = self.logger.getChild("queue_item_stream")
@@ -1659,18 +1618,18 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
-                # trigger pre-buffering of the next track well before end
-                # to ensure the raw PCM is ready when the next track needs to be streamed.
-                # only do this for tracks: live sources (radio, audio_source) open an
-                # upstream connection that would sit idle and likely time out before the
-                # player actually consumes it.
+                # trigger pre-buffering of the next item well before end
+                # to ensure the raw PCM is ready when the next item needs to be streamed.
+                # tracks and sound effects are finite files that fill and close immediately;
+                # live sources (radio, audio_source) open an upstream connection that would
+                # sit idle and likely time out before the player actually consumes it.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
-                    and queue.next_item.media_type == MediaType.TRACK
+                    and queue.next_item.media_type in (MediaType.TRACK, MediaType.SOUND_EFFECT)
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
                     >= streamdetails.duration - 60
                 ):
@@ -1678,10 +1637,6 @@ class StreamsAudio:
                     self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-            # if we received no audio and the buffer has a producer error,
-            # the error was swallowed by the FFmpeg stdin feeder - re-raise it
-            if bytes_received == 0 and audio_buffer.has_error:
-                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
@@ -1719,14 +1674,7 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            if (
-                (finished or seconds_streamed >= 90)
-                and streamdetails.media_type != MediaType.AUDIO_SOURCE
-                and (music_prov := self.mass.get_provider(streamdetails.provider))
-            ):
-                if TYPE_CHECKING:
-                    assert isinstance(music_prov, MusicProvider)
-                self.mass.create_task(music_prov.on_streamed(streamdetails))
+            self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -2155,6 +2103,7 @@ class StreamsAudio:
             """Return True if a newer stream session has taken over this queue."""
             return pq_data.session_id != flow_session_id
 
+        queue_exhausted = False
         while True:
             # bail out early if a newer producer has taken over this queue,
             # so we don't append another entry to a stream log we no longer own
@@ -2176,6 +2125,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
+                    queue_exhausted = True
                     break
 
             if self._flow_stream_needs_restart(
@@ -2412,6 +2362,26 @@ class StreamsAudio:
                     del crossfade_buffer[:pcm_sample_size]
                     await asyncio.sleep(0)
 
+            # A source error after partial audio must not look like a completed item.
+            # Progress reporting skips items with stream_error, so the item is not
+            # marked played; move on to the next queue item like the zero-audio path.
+            if first_chunk_received and queue_track.streamdetails.stream_error:
+                if _superseded():
+                    return
+                self.logger.warning(
+                    "Track %s (%s) on queue %s aborted by a stream error - skipping",
+                    queue_track.name,
+                    queue_track.streamdetails.uri,
+                    queue.display_name,
+                )
+                # the audio sent so far will still play out; keep the play log entry
+                # honest about how much of this item was actually streamed
+                play_log_entry.seconds_streamed = bytes_written / pcm_sample_size
+                if last_fadeout_part:
+                    # crossfade into this item never happened — undo the eager seek_position
+                    queue_track.streamdetails.seek_position = raw_seek_position
+                continue
+
             #### HANDLE END OF TRACK
             if not first_chunk_received:
                 self.logger.warning(
@@ -2422,6 +2392,8 @@ class StreamsAudio:
                 )
                 queue_track.streamdetails.stream_error = True
                 play_log_entry.seconds_streamed = 0
+                if last_fadeout_part:
+                    queue_track.streamdetails.seek_position = raw_seek_position
                 continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
@@ -2517,7 +2489,7 @@ class StreamsAudio:
         if not _superseded():
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
-            self.mass.player_queues.queue_buffer_completed(queue.queue_id)
+            self.mass.player_queues.queue_buffer_completed(queue.queue_id, queue_exhausted)
 
     async def get_overlay_mixed_stream(
         self,
@@ -2732,6 +2704,19 @@ class StreamsAudio:
 
     # --- Private methods ---
 
+    def _notify_provider_streamed(
+        self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
+    ) -> None:
+        """Report a (mostly) streamed item back to the provider that owns it."""
+        if not finished and seconds_streamed < 90:
+            return
+        provider = self.mass.get_provider(streamdetails.provider)
+        # plugin providers serve playable items too, but on_streamed is MusicProvider-only
+        if provider is None or provider.type != ProviderType.MUSIC:
+            return
+        music_prov = cast("MusicProvider", provider)
+        self.mass.create_task(music_prov.on_streamed(streamdetails))
+
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
     ) -> VolumeNormalizationMode:
@@ -2879,6 +2864,65 @@ class StreamsAudio:
             return read_named_pipe(streamdetails.path)
         raise AudioError(f"Unsupported stream_type {streamdetails.stream_type} for AudioSource")
 
+    def _handle_inband_metadata(
+        self, streamdetails: StreamDetails, metadata: dict[str, str]
+    ) -> None:
+        """Handle metadata extracted from a chained Ogg stream."""
+        title = metadata.get("title", "")
+        artist = metadata.get("artist", "")
+        album = metadata.get("album", "")
+        if not artist and " - " in title:
+            artist, title = title.split(" - ", 1)
+        if not (title or artist):
+            return
+
+        stream_title = f"{artist} - {title}" if artist and title else title or artist
+        cleaned_title = clean_stream_title(stream_title)
+        if not cleaned_title:
+            return
+        if self._record_inband_stream_title(streamdetails, cleaned_title):
+            return
+        if cleaned_title != streamdetails.stream_title:
+            self.logger.log(VERBOSE_LOG_LEVEL, "In-band metadata: %s", cleaned_title)
+            streamdetails.stream_title = cleaned_title
+            self._update_radio_stream_metadata(
+                streamdetails,
+                artist=artist or None,
+                title=title or cleaned_title,
+                album=album or None,
+            )
+
+    def _record_inband_stream_title(self, streamdetails: StreamDetails, cleaned_title: str) -> bool:
+        """
+        Record an in-band stream title for provider-owned metadata, if applicable.
+
+        When a provider opts into owning stream_metadata (and stream_title is only
+        a derived view of it), writing either from the stream reader would fight the
+        provider. The cleaned in-band title is recorded on StreamDetails.data instead,
+        as the identity signal for the provider callback.
+
+        :param streamdetails: StreamDetails carrying the stream.
+        :param cleaned_title: Cleaned in-band stream title.
+        :returns: True when recorded (the caller must not write stream metadata);
+            False when no provider callback exists and normal handling applies.
+        """
+        if (
+            streamdetails.stream_metadata_update_callback is None
+            or streamdetails.data is None
+            or not streamdetails.data.get(STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY)
+        ):
+            return False
+        if streamdetails.data.get(STREAMDETAILS_INBAND_TITLE_KEY) != cleaned_title:
+            # occupancy approximates how far this detection leads audible playback
+            buffer = streamdetails.buffer
+            self.logger.debug(
+                "In-band stream title: %s (buffer occupancy: %ss)",
+                cleaned_title,
+                buffer.size_seconds if buffer is not None else "unknown",
+            )
+            streamdetails.data[STREAMDETAILS_INBAND_TITLE_KEY] = cleaned_title
+        return True
+
     def _parse_icy_metadata(self, meta_data: bytes, streamdetails: StreamDetails) -> None:
         """
         Parse ICY metadata and update streamdetails.
@@ -2914,6 +2958,9 @@ class StreamsAudio:
         cleaned_stream_title = clean_stream_title(stream_title)
 
         if not cleaned_stream_title:
+            return
+
+        if self._record_inband_stream_title(streamdetails, cleaned_stream_title):
             return
 
         if cleaned_stream_title == streamdetails.stream_title:
@@ -3124,8 +3171,9 @@ class StreamsAudio:
         The format matches the source's native sample rate, bit depth and
         channel count whenever the player can accept them; if the player does
         not support the source's sample rate, it is snapped down to the
-        closest supported rate. No F32 widening, no forced stereo — realtime
-        sources skip every processing stage that would otherwise need them.
+        closest supported rate. No F32 widening — realtime sources skip every
+        processing stage that would otherwise need it. Surround sources are
+        still folded down to stereo, which every output path requires anyway.
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the AudioSource item.
@@ -3149,7 +3197,10 @@ class StreamsAudio:
             content_type=ContentType.from_bit_depth(bit_depth),
             sample_rate=output_sample_rate,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # a realtime source may announce more channels than anything downstream can
+            # carry (a VBAN stream can be configured up to 8), and player handoff formats
+            # copy this count straight through, so fold it here
+            channels=min(streamdetails.audio_format.channels, 2),
         )
 
     def _flow_restart_context(
@@ -3400,8 +3451,8 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            provider = cast("MusicProvider", provider)
-            streamdetails = await provider.get_stream_details(
+            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            streamdetails = await stream_prov.get_stream_details(
                 mapping.item_id, MediaType.SOUND_EFFECT
             )
         except Exception as err:

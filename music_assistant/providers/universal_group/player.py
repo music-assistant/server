@@ -40,6 +40,7 @@ from .constants import (
     CONF_ENTRY_UGP_OUTPUT_FORMAT,
     CONF_UGP_OUTPUT_FORMAT,
     CONFIG_ENTRY_UGP_NOTE,
+    EXTRA_FEATURES_FROM_MEMBERS,
     IDLE_GRACE_SECONDS,
     UGP_OUTPUT_MP3,
     resolve_ugp_output_format,
@@ -49,13 +50,14 @@ from .ugp_stream import UGPStream
 if TYPE_CHECKING:
     from .provider import UniversalGroupProvider
 
-# PlayerFeature.POWER is intentionally not in the base feature set anymore:
-# the lifecycle (form on play, dissolve on stop, debounced idle deform) governs
-# whether the group captures its members. POWER is added dynamically when the
-# user assigns 'Fake power control' to the group.
+# The features the group carries on its own. Everything else is resolved per read in
+# the supported_features property: POWER when the user assigns 'Fake power control',
+# SET_MEMBERS for dynamic groups, and EXTRA_FEATURES_FROM_MEMBERS from the members.
+# PlayerFeature.POWER is intentionally not a base feature: the lifecycle (form on
+# play, dissolve on stop, debounced idle deform) governs whether the group captures
+# its members.
 BASE_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
-    PlayerFeature.VOLUME_SET,
     PlayerFeature.MULTI_DEVICE_DSP,
 }
 
@@ -73,14 +75,17 @@ class UniversalGroupPlayer(Player):
         """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
-        self._attr_name = self.config.name or f"Universal Group {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = (
+            self.config.default_name or self.config.name or f"Universal Group {player_id}"
+        )
         self._attr_available = True
         # See SyncGroupPlayer: groups have no opinion on power by default; the
         # session lifecycle is what governs activity. Fake power control is the
         # opt-in mechanism for explicit on/off semantics.
         self._attr_powered = None
         self._attr_device_info = DeviceInfo(model="Universal Group", manufacturer=provider.name)
-        self._attr_supported_features = {*BASE_FEATURES}
         self._attr_needs_poll = True
         self._attr_poll_interval = 30
         # task that releases members after the idle grace window expires
@@ -99,6 +104,29 @@ class UniversalGroupPlayer(Player):
             )
         )
         self._set_attributes()
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        features = {*BASE_FEATURES}
+        # The raw config value is read here to avoid recursion via the power_control
+        # property (which itself may inspect supported features).
+        raw_power_conf = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_POWER_CONTROL
+        )
+        if raw_power_conf == PLAYER_CONTROL_FAKE:
+            features.add(PlayerFeature.POWER)
+        if self.is_dynamic:
+            features.add(PlayerFeature.SET_MEMBERS)
+        # derive the fanned-out features from all (configured) members, so volume and
+        # mute are advertised whether or not the group currently has a live session.
+        for member_id in self._attr_group_members:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                    if feature in member_player.state.supported_features:
+                        features.add(feature)
+        return features
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -159,18 +187,6 @@ class UniversalGroupPlayer(Player):
             # only realign members to the configured static set when the group
             # is dormant — otherwise we would lose any dynamic adds mid-session.
             self._attr_group_members = static_members.copy()
-        if self.is_dynamic:
-            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        elif PlayerFeature.SET_MEMBERS in self._attr_supported_features:
-            self._attr_supported_features.remove(PlayerFeature.SET_MEMBERS)
-        # advertise POWER feature only when the user has opted in via fake control
-        raw_power_conf = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_POWER_CONTROL
-        )
-        if raw_power_conf == PLAYER_CONTROL_FAKE:
-            self._attr_supported_features.add(PlayerFeature.POWER)
-        else:
-            self._attr_supported_features.discard(PlayerFeature.POWER)
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -271,10 +287,6 @@ class UniversalGroupPlayer(Player):
             # reset the original group members when powered off
             self._attr_group_members = self._attr_static_group_members.copy()
         self.update_state()
-
-    async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        # group volume is already handled in the player manager
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -492,18 +504,19 @@ class UniversalGroupPlayer(Player):
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""
-        if self.is_dynamic and PlayerFeature.SET_MEMBERS not in self.supported_features:
-            # dynamic group players should support SET_MEMBERS feature
-            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        elif not self.is_dynamic and PlayerFeature.SET_MEMBERS in self.supported_features:
-            # static group players should not support SET_MEMBERS feature
-            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         prev_state = self._attr_playback_state
         # grab current media and state from one of the active players
         # use state properties (not raw attributes) to account for protocol player propagation
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
             self._attr_playback_state = child_player.state.playback_state
-            if child_player.state.elapsed_time:
+            # a position is only meaningful together with the timestamp it was taken at,
+            # so the pair is adopted as a whole or not at all. Position 0 is a valid
+            # position: members that anchor the group stream once report a fixed 0 and
+            # let the timestamp carry both the progression and their own buffer delay.
+            if (
+                child_player.state.elapsed_time is not None
+                and child_player.state.elapsed_time_last_updated is not None
+            ):
                 self._attr_elapsed_time = child_player.state.elapsed_time
                 self._attr_elapsed_time_last_updated = child_player.state.elapsed_time_last_updated
             break

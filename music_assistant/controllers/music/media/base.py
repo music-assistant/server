@@ -26,7 +26,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.helpers import get_global_cache_value
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -56,7 +56,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
 )
-from music_assistant.helpers.compare import compare_media_item, create_safe_string
+from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
@@ -115,8 +115,10 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
-    "artist_name": "artists.search_name ASC, year DESC",
-    "artist_name_desc": "artists.search_name DESC, year DESC",
+    "album_artist_name": "artists.search_name ASC, year DESC",
+    "album_artist_name_desc": "artists.search_name DESC, year DESC",
+    "track_artist_name": "artists.search_name ASC, search_name ASC",
+    "track_artist_name_desc": "artists.search_name DESC, search_name ASC",
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }
@@ -179,6 +181,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         self.mass.register_api_command(
             f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/get_by_external_id",
+            self.get_library_item_by_external_id,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_collection",
@@ -365,11 +372,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.logger.debug("deleted item with id %s from database", db_id)
 
     async def library_count(self, favorite_only: bool = False) -> int:
-        """Return the total number of items in the library."""
+        """
+        Return the number of items in the library.
+
+        Restricted to the providers the current user is allowed to see when that user
+        has a provider filter set.
+
+        :param favorite_only: Only count items marked as favorite.
+        """
+        query_parts: list[str] = []
+        query_params: dict[str, Any] = {}
         if favorite_only:
-            sql_query = f"SELECT item_id FROM {self.db_table} WHERE favorite = 1"
-            return await self.mass.music.database.get_count_from_query(sql_query)
-        return await self.mass.music.database.get_count(self.db_table)
+            query_parts.append("favorite = 1")
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
+        if not query_parts:
+            return await self.mass.music.database.get_count(self.db_table)
+        sql_query = f"SELECT item_id FROM {self.db_table} WHERE {' AND '.join(query_parts)}"
+        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     if TYPE_CHECKING:
 
@@ -387,6 +409,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[ItemCls]: ...
 
@@ -404,6 +427,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             summary: bool = True,
             collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
@@ -421,10 +445,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             summary: bool = True,
             collapse_collections: bool,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -437,6 +462,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         summary: bool = True,
         collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """
@@ -454,19 +480,29 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
             be returned individually.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics), regardless of
+            whether that mapping is itself in that provider's own library. This is
+            independent of `provider`, which instead requires the *matched* mapping to
+            be in-library. None applies no filter; an explicit empty list, or a list
+            with no currently loaded/allowed instance, returns no items.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             genre_ids=genre,
             played_only=played_only,
             in_library_only=True,
             summary=summary,
             collapse_collections=collapse_collections,
+            reachable_via=reachable_via,
         )
         if (
             kwargs.get("_localized_fallback", True)
@@ -483,6 +519,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider=provider,
                 genre=genre,
                 summary=summary,
+                reachable_via=reachable_via,
             )
         return items
 
@@ -1071,6 +1108,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # edge case: already deleted / race condition
             return
 
+        remaining_mappings = {
+            x
+            for x in library_item.provider_mappings
+            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
+        }
+        if not remaining_mappings:
+            # this was the last mapping, so remove the entire library item, which also
+            # clears its provider mapping rows. Dropping those rows up front would leave
+            # the item behind without any mappings if the removal itself fails.
+            with suppress(MediaNotFoundError):
+                await self.remove_item_from_library(db_id)
+            return
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -1090,33 +1140,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
-        library_item.provider_mappings = {
-            x
-            for x in library_item.provider_mappings
-            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
-        }
-        if library_item.provider_mappings:
-            # if this was the last mapping for the provider instance, strip any artwork
-            # that belonged to it (e.g. local file paths that are no longer resolvable)
-            images_changed = not any(
-                x.provider_instance == provider_instance_id for x in library_item.provider_mappings
-            ) and await self._remove_provider_images(db_id, provider_instance_id)
-            self.logger.debug(
-                "removed provider_mapping %s/%s from item id %s",
-                provider_instance_id,
-                provider_item_id,
-                db_id,
-            )
-            # the removed provider mapping is itself a change to the item, so always notify
-            # (unless suppressed during a bulk cleanup); re-fetch first when images were
-            # stripped so the event payload stays accurate
-            if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-                event_item = await self.get_library_item(db_id) if images_changed else library_item
-                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
-        else:
-            # remove item if it has no more providers
-            with suppress(AssertionError):
-                await self.remove_item_from_library(db_id)
+        library_item.provider_mappings = remaining_mappings
+        # if this was the last mapping for the provider instance, strip any artwork
+        # that belonged to it (e.g. local file paths that are no longer resolvable)
+        images_changed = not any(
+            x.provider_instance == provider_instance_id for x in remaining_mappings
+        ) and await self._remove_provider_images(db_id, provider_instance_id)
+        self.logger.debug(
+            "removed provider_mapping %s/%s from item id %s",
+            provider_instance_id,
+            provider_item_id,
+            db_id,
+        )
+        # the removed provider mapping is itself a change to the item, so always notify
+        # (unless suppressed during a bulk cleanup); re-fetch first when images were
+        # stripped so the event payload stays accurate
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            event_item = await self.get_library_item(db_id) if images_changed else library_item
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
 
     @final
     async def remove_provider_mappings(self, item_id: str | int, provider_instance_id: str) -> None:
@@ -1125,8 +1166,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         try:
             library_item = await self.get_library_item(db_id)
         except MediaNotFoundError:
-            # edge case: already deleted / race condition
-            library_item = None
+            # edge case: already deleted / race condition, just drop any leftover rows
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {
+                    "media_type": self.media_type.value,
+                    "item_id": db_id,
+                    "provider_instance": provider_instance_id,
+                },
+            )
+            return
+
+        remaining_mappings = {
+            x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
+        }
+        if not remaining_mappings:
+            # these were the last mappings, so remove the entire library item, which also
+            # clears its provider mapping rows. Dropping those rows up front would leave
+            # the item behind without any mappings if the removal itself fails.
+            with suppress(MediaNotFoundError):
+                await self.remove_item_from_library(db_id)
+            return
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -1136,32 +1197,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider_instance": provider_instance_id,
             },
         )
-        if library_item is None:
-            return
-        # update the item's provider mappings (and check if we still have any)
-        library_item.provider_mappings = {
-            x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
-        }
-        if library_item.provider_mappings:
-            # the item is kept (it still has other providers), but it may carry artwork
-            # that belonged to the removed provider (e.g. local file paths that are no
-            # longer resolvable), so strip those images from the stored metadata
-            images_changed = await self._remove_provider_images(db_id, provider_instance_id)
-            self.logger.debug(
-                "removed all provider mappings for provider %s from item id %s",
-                provider_instance_id,
-                db_id,
-            )
-            # the removed provider mapping(s) are themselves a change to the item, so
-            # always notify (unless suppressed during a bulk cleanup); re-fetch first when
-            # images were stripped so the event payload stays accurate
-            if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-                event_item = await self.get_library_item(db_id) if images_changed else library_item
-                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
-        else:
-            # remove item if it has no more providers
-            with suppress(AssertionError):
-                await self.remove_item_from_library(db_id)
+        library_item.provider_mappings = remaining_mappings
+        # the item is kept (it still has other providers), but it may carry artwork
+        # that belonged to the removed provider (e.g. local file paths that are no
+        # longer resolvable), so strip those images from the stored metadata
+        images_changed = await self._remove_provider_images(db_id, provider_instance_id)
+        self.logger.debug(
+            "removed all provider mappings for provider %s from item id %s",
+            provider_instance_id,
+            db_id,
+        )
+        # the removed provider mapping(s) are themselves a change to the item, so
+        # always notify (unless suppressed during a bulk cleanup); re-fetch first when
+        # images were stripped so the event payload stays accurate
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            event_item = await self.get_library_item(db_id) if images_changed else library_item
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
 
     @final
     async def set_provider_mappings(
@@ -1170,15 +1221,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_mappings: Iterable[ProviderMapping],
         overwrite: bool = False,
     ) -> None:
-        """Update the provider_items table for the media item."""
+        """
+        Update the provider_mappings table for the media item.
+
+        An empty set of mappings never clears the stored rows: an item without any
+        mapping can not be played or resolved.
+        """
         db_id = int(item_id)  # ensure integer
-        if overwrite:
-            # on overwrite, clear the provider_mappings table first
-            # this is done for filesystem provider changing the path (and thus item_id)
-            await self.mass.music.database.delete(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": self.media_type.value, "item_id": db_id},
-            )
         prov_map_objs: list[dict[str, Any]] = []
         for provider_mapping in provider_mappings:
             prov_map_obj = {
@@ -1194,6 +1243,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             prov_map_objs.append(prov_map_obj)
+        if not prov_map_objs:
+            if overwrite:
+                # a caller asking to replace all mappings with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning(
+                    "Ignoring request to clear all provider mappings of %s item id %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        if overwrite:
+            # on overwrite, clear the provider_mappings table first
+            # this is done for filesystem provider changing the path (and thus item_id)
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
         await self.mass.music.database.upsert_many(
             DB_TABLE_PROVIDER_MAPPINGS,
             prov_map_objs,
@@ -1250,6 +1316,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = False,
             *,
             collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
         ) -> list[ItemCls | MediaCollection[ItemCls]]: ...
 
         @overload
@@ -1270,6 +1337,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = False,
             *,
             collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
         ) -> list[ItemCls]: ...
 
         @overload
@@ -1290,6 +1358,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = False,
             *,
             collapse_collections: bool,
+            reachable_via: list[str] | None = None,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
     @final
@@ -1310,6 +1379,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         summary: bool = False,
         *,
         collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """Fetch MediaItem records from database by building the query."""
         query_params = dict(extra_query_params) if extra_query_params else {}
@@ -1330,6 +1400,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 played_only=played_only,
                 limit=limit,
                 in_library_only=in_library_only,
+                reachable_via=reachable_via,
             )
         else:
             # apply filters
@@ -1342,6 +1413,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_filter=provider_filter,
                 played_only=played_only,
                 in_library_only=in_library_only,
+                reachable_via=reachable_via,
             )
         # build and execute final query
         sql_query, base_query_params = self._build_final_query(
@@ -1487,7 +1559,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     def _summary_base_columns(self) -> str:
         """Return the SELECT columns shared by every summary query."""
-        # the search/sort/statistics columns are selected so ORDER BY (see SORT_KEYS)
+        # the search/sort/statistics columns are selected so ORDER BY (see sort_keys)
         # resolves them from the result set, like the full query's SELECT * does
         return f"""
             {self.db_table}.item_id,
@@ -1574,7 +1646,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
 
     @final
-    def _apply_random_subquery(
+    def _apply_random_subquery(  # noqa: PLR0913
         self,
         query_parts: list[str],
         query_params: dict[str, Any],
@@ -1586,6 +1658,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         played_only: bool = False,
         limit: int = 500,
         in_library_only: bool = False,
+        reachable_via: list[str] | None = None,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
         sub_query_parts = query_parts.copy()
@@ -1601,6 +1674,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_filter=provider_filter,
             played_only=played_only,
             in_library_only=in_library_only,
+            reachable_via=reachable_via,
         )
 
         # Build the subquery
@@ -1631,6 +1705,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_filter: list[str] | None,
         played_only: bool = False,
         in_library_only: bool = False,
+        reachable_via: list[str] | None = None,
     ) -> None:
         """Apply search, favorite, and provider filters."""
         # handle search
@@ -1655,32 +1730,76 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "AND gm.genre_id IN :genre_ids)"
             )
         # Apply the provider filter
+        if provider_filter or in_library_only:
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only)
+            )
+        # Apply the reachability filter, independent of the (in-library) provider filter above
+        if reachable_via is not None:
+            query_parts.append(self._reachability_filter_clause(query_params, reachable_via))
+
+    @final
+    def _reachability_filter_clause(
+        self, query_params: dict[str, Any], reachable_via: list[str]
+    ) -> str:
+        """
+        Return the SQL clause that restricts items to those reachable via given providers.
+
+        Unlike `_provider_filter_clause`, this only checks that an available mapping to
+        one of the given provider instances exists: it does not require that mapping to
+        be in that provider's own library. This is used to answer "can this (already
+        in-library) item be played through one of these providers", as opposed to
+        "is this item favorited on one of these providers".
+
+        :param query_params: Query params dict; the clause's bound params are added to it.
+        :param reachable_via: Only match items with an available mapping to one of these
+            provider instances.
+        """
+        query_params["reachable_via_media_type"] = self.media_type.value
+        query_params["reachable_via_providers"] = reachable_via
+        return (
+            f"EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} reachable_mappings "
+            f"WHERE reachable_mappings.item_id = {self.db_table}.item_id "
+            "AND reachable_mappings.media_type = :reachable_via_media_type "
+            "AND reachable_mappings.available = 1 "
+            "AND reachable_mappings.provider_instance IN :reachable_via_providers)"
+        )
+
+    @final
+    def _provider_filter_clause(
+        self,
+        query_params: dict[str, Any],
+        provider_filter: list[str] | None,
+        in_library_only: bool = False,
+    ) -> str:
+        """
+        Return the SQL clause that restricts items by their provider mappings.
+
+        At least one of provider_filter/in_library_only must be set, otherwise the
+        returned clause only asserts that the item has any mapping at all.
+
+        :param query_params: Query params dict; the clause's bound params are added to it.
+        :param provider_filter: Only match items mapped to one of these provider instances.
+        :param in_library_only: Only match provider mappings that are in the provider's library.
+        """
         # NOTE: provider mapping filters are applied as a correlated EXISTS subquery
         # instead of a JOIN + GROUP BY, so SQLite can stream results straight from the
         # sort index instead of materializing/sorting the whole (deduped) result set.
+        query_params["provider_media_type"] = self.media_type.value
+        conditions = [
+            f"provider_mappings.item_id = {self.db_table}.item_id",
+            "provider_mappings.media_type = :provider_media_type",
+        ]
+        if in_library_only:
+            conditions.append("provider_mappings.in_library = 1")
         if provider_filter:
             provider_conditions = []
             for idx, prov in enumerate(provider_filter):
                 param_name = f"provider_filter_{idx}"
                 provider_conditions.append(f"provider_mappings.provider_instance = :{param_name}")
                 query_params[param_name] = prov
-            query_params["provider_media_type"] = self.media_type.value
-            in_library_clause = "AND provider_mappings.in_library = 1 " if in_library_only else ""
-            query_parts.append(
-                "EXISTS(SELECT 1 FROM provider_mappings "
-                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
-                "AND provider_mappings.media_type = :provider_media_type "
-                f"{in_library_clause}"
-                f"AND ({' OR '.join(provider_conditions)}))"
-            )
-        elif in_library_only:
-            query_params["provider_media_type"] = self.media_type.value
-            query_parts.append(
-                "EXISTS(SELECT 1 FROM provider_mappings "
-                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
-                "AND provider_mappings.media_type = :provider_media_type "
-                "AND provider_mappings.in_library = 1)"
-            )
+            conditions.append(f"({' OR '.join(provider_conditions)})")
+        return f"EXISTS(SELECT 1 FROM provider_mappings WHERE {' AND '.join(conditions)})"
 
     @final
     def _build_final_query(
@@ -1817,8 +1936,57 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return final_provider_filter
 
     @final
+    def _resolve_reachable_via(self, reachable_via: list[str] | None) -> list[str] | None:
+        """
+        Resolve a `reachable_via` filter against currently loaded, user-allowed providers.
+
+        :param reachable_via: Requested provider instance ids, or None for no filter.
+        :return: None if no filter should be applied. Otherwise, the subset of
+            `reachable_via` that is currently active and allowed for the current user
+            (per `MusicController.get_active_provider_instances`). An empty list means
+            the filter cannot match anything; callers must then return no items rather
+            than issue a query.
+        """
+        if reachable_via is None:
+            return None
+        if not reachable_via:
+            return []
+        allowed_providers = set(self.mass.music.get_active_provider_instances())
+        return [p for p in reachable_via if p in allowed_providers]
+
+    @final
+    def _provider_filter_considering_reachability(
+        self,
+        provider: str | list[str] | None,
+        resolved_reachable_via: list[str] | None,
+    ) -> list[str] | None:
+        """
+        Resolve the `provider` filter, deferring to an active `reachable_via` filter.
+
+        The current user's provider access is already enforced on `resolved_reachable_via`
+        by `_resolve_reachable_via`. So when `reachable_via` is active and no explicit
+        `provider` filter was requested, skip `_ensure_provider_filter`'s implicit
+        injection of the user's provider filter: that would additionally require the
+        item's in-library mapping itself to be on one of those providers, which is
+        stricter than (and redundant with) what `reachable_via` already checks.
+
+        :param provider: The explicit provider filter, as passed to `library_items`.
+        :param resolved_reachable_via: The already-resolved `reachable_via` filter (the
+            return value of `_resolve_reachable_via`), or None if not active.
+        """
+        if resolved_reachable_via is not None and provider is None:
+            return None
+        return self._ensure_provider_filter(provider)
+
+    @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
         """Select the correct provider id to use for fetching the item."""
+        if not library_item.provider_mappings:
+            msg = (
+                f"{self.media_type.value} {library_item.item_id} "
+                "is no longer available on any provider"
+            )
+            raise MediaNotFoundError(msg)
         user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         if not user_provider_filter:
@@ -2054,6 +2222,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         {single_extra_order_keys}
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
+                        json_extract(iter_coll.value, '$.search_title') as collection_search_title,
+                        json_extract(iter_coll.value, '$.search_sort_title') as collection_search_sort_title,
                         CASE
                             WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
                             THEN 1
@@ -2075,8 +2245,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SELECT
                 'collection' as type,
                 collection_title as name,
-                replace(lower(collection_title),' ','') as search_name,
-                replace(lower(collection_title),' ','') as search_sort_name,
+                COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
+                COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
                 MAX(timestamp_added) as timestamp_added,
                 MAX(timestamp_modified) as timestamp_modified,
                 MAX(last_played) as last_played,
