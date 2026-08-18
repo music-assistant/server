@@ -1059,14 +1059,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         if not compare_artist(db_artist, candidate, strict=strict):
             return []
-        # fetch the full artist so we have all metadata, and re-compare: only the full
-        # object carries the external ids and artist type that can still reject the candidate
-        prov_artist = await self.get_provider_item(
-            candidate.item_id, candidate.provider, fallback=candidate
-        )
-        if not compare_artist(db_artist, prov_artist, strict=strict):
-            return []
-        return list(prov_artist.provider_mappings)
+        # only the full artist carries the external ids and artist type that can still reject
+        # the candidate, so a credit the provider cannot resolve confirms nothing; a credit
+        # that resolves to a library item is already owned by another artist
+        with contextlib.suppress(MediaNotFoundError):
+            prov_artist = await self.get_provider_item(candidate.item_id, candidate.provider)
+            if prov_artist.provider != "library" and compare_artist(
+                db_artist, prov_artist, strict=strict
+            ):
+                return list(prov_artist.provider_mappings)
+        return []
 
     async def _add_library_item(
         self, item: Artist | ItemMapping, overwrite_existing: bool = False

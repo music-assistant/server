@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import ArtistType, ExternalID, MediaType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -206,9 +207,13 @@ def _harness(
     ctrl = ArtistsController.__new__(ArtistsController)
     ctrl.logger = logging.getLogger("test.artists.match")
     ctrl.mass = mass
-    get_provider_item = AsyncMock(
-        side_effect=lambda item_id, _provider, **_kwargs: full_artists[item_id]
-    )
+
+    async def _full_artist(item_id: str, _provider: str, **_kwargs: object) -> Artist:
+        if item_id not in full_artists:
+            raise MediaNotFoundError(item_id)
+        return full_artists[item_id]
+
+    get_provider_item = AsyncMock(side_effect=_full_artist)
     with patch.multiple(ctrl, get_provider_item=get_provider_item):
         yield _Harness(ctrl, track_search, album_search, get_provider_item, _provider())
 
@@ -340,3 +345,34 @@ async def test_reference_album_recording_conflict_does_not_match() -> None:
 
     assert matches == []
     harness.get_provider_item.assert_not_awaited()
+
+
+async def test_unresolvable_credit_does_not_match() -> None:
+    """A credit the provider cannot resolve to a full artist confirms nothing."""
+    with _harness(
+        ref_tracks=[_track("lib-track", "library", mappings=(BASE_MAPPING,))],
+        track_results=[_track("s1", "spotify_1")],
+        provider_artists=[],
+    ) as harness:
+        matches = await harness.match(_library_artist())
+
+    assert matches == []
+
+
+async def test_credit_owned_by_another_library_artist_does_not_match() -> None:
+    """A credit that resolves to a library item belongs to another artist, so it cannot confirm."""
+    other_library_artist = Artist(
+        item_id="lib2",
+        provider="library",
+        name="Main Artist",
+        provider_mappings={BASE_MAPPING, CANDIDATE_MAPPING},
+    )
+    with _harness(
+        ref_tracks=[_track("lib-track", "library", mappings=(BASE_MAPPING,))],
+        track_results=[_track("s1", "spotify_1")],
+    ) as harness:
+        harness.get_provider_item.side_effect = None
+        harness.get_provider_item.return_value = other_library_artist
+        matches = await harness.match(_library_artist())
+
+    assert matches == []
