@@ -122,3 +122,18 @@ async def test_skip_requires_an_active_queue() -> None:
         await ctrl.skip(QUEUE_ID, 10)
 
     seek.assert_not_awaited()
+
+
+async def test_previous_restarts_the_track_when_past_the_threshold() -> None:
+    """A stale anchor must not make a 6s-in previous jump back to the preceding track."""
+    ctrl, queue, _seek = _controller(elapsed_time=4.5, anchor_age=2.0)
+    queue.current_index = 1
+    ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
+    ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
+    ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.get_item = Mock(return_value=queue.current_item)  # type: ignore[method-assign]
+
+    await ctrl.previous(QUEUE_ID)
+
+    # corrected position is 6.5s, so the current track restarts rather than stepping back
+    assert queue.current_index == 1
