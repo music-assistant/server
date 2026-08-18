@@ -754,7 +754,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for plex_track in await self._run_async(plex_album.tracks):
-            if track := await self._parse_or_skip(self._parse_track, plex_track):
+            if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
                 tracks.append(track)
         return tracks
 
@@ -829,7 +829,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             # Collections can contain tracks, albums, or artists - we only want tracks
             for item in collection_items:
                 if item.type == "track":
-                    if track := await self._parse_or_skip(self._parse_track, item):
+                    if (track := await self._parse_or_skip(self._parse_track, item)) is not None:
                         track.position = len(result) + 1
                         result.append(track)
                 elif item.type == "album":
@@ -850,7 +850,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             plex_tracks = await self._run_async(self._plex_library.fetchItems, tracks_key)
             random.shuffle(plex_tracks)
             for plex_track in plex_tracks:
-                if track := await self._parse_or_skip(self._parse_track, plex_track):
+                if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
                     track.position = len(result) + 1
                     result.append(track)
             return result
@@ -859,7 +859,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
         for plex_track in playlist_items:
-            if track := await self._parse_or_skip(self._parse_track, plex_track):
+            if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
                 track.position = len(result) + 1
                 result.append(track)
         return result
@@ -1213,8 +1213,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             return await parse_coro(plex_item)
         except InvalidDataError as err:
             # only an item we can not build a media item from is skippable. anything else
-            # affects every item that follows, so it has to abort the sync, which is what
-            # holds back the deletion pass that would otherwise drop the whole library.
+            # may be a server or connection failure rather than a property of this item,
+            # and we can not tell those apart here, so it has to abort the sync - that is
+            # what holds back the deletion pass that would otherwise drop valid items.
             #
             # read the identifiers from the cached payload, so reporting a failed item
             # can not trigger a reload that fails all over again

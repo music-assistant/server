@@ -23,6 +23,7 @@ SPOKEN_LIBRARIES = [
     (LIBRARY_TYPE_PODCASTS, "get_library_podcasts", "_parse_podcast"),
 ]
 SPOKEN_LIBRARY_LISTINGS = [(library, generator) for library, generator, _ in SPOKEN_LIBRARIES]
+SPOKEN_LIBRARY_PARSERS = [(library, parser) for library, _, parser in SPOKEN_LIBRARIES]
 
 
 class _FakePlexData:
@@ -86,6 +87,7 @@ class _FakePlexAlbum:
         self.key = key
         self.title = title
         self.year = year
+        self.studio = None
         self.parentTitle = "Author 1"
         self.grandparentTitle = None
         self.summary = ""
@@ -220,13 +222,14 @@ async def test_spoken_library_does_not_swallow_listing_error(
         _ = [item async for item in getattr(provider, generator)()]
 
 
-async def test_audiobook_accepts_out_of_range_year() -> None:
+@pytest.mark.parametrize(("library_type", "parse_method"), SPOKEN_LIBRARY_PARSERS)
+async def test_spoken_item_ignores_out_of_range_year(library_type: str, parse_method: str) -> None:
     """A year Plex cannot express as a date is ignored instead of failing the item."""
-    provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
+    provider = _make_provider(library_type)
 
-    audiobook = await provider._parse_audiobook(_FakePlexAlbum(year=19999))
+    parsed = await getattr(provider, parse_method)(_FakePlexAlbum(year=19999))
 
-    assert audiobook.metadata.release_date is None
+    assert parsed.metadata.release_date is None
 
 
 async def test_album_tracks_skips_unparsable_track() -> None:
