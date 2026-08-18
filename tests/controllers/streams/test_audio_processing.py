@@ -1020,6 +1020,12 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     raw_seek_position = 12
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
+        buffer=SimpleNamespace(
+            has_error=False,
+            is_valid=lambda *_args: True,
+            duration_available=16,
+            ready=SimpleNamespace(is_set=lambda: True),
+        ),
         fade_in=False,
         stream_error=False,
         uri="test://skipped",
@@ -1034,7 +1040,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=skipped_streamdetails,
-        extra_attributes={},
+        extra_attributes={"playback_speed": 2.0},
     )
     queue = SimpleNamespace(
         queue_id="queue-1",
@@ -1067,6 +1073,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         )
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    eager_seek_positions: list[float] = []
 
     async def _item_stream(
         queue_item: SimpleNamespace,
@@ -1076,6 +1083,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         if queue_item is first_item:
             yield bytes(pcm_format.pcm_sample_size * 8)
             yield bytes(pcm_format.pcm_sample_size)
+        else:
+            eager_seek_positions.append(queue_item.streamdetails.seek_position)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_flow_stream(
@@ -1089,6 +1098,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         pass
 
     build.assert_awaited_once()
+    assert eager_seek_positions == [32]
     assert skipped_streamdetails.seek_position == raw_seek_position
 
 

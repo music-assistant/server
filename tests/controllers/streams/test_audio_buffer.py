@@ -115,6 +115,7 @@ def test_init_defaults() -> None:
     assert buf.max_size_seconds == BUFFER_SIZE_MAP[BufferSize.BALANCED]
     assert buf.size_seconds == 0
     assert buf.seconds_available == 0
+    assert buf.duration_available == 0
     assert not buf.cancelled
     assert not buf.has_error
     assert not buf.ready.is_set()
@@ -133,6 +134,16 @@ def test_init_rolling_mode() -> None:
 
 
 # -- Put and get --
+
+
+async def test_duration_available_uses_exact_resident_byte_count() -> None:
+    """A partial EOF chunk contributes its exact PCM duration."""
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
+    await audio_buffer._put(ONE_SECOND_CHUNK[: len(ONE_SECOND_CHUNK) // 2])
+
+    assert audio_buffer.seconds_available == 2
+    assert audio_buffer.duration_available == 1.5
 
 
 @pytest.mark.asyncio
@@ -458,6 +469,23 @@ async def test_seek_in_raw_stream() -> None:
     assert len(chunks) == 5
     # first chunk should be chunk #5
     assert chunks[0] == _make_chunk(5)
+
+
+async def test_exact_raw_seek_preserves_millisecond_position() -> None:
+    """Crossfade continuation does not round its media-time resume backward."""
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
+    await audio_buffer._set_eof()
+
+    regular_stream = audio_buffer.get_raw_stream(seek_position_ms=250)
+    exact_stream = audio_buffer.get_raw_stream(seek_position_ms=250, exact_seek=True)
+    regular_chunk = await anext(regular_stream)
+    exact_chunk = await anext(exact_stream)
+    await regular_stream.aclose()
+    await exact_stream.aclose()
+
+    assert len(regular_chunk) == int(len(ONE_SECOND_CHUNK) * 0.8)
+    assert len(exact_chunk) == int(len(ONE_SECOND_CHUNK) * 0.75)
 
 
 # -- Analysis reader (read_chunk_for_analysis) --

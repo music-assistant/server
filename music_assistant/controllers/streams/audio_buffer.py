@@ -143,6 +143,11 @@ class AudioBuffer:
         return len(self._chunks)
 
     @property
+    def duration_available(self) -> float:
+        """Return the exact duration of resident PCM audio in seconds."""
+        return sum(len(chunk) for chunk in self._chunks) / self.pcm_format.pcm_sample_size
+
+    @property
     def is_buffering(self) -> bool:
         """Return whether the upstream source producer is still active."""
         return self._producer_task is not None and not self._producer_task.done()
@@ -187,14 +192,18 @@ class AudioBuffer:
         chunks_ahead = seek_chunk - total_chunks
         return chunks_ahead <= SEEK_WAIT_THRESHOLD
 
-    async def get_raw_stream(self, seek_position_ms: int = 0) -> AsyncGenerator[bytes]:
+    async def get_raw_stream(
+        self, seek_position_ms: int = 0, exact_seek: bool = False
+    ) -> AsyncGenerator[bytes]:
         """
         Get raw (unprocessed) PCM audio from the buffer.
 
         :param seek_position_ms: Starting position in milliseconds.
+        :param exact_seek: Preserve millisecond precision instead of quantizing to 100 ms.
         """
-        # align to 100ms steps to avoid rounding issues
-        seek_position_ms = (seek_position_ms // 100) * 100
+        if not exact_seek:
+            # align regular user seeks to 100ms steps to avoid rounding issues
+            seek_position_ms = (seek_position_ms // 100) * 100
         chunk_number = seek_position_ms // 1000
         # handle fractional seek: trim leading samples from the first chunk
         fractional_ms = seek_position_ms % 1000
@@ -249,6 +258,7 @@ class AudioBuffer:
         output_format: AudioFormat,
         seek_position_ms: int = 0,
         filter_params: list[str] | None = None,
+        exact_seek: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Get processed audio from the buffer.
@@ -259,16 +269,21 @@ class AudioBuffer:
         :param output_format: The desired output PCM format.
         :param seek_position_ms: Starting position in milliseconds.
         :param filter_params: FFmpeg filter parameters to apply.
+        :param exact_seek: Preserve millisecond precision for the input buffer position.
         """
         needs_ffmpeg = bool(filter_params) or self.pcm_format != output_format
 
         if not needs_ffmpeg:
-            async for chunk in self.get_raw_stream(seek_position_ms=seek_position_ms):
+            async for chunk in self.get_raw_stream(
+                seek_position_ms=seek_position_ms, exact_seek=exact_seek
+            ):
                 yield chunk
             return
 
         async for chunk in get_ffmpeg_stream(
-            audio_input=self.get_raw_stream(seek_position_ms=seek_position_ms),
+            audio_input=self.get_raw_stream(
+                seek_position_ms=seek_position_ms, exact_seek=exact_seek
+            ),
             input_format=self.pcm_format,
             output_format=output_format,
             filter_params=filter_params,
