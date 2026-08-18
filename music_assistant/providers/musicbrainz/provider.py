@@ -16,6 +16,7 @@ from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import external_id_lookup_values, is_valid_barcode
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -334,6 +335,33 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Album ID provided"
         raise InvalidDataError(msg)
+
+    async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzRelease]:
+        """
+        Get the releases MusicBrainz has on file for a barcode/UPC.
+
+        :param barcode: Album barcode (UPC/EAN/GTIN), with or without separators.
+        :return: Releases carrying this barcode, or an empty list if none are found.
+        """
+        if not is_valid_barcode(barcode):
+            return []
+        # a UPC-12 and its zero-padded EAN-13/GTIN forms are the same physical barcode,
+        # so query every compatible form to also resolve a provider's shorter/longer notation
+        barcodes = [
+            value
+            for value in external_id_lookup_values(ExternalID.BARCODE, barcode)
+            if value.isdigit()
+        ]
+        query = " OR ".join(f"barcode:{value}" for value in barcodes)
+        result = await self._api_client.get_data("release", query=query)
+        if not result or not (releases := result.get("releases")):
+            return []
+        parsed: list[MusicBrainzRelease] = []
+        for release in releases:
+            # a single malformed entry should not sink the releases we did parse
+            with suppress(MissingField):
+                parsed.append(MusicBrainzRelease.from_raw(release))
+        return parsed
 
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
         """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""
