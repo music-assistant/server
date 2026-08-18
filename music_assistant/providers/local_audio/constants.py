@@ -22,6 +22,15 @@ AUDIO_BACKEND_AUTO = "auto"
 AUDIO_BACKEND_PULSEAUDIO = "pulseaudio"
 AUDIO_BACKEND_ALSA = "alsa"
 
+# Pre-warm PA streams at provider startup (PulseAudio backend only).
+# Eliminates per-player stream-open latency (~50-200ms) that would otherwise
+# become a fixed sync offset within sync groups. Trade-off: held-open streams
+# keep the sound device active (sink RUNNING) while the provider runs,
+# preventing idle suspend — negligible on PCI cards, but potentially costly
+# for USB audio devices on virtualized hosts. Default on; disable on such
+# setups if sync-group alignment is not needed.
+CONF_PREWARM_STREAMS = "prewarm_streams"
+
 # Volume control mode.
 # HARDWARE: PA sink hardware volume via PAVolumeController (libpulse direct
 #   calls, no subprocess) — used automatically for the PulseAudio/PipeWire

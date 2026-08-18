@@ -11,12 +11,20 @@ from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.models.player_provider import PlayerProvider
 
+from .card_profiles import (
+    PROFILE_AUTO,
+    PROFILE_OFF,
+    card_config_label,
+    conf_card_profile_key,
+)
 from .constants import (
     AUDIO_BACKEND_ALSA,
     AUDIO_BACKEND_AUTO,
     AUDIO_BACKEND_PULSEAUDIO,
     CONF_AUDIO_BACKEND,
+    CONF_PREWARM_STREAMS,
 )
+from .pa_simple import enumerate_pa_cards
 from .sendspin_bridge import LocalAudioBridgeManager
 
 
@@ -30,6 +38,9 @@ class LocalAudioProvider(PlayerProvider):
         entries: list[ConfigEntry] = []
 
         if sys.platform == "linux":
+            configured_backend: str = str(
+                self.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
+            )
             entries.append(
                 ConfigEntry(
                     key=CONF_AUDIO_BACKEND,
@@ -42,6 +53,15 @@ class LocalAudioProvider(PlayerProvider):
                     default_value=AUDIO_BACKEND_AUTO,
                 )
             )
+            entries.append(
+                ConfigEntry(
+                    key=CONF_PREWARM_STREAMS,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=True,
+                )
+            )
+            if configured_backend != AUDIO_BACKEND_ALSA:
+                entries.extend(await self._card_profile_entries())
 
         return tuple(entries)
 
@@ -51,7 +71,10 @@ class LocalAudioProvider(PlayerProvider):
             configured_backend: str = str(
                 self.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
             )
-            needs_pulse = configured_backend in (AUDIO_BACKEND_PULSEAUDIO, AUDIO_BACKEND_AUTO)
+            needs_pulse = configured_backend in (
+                AUDIO_BACKEND_PULSEAUDIO,
+                AUDIO_BACKEND_AUTO,
+            )
             if needs_pulse:
                 # Verify libpulse-simple is present before attempting PA output.
                 # On AUTO we probe but don't hard-fail — bridge manager will fall
@@ -75,3 +98,52 @@ class LocalAudioProvider(PlayerProvider):
         """Handle unload/removal of the provider."""
         if bridge_manager := getattr(self, "_bridge_manager", None):
             await bridge_manager.close()
+
+    async def _card_profile_entries(self) -> list[ConfigEntry]:
+        """
+        Build one profile dropdown per PulseAudio card currently present.
+
+        Generated live at settings-dialog time (get_config_entries is
+        async), so the option list is exactly what PA offers right now —
+        machine profile names as values, PA's human descriptions as
+        titles. Cards offering no real choice (only one output profile)
+        are skipped to keep the page clean; absent cards simply produce
+        no entry, and any stored value for them sits harmlessly until
+        they return. Returns no entries when card introspection is
+        unavailable (no PA at runtime, initial setup flow, etc.) —
+        profile selection then just isn't offered.
+        """
+        try:
+            cards = await self.mass.loop.run_in_executor(None, enumerate_pa_cards)
+        except (FileNotFoundError, RuntimeError, OSError) as err:
+            self.logger.debug("Card profile config entries skipped: %s", err)
+            return []
+
+        entries: list[ConfigEntry] = []
+        for card in cards:
+            options = [
+                ConfigValueOption(PROFILE_AUTO, "Auto (most output channels, duplex preferred)")
+            ]
+            for profile in card.profiles:
+                if profile.name == PROFILE_OFF or profile.n_sinks <= 0:
+                    continue
+                title = profile.description
+                if not profile.available:
+                    title = f"{title} (currently unavailable)"
+                options.append(ConfigValueOption(profile.name, title))
+            if len(options) <= 2:
+                # "auto" plus a single real profile is not a choice.
+                continue
+            entries.append(
+                ConfigEntry(
+                    key=conf_card_profile_key(card.name),
+                    type=ConfigEntryType.STRING,
+                    translation_key="card_profile",
+                    translation_params=[card_config_label(card)],
+                    options=options,
+                    default_value=PROFILE_AUTO,
+                    advanced=True,
+                )
+            )
+        self.logger.debug("Generated %d card profile config entries", len(entries))
+        return entries
