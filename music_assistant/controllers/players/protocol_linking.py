@@ -1068,11 +1068,13 @@ class ProtocolLinkingMixin:
             # A derived protocol rides on another output, so a base and everything riding
             # on it can only move together: refusing one of them holds back the group.
             for group in self._group_protocol_links(player):
-                # A device that kept its id across a type change is listed as a protocol
-                # of the wrapper that replaces it. It cannot move onto itself, so leaving
-                # it in would mark it refused and abort the takeover below.
+                # A device that kept its id across a type change is still listed as one of
+                # the outputs of the wrapper it replaces. It cannot be taken over from
+                # itself, so leaving it in would mark it refused and abort the takeover.
                 movable = [
-                    entry for entry in group if entry[1].player_id != native_player.player_id
+                    (linked, protocol_player)
+                    for linked, protocol_player in group
+                    if protocol_player.player_id != native_player.player_id
                 ]
                 if not movable:
                     continue
