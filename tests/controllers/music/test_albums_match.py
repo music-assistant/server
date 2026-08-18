@@ -855,6 +855,51 @@ async def test_insert_match_keeps_ambiguous_candidate_with_conflicting_tracklist
 
         assert await harness.ctrl._get_library_item_by_match(item) is None
 
+    # the tracklists must have been the thing that rejected it, not a skipped escalation
+    assert harness.album_track_calls() == ["base-prov", "a1"]
+
+
+async def test_insert_match_escalates_each_candidate_against_its_own_tracklist() -> None:
+    """Every ambiguous candidate is fingerprinted against its own base tracklist."""
+    first = _library_candidate()
+    first.item_id = "7"
+    first.provider_mappings = {
+        ProviderMapping(item_id="other-prov", provider_domain="tidal", provider_instance="tidal_1")
+    }
+    with _insert_harness(
+        candidates=[first, _library_candidate()],
+        # only the second candidate shares the incoming tracklist
+        provider_album_tracks={
+            "other-prov": _tracklist(14),
+            "base-prov": _tracklist(10),
+            "a1": _tracklist(10),
+        },
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023)
+
+        assert await harness.ctrl._get_library_item_by_match(item) == 1
+
+    assert harness.album_track_calls() == ["other-prov", "a1", "base-prov", "a1"]
+
+
+async def test_insert_match_adds_album_when_arbitration_raises() -> None:
+    """An unforeseen provider error costs the album its link but never the sync."""
+    with _insert_harness(
+        candidates=[_library_candidate()],
+        provider_album_tracks={"base-prov": ValueError("malformed provider payload")},
+    ) as harness:
+        item = _album("a1", "spotify_1", year=2023)
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
+
+async def test_insert_match_abstains_when_musicbrainz_is_not_loaded() -> None:
+    """Without MusicBrainz an unresolved album is added rather than guessed."""
+    with _insert_harness(candidates=[_library_candidate(barcodes=(BASE_BARCODE,))]) as harness:
+        item = _album("a1", "spotify_1", year=2023, barcodes=(OTHER_BARCODE,))
+
+        assert await harness.ctrl._get_library_item_by_match(item) is None
+
 
 async def test_insert_match_escalates_to_musicbrainz_when_tracklists_are_absent() -> None:
     """With no usable tracklist, a shared MusicBrainz release still links the album."""
