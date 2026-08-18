@@ -506,34 +506,6 @@ class OpenHomePlayer(Player):
         config_entries: list[ConfigEntry] = [
             *base_entries,
         ]
-        if not any(entry.key == CONF_USE_DEVICE_PLAYLIST_AS_QUEUE for entry in config_entries):
-            config_entries.append(
-                ConfigEntry(
-                    key=CONF_USE_DEVICE_PLAYLIST_AS_QUEUE,
-                    type=ConfigEntryType.BOOLEAN,
-                    label="Use device Playlist as queue",
-                    required=True,
-                    default_value=False,
-                    category="advanced",
-                    description="Use the Playlist on the OpenHome Media device synced with the Music Assistant queue",
-                ))
-
-        if (has_radio := self.profile.has_source_type(ProductSourceType.RADIO)) is None:
-            await self.profile._async_poll_state_variables(Service.PRODUCT, ProductState.SOURCE_XML)
-            has_radio = self.profile.has_source_type(ProductSourceType.RADIO)
-
-        if has_radio :
-            if not any(entry.key == CONF_USE_DEVICE_RADIO_AS_SOURCE for entry in config_entries):
-                config_entries.append(
-                    ConfigEntry(
-                        key=CONF_USE_DEVICE_RADIO_AS_SOURCE,
-                        type=ConfigEntryType.BOOLEAN,
-                        label="Use device Radio as source",
-                        required=False,
-                        default_value=False,
-                        category="advanced",
-                        description="If True then use the Radio on the OpenHome Media device, otherwise use the device Playlist",
-                    ))
         return config_entries
 
     # endregion
