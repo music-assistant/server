@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import AsyncProcess
@@ -130,7 +131,6 @@ class SoloistBackend(SpotifyConnectBackend):
         self.mass = mass
         self.logger = logger
         self.name = name
-        self._instance_id = instance_id
         self._publish_name = publish_name
         self._event_callback = event_callback
         self._api_key = api_key
@@ -144,22 +144,38 @@ class SoloistBackend(SpotifyConnectBackend):
         self._server: PulseCaptureServer | None = None
         self._sink: PipeSink | None = None
         self._sink_generation: int = -1
+        # serializes sink (re)creation against teardown in stop()
+        self._sink_lock = asyncio.Lock()
         self._client: SoloistClient | None = None
         self._stop_called: bool = False
         self._daemon_task: asyncio.Task[None] | None = None
         self._events_task: asyncio.Task[None] | None = None
         self._proc: AsyncProcess | None = None
         self._restart_error_count = 0
+        # set when a daemon close is intentional (sink replaced), so the
+        # supervisor respawns immediately instead of counting a failure
+        self._respawn_requested: bool = False
         # serializes all volume handling (sink compensation + event forwarding)
         self._volume_lock = asyncio.Lock()
         # last volume reported by the daemon (None until the first event)
         self._spotify_volume: int | None = None
+        # guards the player_only 100%-pin so overlapping resets are not issued
+        self._pin_in_flight: bool = False
+        # whether an auth_state ever reported a completed login; a fresh daemon
+        # reports logged_in=False while advertising for pairing, which is normal
+        self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
-        # The capture sink delivers fixed s32le/44.1kHz/2ch PCM (the pulse
-        # capture format). Soloist decodes internally and does not expose the
-        # source codec or quality, so both formats advertise the capture PCM —
-        # we never claim a lossless source or a specific source bit depth.
+        # Soloist decodes internally and does not expose the source codec or
+        # quality, so the display format reports an unknown source — we never
+        # claim a lossless source or a specific source bit depth.
+        self._audio_format = AudioFormat(
+            content_type=ContentType.UNKNOWN,
+            sample_rate=CAPTURE_SAMPLE_RATE,
+            channels=CAPTURE_CHANNELS,
+        )
+        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM (the pulse
+        # capture format) — that is what actually arrives on the named pipe
         self._capture_format = AudioFormat(
             content_type=ContentType.PCM_S32LE,
             codec_type=ContentType.PCM_S32LE,
@@ -171,7 +187,7 @@ class SoloistBackend(SpotifyConnectBackend):
     @property
     def audio_format(self) -> AudioFormat:
         """Return the source audio format (advertised to clients for display)."""
-        return self._capture_format
+        return self._audio_format
 
     @property
     def decoded_audio_format(self) -> AudioFormat:
@@ -211,12 +227,15 @@ class SoloistBackend(SpotifyConnectBackend):
         if (proc := self._proc) is not None:
             self._proc = None
             await proc.close()
-        if (sink := self._sink) is not None:
-            self._sink = None
-            await sink.unload()
-        if (server := self._server) is not None:
-            self._server = None
-            await server.release()
+        # the lock lets an in-flight _ensure_fresh_sink finish before the
+        # capture resources go away (later callers fail on the stop flag)
+        async with self._sink_lock:
+            if (sink := self._sink) is not None:
+                self._sink = None
+                await sink.unload()
+            if (server := self._server) is not None:
+                self._server = None
+                await server.release()
 
     async def get_stream_source(self) -> BackendStreamSource:
         """
@@ -226,11 +245,10 @@ class SoloistBackend(SpotifyConnectBackend):
         ``-readrate 1`` paces the read to realtime with a small initial burst
         as jitter headroom — nothing else may sleep-pace this audio path.
         """
-        await self._ensure_fresh_sink()
-        assert self._sink is not None
+        sink = await self._ensure_fresh_sink()
         return BackendStreamSource(
             stream_type=StreamType.NAMED_PIPE,
-            path=str(self._sink.fifo_path),
+            path=str(sink.fifo_path),
             extra_input_args=["-readrate", "1", "-readrate_initial_burst", "0.5"],
         )
 
@@ -293,7 +311,8 @@ class SoloistBackend(SpotifyConnectBackend):
         if self._volume_mode == VOLUME_MODE_SYNC_SPOTIFY:
             # the daemon echoes the change back as a volume_changed event; the
             # provider's dedupe keeps that echo from bouncing back to the player
-            await self._client.set_volume(volume)
+            async with self._volume_lock:
+                await self._client.set_volume(volume)
             return
         # player_only: the MA player owns the volume, so the daemon is pinned at
         # 100% (unity PCM into the sink); only (re)send the pin when it is known
@@ -303,21 +322,31 @@ class SoloistBackend(SpotifyConnectBackend):
                 return
             await self._client.set_volume(100)
 
-    async def _ensure_fresh_sink(self) -> None:
-        """Create the capture sink, replacing it when the pulse daemon restarted."""
-        assert self._server is not None
-        if self._sink is not None and self._sink_generation == self._server.generation:
-            return
-        if self._sink is not None:
-            # sinks do not survive a daemon restart; this only cleans up the FIFO
-            await self._sink.unload()
-        self._sink = await PipeSink.create(self._server, self._sink_prefix)
-        self._sink_generation = self._server.generation
-        # the daemon plays into the sink named in its spawn env (PULSE_SINK), so
-        # close a running process to make the supervisor respawn it against the
-        # recreated sink
-        if (proc := self._proc) is not None:
-            await proc.close()
+    async def _ensure_fresh_sink(self) -> PipeSink:
+        """
+        Return the capture sink, replacing it when the pulse daemon restarted.
+
+        :raises AudioError: The backend is (being) stopped.
+        """
+        async with self._sink_lock:
+            # checked under the lock: a concurrent stop() sets the flag before
+            # it waits for the lock to tear down the capture resources
+            if self._stop_called or self._server is None:
+                raise AudioError("Spotify Connect backend is stopping")
+            if self._sink is not None and self._sink_generation == self._server.generation:
+                return self._sink
+            if self._sink is not None:
+                # sinks do not survive a daemon restart; this only cleans up the FIFO
+                await self._sink.unload()
+            self._sink = await PipeSink.create(self._server, self._sink_prefix)
+            self._sink_generation = self._server.generation
+            # the daemon plays into the sink named in its spawn env (PULSE_SINK), so
+            # close a running process to make the supervisor respawn it against the
+            # recreated sink (flagged as intentional: not a daemon failure)
+            if (proc := self._proc) is not None:
+                self._respawn_requested = True
+                await proc.close()
+            return self._sink
 
     def _daemon_args(self) -> list[str]:
         """
@@ -351,27 +380,33 @@ class SoloistBackend(SpotifyConnectBackend):
 
     async def _daemon_runner(self) -> None:
         """Run and supervise the soloist daemon, restarting (and refreshing) as needed."""
-        assert self._server is not None
         # Loop forever; stop() cancels this task and the explicit stop-check below
         # handles a graceful exit without a restart.
         while True:
-            sink = self._sink
-            assert sink is not None
             proc: AsyncProcess | None = None
             returncode: int | None = None
             try:
+                # the sink may have been replaced (pulse restart) while the
+                # daemon was down; never spawn against a stale sink
+                sink = await self._ensure_fresh_sink()
+                server = self._server
+                assert server is not None  # guaranteed by _ensure_fresh_sink
                 # the explicit process name keeps AsyncProcess logging free of
                 # the argv (which carries the API key)
                 self._proc = proc = AsyncProcess(
                     self._daemon_args(),
                     stderr=True,
                     name=f"soloist[{self.name}]",
-                    env=self._server.child_env(sink.sink_name),
+                    env=server.child_env(sink.sink_name),
                 )
                 await proc.start()
                 self.logger.info("Started Spotify Connect background daemon [%s]", self.name)
+                await self._reset_volume_state(sink)
                 async for line in proc.iter_stderr():
-                    self.logger.debug("[%s] %s", self.name, line)
+                    # the third-party binary's own output may echo argv (which
+                    # carries the api key), so redact it before logging
+                    text = line.replace(self._api_key, "<redacted>") if self._api_key else line
+                    self.logger.debug("[%s] %s", self.name, text)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -392,6 +427,11 @@ class SoloistBackend(SpotifyConnectBackend):
                     self.logger.exception("Error while handling daemon exit")
             if self._stop_called:
                 break
+            if self._respawn_requested:
+                # intentional close (the sink was replaced): respawn right away,
+                # this is not a daemon failure
+                self._respawn_requested = False
+                continue
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)
             if returncode == EXIT_CODE_BUILD_EXPIRED and not await self._refresh_expired_binary():
                 return
@@ -400,11 +440,29 @@ class SoloistBackend(SpotifyConnectBackend):
                 await self._event_callback(
                     BackendEvent(
                         BackendEventType.FATAL_ERROR,
+                        # fatal errors are plain (non-localized) strings for now,
+                        # matching the go-librespot backend
                         error="soloist daemon failed to start multiple times.",
                     )
                 )
                 return
             await asyncio.sleep(RESTART_DELAY_S)
+
+    async def _reset_volume_state(self, sink: PipeSink) -> None:
+        """
+        Realign the volume bookkeeping with a freshly spawned daemon.
+
+        :param sink: The capture sink the daemon plays into.
+        """
+        # the daemon always starts at --initial-volume 100; without this reset a
+        # stale reciprocal sink compensation from before a crash would amplify
+        # and clip the captured audio (sync_spotify mode)
+        async with self._volume_lock:
+            self._spotify_volume = 100
+            try:
+                await sink.set_volume(100)
+            except Exception as err:
+                self.logger.warning("Failed to reset capture sink volume: %s", err)
 
     async def _refresh_expired_binary(self) -> bool:
         """
@@ -451,7 +509,7 @@ class SoloistBackend(SpotifyConnectBackend):
 
     async def _handle_event(self, event: SoloistEvent) -> None:
         """Adapt a raw soloist event and emit its normalized counterpart."""
-        self.logger.debug("Received event [%s]: %s", self.name, event.raw)
+        self.logger.debug("Received %s event [%s]", event.type, self.name)
         # A delivered event means the websocket — and thus the daemon — is
         # healthy: reset the restart backoff counter the daemon supervisor uses.
         # (The endpoint files the events runner polls can be stale leftovers
@@ -460,6 +518,15 @@ class SoloistBackend(SpotifyConnectBackend):
         if isinstance(event.data, SoloistVolumeChanged):
             await self._handle_volume_changed(event.data.volume)
             return
+        if (
+            isinstance(event.data, SoloistPlaybackState)
+            and event.data.volume is not None
+            and event.data.volume != self._spotify_volume
+        ):
+            # a playback_state snapshot (e.g. right after a websocket reconnect)
+            # carries the daemon's current volume; resync the pin/compensation
+            # before forwarding the playback event itself
+            await self._handle_volume_changed(event.data.volume)
         await self._event_callback(self._translate_event(event))
 
     async def _handle_volume_changed(self, volume: int) -> None:
@@ -474,11 +541,14 @@ class SoloistBackend(SpotifyConnectBackend):
                 # player_only: MA/the player owns the volume. Keep the daemon
                 # pinned at 100% so the captured PCM stays at unity gain, and
                 # never forward VOLUME events (they would fight the MA volume).
-                if volume != 100 and self._client is not None:
+                if volume != 100 and self._client is not None and not self._pin_in_flight:
+                    self._pin_in_flight = True
                     try:
                         await self._client.set_volume(100)
                     except Exception as err:
                         self.logger.debug("Failed to reset soloist volume: %s", err)
+                    finally:
+                        self._pin_in_flight = False
                 return
             # sync_spotify: the daemon attenuates the PCM it plays into the sink
             # with Spotify's cubic volume curve; undo that with the reciprocal
@@ -501,7 +571,14 @@ class SoloistBackend(SpotifyConnectBackend):
         data = event.data
         if isinstance(data, SoloistAuthState):
             if not data.logged_in:
-                return self._make_event(BackendEventType.AUTH_REQUIRED)
+                if self._was_logged_in:
+                    # an established login was lost mid-session: real auth loss
+                    self._was_logged_in = False
+                    return self._make_event(BackendEventType.AUTH_REQUIRED)
+                # a fresh daemon reports logged_in=False while advertising for
+                # pairing; that is the normal pre-pairing state, not an auth loss
+                return self._make_event(BackendEventType.SESSION_INACTIVE)
+            self._was_logged_in = True
             return self._make_event(
                 BackendEventType.SESSION_ACTIVE
                 if data.is_active
@@ -556,6 +633,8 @@ def _entity_metadata(item: SoloistEntity) -> BackendTrackMetadata:
 
     Only ``identity.name`` and ``playback.duration_ms`` are documented; the
     other decoration keys are probed defensively (the bag is extensible).
+
+    :param item: The soloist entity (track) to extract the metadata from.
     """
     decorations = item.decorations or {}
     identity = _as_dict(decorations.get("identity"))

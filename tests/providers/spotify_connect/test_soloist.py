@@ -192,6 +192,12 @@ def fake_version_cmd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(soloist, "check_output", _fake_check_output)
 
 
+@pytest.fixture(autouse=True)
+def _reset_verify_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the module-level recent-verification stamp between tests."""
+    monkeypatch.setattr(soloist, "_last_verified", None)
+
+
 @pytest.fixture
 def linux_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend to run on Linux x86_64 (tests run on macOS)."""
@@ -477,6 +483,35 @@ async def test_offline_with_expired_binary_raises(tmp_path: Path) -> None:
 
     with pytest.raises(BuildExpiredError):
         await manager.ensure_fresh(consent=True)
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_recent_verification_shared_across_managers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back-to-back ensure_fresh calls run the --version/CDN verification only once."""
+    archive = _build_archive(tmp_path / "a.tar.gz", {"soloist": _elf_binary("x86_64")})
+    manager1, session1 = _make_manager(tmp_path, _serve_archive(archive))
+    await manager1.ensure_binary(consent=True)
+    _age_metadata(tmp_path)  # old enough that a full verification also HEADs the CDN
+    version_calls: list[str] = []
+
+    async def _counting_check_output(*args: str, **kwargs: Any) -> tuple[int, bytes]:
+        version_calls.append(args[0])
+        return await _fake_check_output(*args, **kwargs)
+
+    monkeypatch.setattr(soloist, "check_output", _counting_check_output)
+    session1.requests.clear()
+    manager2, session2 = _make_manager(tmp_path, _serve_archive(archive))
+
+    path1 = await manager1.ensure_fresh(consent=True)
+    path2 = await manager2.ensure_fresh(consent=True)
+
+    assert path1 == path2 == manager1.binary_path
+    # the second manager reuses the just-completed verification entirely
+    assert len(version_calls) == 1
+    assert session1.requests == [("HEAD", _CDN_URL.format(arch="x86_64"))]
+    assert session2.requests == []
 
 
 @pytest.mark.usefixtures("linux_platform", "fake_version_cmd")

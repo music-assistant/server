@@ -97,6 +97,12 @@ _ELF_IDENT: Final[dict[str, tuple[int, int]]] = {
 # the single-flight install lock is shared process-wide as well.
 _INSTALL_LOCK: Final = asyncio.Lock()
 
+# One successful ensure_fresh covers all provider instances starting together:
+# skip re-verifying the shared binary (a --version spawn plus a CDN update
+# check) when the last verification completed less than this long ago.
+_VERIFY_CACHE_SECONDS: Final[float] = 60.0
+_last_verified: float | None = None
+
 _VERSION_CMD_TIMEOUT: Final[float] = 10.0
 _DOWNLOAD_TIMEOUT: Final[float] = 300.0
 _HEAD_TIMEOUT: Final[float] = 30.0
@@ -389,33 +395,20 @@ class SoloistBinaryManager:
         :raises BuildExpiredError: The installed build expired and no valid
             replacement could be obtained.
         """
+        global _last_verified  # noqa: PLW0603
         arch = _resolve_architecture()
         async with _INSTALL_LOCK:
-            returncode = await self._installed_returncode()
-            if returncode not in (0, EXIT_CODE_BUILD_EXPIRED):
-                # missing or broken install: plain (re)install
-                await self._install_with_consent(consent, arch)
+            # provider instances starting together share one shared install;
+            # skip re-verifying when another caller just did successfully
+            if (
+                _last_verified is not None
+                and time.monotonic() - _last_verified < _VERIFY_CACHE_SECONDS
+                and self._binary_path.is_file()
+            ):
                 return self._binary_path
-            expired = returncode == EXIT_CODE_BUILD_EXPIRED or self._installed_expired()
-            if not expired and (not consent or not self._due_for_update()):
-                return self._binary_path
-            if expired and not consent:
-                raise ConsentRequiredError(
-                    "Updating the expired soloist binary requires user consent"
-                )
-            if not expired and not await self._update_available(arch):
-                return self._binary_path
-            try:
-                await self._download_and_install(arch)
-            except SoloistError as err:
-                if expired:
-                    if isinstance(err, DownloadFailedError):
-                        raise BuildExpiredError(
-                            "soloist build expired and no replacement could be downloaded"
-                        ) from err
-                    raise
-                LOGGER.warning("soloist update failed, keeping the current binary: %s", err)
-            return self._binary_path
+            binary = await self._ensure_fresh_locked(consent, arch)
+            _last_verified = time.monotonic()
+            return binary
 
     def diagnostics(self) -> dict[str, Any]:
         """
@@ -438,6 +431,32 @@ class SoloistBinaryManager:
             "expires_at": (metadata.build_timestamp or metadata.installed_at)
             + _BUILD_EXPIRY_SECONDS,
         }
+
+    async def _ensure_fresh_locked(self, consent: bool, arch: str) -> Path:
+        """Verify/refresh the installed binary (see ensure_fresh; runs under _INSTALL_LOCK)."""
+        returncode = await self._installed_returncode()
+        if returncode not in (0, EXIT_CODE_BUILD_EXPIRED):
+            # missing or broken install: plain (re)install
+            await self._install_with_consent(consent, arch)
+            return self._binary_path
+        expired = returncode == EXIT_CODE_BUILD_EXPIRED or self._installed_expired()
+        if not expired and (not consent or not self._due_for_update()):
+            return self._binary_path
+        if expired and not consent:
+            raise ConsentRequiredError("Updating the expired soloist binary requires user consent")
+        if not expired and not await self._update_available(arch):
+            return self._binary_path
+        try:
+            await self._download_and_install(arch)
+        except SoloistError as err:
+            if expired:
+                if isinstance(err, DownloadFailedError):
+                    raise BuildExpiredError(
+                        "soloist build expired and no replacement could be downloaded"
+                    ) from err
+                raise
+            LOGGER.warning("soloist update failed, keeping the current binary: %s", err)
+        return self._binary_path
 
     async def _install_with_consent(self, consent: bool, arch: str) -> None:
         """Download and install the binary, requiring user consent first."""
@@ -520,6 +539,10 @@ class SoloistBinaryManager:
 
     async def _download_and_install(self, arch: str) -> None:
         """Download, validate and atomically install the binary for the given architecture."""
+        global _last_verified  # noqa: PLW0603
+        # a (re)install invalidates any recent-verification claim about the
+        # previous binary
+        _last_verified = None
         url = CDN_URL_TEMPLATE.format(arch=arch)
         try:
             await asyncio.to_thread(self._install_dir.mkdir, parents=True, exist_ok=True)

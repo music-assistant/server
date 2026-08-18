@@ -31,8 +31,9 @@ from . import (
     CONF_VOLUME_MODE,
     DEFAULT_PUBLISH_NAME,
     PLAYER_ID_AUTO,
+    VOLUME_MODE_OPTIONS,
 )
-from .backends.soloist import VOLUME_MODE_PLAYER_ONLY, VOLUME_MODE_SYNC_SPOTIFY
+from .backends.soloist import VOLUME_MODE_PLAYER_ONLY
 from .soloist import UnsupportedPlatformError, verify_platform_supported
 
 if TYPE_CHECKING:
@@ -185,10 +186,7 @@ async def _ask_api_key(session: SetupSession, collected: dict[str, Any]) -> None
                 required=True,
                 default_value=VOLUME_MODE_PLAYER_ONLY,
                 value=volume_mode,
-                options=[
-                    ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
-                    ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
-                ],
+                options=VOLUME_MODE_OPTIONS,
             ),
         ]
         if has_stored_key:

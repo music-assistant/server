@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     SourceControl,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -57,6 +57,13 @@ BACKEND_SOLOIST = "soloist"
 CONF_API_KEY = "soloist_api_key"
 CONF_SOLOIST_CONSENT = "soloist_download_consent"
 CONF_VOLUME_MODE = "volume_mode"
+
+# The selectable volume modes (labels resolve from strings.json), shared
+# between the runtime option and the setup flow.
+VOLUME_MODE_OPTIONS: Final = [
+    ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
+    ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
+]
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -185,16 +192,11 @@ class SpotifyConnectProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_VOLUME_MODE,
                 type=ConfigEntryType.STRING,
-                # default to the mode chosen in the setup flow so the options
-                # page shows the effective mode until the user overrides it here
-                default_value=cast(
-                    "str", self.get_setup_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY
-                ),
+                # default to the currently effective mode so the options page
+                # shows it until the user overrides it here
+                default_value=self._resolve_volume_mode(),
                 required=False,
-                options=[
-                    ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
-                    ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
-                ],
+                options=VOLUME_MODE_OPTIONS,
                 hidden=not is_soloist,
             ),
         )
@@ -271,8 +273,11 @@ class SpotifyConnectProvider(PluginProvider):
         are read directly by the streams controller). When playback pauses the
         backend stops writing PCM; we then end the stream (clean EOF) so the
         consuming player leaves the playing state. The next ``playing`` event
-        re-triggers playback. ``seek_position`` is ignored — seeking is handled
-        upstream by Spotify, not by replaying the bytestream.
+        re-triggers playback.
+
+        :param streamdetails: The StreamDetails of the AudioSource being streamed.
+        :param seek_position: Ignored — seeking is handled upstream by Spotify,
+            not by replaying the bytestream.
         """
         if streamdetails.item_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {streamdetails.item_id}")
@@ -434,8 +439,9 @@ class SpotifyConnectProvider(PluginProvider):
     def _create_backend(self) -> SpotifyConnectBackend:
         """Construct the configured Spotify Connect backend implementation."""
         # The backend choice and soloist secrets are collected by the setup flow
-        # into setup_data; configs from before the backend choice existed have
-        # no stored value at all and resolve to go-librespot.
+        # into setup_data; a config migrated from before the backend choice
+        # existed yields None here, which intentionally selects go-librespot
+        # (the equality check must keep treating None as the default).
         if self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST:
             return SoloistBackend(
                 self.mass,
@@ -446,13 +452,7 @@ class SpotifyConnectProvider(PluginProvider):
                 event_callback=self._handle_backend_event,
                 api_key=cast("str", self.get_setup_value(CONF_API_KEY) or ""),
                 consent=bool(self.get_setup_value(CONF_SOLOIST_CONSENT)),
-                # the visible option (values) wins over the flow-collected choice
-                volume_mode=cast(
-                    "str",
-                    self.config.get_value(CONF_VOLUME_MODE)
-                    or self.get_setup_value(CONF_VOLUME_MODE)
-                    or VOLUME_MODE_PLAYER_ONLY,
-                ),
+                volume_mode=self._resolve_volume_mode(),
             )
         return GoLibrespotBackend(
             self.mass,
@@ -461,6 +461,15 @@ class SpotifyConnectProvider(PluginProvider):
             name=self.name,
             logger=self.logger,
             event_callback=self._handle_backend_event,
+        )
+
+    def _resolve_volume_mode(self) -> str:
+        """Return the effective volume mode: the visible option wins over the setup choice."""
+        return cast(
+            "str",
+            self.config.get_value(CONF_VOLUME_MODE)
+            or self.get_setup_value(CONF_VOLUME_MODE)
+            or VOLUME_MODE_PLAYER_ONLY,
         )
 
     def _not_active_error(self) -> AudioError:
@@ -629,10 +638,20 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.warning("Spotify Connect backend error: %s", event.error)
             return
         if event.type is BackendEventType.AUTH_REQUIRED:
-            # the backend lost its Spotify login; re-authentication runs through
-            # the setup flow, so only surface it here
+            # the backend lost its Spotify login mid-session: stop treating the
+            # device as active and unload with an auth error so the UI flags
+            # the provider and routes the user through the setup flow
+            self._playing = False
+            self._spotify_session_active = False
             self.logger.warning(
                 "Spotify Connect backend for %s requires (re)authentication", self.name
+            )
+            self.unload_with_error(
+                LoginFailed(
+                    "Spotify authentication required",
+                    translation_key="soloist_auth_required",
+                    translation_owner=self.translation_owner,
+                )
             )
             return
 
@@ -653,7 +672,9 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.info("Spotify Connect session active for %s", self.name)
             # A new session starts at the backend's 100% volume default; push the
             # target player's volume so the Spotify app's slider is correct from
-            # device selection, before any playback starts.
+            # device selection, before any playback starts. (In the soloist
+            # player_only mode the backend pins 100% and ignores the pushed
+            # value — the app slider staying at 100 there is by design.)
             if player_id := self._get_target_player_id():
                 await self._sync_player_volume_to_spotify(player_id)
         elif event.type is BackendEventType.SESSION_INACTIVE:

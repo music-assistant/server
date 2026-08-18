@@ -2331,6 +2331,7 @@
   "provider.spotify_connect.config_entries.volume_mode.options.sync_spotify": "Sync Spotify app volume",
   "provider.spotify_connect.errors.not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again.",
   "provider.spotify_connect.errors.soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
+  "provider.spotify_connect.errors.soloist_auth_required": "The Spotify sign-in for this Spotify Connect device was lost. Run the setup again to reconnect it.",
   "provider.spotify_connect.errors.soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later.",
   "provider.spotify_connect.errors.soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose Legacy go-librespot instead.",
   "provider.spotify_connect.errors.soloist_download_failed": "The Spotify Soloist app could not be downloaded from Spotify. Check the server's internet connection and try again.",

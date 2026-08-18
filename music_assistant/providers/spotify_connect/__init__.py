@@ -26,6 +26,7 @@ from .provider import (
     DEFAULT_PUBLISH_NAME,
     PLAYER_ID_AUTO,
     SUPPORTED_FEATURES,
+    VOLUME_MODE_OPTIONS,
     SpotifyConnectProvider,
 )
 
@@ -48,6 +49,7 @@ __all__ = [
     "DEFAULT_PUBLISH_NAME",
     "PLAYER_ID_AUTO",
     "SUPPORTED_FEATURES",
+    "VOLUME_MODE_OPTIONS",
     "SpotifyConnectProvider",
     "setup",
 ]

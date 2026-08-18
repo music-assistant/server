@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, SourceControl, StreamType
+from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
@@ -149,6 +150,8 @@ def _make_provider(
     provider.logger = MagicMock()
     provider.config = MagicMock()
     provider.config.instance_id = _INSTANCE_ID
+    provider.manifest = MagicMock()
+    provider.manifest.domain = "spotify_connect"
     provider._backend = backend
     provider._publish_name = "Test Device"
     provider._default_player_id = PLAYER_ID_AUTO
@@ -380,6 +383,21 @@ async def test_fatal_error_unloads_provider_with_error() -> None:
     )
 
 
+async def test_auth_required_resets_session_and_unloads_with_auth_error() -> None:
+    """AUTH_REQUIRED resets session state and unloads the provider with an auth error."""
+    backend = FakeBackend()
+    provider, mass = _make_provider(backend, playing=True, session_active=True)
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.AUTH_REQUIRED))
+
+    assert provider._playing is False
+    assert provider._spotify_session_active is False
+    mass.call_later.assert_called_once()
+    error = mass.call_later.call_args.args[3]
+    assert isinstance(error, LoginFailed)
+    assert error.translation_key == "soloist_auth_required"
+
+
 async def test_source_control_commands_dispatch_to_backend() -> None:
     """Transport commands on the source map onto the matching backend calls."""
     backend = FakeBackend()
@@ -457,7 +475,7 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
 
 
 async def test_get_stream_details_built_from_backend_stream_source() -> None:
-    """StreamDetails mirror the backend's stream source (identical to the legacy output)."""
+    """StreamDetails mirror the backend's stream source, formats and live metadata."""
     backend = FakeBackend()
     provider, _mass = _make_provider(backend, playing=True)
 
@@ -476,7 +494,7 @@ async def test_get_stream_details_built_from_backend_stream_source() -> None:
 
 
 async def test_go_librespot_stream_source_is_custom_with_nobuffer() -> None:
-    """The go-librespot backend keeps its exact pre-refactor stream delivery."""
+    """The go-librespot backend delivers audio as a CUSTOM source with unbuffered input."""
     source = await object.__new__(GoLibrespotBackend).get_stream_source()
 
     assert source.stream_type is StreamType.CUSTOM
