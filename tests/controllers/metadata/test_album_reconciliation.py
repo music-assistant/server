@@ -343,6 +343,28 @@ async def test_reconcile_duplicate_albums_selects_retail_suffix_on_a_symbol_only
     assert await _reconciled_ids(mass) == {suffixed.item_id}
 
 
+async def test_reconcile_duplicate_albums_ignores_a_title_merely_ending_in_a_suffix_word(
+    mass: MusicAssistant,
+) -> None:
+    """An ordinary title that just ends in the suffix letters is not a retail-suffix sibling."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Vangelis",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    await _add_album(mass, "Step", artist, provider_instance="spotify_1")
+    await _add_album(mass, "St", artist, provider_instance="qobuz_1")
+
+    assert await _reconciled_ids(mass) == set()
+
+
 async def test_reconcile_duplicate_albums_ignores_other_albums_by_the_same_artist(
     mass: MusicAssistant,
 ) -> None:

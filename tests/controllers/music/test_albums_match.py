@@ -894,6 +894,49 @@ async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title
     assert suffixed.item_id == plain.item_id
 
 
+async def test_insert_match_keeps_an_ep_and_a_single_of_the_same_name_apart(
+    mass: MusicAssistant,
+) -> None:
+    """An EP and a single sharing a base title are separate releases, not one library row."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Kygo",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="spotify", provider_instance="spotify_1"
+                )
+            },
+        )
+    )
+
+    async def add(name: str, instance: str) -> Album:
+        return await mass.music.albums.add_item_to_library(
+            Album(
+                item_id=f"{instance}-item",
+                provider=instance,
+                name=name,
+                artists=UniqueList([artist]),
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f"{instance}-item",
+                        provider_domain=instance.rsplit("_", 1)[0],
+                        provider_instance=instance,
+                    )
+                },
+            )
+        )
+
+    ep = await add("Stargazing - EP", "apple_music_1")
+    single = await add("Stargazing - Single", "tidal_1")
+    assert ep.item_id != single.item_id
+
+    # the plain spelling still joins one of them rather than becoming a third row
+    plain = await add("Stargazing", "spotify_1")
+    assert plain.item_id in {ep.item_id, single.item_id}
+
+
 async def test_insert_match_does_not_escalate_an_unambiguous_candidate() -> None:
     """A candidate the albums' own metadata already decides is never escalated."""
     # a recording-changing edition conflict is decisive on metadata alone
