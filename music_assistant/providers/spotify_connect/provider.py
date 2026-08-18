@@ -567,8 +567,15 @@ class SpotifyConnectProvider(PluginProvider):
 
         :param player_id: The player currently consuming the live source.
         """
+        self.logger.debug("Stopping player %s after pause", player_id)
         try:
-            await self.mass.players.cmd_stop(player_id)
+            # bounded: an unresponsive player (e.g. a throttled web client) must
+            # not hold this task - and the player's playback lock - indefinitely
+            async with asyncio.timeout(10):
+                await self.mass.players.cmd_stop(player_id)
+            self.logger.debug("Player %s stopped after pause", player_id)
+        except TimeoutError:
+            self.logger.warning("Player %s did not stop within 10s after pause", player_id)
         except Exception as err:
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
 
@@ -708,6 +715,7 @@ class SpotifyConnectProvider(PluginProvider):
                     self._deferred_play_media_fire()
                 )
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
+            was_playing = self._playing
             self._playing = False
             # A pause/stop is the definitive "don't start": cancel a deferred fire
             # from a now-stale 'playing'. The active get_audio_stream sees the PCM
@@ -716,8 +724,14 @@ class SpotifyConnectProvider(PluginProvider):
             self._cancel_pending_play_media()
             # A pipe-fed backend keeps delivering silence on pause (no EOF), so
             # the player must be stopped actively; the claim stays so the next
-            # 'playing' event resumes playback like the EOF path does.
-            if not self._backend.stream_ends_on_pause and (player_id := self._active_player_id):
+            # 'playing' event resumes playback like the EOF path does. Only the
+            # playing→paused transition fires it: the backend reports a pause
+            # through multiple events (state delta + snapshot).
+            if (
+                was_playing
+                and not self._backend.stream_ends_on_pause
+                and (player_id := self._active_player_id)
+            ):
                 self.mass.create_task(self._stop_paused_player(player_id))
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
