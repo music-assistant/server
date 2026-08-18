@@ -1519,6 +1519,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # is still setting the player up
         async with self._register_lock:
             if (existing := self._players.get(player.player_id)) is not None:
+                previous_type = existing.state.type
+                # moving in or out of the protocol role turns a player that owns a queue
+                # into one that is hidden behind a parent, or the other way around
+                role_changed = previous_type != player.type and PlayerType.PROTOCOL in (
+                    previous_type,
+                    player.type,
+                )
+                if role_changed:
+                    # release the old topology while the player still reports its old type
+                    self._cleanup_player_type_transition(existing)
                 self._players[player.player_id] = player
                 if existing is not player:
                     # a fresh instance starts out with a base config only, so it needs
@@ -1534,6 +1544,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 # the derived-transport edge may have been set/revoked after the
                 # initial registration (e.g. via a bridge claim)
                 self._save_underlying_player_id(player)
+                if role_changed:
+                    await self._finish_player_type_transition(player)
                 # Also schedule update when replacing existing player
                 self._schedule_update_all_players()
                 return
@@ -2344,6 +2356,26 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             player.player_id,
         )
         return True
+
+    async def _finish_player_type_transition(self, player: Player) -> None:
+        """
+        Publish a registered player that moved in or out of the protocol role.
+
+        :param player: The player, with its new type already applied to its state.
+        """
+        self._evaluate_protocol_links(player)
+        if player.state.type == PlayerType.PROTOCOL:
+            # the player is hidden behind its parent from now on and no longer owns a queue
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
+            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+            return
+        # the player surfaces on its own, which leaves it unusable without a queue
+        self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+        await self.mass.player_queues.on_player_register(player)
+        if self._registration_aborted(player):
+            # the queue restore outlived the unregister that already cleaned it up,
+            # so drop the queue we just recreated for a player that is gone
+            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """

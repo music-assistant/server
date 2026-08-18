@@ -1110,6 +1110,154 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
     mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
 
 
+class TestRegisterOrUpdateTypeTransition:
+    """Tests for a registered player moving in or out of the protocol role."""
+
+    @staticmethod
+    def _prepare(mock_mass: MagicMock) -> PlayerController:
+        """Build a controller with the calls a re-registration makes stubbed out."""
+        mock_mass.loop = MagicMock()
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.player_queues.on_player_register = AsyncMock()
+        mock_mass.player_queues.on_player_remove = MagicMock()
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        return controller
+
+    @staticmethod
+    def _register(
+        controller: PlayerController, provider: MockProvider, player_id: str, type_: PlayerType
+    ) -> MockPlayer:
+        """Add a player to the registry with its state calculated for the given type."""
+        player = MockPlayer(provider, player_id, player_id, type_)
+        player.set_initialized()
+        controller._players[player_id] = player
+        # MockPlayer assigns the type after Player.__init__ built the initial state,
+        # so the state only reports it once it is recalculated
+        player.update_state(signal_event=False)
+        assert player.state.type is type_
+        return player
+
+    @staticmethod
+    def _signalled(mock_mass: MagicMock, event: EventType) -> bool:
+        """Return True if the given event was signalled."""
+        return any(
+            call_args.args and call_args.args[0] == event
+            for call_args in mock_mass.signal_event.call_args_list
+        )
+
+    async def test_protocol_to_player_registers_queue(self, mock_mass: MagicMock) -> None:
+        """A protocol player that becomes a standalone player gets a queue and is announced."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
+
+        player._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(player)
+
+        assert player.state.type is PlayerType.PLAYER
+        # without a queue the player is registered but cannot play anything
+        mock_mass.player_queues.on_player_register.assert_awaited_once_with(player)
+        assert self._signalled(mock_mass, EventType.PLAYER_ADDED)
+
+    async def test_protocol_to_player_keeps_state_pipeline_intact(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The regular state update still runs for the tick that changes the type."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PROTOCOL)
+        updates: list[dict[str, tuple[Any, Any]]] = []
+        controller.subscribe_player_state_update(lambda _player, changed: updates.append(changed))
+
+        player._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(player)
+
+        # the bridges and wait_for_player_update hang off this dispatch, and the changed
+        # values are consumed by it: a suppressed update is never replayed by a later one
+        assert any("type" in changed for changed in updates)
+
+    async def test_player_to_protocol_removes_queue(self, mock_mass: MagicMock) -> None:
+        """A player that becomes a protocol child loses its queue and is announced removed."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        player._attr_type = PlayerType.PROTOCOL
+        await controller.register_or_update(player)
+
+        assert player.state.type is PlayerType.PROTOCOL
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            "player_1", permanent=False
+        )
+        assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_unchanged_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
+        """Re-registering a player without a type change does not touch its queue."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        await controller.register_or_update(player)
+
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_group_type_change_is_not_a_role_change(self, mock_mass: MagicMock) -> None:
+        """A player that turns into a group keeps its queue (Chromecast reports both)."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = self._register(controller, provider, "player_1", PlayerType.PLAYER)
+
+        player._attr_type = PlayerType.GROUP
+        await controller.register_or_update(player)
+
+        assert player.state.type is PlayerType.GROUP
+        mock_mass.player_queues.on_player_register.assert_not_awaited()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
+        assert not self._signalled(mock_mass, EventType.PLAYER_ADDED)
+        assert not self._signalled(mock_mass, EventType.PLAYER_REMOVED)
+
+    async def test_protocol_to_player_unlinks_from_parent(self, mock_mass: MagicMock) -> None:
+        """A protocol player that becomes standalone is released by its parent."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        child._attr_type = PlayerType.PLAYER
+        await controller.register_or_update(child)
+
+        # a parent that keeps the link would still route audio to a player that is
+        # now standalone
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
+    async def test_player_to_protocol_detaches_its_children(self, mock_mass: MagicMock) -> None:
+        """A player that becomes a protocol child releases the protocols it owned."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        child = self._register(controller, provider, "child", PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("parent")
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="child", protocol_domain="sendspin")]
+        )
+
+        parent._attr_type = PlayerType.PROTOCOL
+        await controller.register_or_update(parent)
+
+        # a protocol player cannot own protocol players of its own
+        assert parent.linked_output_protocols == []
+        assert child.protocol_parent_id is None
+
+
 class TestCmdUngroupNewBranches:
     """
     Regression tests for the post-refactor cmd_ungroup flow.

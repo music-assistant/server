@@ -1594,6 +1594,23 @@ class ProtocolLinkingMixin:
                         protocol_id,
                     )
 
+    def _cleanup_player_type_transition(self, existing: Player) -> None:
+        """
+        Release the protocol topology a player owned before its type changed.
+
+        :param existing: The registered player instance, still reporting its previous type.
+        """
+        if existing.state.type == PlayerType.PROTOCOL:
+            # the player leaves its parent: unlink it there and drop the persisted
+            # parent id, which would otherwise heal its type back to protocol
+            self._cleanup_protocol_links(existing)
+            return
+        # the player becomes a child itself: detach the protocol players it owned so
+        # they can find a new parent, and give up their ownership in its (kept) config
+        protocol_ids = set(self._get_known_protocol_ids(existing))
+        self._cleanup_protocol_links(existing)
+        self._remove_protocol_ids_from_parent(existing, protocol_ids)
+
     def _detach_protocol_children(self, parent_id: str) -> None:
         """
         Detach the registered protocol players of a parent player that is going away.
