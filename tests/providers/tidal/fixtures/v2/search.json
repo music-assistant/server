@@ -1,377 +1,379 @@
 {
-  "data": {
-    "id": "lukas%20graham",
-    "type": "searchResults",
-    "attributes": {
-      "trackingId": "c93d7f4d-49b0-4b3c-83fa-2daf3d94e73d"
-    },
-    "relationships": {
-      "albums": {
-        "data": [
-          {
-            "id": "58756127",
-            "type": "albums"
-          },
-          {
-            "id": "96969306",
-            "type": "albums"
-          },
-          {
-            "id": "271190385",
-            "type": "albums"
-          },
-          {
-            "id": "104340961",
-            "type": "albums"
-          },
-          {
-            "id": "524818809",
-            "type": "albums"
-          },
-          {
-            "id": "121563483",
-            "type": "albums"
-          },
-          {
-            "id": "242744823",
-            "type": "albums"
-          },
-          {
-            "id": "118421110",
-            "type": "albums"
-          },
-          {
-            "id": "254074183",
-            "type": "albums"
-          },
-          {
-            "id": "429400346",
-            "type": "albums"
-          },
-          {
-            "id": "270125433",
-            "type": "albums"
-          },
-          {
-            "id": "16562158",
-            "type": "albums"
-          },
-          {
-            "id": "197218765",
-            "type": "albums"
-          },
-          {
-            "id": "187840424",
-            "type": "albums"
-          },
-          {
-            "id": "151974458",
-            "type": "albums"
-          },
-          {
-            "id": "216347341",
-            "type": "albums"
-          },
-          {
-            "id": "17574778",
-            "type": "albums"
-          },
-          {
-            "id": "140268720",
-            "type": "albums"
-          },
-          {
-            "id": "105537508",
-            "type": "albums"
-          },
-          {
-            "id": "516643645",
-            "type": "albums"
-          }
-        ],
-        "links": {
-          "self": "/searchResults/lukas%20graham/relationships/albums?countryCode=AT",
-          "next": "/searchResults/lukas%20graham/relationships/albums?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
-          "meta": {
-            "nextCursor": "3nI1Esi"
-          }
-        }
+  "data": [
+    {
+      "id": "LE1YpuD9BXaIdBg2FXagVdVlu6FCtNg7CnL",
+      "type": "searchResults",
+      "attributes": {
+        "trackingId": "c93d7f4d-49b0-4b3c-83fa-2daf3d94e73d"
       },
-      "artists": {
-        "data": [
-          {
-            "id": "4184211",
-            "type": "artists"
-          },
-          {
-            "id": "4394210",
-            "type": "artists"
-          },
-          {
-            "id": "4826351",
-            "type": "artists"
-          },
-          {
-            "id": "8155176",
-            "type": "artists"
-          },
-          {
-            "id": "4927349",
-            "type": "artists"
-          },
-          {
-            "id": "8583514",
-            "type": "artists"
-          },
-          {
-            "id": "4804285",
-            "type": "artists"
-          },
-          {
-            "id": "3995478",
-            "type": "artists"
-          },
-          {
-            "id": "8812",
-            "type": "artists"
-          },
-          {
-            "id": "9916090",
-            "type": "artists"
-          },
-          {
-            "id": "4816276",
-            "type": "artists"
-          },
-          {
-            "id": "9212055",
-            "type": "artists"
-          },
-          {
-            "id": "17476",
-            "type": "artists"
-          },
-          {
-            "id": "4021356",
-            "type": "artists"
-          },
-          {
-            "id": "4835141",
-            "type": "artists"
-          },
-          {
-            "id": "3887405",
-            "type": "artists"
-          },
-          {
-            "id": "9309054",
-            "type": "artists"
-          },
-          {
-            "id": "43949368",
-            "type": "artists"
-          },
-          {
-            "id": "78144738",
-            "type": "artists"
-          },
-          {
-            "id": "77395432",
-            "type": "artists"
+      "relationships": {
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            },
+            {
+              "id": "96969306",
+              "type": "albums"
+            },
+            {
+              "id": "271190385",
+              "type": "albums"
+            },
+            {
+              "id": "104340961",
+              "type": "albums"
+            },
+            {
+              "id": "524818809",
+              "type": "albums"
+            },
+            {
+              "id": "121563483",
+              "type": "albums"
+            },
+            {
+              "id": "242744823",
+              "type": "albums"
+            },
+            {
+              "id": "118421110",
+              "type": "albums"
+            },
+            {
+              "id": "254074183",
+              "type": "albums"
+            },
+            {
+              "id": "429400346",
+              "type": "albums"
+            },
+            {
+              "id": "270125433",
+              "type": "albums"
+            },
+            {
+              "id": "16562158",
+              "type": "albums"
+            },
+            {
+              "id": "197218765",
+              "type": "albums"
+            },
+            {
+              "id": "187840424",
+              "type": "albums"
+            },
+            {
+              "id": "151974458",
+              "type": "albums"
+            },
+            {
+              "id": "216347341",
+              "type": "albums"
+            },
+            {
+              "id": "17574778",
+              "type": "albums"
+            },
+            {
+              "id": "140268720",
+              "type": "albums"
+            },
+            {
+              "id": "105537508",
+              "type": "albums"
+            },
+            {
+              "id": "516643645",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/searchResults/lukas%20graham/relationships/albums?countryCode=AT",
+            "next": "/searchResults/lukas%20graham/relationships/albums?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
+            "meta": {
+              "nextCursor": "3nI1Esi"
+            }
           }
-        ],
-        "links": {
-          "self": "/searchResults/lukas%20graham/relationships/artists?countryCode=AT",
-          "next": "/searchResults/lukas%20graham/relationships/artists?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
-          "meta": {
-            "nextCursor": "3nI1Esi"
+        },
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            },
+            {
+              "id": "4394210",
+              "type": "artists"
+            },
+            {
+              "id": "4826351",
+              "type": "artists"
+            },
+            {
+              "id": "8155176",
+              "type": "artists"
+            },
+            {
+              "id": "4927349",
+              "type": "artists"
+            },
+            {
+              "id": "8583514",
+              "type": "artists"
+            },
+            {
+              "id": "4804285",
+              "type": "artists"
+            },
+            {
+              "id": "3995478",
+              "type": "artists"
+            },
+            {
+              "id": "8812",
+              "type": "artists"
+            },
+            {
+              "id": "9916090",
+              "type": "artists"
+            },
+            {
+              "id": "4816276",
+              "type": "artists"
+            },
+            {
+              "id": "9212055",
+              "type": "artists"
+            },
+            {
+              "id": "17476",
+              "type": "artists"
+            },
+            {
+              "id": "4021356",
+              "type": "artists"
+            },
+            {
+              "id": "4835141",
+              "type": "artists"
+            },
+            {
+              "id": "3887405",
+              "type": "artists"
+            },
+            {
+              "id": "9309054",
+              "type": "artists"
+            },
+            {
+              "id": "43949368",
+              "type": "artists"
+            },
+            {
+              "id": "78144738",
+              "type": "artists"
+            },
+            {
+              "id": "77395432",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/searchResults/lukas%20graham/relationships/artists?countryCode=AT",
+            "next": "/searchResults/lukas%20graham/relationships/artists?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
+            "meta": {
+              "nextCursor": "3nI1Esi"
+            }
           }
-        }
-      },
-      "playlists": {
-        "data": [
-          {
-            "id": "67dc80a4-563f-4046-abd7-99945a6ae866",
-            "type": "playlists"
-          },
-          {
-            "id": "0fa30617-662a-42fc-ad16-fb699f3636b7",
-            "type": "playlists"
-          },
-          {
-            "id": "f3ed269b-b53d-4515-8c83-e2c4e697d93b",
-            "type": "playlists"
-          },
-          {
-            "id": "1b5bf92a-6edb-4839-a56c-0877643c4aba",
-            "type": "playlists"
-          },
-          {
-            "id": "69cf3625-b4c9-4f39-8076-fa7d3cd7784c",
-            "type": "playlists"
-          },
-          {
-            "id": "55905c86-7fb0-49ae-a574-43d14c61053f",
-            "type": "playlists"
-          },
-          {
-            "id": "acaf9642-4257-4857-950a-fbe2187e1fa3",
-            "type": "playlists"
-          },
-          {
-            "id": "3a10b48f-abd8-4577-ad25-0e6c44eebd11",
-            "type": "playlists"
-          },
-          {
-            "id": "11f23764-7e5d-4a86-af62-ff7fd202c113",
-            "type": "playlists"
-          },
-          {
-            "id": "c7e1ac7f-7689-4d99-8a3a-392f6c2a984e",
-            "type": "playlists"
-          },
-          {
-            "id": "46288e2b-ad6d-4387-a9b7-c9557418c2de",
-            "type": "playlists"
-          },
-          {
-            "id": "be10e8d9-cb8c-451d-9232-154676bb2456",
-            "type": "playlists"
-          },
-          {
-            "id": "34dbff57-88b8-4fb5-b09a-e4a79c107ffb",
-            "type": "playlists"
-          },
-          {
-            "id": "14c63d93-6f57-4540-9f95-a3bee7a8f66b",
-            "type": "playlists"
-          },
-          {
-            "id": "a2fd217b-3992-44a4-afc7-0a49360104a9",
-            "type": "playlists"
-          },
-          {
-            "id": "dc417540-3605-47a3-a054-600119de0c69",
-            "type": "playlists"
-          },
-          {
-            "id": "238482f9-60ff-44a3-b1ea-369eeddbebf6",
-            "type": "playlists"
-          },
-          {
-            "id": "3a98bd93-3b70-47ab-adfa-6735802bcc75",
-            "type": "playlists"
-          },
-          {
-            "id": "bc7e69ca-4609-4bc1-8c73-1396a1fc12c2",
-            "type": "playlists"
-          },
-          {
-            "id": "f0b21ffe-88af-41c4-bba1-0f1524a315c0",
-            "type": "playlists"
+        },
+        "playlists": {
+          "data": [
+            {
+              "id": "67dc80a4-563f-4046-abd7-99945a6ae866",
+              "type": "playlists"
+            },
+            {
+              "id": "0fa30617-662a-42fc-ad16-fb699f3636b7",
+              "type": "playlists"
+            },
+            {
+              "id": "f3ed269b-b53d-4515-8c83-e2c4e697d93b",
+              "type": "playlists"
+            },
+            {
+              "id": "1b5bf92a-6edb-4839-a56c-0877643c4aba",
+              "type": "playlists"
+            },
+            {
+              "id": "69cf3625-b4c9-4f39-8076-fa7d3cd7784c",
+              "type": "playlists"
+            },
+            {
+              "id": "55905c86-7fb0-49ae-a574-43d14c61053f",
+              "type": "playlists"
+            },
+            {
+              "id": "acaf9642-4257-4857-950a-fbe2187e1fa3",
+              "type": "playlists"
+            },
+            {
+              "id": "3a10b48f-abd8-4577-ad25-0e6c44eebd11",
+              "type": "playlists"
+            },
+            {
+              "id": "11f23764-7e5d-4a86-af62-ff7fd202c113",
+              "type": "playlists"
+            },
+            {
+              "id": "c7e1ac7f-7689-4d99-8a3a-392f6c2a984e",
+              "type": "playlists"
+            },
+            {
+              "id": "46288e2b-ad6d-4387-a9b7-c9557418c2de",
+              "type": "playlists"
+            },
+            {
+              "id": "be10e8d9-cb8c-451d-9232-154676bb2456",
+              "type": "playlists"
+            },
+            {
+              "id": "34dbff57-88b8-4fb5-b09a-e4a79c107ffb",
+              "type": "playlists"
+            },
+            {
+              "id": "14c63d93-6f57-4540-9f95-a3bee7a8f66b",
+              "type": "playlists"
+            },
+            {
+              "id": "a2fd217b-3992-44a4-afc7-0a49360104a9",
+              "type": "playlists"
+            },
+            {
+              "id": "dc417540-3605-47a3-a054-600119de0c69",
+              "type": "playlists"
+            },
+            {
+              "id": "238482f9-60ff-44a3-b1ea-369eeddbebf6",
+              "type": "playlists"
+            },
+            {
+              "id": "3a98bd93-3b70-47ab-adfa-6735802bcc75",
+              "type": "playlists"
+            },
+            {
+              "id": "bc7e69ca-4609-4bc1-8c73-1396a1fc12c2",
+              "type": "playlists"
+            },
+            {
+              "id": "f0b21ffe-88af-41c4-bba1-0f1524a315c0",
+              "type": "playlists"
+            }
+          ],
+          "links": {
+            "self": "/searchResults/lukas%20graham/relationships/playlists?countryCode=AT",
+            "next": "/searchResults/lukas%20graham/relationships/playlists?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
+            "meta": {
+              "nextCursor": "3nI1Esi"
+            }
           }
-        ],
-        "links": {
-          "self": "/searchResults/lukas%20graham/relationships/playlists?countryCode=AT",
-          "next": "/searchResults/lukas%20graham/relationships/playlists?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
-          "meta": {
-            "nextCursor": "3nI1Esi"
-          }
-        }
-      },
-      "tracks": {
-        "data": [
-          {
-            "id": "58756128",
-            "type": "tracks"
-          },
-          {
-            "id": "96969310",
-            "type": "tracks"
-          },
-          {
-            "id": "58756130",
-            "type": "tracks"
-          },
-          {
-            "id": "121563484",
-            "type": "tracks"
-          },
-          {
-            "id": "104340964",
-            "type": "tracks"
-          },
-          {
-            "id": "242744824",
-            "type": "tracks"
-          },
-          {
-            "id": "16562159",
-            "type": "tracks"
-          },
-          {
-            "id": "183310109",
-            "type": "tracks"
-          },
-          {
-            "id": "118421111",
-            "type": "tracks"
-          },
-          {
-            "id": "151974459",
-            "type": "tracks"
-          },
-          {
-            "id": "79492732",
-            "type": "tracks"
-          },
-          {
-            "id": "58756132",
-            "type": "tracks"
-          },
-          {
-            "id": "197218768",
-            "type": "tracks"
-          },
-          {
-            "id": "58756137",
-            "type": "tracks"
-          },
-          {
-            "id": "359762509",
-            "type": "tracks"
-          },
-          {
-            "id": "270125434",
-            "type": "tracks"
-          },
-          {
-            "id": "187840426",
-            "type": "tracks"
-          },
-          {
-            "id": "96969308",
-            "type": "tracks"
-          },
-          {
-            "id": "96969307",
-            "type": "tracks"
-          },
-          {
-            "id": "58756131",
-            "type": "tracks"
-          }
-        ],
-        "links": {
-          "self": "/searchResults/lukas%20graham/relationships/tracks?countryCode=AT",
-          "next": "/searchResults/lukas%20graham/relationships/tracks?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
-          "meta": {
-            "nextCursor": "3nI1Esi"
+        },
+        "tracks": {
+          "data": [
+            {
+              "id": "58756128",
+              "type": "tracks"
+            },
+            {
+              "id": "96969310",
+              "type": "tracks"
+            },
+            {
+              "id": "58756130",
+              "type": "tracks"
+            },
+            {
+              "id": "121563484",
+              "type": "tracks"
+            },
+            {
+              "id": "104340964",
+              "type": "tracks"
+            },
+            {
+              "id": "242744824",
+              "type": "tracks"
+            },
+            {
+              "id": "16562159",
+              "type": "tracks"
+            },
+            {
+              "id": "183310109",
+              "type": "tracks"
+            },
+            {
+              "id": "118421111",
+              "type": "tracks"
+            },
+            {
+              "id": "151974459",
+              "type": "tracks"
+            },
+            {
+              "id": "79492732",
+              "type": "tracks"
+            },
+            {
+              "id": "58756132",
+              "type": "tracks"
+            },
+            {
+              "id": "197218768",
+              "type": "tracks"
+            },
+            {
+              "id": "58756137",
+              "type": "tracks"
+            },
+            {
+              "id": "359762509",
+              "type": "tracks"
+            },
+            {
+              "id": "270125434",
+              "type": "tracks"
+            },
+            {
+              "id": "187840426",
+              "type": "tracks"
+            },
+            {
+              "id": "96969308",
+              "type": "tracks"
+            },
+            {
+              "id": "96969307",
+              "type": "tracks"
+            },
+            {
+              "id": "58756131",
+              "type": "tracks"
+            }
+          ],
+          "links": {
+            "self": "/searchResults/lukas%20graham/relationships/tracks?countryCode=AT",
+            "next": "/searchResults/lukas%20graham/relationships/tracks?countryCode=AT&page%5Bcursor%5D=3nI1Esi",
+            "meta": {
+              "nextCursor": "3nI1Esi"
+            }
           }
         }
       }
     }
-  },
+  ],
   "links": {
     "self": "/searchResults/lukas%20graham?include=albums.coverArt%2Cartists.profileArt%2Cplaylists.coverArt%2Ctracks.albums.coverArt%2Ctracks.artists&countryCode=AT"
   },
@@ -389,7 +391,7 @@
         "ai": false,
         "releaseDate": "2012-03-26",
         "copyright": {
-          "text": "© 2012 Copenhagen Records / Universal Music"
+          "text": "\u00a9 2012 Copenhagen Records / Universal Music"
         },
         "popularity": 0.28222558579746027,
         "accessType": "PUBLIC",
@@ -438,7 +440,7 @@
         "ai": false,
         "releaseDate": "2018-09-07",
         "copyright": {
-          "text": "© 2019 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2019 Universal Music (Denmark) A/S"
         },
         "popularity": 0.3406352400779724,
         "accessType": "PUBLIC",
@@ -489,7 +491,7 @@
         "ai": false,
         "releaseDate": "2019-09-27",
         "copyright": {
-          "text": "© 2019 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2019 Universal Music (Denmark) A/S"
         },
         "popularity": 0.2251062561289688,
         "accessType": "PUBLIC",
@@ -538,7 +540,7 @@
         "ai": false,
         "releaseDate": "2019-11-08",
         "copyright": {
-          "text": "© 2019 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2019 Universal Music (Denmark) A/S"
         },
         "popularity": 0.2651028850675421,
         "accessType": "PUBLIC",
@@ -588,7 +590,7 @@
         "ai": false,
         "releaseDate": "2020-05-01",
         "copyright": {
-          "text": "© 2020 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2020 Universal Music (Denmark) A/S"
         },
         "popularity": 0.36036545038223267,
         "accessType": "PUBLIC",
@@ -637,7 +639,7 @@
         "ai": false,
         "releaseDate": "2020-08-20",
         "copyright": {
-          "text": "© 2020 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2020 Universal Music (Denmark) A/S"
         },
         "popularity": 0.15355200198589303,
         "accessType": "PUBLIC",
@@ -687,7 +689,7 @@
         "ai": false,
         "releaseDate": "2011-10-17",
         "copyright": {
-          "text": "© 2012 Copenhagen Records / Universal Music"
+          "text": "\u00a9 2012 Copenhagen Records / Universal Music"
         },
         "popularity": 0.22785941478408922,
         "accessType": "PUBLIC",
@@ -736,7 +738,7 @@
         "ai": false,
         "releaseDate": "2012-02-13",
         "copyright": {
-          "text": "© 2012 Copenhagen Records / Universal Music"
+          "text": "\u00a9 2012 Copenhagen Records / Universal Music"
         },
         "popularity": 0.19949200687605953,
         "accessType": "PUBLIC",
@@ -785,7 +787,7 @@
         "ai": false,
         "releaseDate": "2021-05-14",
         "copyright": {
-          "text": "© 2021 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2021 Universal Music (Denmark) A/S"
         },
         "popularity": 0.15674805818705734,
         "accessType": "PUBLIC",
@@ -835,7 +837,7 @@
         "ai": false,
         "releaseDate": "2021-05-14",
         "copyright": {
-          "text": "© 2021 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2021 Universal Music (Denmark) A/S"
         },
         "popularity": 0.1944491907265111,
         "accessType": "PUBLIC",
@@ -885,7 +887,7 @@
         "ai": false,
         "releaseDate": "2021-09-17",
         "copyright": {
-          "text": "© 2021 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2021 Universal Music (Denmark) A/S"
         },
         "popularity": 0.15884875030410214,
         "accessType": "PUBLIC",
@@ -936,7 +938,7 @@
         "ai": false,
         "releaseDate": "2022-02-18",
         "copyright": {
-          "text": "© 2022 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2022 Universal Music (Denmark) A/S"
         },
         "popularity": 0.19219816221894997,
         "accessType": "PUBLIC",
@@ -986,7 +988,7 @@
         "ai": false,
         "releaseDate": "2022-08-19",
         "copyright": {
-          "text": "© 2022 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2022 Universal Music (Denmark) A/S"
         },
         "popularity": 0.18676196311960816,
         "accessType": "PUBLIC",
@@ -1037,7 +1039,7 @@
         "ai": false,
         "releaseDate": "2022-10-21",
         "copyright": {
-          "text": "© 2022 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2022 Universal Music (Denmark) A/S"
         },
         "popularity": 0.17295020859346277,
         "accessType": "PUBLIC",
@@ -1087,7 +1089,7 @@
         "ai": false,
         "releaseDate": "2023-01-13",
         "copyright": {
-          "text": "© 2023 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2023 Universal Music (Denmark) A/S"
         },
         "popularity": 0.43128702044487,
         "accessType": "PUBLIC",
@@ -1137,7 +1139,7 @@
         "ai": false,
         "releaseDate": "2023-01-20",
         "copyright": {
-          "text": "© 2023 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2023 Universal Music (Denmark) A/S"
         },
         "popularity": 0.35705821313900377,
         "accessType": "PUBLIC",
@@ -1187,7 +1189,7 @@
         "ai": false,
         "releaseDate": "2024-05-03",
         "copyright": {
-          "text": "© 2024 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2024 Universal Music (Denmark) A/S"
         },
         "popularity": 0.07578221628095376,
         "accessType": "PUBLIC",
@@ -1237,7 +1239,7 @@
         "ai": false,
         "releaseDate": "2025-04-18",
         "copyright": {
-          "text": "© 2025 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2025 Universal Music (Denmark) A/S"
         },
         "popularity": 0.20406164776917143,
         "accessType": "PUBLIC",
@@ -1287,7 +1289,7 @@
         "ai": false,
         "releaseDate": "2026-04-24",
         "copyright": {
-          "text": "© 2026 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2026 Universal Music (Denmark) A/S"
         },
         "popularity": 0.11736994202118811,
         "accessType": "PUBLIC",
@@ -1338,7 +1340,7 @@
         "ai": false,
         "releaseDate": "2026-05-22",
         "copyright": {
-          "text": "© 2026 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2026 Universal Music (Denmark) A/S"
         },
         "popularity": 0.16214905881518296,
         "accessType": "PUBLIC",
@@ -1388,7 +1390,7 @@
         "ai": false,
         "releaseDate": "2015-05-29",
         "copyright": {
-          "text": "© 2016 Then We Take The World / Copenhagen Records / Universal Music"
+          "text": "\u00a9 2016 Then We Take The World / Copenhagen Records / Universal Music"
         },
         "popularity": 0.7480961442649546,
         "accessType": "PUBLIC",
@@ -1439,7 +1441,7 @@
         "ai": false,
         "releaseDate": "2017-09-22",
         "copyright": {
-          "text": "© 2017 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2017 Universal Music (Denmark) A/S"
         },
         "popularity": 0.0527633318074913,
         "accessType": "PUBLIC",
@@ -1488,7 +1490,7 @@
         "ai": false,
         "releaseDate": "2018-10-26",
         "copyright": {
-          "text": "© 2018 Universal Music (Denmark) A/S"
+          "text": "\u00a9 2018 Universal Music (Denmark) A/S"
         },
         "popularity": 0.5127724778932936,
         "accessType": "PUBLIC",
@@ -1892,7 +1894,7 @@
       "id": "4816276",
       "type": "artists",
       "attributes": {
-        "name": "MØ",
+        "name": "M\u00d8",
         "popularity": 0.7571531844655853,
         "externalLinks": [
           {
@@ -6082,8 +6084,8 @@
       "id": "55905c86-7fb0-49ae-a574-43d14c61053f",
       "type": "playlists",
       "attributes": {
-        "name": "Størst er kærligheden",
-        "description": "På Valentinsdag skal kærligheden fejres lidt ekstra, uanset om man er nyforelsket eller har levet sammen i mange år. Vi kan ikke hjælpe til med blomster eller chokoladeæske, men vi kan definitivt give dig musikken til en romantisk stund med din udkårne. Her findes sange om kærlighedens mange sider, fra Lukas Grahams \"Love Someone\" om kærlighedens helende kraft over Marvin Gayes opfordring i den stilfuldt sexede ”Let’s Get It On” til Sades indfølte hymne til sammenhold.",
+        "name": "St\u00f8rst er k\u00e6rligheden",
+        "description": "P\u00e5 Valentinsdag skal k\u00e6rligheden fejres lidt ekstra, uanset om man er nyforelsket eller har levet sammen i mange \u00e5r. Vi kan ikke hj\u00e6lpe til med blomster eller chokolade\u00e6ske, men vi kan definitivt give dig musikken til en romantisk stund med din udk\u00e5rne. Her findes sange om k\u00e6rlighedens mange sider, fra Lukas Grahams \"Love Someone\" om k\u00e6rlighedens helende kraft over Marvin Gayes opfordring i den stilfuldt sexede \u201dLet\u2019s Get It On\u201d til Sades indf\u00f8lte hymne til sammenhold.",
         "bounded": true,
         "duration": "PT3H55M56S",
         "numberOfItems": 62,
@@ -6138,7 +6140,7 @@
       "type": "playlists",
       "attributes": {
         "name": "Lukas Graham Essentials",
-        "description": "Lukas Graham tog først Danmark med storm og siden hele verden. Her får du nogle af gruppens bedste numre. Fra de tidlige funkhits til deres, store internationale pophits.\nCover: Lukas Graham / Photo: Press",
+        "description": "Lukas Graham tog f\u00f8rst Danmark med storm og siden hele verden. Her f\u00e5r du nogle af gruppens bedste numre. Fra de tidlige funkhits til deres, store internationale pophits.\nCover: Lukas Graham / Photo: Press",
         "bounded": true,
         "duration": "PT1H7M37S",
         "numberOfItems": 20,
@@ -6413,7 +6415,7 @@
       "type": "playlists",
       "attributes": {
         "name": "Valentinstag ",
-        "description": "Schmachtet, neckt euch, küsst und liebt euch! Was gibt es Schöneres als die Liebe? Wir können euch zwar nicht mit Blumen oder Pralinen versorgen, dafür aber mit einer wunderschönen Playlist für das perfekte Candlelight-Dinner mit euren Liebsten. (Foto: Unsplash)",
+        "description": "Schmachtet, neckt euch, k\u00fcsst und liebt euch! Was gibt es Sch\u00f6neres als die Liebe? Wir k\u00f6nnen euch zwar nicht mit Blumen oder Pralinen versorgen, daf\u00fcr aber mit einer wundersch\u00f6nen Playlist f\u00fcr das perfekte Candlelight-Dinner mit euren Liebsten. (Foto: Unsplash)",
         "bounded": true,
         "duration": "PT4H12M10S",
         "numberOfItems": 69,
@@ -6633,7 +6635,7 @@
       "type": "playlists",
       "attributes": {
         "name": "Tobias Rahim Essentials",
-        "description": "Tobias Rahim kan skrue et hit sammen. Og han har sin helt egen måde at gøre det på, hvor Rahim finder ind til en helt særlig vibe, der både rummer poesi, politisk bevidsthed, attitude og sårbarhed. Og så kan han også lave musik til dansegulvet og en solskinsdag. Her får du nogle af hans bedste numre.\nFoto: Presse",
+        "description": "Tobias Rahim kan skrue et hit sammen. Og han har sin helt egen m\u00e5de at g\u00f8re det p\u00e5, hvor Rahim finder ind til en helt s\u00e6rlig vibe, der b\u00e5de rummer poesi, politisk bevidsthed, attitude og s\u00e5rbarhed. Og s\u00e5 kan han ogs\u00e5 lave musik til dansegulvet og en solskinsdag. Her f\u00e5r du nogle af hans bedste numre.\nFoto: Presse",
         "bounded": true,
         "duration": "PT1H4M38S",
         "numberOfItems": 20,
@@ -6692,7 +6694,7 @@
         "isrc": "DKUM71200883",
         "duration": "PT3M26S",
         "copyright": {
-          "text": "℗ 2012 Copenhagen Records / Universal Music"
+          "text": "\u2117 2012 Copenhagen Records / Universal Music"
         },
         "explicit": false,
         "ai": false,
@@ -6754,7 +6756,7 @@
         "isrc": "USWB11902022",
         "duration": "PT3M",
         "copyright": {
-          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2019 Universal Music (Denmark) A/S"
+          "text": "a Copenhagen Records / Then We Take The World release; \u2117 2019 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -6816,7 +6818,7 @@
         "isrc": "USWB11902814",
         "duration": "PT4M1S",
         "copyright": {
-          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2019 Universal Music (Denmark) A/S"
+          "text": "a Copenhagen Records / Then We Take The World release; \u2117 2019 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -6879,7 +6881,7 @@
         "isrc": "USWB12002076",
         "duration": "PT2M52S",
         "copyright": {
-          "text": "℗ 2020 Universal Music (Denmark) A/S"
+          "text": "\u2117 2020 Universal Music (Denmark) A/S"
         },
         "explicit": true,
         "ai": false,
@@ -6946,7 +6948,7 @@
         "isrc": "DKBV71106701",
         "duration": "PT3M28S",
         "copyright": {
-          "text": "℗ 2011 Copenhagen Records"
+          "text": "\u2117 2011 Copenhagen Records"
         },
         "explicit": false,
         "ai": false,
@@ -7008,7 +7010,7 @@
         "isrc": "USWB12100981",
         "duration": "PT3M46S",
         "copyright": {
-          "text": "℗ 2021 Universal Music (Denmark) A/S"
+          "text": "\u2117 2021 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7071,7 +7073,7 @@
         "isrc": "USWB12101751",
         "duration": "PT3M46S",
         "copyright": {
-          "text": "℗ 2021 Universal Music (Denmark) A/S"
+          "text": "\u2117 2021 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7138,7 +7140,7 @@
         "isrc": "USWB12103083",
         "duration": "PT3M21S",
         "copyright": {
-          "text": "℗ 2021 Universal Music (Denmark) A/S"
+          "text": "\u2117 2021 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7201,7 +7203,7 @@
         "isrc": "USWB12201688",
         "duration": "PT2M56S",
         "copyright": {
-          "text": "℗ 2022 Universal Music (Denmark) A/S"
+          "text": "\u2117 2022 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7268,7 +7270,7 @@
         "isrc": "USWB12207016",
         "duration": "PT3M16S",
         "copyright": {
-          "text": "℗ 2023 Universal Music (Denmark) A/S"
+          "text": "\u2117 2023 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7335,7 +7337,7 @@
         "isrc": "DKUM72400183",
         "duration": "PT2M29S",
         "copyright": {
-          "text": "℗ 2024 Universal Music (Denmark) A/S"
+          "text": "\u2117 2024 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7398,7 +7400,7 @@
         "isrc": "USWB11506516",
         "duration": "PT3M57S",
         "copyright": {
-          "text": "℗ 2015 Universal Music A/S"
+          "text": "\u2117 2015 Universal Music A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7460,7 +7462,7 @@
         "isrc": "DKUM71400126",
         "duration": "PT3M27S",
         "copyright": {
-          "text": "℗ 2014 Universal Music (Denmark) A/S"
+          "text": "\u2117 2014 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7522,7 +7524,7 @@
         "isrc": "USWB11506519",
         "duration": "PT3M39S",
         "copyright": {
-          "text": "℗ 2015 Universal Music (Denmark) A/S"
+          "text": "\u2117 2015 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7584,7 +7586,7 @@
         "isrc": "USWB11514268",
         "duration": "PT3M23S",
         "copyright": {
-          "text": "℗ 2015 Then We Take The World / Copenhagen Records"
+          "text": "\u2117 2015 Then We Take The World / Copenhagen Records"
         },
         "explicit": false,
         "ai": false,
@@ -7646,7 +7648,7 @@
         "isrc": "USWB11506526",
         "duration": "PT3M23S",
         "copyright": {
-          "text": "℗ 2015 Universal Music (Denmark) A/S"
+          "text": "\u2117 2015 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7708,7 +7710,7 @@
         "isrc": "USWB11701563",
         "duration": "PT3M4S",
         "copyright": {
-          "text": "A Copenhagen Records / Then We Take The World release; ℗ 2017 Universal Music (Denmark) A/S"
+          "text": "A Copenhagen Records / Then We Take The World release; \u2117 2017 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7774,7 +7776,7 @@
         "isrc": "USWB11801972",
         "duration": "PT3M13S",
         "copyright": {
-          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2018 Universal Music (Denmark) A/S"
+          "text": "a Copenhagen Records / Then We Take The World release; \u2117 2018 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7836,7 +7838,7 @@
         "isrc": "USWB11801973",
         "duration": "PT3M11S",
         "copyright": {
-          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2018 Universal Music (Denmark) A/S"
+          "text": "a Copenhagen Records / Then We Take The World release; \u2117 2018 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,
@@ -7898,7 +7900,7 @@
         "isrc": "USWB11801903",
         "duration": "PT3M25S",
         "copyright": {
-          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2018 Universal Music (Denmark) A/S"
+          "text": "a Copenhagen Records / Then We Take The World release; \u2117 2018 Universal Music (Denmark) A/S"
         },
         "explicit": false,
         "ai": false,

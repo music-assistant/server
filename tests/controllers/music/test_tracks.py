@@ -2,12 +2,15 @@
 
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
+
+from .helpers import create_track
 
 
 @pytest.fixture
@@ -118,3 +121,41 @@ async def test_by_prov_id_empty_item_ids_matches_nothing(music: MusicController)
 
     assert result == []
     assert ran is False  # short-circuits before it can build an unconstrained query
+
+
+async def test_match_provider_uses_full_track_mapping(music: MusicController) -> None:
+    """Provider matching stores mapping details from the fetched track."""
+    base_track = create_track("spotify_1", "base")
+    search_track = create_track("qobuz_1", "candidate")
+    full_track = create_track("qobuz_1", "candidate")
+    full_track.provider_mappings = {
+        ProviderMapping(
+            item_id="candidate",
+            provider_domain="qobuz",
+            provider_instance="qobuz_1",
+            url="https://provider.example/full",
+        )
+    }
+    provider = MagicMock()
+    provider.name = "Qobuz"
+    provider.domain = "qobuz"
+
+    with (
+        patch.object(music.tracks, "search", AsyncMock(return_value=[search_track])),
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(return_value=full_track),
+        ),
+        patch(
+            "music_assistant.controllers.music.media.tracks.compare_media_item",
+            return_value=True,
+        ),
+        patch(
+            "music_assistant.controllers.music.media.tracks.compare_track",
+            return_value=True,
+        ),
+    ):
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == list(full_track.provider_mappings)
