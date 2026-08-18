@@ -409,6 +409,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[ItemCls]: ...
 
@@ -426,6 +427,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             summary: bool = True,
             collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
@@ -443,10 +445,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             summary: bool = True,
             collapse_collections: bool,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -459,6 +462,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         summary: bool = True,
         collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """
@@ -476,19 +480,29 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
             be returned individually.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics), regardless of
+            whether that mapping is itself in that provider's own library. This is
+            independent of `provider`, which instead requires the *matched* mapping to
+            be in-library. None applies no filter; an explicit empty list, or a list
+            with no currently loaded/allowed instance, returns no items.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             genre_ids=genre,
             played_only=played_only,
             in_library_only=True,
             summary=summary,
             collapse_collections=collapse_collections,
+            reachable_via=reachable_via,
         )
         if (
             kwargs.get("_localized_fallback", True)
@@ -505,6 +519,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider=provider,
                 genre=genre,
                 summary=summary,
+                reachable_via=reachable_via,
             )
         return items
 
@@ -1301,6 +1316,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = False,
             *,
             collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
         ) -> list[ItemCls | MediaCollection[ItemCls]]: ...
 
         @overload
@@ -1321,6 +1337,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = False,
             *,
             collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
         ) -> list[ItemCls]: ...
 
         @overload
@@ -1341,6 +1358,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = False,
             *,
             collapse_collections: bool,
+            reachable_via: list[str] | None = None,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
     @final
@@ -1361,6 +1379,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         summary: bool = False,
         *,
         collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """Fetch MediaItem records from database by building the query."""
         query_params = dict(extra_query_params) if extra_query_params else {}
@@ -1381,6 +1400,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 played_only=played_only,
                 limit=limit,
                 in_library_only=in_library_only,
+                reachable_via=reachable_via,
             )
         else:
             # apply filters
@@ -1393,6 +1413,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_filter=provider_filter,
                 played_only=played_only,
                 in_library_only=in_library_only,
+                reachable_via=reachable_via,
             )
         # build and execute final query
         sql_query, base_query_params = self._build_final_query(
@@ -1625,7 +1646,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
 
     @final
-    def _apply_random_subquery(
+    def _apply_random_subquery(  # noqa: PLR0913
         self,
         query_parts: list[str],
         query_params: dict[str, Any],
@@ -1637,6 +1658,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         played_only: bool = False,
         limit: int = 500,
         in_library_only: bool = False,
+        reachable_via: list[str] | None = None,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
         sub_query_parts = query_parts.copy()
@@ -1652,6 +1674,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_filter=provider_filter,
             played_only=played_only,
             in_library_only=in_library_only,
+            reachable_via=reachable_via,
         )
 
         # Build the subquery
@@ -1682,6 +1705,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_filter: list[str] | None,
         played_only: bool = False,
         in_library_only: bool = False,
+        reachable_via: list[str] | None = None,
     ) -> None:
         """Apply search, favorite, and provider filters."""
         # handle search
@@ -1710,6 +1734,36 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_parts.append(
                 self._provider_filter_clause(query_params, provider_filter, in_library_only)
             )
+        # Apply the reachability filter, independent of the (in-library) provider filter above
+        if reachable_via is not None:
+            query_parts.append(self._reachability_filter_clause(query_params, reachable_via))
+
+    @final
+    def _reachability_filter_clause(
+        self, query_params: dict[str, Any], reachable_via: list[str]
+    ) -> str:
+        """
+        Return the SQL clause that restricts items to those reachable via given providers.
+
+        Unlike `_provider_filter_clause`, this only checks that an available mapping to
+        one of the given provider instances exists: it does not require that mapping to
+        be in that provider's own library. This is used to answer "can this (already
+        in-library) item be played through one of these providers", as opposed to
+        "is this item favorited on one of these providers".
+
+        :param query_params: Query params dict; the clause's bound params are added to it.
+        :param reachable_via: Only match items with an available mapping to one of these
+            provider instances.
+        """
+        query_params["reachable_via_media_type"] = self.media_type.value
+        query_params["reachable_via_providers"] = reachable_via
+        return (
+            f"EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} reachable_mappings "
+            f"WHERE reachable_mappings.item_id = {self.db_table}.item_id "
+            "AND reachable_mappings.media_type = :reachable_via_media_type "
+            "AND reachable_mappings.available = 1 "
+            "AND reachable_mappings.provider_instance IN :reachable_via_providers)"
+        )
 
     @final
     def _provider_filter_clause(
@@ -1880,6 +1934,49 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # No user filter - use the provided filter as is
             final_provider_filter = [provider] if isinstance(provider, str) else provider
         return final_provider_filter
+
+    @final
+    def _resolve_reachable_via(self, reachable_via: list[str] | None) -> list[str] | None:
+        """
+        Resolve a `reachable_via` filter against currently loaded, user-allowed providers.
+
+        :param reachable_via: Requested provider instance ids, or None for no filter.
+        :return: None if no filter should be applied. Otherwise, the subset of
+            `reachable_via` that is currently active and allowed for the current user
+            (per `MusicController.get_active_provider_instances`). An empty list means
+            the filter cannot match anything; callers must then return no items rather
+            than issue a query.
+        """
+        if reachable_via is None:
+            return None
+        if not reachable_via:
+            return []
+        allowed_providers = set(self.mass.music.get_active_provider_instances())
+        return [p for p in reachable_via if p in allowed_providers]
+
+    @final
+    def _provider_filter_considering_reachability(
+        self,
+        provider: str | list[str] | None,
+        resolved_reachable_via: list[str] | None,
+    ) -> list[str] | None:
+        """
+        Resolve the `provider` filter, deferring to an active `reachable_via` filter.
+
+        The current user's provider access is already enforced on `resolved_reachable_via`
+        by `_resolve_reachable_via`. So when `reachable_via` is active and no explicit
+        `provider` filter was requested, skip `_ensure_provider_filter`'s implicit
+        injection of the user's provider filter: that would additionally require the
+        item's in-library mapping itself to be on one of those providers, which is
+        stricter than (and redundant with) what `reachable_via` already checks.
+
+        :param provider: The explicit provider filter, as passed to `library_items`.
+        :param resolved_reachable_via: The already-resolved `reachable_via` filter (the
+            return value of `_resolve_reachable_via`), or None if not active.
+        """
+        if resolved_reachable_via is not None and provider is None:
+            return None
+        return self._ensure_provider_filter(provider)
 
     @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
