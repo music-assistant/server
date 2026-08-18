@@ -47,6 +47,8 @@ async def test_episode_stream_details_success(provider: VrtMaxProvider) -> None:
     assert details.path == "https://x/nodrm.m3u8"
     assert details.can_seek is True
     assert details.duration == 1800
+    # Multi-instance: the stream is scoped to this instance, not the shared domain.
+    assert details.provider == provider.instance_id
 
 
 async def test_episode_stream_details_auth_error(provider: VrtMaxProvider) -> None:

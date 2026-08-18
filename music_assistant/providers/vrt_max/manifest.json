@@ -9,7 +9,7 @@
   "requirements": [],
   "icon": "mdi:radio",
   "dependencies": [],
-  "multi_instance": false,
+  "multi_instance": true,
   "config_entries": [],
   "codeowners": ["@bollewolle"]
 }

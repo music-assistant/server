@@ -500,7 +500,7 @@ class VrtMaxProvider(MusicProvider):
         return MediaItemImage(
             type=ImageType.THUMB,
             path=url,
-            provider=self.domain,
+            provider=self.instance_id,
             remotely_accessible=True,
         )
 
@@ -513,7 +513,7 @@ class VrtMaxProvider(MusicProvider):
         if station is None:
             raise MediaNotFoundError("Radio not found.")
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
@@ -537,7 +537,7 @@ class VrtMaxProvider(MusicProvider):
         except VrtApiError as err:
             raise MediaNotFoundError(f"Could not resolve episode stream: {err}") from err
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             media_type=MediaType.PODCAST_EPISODE,
             stream_type=StreamType.HLS,

@@ -38,6 +38,7 @@ def test_radio_item_with_logo_and_tagline(provider: VrtMaxProvider) -> None:
     assert mapping.provider_instance == provider.instance_id
     assert radio.metadata.images is not None
     assert len(radio.metadata.images) == 1
+    assert radio.metadata.images[0].provider == provider.instance_id
     assert radio.metadata.description == station.tagline
 
 
@@ -78,6 +79,8 @@ async def test_get_stream_details_known(provider: VrtMaxProvider) -> None:
     assert details.stream_type == StreamType.HTTP
     assert details.path == station.stream_url
     assert details.can_seek is False
+    # Multi-instance: streams and images are scoped to the instance, not the domain.
+    assert details.provider == provider.instance_id
 
 
 async def test_get_stream_details_unknown(provider: VrtMaxProvider) -> None:
