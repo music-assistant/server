@@ -1599,69 +1599,75 @@ class ProtocolLinkingMixin:
     def _cleanup_protocol_links(self, player: Player) -> None:
         """Clean up protocol links when a player is permanently removed."""
         if player.state.type == PlayerType.PROTOCOL:
-            # Protocol player being removed: remove link from parent
-            if parent_id := player.protocol_parent_id:
-                if parent_player := self.get_player(parent_id):
-                    # Use permanent=True to also remove from cached protocol IDs
-                    self._remove_protocol_link(parent_player, player.player_id, permanent=True)
-                    if (
-                        parent_player.provider.domain == "universal_player"
-                        and len(parent_player.linked_output_protocols) == 0
-                    ):
-                        # No protocols left - the universal player has nothing to play
-                        # on. Its config is deliberately kept: the player id is opaque
-                        # and cannot be recreated, so deleting it here would orphan the
-                        # entities API consumers bound to it. Only an explicit removal
-                        # by the user deletes a universal player for good.
-                        self.logger.info(
-                            "Universal player %s has no protocols left",
-                            parent_id,
-                        )
-                        self.mass.create_task(
-                            self.mass.players.unregister(parent_id, permanent=False)
-                        )
-                    else:
-                        parent_player.refresh_state()
-                else:
-                    # Parent not registered yet — still purge the cached id
-                    self._remove_protocol_id_from_cache(parent_id, player.player_id)
-        else:
-            # Native/universal player being removed: handle all linked protocol players.
-            # Collect all known protocol IDs from both active links and cached state,
-            # since disabled/inactive protocols may only exist in the cached parent data.
-            all_protocol_ids = set(self._get_known_protocol_ids(player))
-            for protocol_id in all_protocol_ids:
-                if protocol_player := self.get_player(protocol_id):
-                    # Protocol player is available: clear parent and schedule re-evaluation
-                    # so it can be matched to a new parent or a new universal player
-                    self.logger.debug(
-                        "Player %s removed - scheduling evaluation for protocol %s",
-                        player.player_id,
-                        protocol_id,
-                    )
-                    self._detach_protocol_child(protocol_player)
-                else:
-                    # Clear cached parent ID in config so protocol won't try to
-                    # restore a link to the deleted player on next restart
-                    self._clear_protocol_parent_id(protocol_id)
-                    # Protocol player is not registered yet — it may still be
-                    # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
-                    # its config as that would cause a KeyError when it finishes
-                    # registering. Stale configs are harmless and get cleaned up
-                    # naturally on subsequent restarts.
-                    self.logger.debug(
-                        "Player %s removed - protocol %s not registered, skipping cleanup",
-                        player.player_id,
-                        protocol_id,
-                    )
+            self._unlink_from_protocol_parent(player)
+            return
+        self._detach_owned_protocols(player)
 
-    def _cleanup_player_type_transition(self, existing: Player) -> None:
+    def _unlink_from_protocol_parent(self, player: Player) -> None:
+        """Release a protocol player from the parent it is attached to."""
+        if parent_id := player.protocol_parent_id:
+            if parent_player := self.get_player(parent_id):
+                # Use permanent=True to also remove from cached protocol IDs
+                self._remove_protocol_link(parent_player, player.player_id, permanent=True)
+                if (
+                    parent_player.provider.domain == "universal_player"
+                    and len(parent_player.linked_output_protocols) == 0
+                ):
+                    # No protocols left - the universal player has nothing to play
+                    # on. Its config is deliberately kept: the player id is opaque
+                    # and cannot be recreated, so deleting it here would orphan the
+                    # entities API consumers bound to it. Only an explicit removal
+                    # by the user deletes a universal player for good.
+                    self.logger.info(
+                        "Universal player %s has no protocols left",
+                        parent_id,
+                    )
+                    self.mass.create_task(self.mass.players.unregister(parent_id, permanent=False))
+                else:
+                    parent_player.refresh_state()
+            else:
+                # Parent not registered yet — still purge the cached id
+                self._remove_protocol_id_from_cache(parent_id, player.player_id)
+
+    def _detach_owned_protocols(self, player: Player) -> None:
+        """Detach the protocol players a parent owns so they can find a new parent."""
+        # collect the ids from both the active links and the cached state, since
+        # disabled/inactive protocols may only exist in the cached parent data
+        all_protocol_ids = set(self._get_known_protocol_ids(player))
+        for protocol_id in all_protocol_ids:
+            if protocol_player := self.get_player(protocol_id):
+                # Protocol player is available: clear parent and schedule re-evaluation
+                # so it can be matched to a new parent or a new universal player
+                self.logger.debug(
+                    "Player %s no longer owns protocol %s - scheduling evaluation",
+                    player.player_id,
+                    protocol_id,
+                )
+                self._detach_protocol_child(protocol_player)
+            else:
+                # Clear cached parent ID in config so protocol won't try to
+                # restore a link to its former parent on next restart
+                self._clear_protocol_parent_id(protocol_id)
+                # Protocol player is not registered yet — it may still be
+                # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
+                # its config as that would cause a KeyError when it finishes
+                # registering. Stale configs are harmless and get cleaned up
+                # naturally on subsequent restarts.
+                self.logger.debug(
+                    "Player %s no longer owns protocol %s - not registered, skipping cleanup",
+                    player.player_id,
+                    protocol_id,
+                )
+
+    def _cleanup_player_type_transition(self, existing: Player, *, becomes_protocol: bool) -> None:
         """
         Release the protocol topology a player owned before its type changed.
 
-        :param existing: The registered player instance, still reporting its previous type.
+        :param existing: The registered player instance for the changed player.
+        :param becomes_protocol: True if the player moves into the protocol role,
+            False if it leaves it.
         """
-        if existing.state.type == PlayerType.PROTOCOL:
+        if not becomes_protocol:
             # a provider may announce the new type with the live parent link already
             # dropped, so fall back to the persisted one to still reach the parent
             parent_id = existing.protocol_parent_id or self._get_cached_protocol_parent_id(
@@ -1679,7 +1685,7 @@ class ProtocolLinkingMixin:
             existing.set_protocol_parent_id(parent_id)
             # unlink at the parent and drop the persisted parent id, which would
             # otherwise heal the player's type back to protocol
-            self._cleanup_protocol_links(existing)
+            self._unlink_from_protocol_parent(existing)
             # a player leaving the protocol role has no parent, also when that parent
             # is not registered (anymore) and only the cached link could be cleaned up
             existing.set_protocol_parent_id(None)
@@ -1688,7 +1694,7 @@ class ProtocolLinkingMixin:
         # can find a new parent, then give up their ownership in its (kept) config - the
         # reverse of the removal path, which drops the ownership before the detach
         protocol_ids = set(self._get_known_protocol_ids(existing))
-        self._cleanup_protocol_links(existing)
+        self._detach_owned_protocols(existing)
         self._remove_protocol_ids_from_parent(existing, protocol_ids)
 
     def _detach_protocol_children(self, parent_id: str) -> None:

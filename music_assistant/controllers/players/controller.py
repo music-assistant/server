@@ -1519,16 +1519,18 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # is still setting the player up
         async with self._register_lock:
             if (existing := self._players.get(player.player_id)) is not None:
-                previous_type = existing.state.type
-                # moving in or out of the protocol role turns a player that owns a queue
-                # into one that is hidden behind a parent, or the other way around
-                role_changed = previous_type != player.type and PlayerType.PROTOCOL in (
-                    previous_type,
-                    player.type,
-                )
+                # a protocol player is hidden behind its parent and owns no queue, every
+                # other player does. Reading the role change off that published reality
+                # keeps it independent of when the player's state was last recalculated,
+                # which providers cannot control (they flip the type before this call).
+                becomes_protocol = player.type == PlayerType.PROTOCOL
+                owns_queue = self.mass.player_queues.get(player.player_id) is not None
+                role_changed = becomes_protocol == owns_queue
                 if role_changed:
-                    # release the old topology while the state still reports the old type
-                    self._cleanup_player_type_transition(existing)
+                    # release the topology of the role the player is leaving
+                    self._cleanup_player_type_transition(
+                        existing, becomes_protocol=becomes_protocol
+                    )
                 self._players[player.player_id] = player
                 if existing is not player:
                     # a fresh instance starts out with a base config only, so it needs
