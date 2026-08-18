@@ -220,7 +220,7 @@ async def _run_sync(provider: MusicProvider, prov_item: Mock) -> None:
         get_library_playlists=Mock(return_value=_get_single_playlist(prov_item)),
         _check_provider_mappings=Mock(return_value=True),
         _update_sync_task_item_status=Mock(),
-        _report_sync_task_failure=Mock(),
+        _handle_sync_item_failure=Mock(),
     ):
         await provider._sync_library_playlists()
 
