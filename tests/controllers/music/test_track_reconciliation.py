@@ -176,6 +176,7 @@ def _bare_controller(candidate_rows: list[dict[str, int]]) -> MusicController:
     """Create a bare MusicController whose candidate query returns the given rows."""
     ctrl = MusicController.__new__(MusicController)
     ctrl._track_reconciliation_cursor = (0, 0)
+    ctrl._track_reconciliation_rescan_due = False
     ctrl.logger = Mock()
     ctrl._database = Mock(get_rows_from_query=AsyncMock(return_value=candidate_rows))
     ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
@@ -549,16 +550,74 @@ async def test_empty_batch_leaves_the_cursor_alone() -> None:
     assert ctrl._track_reconciliation_cursor == (500, 900)
 
 
-async def test_completed_sync_rewinds_the_cursor() -> None:
-    """New content arrives through a sync, so that is when the library is walked again."""
-    ctrl = _bare_controller([])
-    ctrl._track_reconciliation_cursor = (500, 900)
+async def test_a_completed_sync_does_not_restart_a_walk_in_progress() -> None:
+    """Rewinding mid-walk would re-examine the same prefix forever, starving the rest."""
+    ctrl = _bare_controller(
+        [
+            {"item_id_1": index, "item_id_2": 900 + index}
+            for index in range(1, TRACK_RECONCILIATION_BATCH_SIZE + 1)
+        ]
+    )
     ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
 
     with patch.object(ctrl, "_queue_database_cleanup_task", Mock()):
         ctrl._handle_sync_completion_check()
+    assert ctrl._track_reconciliation_cursor == (0, 0)
+
+    # a full batch means the walk is still in progress, so it keeps its place
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=False)):
+        await ctrl._reconcile_duplicate_tracks()
+
+    assert ctrl._track_reconciliation_cursor == (
+        TRACK_RECONCILIATION_BATCH_SIZE,
+        900 + TRACK_RECONCILIATION_BATCH_SIZE,
+    )
+    assert ctrl._track_reconciliation_rescan_due
+
+
+async def test_the_next_pass_starts_once_the_walk_reaches_the_end() -> None:
+    """The rescan a sync asked for happens as soon as the current walk drains."""
+    ctrl = _bare_controller([{"item_id_1": 7, "item_id_2": 9}])
+    ctrl._track_reconciliation_cursor = (5, 6)
+    ctrl._track_reconciliation_rescan_due = True
+
+    with patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(return_value=False)):
+        await ctrl._reconcile_duplicate_tracks()
 
     assert ctrl._track_reconciliation_cursor == (0, 0)
+    assert not ctrl._track_reconciliation_rescan_due
+
+
+async def test_no_candidate_survives_a_sync_driven_rewind() -> None:
+    """Repeated syncs must not keep a later candidate permanently out of reach."""
+    pairs = [(index, 900 + index) for index in range(1, TRACK_RECONCILIATION_BATCH_SIZE * 3)]
+    seen: set[tuple[int, int]] = set()
+
+    async def _candidates(_sql: str, params: dict[str, int], limit: int) -> list[dict[str, int]]:
+        cursor = (params["cursor_item_id_1"], params["cursor_item_id_2"])
+        return [
+            {"item_id_1": one, "item_id_2": two}
+            for one, two in [pair for pair in pairs if pair > cursor][:limit]
+        ]
+
+    async def _refuse(item_id_1: int, item_id_2: int) -> bool:
+        seen.add((item_id_1, item_id_2))
+        return False
+
+    ctrl = _bare_controller([])
+    ctrl._database = Mock(get_rows_from_query=AsyncMock(side_effect=_candidates))
+    ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
+
+    with (
+        patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(side_effect=_refuse)),
+        patch.object(ctrl, "_queue_database_cleanup_task", Mock()),
+    ):
+        for _ in range(4):
+            # a sync completes before every run, as a busy library would do
+            ctrl._handle_sync_completion_check()
+            await ctrl._reconcile_duplicate_tracks()
+
+    assert seen == set(pairs)
 
 
 async def test_batch_continues_quietly_after_an_already_merged_row() -> None:

@@ -224,6 +224,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self._track_reconciliation_cursor: tuple[int, int] = (0, 0)
+        self._track_reconciliation_rescan_due = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -2657,9 +2658,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if self.active_sync_tasks:
             return
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
-        # freshly synced content is the only source of new duplicates, so let the
-        # reconciliation pass walk the library again from the start
-        self._track_reconciliation_cursor = (0, 0)
+        # freshly synced content is the only source of new duplicates, so the reconciliation
+        # pass owes the library another walk; it starts once the current one reaches the end,
+        # since rewinding right now would keep re-examining the same prefix forever
+        self._track_reconciliation_rescan_due = True
         self._queue_database_cleanup_task()
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
@@ -2732,17 +2734,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             limit=TRACK_RECONCILIATION_BATCH_SIZE,
         )
         if not rows:
+            self._start_next_pass_if_due()
             update_current_task_progress_text("No duplicate tracks found")
             return
         # resume after the exact pair examined last, so candidates this run refused can never
         # starve the ones behind them, not even a further pair of the same track that the batch
         # boundary cut off. The cursor is deliberately left where the library ends: walking off
         # the end costs nothing, while starting over would rescan the whole table every hour.
-        # A completed sync rewinds it, as that is when new duplicates can appear.
         self._track_reconciliation_cursor = (
             int(rows[-1]["item_id_1"]),
             int(rows[-1]["item_id_2"]),
         )
+        if len(rows) < TRACK_RECONCILIATION_BATCH_SIZE:
+            self._start_next_pass_if_due()
         merged = 0
         for index, row in enumerate(rows, 1):
             update_current_task_progress_from_index(
@@ -2766,6 +2770,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
         update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
+
+    def _start_next_pass_if_due(self) -> None:
+        """Rewind the duplicate track walk if a sync has added content since it started."""
+        if not self._track_reconciliation_rescan_due:
+            return
+        self._track_reconciliation_cursor = (0, 0)
+        self._track_reconciliation_rescan_due = False
 
     async def _albums_agree_on_edition(self, item_id_1: int, item_id_2: int) -> bool:
         """
