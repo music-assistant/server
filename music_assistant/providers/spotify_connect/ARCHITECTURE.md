@@ -58,7 +58,7 @@ go-librespot ──s16le PCM──▶ stdout ──▶ get_audio_stream ──�
 
 - **`StreamType.CUSTOM`**: `get_audio_stream` reads the daemon's stdout and yields PCM. The
   subprocess pipe always has a reader, so go-librespot's non-blocking pipe open never fails,
-  and we control the byte stream (pacing it, and ending it cleanly on pause).
+  and we control the byte stream (ending it cleanly on pause).
 - **Pacing**: the streams controller's realtime pacer (ffmpeg `-readrate` with a small
   initial burst) is the single pacing authority. go-librespot's pipe backend is not
   realtime-paced, but backpressure through the stdout pipe keeps the daemon only a

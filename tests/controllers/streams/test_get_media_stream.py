@@ -205,7 +205,7 @@ def _multi_part_streamdetails() -> StreamDetails:
     )
 
 
-def _flac_streamdetails() -> StreamDetails:
+def _flac_streamdetails(extra_input_args: list[str] | None = None) -> StreamDetails:
     return _make_streamdetails(
         audio_format=AudioFormat(
             content_type=ContentType.FLAC,
@@ -213,7 +213,8 @@ def _flac_streamdetails() -> StreamDetails:
             sample_rate=44100,
             bit_depth=16,
             channels=2,
-        )
+        ),
+        extra_input_args=extra_input_args,
     )
 
 
@@ -468,16 +469,7 @@ async def test_get_media_stream_respects_provider_pacing_args(
     provider_pacing_args: list[str],
 ) -> None:
     """Provider-supplied -re/-readrate args suppress the automatic AudioSource pacing."""
-    streamdetails = _make_streamdetails(
-        audio_format=AudioFormat(
-            content_type=ContentType.FLAC,
-            codec_type=ContentType.FLAC,
-            sample_rate=44100,
-            bit_depth=16,
-            channels=2,
-        ),
-        extra_input_args=list(provider_pacing_args),
-    )
+    streamdetails = _flac_streamdetails(extra_input_args=list(provider_pacing_args))
     audio = _make_audio_controller()
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
 

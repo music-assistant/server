@@ -535,8 +535,10 @@ class StreamsAudio:
         # The initial burst grants a small bounded read-ahead so downstream
         # jitter does not immediately underrun the player. Providers that need
         # different pacing can pass their own -re/-readrate args to override.
-        if streamdetails.media_type == MediaType.AUDIO_SOURCE and not (
-            "-re" in extra_input_args or "-readrate" in extra_input_args
+        if (
+            streamdetails.media_type == MediaType.AUDIO_SOURCE
+            and "-re" not in extra_input_args
+            and "-readrate" not in extra_input_args
         ):
             extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
@@ -1399,7 +1401,7 @@ class StreamsAudio:
         directly — no ffmpeg in the data path.
 
         Slow path: when formats differ, ffmpeg resamples/recodes the stream
-        (with ``-re`` for rate pacing) via ``get_media_stream``.
+        (with ``-readrate`` pacing) via ``get_media_stream``.
 
         :param queue_item: The AudioSource queue item to stream.
         :param pcm_format: Output PCM format the consumer wants.
