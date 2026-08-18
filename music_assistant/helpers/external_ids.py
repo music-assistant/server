@@ -102,6 +102,19 @@ def is_valid_isrc(value: str) -> bool:
     return bool(_ISRC_PATTERN.fullmatch(normalize_external_id(ExternalID.ISRC, value)))
 
 
+def is_valid_barcode(value: str) -> bool:
+    """
+    Return whether a value is a structurally valid (canonical) barcode/GTIN.
+
+    An invalid barcode is still preserved as-is for storage/exact-match lookups, but
+    should be treated as absent by callers that rely on the barcode being a genuine
+    GTIN (e.g. a MusicBrainz release lookup).
+
+    :param value: Identifier value to validate.
+    """
+    return _is_valid_gtin(normalize_external_id(ExternalID.BARCODE, value))
+
+
 def external_id_lookup_values_untyped(value: str) -> tuple[str, ...]:
     """
     Return lookup values for an identifier whose type is not known.

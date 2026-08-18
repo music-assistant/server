@@ -714,6 +714,20 @@ def test_compare_album_track_fingerprint_unknown_disc_layout_vs_multi_disc_is_in
     )
 
 
+def test_album_tracks_have_positions() -> None:
+    """A trustworthy disc/track layout is recognized, an ambiguous one is not."""
+    assert compare.album_tracks_have_positions(_tracklist(10)) is True
+    assert compare.album_tracks_have_positions(None) is False
+    assert compare.album_tracks_have_positions([]) is False
+    # a missing track number makes the layout untrustworthy
+    assert compare.album_tracks_have_positions([_track("1", track_number=0)]) is False
+    # a missing disc number is treated as unknown, not silently assumed to be disc 1
+    assert compare.album_tracks_have_positions([_track("1", disc_number=0)]) is False
+    # a duplicate position cannot be trusted either
+    duplicate = [_track("1", track_number=1), _track("2", track_number=1)]
+    assert compare.album_tracks_have_positions(duplicate) is False
+
+
 def test_compare_external_ids_checks_all_unique_values() -> None:
     """One mismatching unique identifier does not hide another matching value."""
     base_ids = {

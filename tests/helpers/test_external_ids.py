@@ -6,6 +6,7 @@ from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     external_id_lookup_values,
     external_id_lookup_values_untyped,
+    is_valid_barcode,
     normalize_external_id,
     normalize_external_ids,
 )
@@ -62,3 +63,14 @@ def test_normalize_external_ids_deduplicates_values() -> None:
     )
 
     assert result == {(ExternalID.BARCODE, "00724354283857")}
+
+
+def test_is_valid_barcode() -> None:
+    """A structurally valid GTIN is recognized regardless of UPC/EAN notation."""
+    assert is_valid_barcode("888072439412") is True
+    assert is_valid_barcode("0888072439412") is True
+    assert is_valid_barcode("00888072439412") is True
+    # bad check digit, wrong length or non-numeric data is not a usable barcode
+    assert is_valid_barcode("602445790392") is False
+    assert is_valid_barcode("12345") is False
+    assert is_valid_barcode("catalog-123") is False

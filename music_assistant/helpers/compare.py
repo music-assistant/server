@@ -274,6 +274,25 @@ def compare_album_track_fingerprint(
     return evidence
 
 
+def album_tracks_have_positions(tracks: Sequence[Track] | None) -> bool:
+    """
+    Return True if a tracklist has a trustworthy, unambiguous disc/track layout.
+
+    A caller choosing a base tracklist for album-track fingerprinting can use this to
+    reject a tracklist whose positions cannot be trusted (a missing disc or track number,
+    or a duplicate position) and fall back to another source instead.
+
+    :param tracks: Tracklist to inspect.
+    """
+    if not tracks:
+        return False
+    # a missing disc or track number is treated as unknown rather than silently assumed,
+    # so such a tracklist is not trusted as a shape reference
+    if any(not track.disc_number or not track.track_number for track in tracks):
+        return False
+    return bool(_track_positions(tracks))
+
+
 def compare_track(
     base_item: Track,
     compare_item: Track,
