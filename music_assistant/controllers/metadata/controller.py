@@ -24,11 +24,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
+    DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
@@ -497,13 +498,14 @@ class MetaDataController(
         update_current_task_progress(100, f"Processed {len(playlists)} playlist(s)")
 
     async def _reconcile_duplicate_albums(self) -> None:
-        """Enrich and re-match a small batch of sparse, unenriched albums."""
+        """Enrich and re-match a small batch of sparse or possibly duplicated albums."""
         update_current_task_progress_text("Searching for albums needing reconciliation")
         # albums that are still unknown-typed keep retrying at the normal REFRESH_INTERVAL
         # cadence (e.g. after a transient provider outage), rather than only ever once
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
-            f"{DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' AND ("
+            f"({DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' "
+            f"OR {_duplicate_album_sibling_guard()}) AND ("
             f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
         )
@@ -525,6 +527,10 @@ class MetaDataController(
                 await self._update_album_metadata(album, force_refresh=False)
                 reconciled_album = await self.mass.music.albums.get_library_item(album.item_id)
                 await self.mass.music.albums.match_providers(reconciled_album)
+            except MediaNotFoundError:
+                # both rows of a duplicate pair can share a batch, so this row may
+                # already have been merged into its duplicate earlier in the run
+                continue
             except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
                 report_current_task_failure(f"{album.name}: {err}")
                 self.logger.warning(
@@ -596,6 +602,37 @@ class MetaDataController(
             )
             report_current_task_failure(message)
             self.logger.warning(message)
+
+
+def _duplicate_album_sibling_guard() -> str:
+    """Return a query part that selects albums which may be a duplicate of another library row."""
+    own_version = f"LOWER(TRIM(COALESCE({DB_TABLE_ALBUMS}.version,'')))"
+    dup_version = "LOWER(TRIM(COALESCE(dup.version,'')))"
+    # an equal version, or one whose wording is a whole-word subset of the other's
+    # ("2011 Remaster" vs "Deluxe Edition 2011 Remaster"), leaves the two editions
+    # undecided - exactly the case the album comparison escalates to a tracklist and
+    # barcode check. Differently worded versions ("Remixes Pt. 1" vs "Remixes Pt. 2")
+    # mark a genuinely different edition, so those rows are left alone. Both sides are
+    # space-padded so a version does not match inside a longer word ("Mix" vs "Remix").
+    compatible_version = (
+        f"({own_version} = {dup_version} OR ({own_version} != '' AND {dup_version} != '' AND ("
+        f"INSTR(' ' || {own_version} || ' ', ' ' || {dup_version} || ' ') > 0 OR "
+        f"INSTR(' ' || {dup_version} || ' ', ' ' || {own_version} || ' ') > 0)))"
+    )
+    shares_artist = (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} own "
+        f"JOIN {DB_TABLE_ALBUM_ARTISTS} other ON other.artist_id = own.artist_id "
+        f"WHERE own.album_id = {DB_TABLE_ALBUMS}.item_id AND other.album_id = dup.item_id)"
+    )
+    # titles that normalize to nothing (e.g. Ed Sheeran's '+', '=' and '÷')
+    # would otherwise all collapse onto each other
+    return (
+        f"({DB_TABLE_ALBUMS}.search_name != '' AND EXISTS ("
+        f"SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
+        f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
+        f"AND dup.search_name = {DB_TABLE_ALBUMS}.search_name "
+        f"AND {compatible_version} AND {shares_artist}))"
+    )
 
 
 def _valid_metadata_guard(table: str) -> str:
