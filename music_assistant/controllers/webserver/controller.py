@@ -105,7 +105,10 @@ CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 # A preview URL only has to survive the hop from the API response to the audio element
 # that plays it. It stays usable for the whole window rather than being single-use,
 # because players routinely re-request a media URL they have already opened.
-PREVIEW_TOKEN_TTL = 300
+PREVIEW_TOKEN_TTL = 60
+# Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
+# every signed-in client; the cap keeps a chatty or hostile one from growing the store.
+MAX_PREVIEW_TOKENS = 500
 
 
 def _get_publish_addresses(
@@ -517,7 +520,11 @@ class WebserverController(CoreController):
 
     def create_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
         """
-        Return a short-lived URL that serves a preview clip of the given item.
+        Return a short-lived path on this server that serves a preview clip of the given item.
+
+        Relative on purpose: a client reaches this server through whatever address its own
+        setup uses - Home Assistant ingress, a reverse proxy, or the remote connection - and
+        the advertised base URL is not necessarily any of them.
 
         :param provider_instance_id_or_domain: Music provider that holds the item.
         :param item_id: Id of the item on that provider.
@@ -527,13 +534,19 @@ class WebserverController(CoreController):
         # tokens are swept as well
         for expired in [key for key, entry in self._preview_tokens.items() if entry[2] <= now]:
             del self._preview_tokens[expired]
+        if len(self._preview_tokens) >= MAX_PREVIEW_TOKENS:
+            # every token is still within its lifetime, so drop the oldest to make room
+            # rather than letting a caller grow this without bound
+            del self._preview_tokens[
+                min(self._preview_tokens, key=lambda k: self._preview_tokens[k][2])
+            ]
         token = secrets.token_urlsafe(16)
         self._preview_tokens[token] = (
             provider_instance_id_or_domain,
             item_id,
             now + PREVIEW_TOKEN_TTL,
         )
-        return f"{self.base_url}/preview?token={token}"
+        return f"/preview?token={token}"
 
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""

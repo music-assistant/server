@@ -1,12 +1,14 @@
 """Tests for the short-lived tokens that address the preview endpoint."""
 
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 
 from music_assistant.controllers.webserver.controller import (
+    MAX_PREVIEW_TOKENS,
     PREVIEW_TOKEN_TTL,
     WebserverController,
 )
@@ -44,6 +46,42 @@ def test_preview_url_carries_a_token_and_not_the_item(webserver: WebserverContro
     assert "/preview?token=" in url
     assert "spotify--abc" not in url
     assert "track123" not in url
+
+
+def test_preview_url_is_relative(webserver: WebserverController) -> None:
+    """Clients reach this server on their own address, which we cannot guess for them."""
+    url = webserver.create_preview_url("spotify--abc", "track123")
+    assert url.startswith("/preview?")
+    assert "://" not in url
+
+
+def test_each_mint_is_a_fresh_token(webserver: WebserverController) -> None:
+    """Handing out a new url must not invalidate one already in use."""
+    first = webserver.create_preview_url("spotify--abc", "track123").split("token=")[1]
+    second = webserver.create_preview_url("spotify--abc", "track456").split("token=")[1]
+    assert first != second
+    assert webserver._resolve_preview_token(first) == ("spotify--abc", "track123")
+    assert webserver._resolve_preview_token(second) == ("spotify--abc", "track456")
+
+
+def test_store_is_capped(webserver: WebserverController) -> None:
+    """A chatty client cannot grow the store without bound."""
+    for index in range(MAX_PREVIEW_TOKENS + 50):
+        webserver.create_preview_url("spotify--abc", f"track{index}")
+    assert len(webserver._preview_tokens) <= MAX_PREVIEW_TOKENS
+
+
+def test_sweep_keeps_tokens_that_are_still_valid(
+    webserver: WebserverController, clock: list[float]
+) -> None:
+    """Clearing out expired tokens must not take live ones with it."""
+    stale = webserver.create_preview_url("spotify--abc", "old").split("token=")[1]
+    clock[0] += PREVIEW_TOKEN_TTL - 1
+    live = webserver.create_preview_url("spotify--abc", "new").split("token=")[1]
+    clock[0] += 2
+    webserver.create_preview_url("spotify--abc", "newest")
+    assert stale not in webserver._preview_tokens
+    assert webserver._resolve_preview_token(live) == ("spotify--abc", "new")
 
 
 def test_token_resolves_to_the_item_it_was_minted_for(webserver: WebserverController) -> None:
@@ -93,3 +131,29 @@ async def test_serve_preview_stream_refuses_an_unknown_token(
     request.query = {"provider": "spotify--abc", "item_id": "track123"}
     with pytest.raises(web.HTTPNotFound):
         await webserver.serve_preview_stream(request)
+
+
+async def test_serve_preview_stream_serves_the_item_the_token_was_minted_for(
+    webserver: WebserverController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid token streams that item, and nothing from the query string is consulted."""
+
+    async def _clip() -> AsyncGenerator[bytes]:
+        yield b"audio"
+
+    get_preview_stream = MagicMock(return_value=_clip())
+    monkeypatch.setattr(webserver.mass.streams, "get_preview_stream", get_preview_stream)
+    token = webserver.create_preview_url("spotify--abc", "track123").split("token=")[1]
+    request = MagicMock()
+    # a mismatching provider/item in the query must be ignored entirely
+    request.query = {"token": token, "provider": "tidal--xyz", "item_id": "other"}
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    response.write = AsyncMock()
+    with patch(
+        "music_assistant.controllers.webserver.controller.web.StreamResponse",
+        MagicMock(return_value=response),
+    ):
+        await webserver.serve_preview_stream(request)
+    get_preview_stream.assert_called_once_with("spotify--abc", "track123")
+    response.write.assert_awaited_once_with(b"audio")
