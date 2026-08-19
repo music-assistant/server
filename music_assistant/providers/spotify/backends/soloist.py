@@ -106,8 +106,6 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 _INCOMPLETE_TOLERANCE_MS: Final[int] = 10000
 # after the item ends, how long to keep draining the FIFO toward the duration cap
 _DRAIN_TIMEOUT_S: Final[float] = 2.0
-# how long the daemon gets to finish its own shutdown before it is closed
-_NATURAL_EXIT_TIMEOUT_S: Final[int] = 3
 
 
 class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
@@ -612,11 +610,10 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         silence), so the last observed playback position is checked against the
         item's duration as well.
         """
-        # in single-track mode the daemon exits by itself when the item is
-        # done; give it a moment so the exit code reflects its own verdict
-        # rather than our teardown signal
-        with suppress(TimeoutError):
-            await proc.wait_with_timeout(_NATURAL_EXIT_TIMEOUT_S)
+        # a daemon still running once the item is delivered is closed right
+        # away: with autoplay context it never exits on its own, and waiting
+        # would starve the player at the track boundary (measured live) —
+        # delivery integrity is validated by the position check below instead
         forced_close = proc.returncode is None
         await proc.close()
         returncode = proc.returncode

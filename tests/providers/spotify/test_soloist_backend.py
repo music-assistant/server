@@ -242,7 +242,6 @@ async def test_forced_close_does_not_fail_a_complete_delivery(tmp_path: Path) ->
     state.last_position_ms = 195_000
     proc = MagicMock()
     proc.returncode = None
-    proc.wait_with_timeout = AsyncMock(side_effect=TimeoutError)
 
     async def _close() -> None:
         proc.returncode = -2
