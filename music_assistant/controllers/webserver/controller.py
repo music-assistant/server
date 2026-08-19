@@ -12,7 +12,8 @@ import hashlib
 import html
 import inspect
 import os
-import urllib.parse
+import secrets
+import time
 from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
@@ -101,6 +102,10 @@ CONF_SSL_PRIVATE_KEY = "ssl_private_key"
 CONF_ACTION_VERIFY_SSL = "verify_ssl"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+# A preview URL only has to survive the hop from the API response to the audio element
+# that plays it. It stays usable for the whole window rather than being single-use,
+# because players routinely re-request a media URL they have already opened.
+PREVIEW_TOKEN_TTL = 300
 
 
 def _get_publish_addresses(
@@ -184,6 +189,9 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # Preview tokens keyed on the token in the URL, value is
+        # (provider instance id or domain, item id, monotonic expiry).
+        self._preview_tokens: dict[str, tuple[str, str, float]] = {}
 
     @property
     def base_url(self) -> str:
@@ -507,10 +515,31 @@ class WebserverController(CoreController):
                 )
                 return
 
+    def create_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
+        """
+        Return a short-lived URL that serves a preview clip of the given item.
+
+        :param provider_instance_id_or_domain: Music provider that holds the item.
+        :param item_id: Id of the item on that provider.
+        """
+        now = time.monotonic()
+        # minting is the only regular traffic on this store, so it is where expired
+        # tokens are swept as well
+        for expired in [key for key, entry in self._preview_tokens.items() if entry[2] <= now]:
+            del self._preview_tokens[expired]
+        token = secrets.token_urlsafe(16)
+        self._preview_tokens[token] = (
+            provider_instance_id_or_domain,
+            item_id,
+            now + PREVIEW_TOKEN_TTL,
+        )
+        return f"{self.base_url}/preview?token={token}"
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
-        provider_instance_id_or_domain = request.query["provider"]
-        item_id = urllib.parse.unquote(request.query["item_id"])
+        if not (preview := self._resolve_preview_token(request.query.get("token", ""))):
+            raise web.HTTPNotFound(reason="Unknown or expired preview token")
+        provider_instance_id_or_domain, item_id = preview
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
         preview_stream = self.mass.streams.get_preview_stream(
@@ -1252,6 +1281,16 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
+
+    def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
+        """Return the provider and item a preview token grants, or None when it is not valid."""
+        if not token or not (entry := self._preview_tokens.get(token)):
+            return None
+        provider_instance_id_or_domain, item_id, expires = entry
+        if time.monotonic() >= expires:
+            del self._preview_tokens[token]
+            return None
+        return provider_instance_id_or_domain, item_id
 
 
 def _serialize_script_value(value: str) -> str:
