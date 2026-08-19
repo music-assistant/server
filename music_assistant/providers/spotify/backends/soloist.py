@@ -78,12 +78,15 @@ _BYTES_PER_SECOND: Final[int] = CAPTURE_SAMPLE_RATE * _FRAME_BYTES
 # Bounded soloist playback cache (docs: 0 = unlimited, otherwise at least 100 MB).
 _CACHE_SIZE_MB: Final[int] = 512
 
-# The FIFO is read at realtime pace: classic PulseAudio's pipe sink is
-# reader-clocked, and measurements show Spotify's delivery cannot sustain
-# accelerated reads across network/cache conditions. The initial burst fills
-# the downstream buffers after a track change or cold seek; 3s amortizes to
-# ~1.02x over a typical track, well inside the measured 1.1x cold-cache
-# envelope, and a stall is caught by the buffering suspend.
+# The reader clocks the pipe sink, and thus how fast Spotify must deliver.
+# Measurements: 1.1x sustained is clean even on a cold cache, while 1.2x+
+# starves mid-track — so the sustained pace stays conservatively below that.
+# Running slightly above realtime deliberately banks a downstream cushion
+# during each track (~9s per 3 minutes) that absorbs the source-less gap at
+# the next track boundary; at exactly 1.0x every boundary gap reaches the
+# player, where timeline-synced outputs drop the late audio.
+_PACE_RATE: Final[float] = 1.05
+# extra head start right after the sink resumes (track start / cold seek)
 _PACE_BURST_S: Final[float] = 3.0
 
 _READ_CHUNK_SIZE: Final[int] = 32768
@@ -594,11 +597,12 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             yield chunk
             if expected_bytes is not None and bytes_out >= expected_bytes:
                 break
-            # realtime pacing: the reader clocks the pipe sink, and thus how
-            # fast Spotify must deliver — never run ahead of realtime beyond
-            # the initial burst (no pacing needed once the item is over)
+            # pace the read at _PACE_RATE with an initial burst (no pacing
+            # needed once the item is over)
             if pace_start is not None and proc.returncode is None and not state.ended.is_set():
-                resume_at = pace_start + (bytes_out / _BYTES_PER_SECOND) - _PACE_BURST_S
+                resume_at = (
+                    pace_start + bytes_out / (_BYTES_PER_SECOND * _PACE_RATE) - _PACE_BURST_S
+                )
                 if (delay := resume_at - loop.time()) > 0:
                     await asyncio.sleep(delay)
 
