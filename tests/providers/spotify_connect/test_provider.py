@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import ProviderType
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+from music_assistant_models.enums import ConfigEntryType, ProviderType
 
 from music_assistant.providers.spotify_connect import (
     BACKEND_SOLOIST,
@@ -194,9 +194,14 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
             CONF_BACKEND: BACKEND_SOLOIST,
             CONF_API_KEY: "soloist-api-key-0123456789abcdef",
             CONF_SOLOIST_CONSENT: True,
-            CONF_VOLUME_MODE: VOLUME_MODE_SYNC_SPOTIFY,
         },
         tmp_path,
+    )
+    # the volume mode lives in the provider options, not in the setup data
+    provider.config.values[CONF_VOLUME_MODE] = ConfigEntry(
+        key=CONF_VOLUME_MODE,
+        type=ConfigEntryType.STRING,
+        value=VOLUME_MODE_SYNC_SPOTIFY,
     )
 
     backend = provider._create_backend()

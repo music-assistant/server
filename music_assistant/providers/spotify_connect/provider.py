@@ -197,9 +197,7 @@ class SpotifyConnectProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_VOLUME_MODE,
                 type=ConfigEntryType.STRING,
-                # default to the currently effective mode so the options page
-                # shows it until the user overrides it here
-                default_value=self._resolve_volume_mode(),
+                default_value=VOLUME_MODE_PLAYER_ONLY,
                 required=False,
                 options=VOLUME_MODE_OPTIONS,
                 hidden=not is_soloist,
@@ -480,12 +478,10 @@ class SpotifyConnectProvider(PluginProvider):
         )
 
     def _resolve_volume_mode(self) -> str:
-        """Return the effective volume mode: the visible option wins over the setup choice."""
+        """Return the configured volume mode (the provider options page is the only source)."""
         return cast(
             "str",
-            self.config.get_value(CONF_VOLUME_MODE)
-            or self.get_setup_value(CONF_VOLUME_MODE)
-            or VOLUME_MODE_PLAYER_ONLY,
+            self.config.get_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY,
         )
 
     def _not_active_error(self) -> AudioError:

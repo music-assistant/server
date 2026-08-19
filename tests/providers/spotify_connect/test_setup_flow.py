@@ -19,13 +19,8 @@ from music_assistant.providers.spotify_connect import (
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
     CONF_SOLOIST_CONSENT,
-    CONF_VOLUME_MODE,
 )
 from music_assistant.providers.spotify_connect import setup_flow as spotify_flow
-from music_assistant.providers.spotify_connect.soloist.backend import (
-    VOLUME_MODE_PLAYER_ONLY,
-    VOLUME_MODE_SYNC_SPOTIFY,
-)
 from music_assistant.providers.spotify_connect.soloist.runtime import UnsupportedPlatformError
 
 if TYPE_CHECKING:
@@ -37,7 +32,6 @@ _SOLOIST_SETUP_DATA = {
     CONF_BACKEND: BACKEND_SOLOIST,
     CONF_API_KEY: _VALID_API_KEY,
     CONF_SOLOIST_CONSENT: True,
-    CONF_VOLUME_MODE: VOLUME_MODE_PLAYER_ONLY,
     CONF_MASS_PLAYER_ID: "living-room",
     CONF_PUBLISH_NAME: "Living Room Spotify",
 }
@@ -198,9 +192,7 @@ async def test_new_setup_soloist_path() -> None:
         assert step.errors == {CONF_API_KEY: "soloist_api_key_invalid"}
 
         # a valid key advances to the player/name step
-        step = await _submit(
-            session, {CONF_API_KEY: _VALID_API_KEY, CONF_VOLUME_MODE: VOLUME_MODE_SYNC_SPOTIFY}
-        )
+        step = await _submit(session, {CONF_API_KEY: _VALID_API_KEY})
         assert step.step_id == "user"
 
         session.handle_submit(
@@ -213,7 +205,6 @@ async def test_new_setup_soloist_path() -> None:
         CONF_BACKEND: BACKEND_SOLOIST,
         CONF_SOLOIST_CONSENT: True,
         CONF_API_KEY: _VALID_API_KEY,
-        CONF_VOLUME_MODE: VOLUME_MODE_SYNC_SPOTIFY,
         CONF_MASS_PLAYER_ID: "kitchen",
         CONF_PUBLISH_NAME: "Kitchen Spotify",
     }
@@ -338,7 +329,6 @@ async def test_switch_go_librespot_to_soloist_keeps_existing_values() -> None:
         CONF_BACKEND: BACKEND_SOLOIST,
         CONF_SOLOIST_CONSENT: True,
         CONF_API_KEY: _VALID_API_KEY,
-        CONF_VOLUME_MODE: VOLUME_MODE_PLAYER_ONLY,
         CONF_MASS_PLAYER_ID: "living-room",
         CONF_PUBLISH_NAME: "Legacy Speaker",
     }

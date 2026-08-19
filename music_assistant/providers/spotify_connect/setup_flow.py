@@ -28,12 +28,10 @@ from . import (
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
     CONF_SOLOIST_CONSENT,
-    CONF_VOLUME_MODE,
     DEFAULT_PUBLISH_NAME,
     PLAYER_ID_AUTO,
-    VOLUME_MODE_OPTIONS,
 )
-from .soloist import VOLUME_MODE_PLAYER_ONLY, UnsupportedPlatformError, verify_platform_supported
+from .soloist import UnsupportedPlatformError, verify_platform_supported
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -157,7 +155,7 @@ async def _ask_consent(session: SetupSession, prefill: bool) -> bool:
 
 async def _ask_api_key(session: SetupSession, collected: dict[str, Any]) -> None:
     """
-    Collect the Soloist API key and the volume mode.
+    Collect the Soloist API key.
 
     An already stored key (reconfigure) is kept when the field is left empty;
     it is never shown back to the user.
@@ -166,11 +164,6 @@ async def _ask_api_key(session: SetupSession, collected: dict[str, Any]) -> None
     :param collected: The values collected so far; updated in place.
     """
     has_stored_key = bool(collected.get(CONF_API_KEY))
-    volume_mode = str(
-        session.context.values.get(CONF_VOLUME_MODE)
-        or collected.get(CONF_VOLUME_MODE)
-        or VOLUME_MODE_PLAYER_ONLY
-    )
     errors: dict[str, str] | None = None
     while True:
         entries = [
@@ -179,26 +172,16 @@ async def _ask_api_key(session: SetupSession, collected: dict[str, Any]) -> None
                 type=ConfigEntryType.SECURE_STRING,
                 required=not has_stored_key,
             ),
-            ConfigEntry(
-                key=CONF_VOLUME_MODE,
-                type=ConfigEntryType.STRING,
-                required=True,
-                default_value=VOLUME_MODE_PLAYER_ONLY,
-                value=volume_mode,
-                options=VOLUME_MODE_OPTIONS,
-            ),
         ]
         if has_stored_key:
             entries.insert(0, ConfigEntry(key="soloist_api_key_hint", type=ConfigEntryType.LABEL))
         values = await session.form(entries, step_id="soloist_api_key", errors=errors)
         api_key = str(values.get(CONF_API_KEY) or "").strip()
-        volume_mode = str(values.get(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY)
         if api_key or not has_stored_key:
             if len(api_key) < MIN_API_KEY_LENGTH:
                 errors = {CONF_API_KEY: "soloist_api_key_invalid"}
                 continue
             collected[CONF_API_KEY] = api_key
-        collected[CONF_VOLUME_MODE] = volume_mode
         return
 
 
