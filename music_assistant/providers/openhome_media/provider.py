@@ -58,8 +58,6 @@ class OpenHomePlayerProvider(PlayerProvider):
             self.mass.http_session, with_sleep=True
         )
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
-
-        # use Music Assistant dynamic routes to receive subscribed messages
         self.notify_server = OpenHomeNotifyServer(self.requester, self.mass)
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -71,8 +69,6 @@ class OpenHomePlayerProvider(PlayerProvider):
                 tg.create_task(self._device_disconnect(openhome_player))
 
         for player in self.players:
-            # if you have any cleanup logic for the players, you can do that here.
-            # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
@@ -90,7 +86,7 @@ class OpenHomePlayerProvider(PlayerProvider):
         if not player_id:
             return  # guard, we need a player_id to work with
 
-        # handle removed player
+
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
             if mass_player := self.mass.players.get(player_id):
@@ -109,7 +105,6 @@ class OpenHomePlayerProvider(PlayerProvider):
                 )
             mass_player.update_state()
             return
-        # handle new player
         self.logger.debug("Discovered device %s on %s", name, cur_address)
 
     async def discover_players(self, use_multicast: bool = False) -> None:
@@ -126,21 +121,19 @@ class OpenHomePlayerProvider(PlayerProvider):
             async def on_response(discovery_info: CaseInsensitiveDict) -> None:
                 """Process discovered device from ssdp search."""
                 ssdp_st: str = discovery_info.get("ST", discovery_info.get("NT"))
-                # ST=ServiceType NT=NotificationType
                 if not ssdp_st:
                     return
 
                 ssdp_usn: str = discovery_info["USN"]
-                # USN=UniqueServiceName
                 if not (("urn:linn-co-uk:device:Source:1" in ssdp_usn) or
                         ("urn:av-openhome-org:device:Source:1" in ssdp_usn)):
                     return
 
                 ssdp_udn: str | None = discovery_info.get("_udn")
-                assert ssdp_udn is not None  # for type checking
+                assert ssdp_udn is not None
                 if not ssdp_udn and ssdp_usn.startswith("uuid:"):
                     ssdp_udn = ssdp_usn.split("::", maxsplit=1)[0]
-                ssdp_udn = ssdp_udn.replace("uuid:", "") # don't like prefix for no benefit
+                ssdp_udn = ssdp_udn.replace("uuid:", "")
                 if ssdp_udn in discovered_devices:
                     # already processed this device
                     return
@@ -161,14 +154,11 @@ class OpenHomePlayerProvider(PlayerProvider):
         finally:
             self._discovery_running = False
 
-        # TODO implement logic to listen for state changes from the player and update the player object
-
         def reschedule() -> None:
             self.mass.create_task(
-                self.discover_players(use_multicast=not use_multicast)  # toggle multicast
+                self.discover_players(use_multicast=not use_multicast)
             )
 
-        # reschedule self once finished
         self.mass.loop.call_later(300, reschedule)
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
@@ -176,16 +166,13 @@ class OpenHomePlayerProvider(PlayerProvider):
         self.logger.debug(f"DISCOVERED: {udn} {description_url}")
         async with self.lock:
             if openhome_player := self.openhome_players.get(udn):
-                # existing player
                 if (
                         openhome_player.description_url == description_url
                         and openhome_player.available
                 ):
-                    # nothing to do, device is already connected
                     return
                 openhome_player.description_url = description_url
             else:
-                # new player detected, add new OpenHomePlayer instance
                 conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
                 enabled = self.mass.config.get(conf_key, True)
                 self.logger.debug(f"New player: {udn} {conf_key} {enabled}")
