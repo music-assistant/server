@@ -42,6 +42,7 @@ from .constants import (
     ATTR_PROMPT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TIMEZONE,
@@ -54,9 +55,11 @@ from .constants import (
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
+    FAHRENHEIT_COUNTRY_CODES,
     SHOW_START_TIMEOUT_SECONDS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
+    WEATHER_PLACEHOLDER_TOKENS,
     WEB_SEARCH_MODE_RANK,
 )
 from .helpers import (
@@ -642,6 +645,7 @@ class AIRadioRuntimeMixin:
             key = f"{slot.when}:{slot.at_index}"
             grouped[key].append((section_id, slot, placeholders))
 
+        weather_guarded_ids = self._weather_guarded_section_ids(program)
         planned: list[PlannedSection] = []
         order_index = 0
         processed_keys: set[str] = set()
@@ -663,6 +667,7 @@ class AIRadioRuntimeMixin:
                     section_by_id=section_by_id,
                     session_id=session_id,
                     history_events=[(item[0], slot_event(item[1])) for item in grouped_items],
+                    weather_guarded_ids=weather_guarded_ids,
                 )
                 planned.append(merged)
                 order_index += 1
@@ -675,6 +680,7 @@ class AIRadioRuntimeMixin:
             if str(section.get("type", "ai_text")).strip().lower() != "ai_text":
                 continue
             prompt = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
+            weather_required = section_id in weather_guarded_ids
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             if max_chars > 0:
                 prompt += (
@@ -692,6 +698,7 @@ class AIRadioRuntimeMixin:
                     prompt=prompt,
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
+                    weather_required=weather_required,
                     history_events=[(section_id, slot_event(slot))],
                 )
             )
@@ -741,6 +748,7 @@ class AIRadioRuntimeMixin:
         section_by_id: dict[str, dict[str, Any]],
         session_id: str,
         history_events: list[tuple[str, tuple[int, float]]],
+        weather_guarded_ids: set[str],
     ) -> PlannedSection:
         """Build a merged ai_meta section for one slot."""
         section_ids = [item[0] for item in grouped_items]
@@ -749,6 +757,8 @@ class AIRadioRuntimeMixin:
         total_max_chars = 0
         max_web_mode = "disabled"
         merged_names: list[str] = []
+        # a weather+news merge must still air the news half, so only all-guarded merges require it
+        all_weather_required = all(section_id in weather_guarded_ids for section_id in section_ids)
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
             section_name = self._resolve_section_name(section, section_id)
@@ -788,6 +798,7 @@ class AIRadioRuntimeMixin:
             prompt=meta_prompt,
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
+            weather_required=all_weather_required,
             history_events=history_events,
         )
 
@@ -864,6 +875,7 @@ class AIRadioRuntimeMixin:
                 ATTR_PROMPT: section.prompt,
                 ATTR_MAX_CHARS: section.max_chars,
                 ATTR_WEB_SEARCH_MODE: section.web_search_mode,
+                ATTR_WEATHER_REQUIRED: section.weather_required,
             }
         )
         return queue_item
@@ -941,10 +953,9 @@ class AIRadioRuntimeMixin:
 
     def _program_uses_weather_placeholders(self, program: dict[str, Any]) -> bool:
         """Return whether the program references weather placeholders."""
-        weather_tokens = ("<weather_hourly>", "<weather_daily>")
         for section in program.get("sections", []):
             prompt = str(section.get("prompt", ""))
-            if any(token in prompt for token in weather_tokens):
+            if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
                 return True
 
         for rule in program.get("section_order", []):
@@ -955,9 +966,25 @@ class AIRadioRuntimeMixin:
                     continue
                 guards = optional.get("guards", {})
                 required = guards.get("require_placeholders_present", [])
-                if any(str(token) in weather_tokens for token in required):
+                if any(str(token) in WEATHER_PLACEHOLDER_TOKENS for token in required):
                     return True
         return False
+
+    def _weather_guarded_section_ids(self, program: dict[str, Any]) -> set[str]:
+        """Return OPTIONAL section ids whose guards require a weather placeholder."""
+        guarded: set[str] = set()
+        for rule in program.get("section_order", []):
+            flow = rule.get("flow", [])
+            for item in flow:
+                optional = item.get("OPTIONAL")
+                if not optional:
+                    continue
+                section_id = str(optional.get("section", "")).strip()
+                guards = optional.get("guards", {})
+                required = guards.get("require_placeholders_present", [])
+                if section_id and any(str(t) in WEATHER_PLACEHOLDER_TOKENS for t in required):
+                    guarded.add(section_id)
+        return guarded
 
     def _extract_location(self) -> tuple[str, str]:
         """Extract weather location (city/country) from the provider config."""
@@ -985,6 +1012,7 @@ class AIRadioRuntimeMixin:
         timeout_seconds: int,
     ) -> tuple[str, str]:
         """Fetch weather strings from Open-Meteo for weather placeholders."""
+        use_fahrenheit = country.upper() in FAHRENHEIT_COUNTRY_CODES
         geocode_params: dict[str, str | int] = {
             "name": city,
             "count": 10,
@@ -993,7 +1021,7 @@ class AIRadioRuntimeMixin:
         }
         country_code = country.upper() if len(country) == 2 and country.isalpha() else ""
         if country_code:
-            geocode_params["country"] = country_code
+            geocode_params["countryCode"] = country_code
         geocode = await self._open_meteo_get_json(
             "https://geocoding-api.open-meteo.com/v1/search",
             geocode_params,
@@ -1003,7 +1031,7 @@ class AIRadioRuntimeMixin:
         if not isinstance(results, list) or not results:
             raise MusicAssistantError(f"No geocoding result for {city}, {country}")
 
-        selected = results[0]
+        selected: dict[str, Any] | None = None
         country_lc = country.lower()
         for candidate in results:
             if not isinstance(candidate, dict):
@@ -1016,6 +1044,15 @@ class AIRadioRuntimeMixin:
             if country_code and candidate_country_code == country_code:
                 selected = candidate
                 break
+
+        if selected is None:
+            if country:
+                # a same-named city in another country is worse than no forecast at all
+                raise MusicAssistantError(
+                    f"No geocoding result for {city} matched configured country {country}"
+                )
+            first = results[0]
+            selected = first if isinstance(first, dict) else None
 
         if not isinstance(selected, dict):
             raise MusicAssistantError(f"No valid geocoding result for {city}, {country}")
@@ -1035,23 +1072,25 @@ class AIRadioRuntimeMixin:
                 f"Geocoding result for {city}, {country} has invalid coordinates"
             ) from err
         timezone_name = str(selected.get("timezone") or "UTC")
+        forecast_params: dict[str, str | int | float] = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,apparent_temperature,weather_code",
+            "hourly": "temperature_2m,precipitation_probability,weather_code",
+            "daily": (
+                "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"
+            ),
+            "forecast_days": 3,
+            "timezone": timezone_name,
+        }
+        if use_fahrenheit:
+            forecast_params["temperature_unit"] = "fahrenheit"
         forecast = await self._open_meteo_get_json(
             "https://api.open-meteo.com/v1/forecast",
-            {
-                "latitude": lat,
-                "longitude": lon,
-                "current": "temperature_2m,apparent_temperature,weather_code",
-                "hourly": "temperature_2m,precipitation_probability,weather_code",
-                "daily": (
-                    "temperature_2m_max,temperature_2m_min,"
-                    "precipitation_probability_max,weather_code"
-                ),
-                "forecast_days": 3,
-                "timezone": timezone_name,
-            },
+            forecast_params,
             timeout_seconds,
         )
-        return self._format_weather_strings(forecast)
+        return self._format_weather_strings(forecast, unit_suffix="F" if use_fahrenheit else "C")
 
     async def _open_meteo_get_json(
         self,
@@ -1076,7 +1115,9 @@ class AIRadioRuntimeMixin:
             raise MusicAssistantError("Open-Meteo response is not a JSON object")
         return data
 
-    def _format_weather_strings(self, payload: dict[str, Any]) -> tuple[str, str]:
+    def _format_weather_strings(
+        self, payload: dict[str, Any], unit_suffix: str = "C"
+    ) -> tuple[str, str]:
         """Format Open-Meteo payload into weather placeholder strings."""
         hourly = payload.get("hourly", {})
         daily = payload.get("daily", {})
@@ -1100,22 +1141,27 @@ class AIRadioRuntimeMixin:
 
         current_time = str(current.get("time") or "").strip()
         start_index = 0
-        if current_time and current_time in hourly_times:
-            start_index = int(hourly_times.index(current_time))
+        if current_time:
+            # current.time sits on a 15-minute grid while hourly.time is on whole hours;
+            # the summary starts at the first hour that is not in the past
+            for index, hour_time in enumerate(hourly_times):
+                if str(hour_time) >= current_time:
+                    start_index = index
+                    break
 
         max_items = min(len(hourly_times), len(hourly_temp), len(hourly_prec))
         hourly_parts: list[str] = []
         for index in range(start_index, min(start_index + 6, max_items)):
             ts = str(hourly_times[index]).replace("T", " ")
             hourly_parts.append(
-                f"{ts}: {self._format_number(hourly_temp[index])}C, "
+                f"{ts}: {self._format_number(hourly_temp[index])}{unit_suffix}, "
                 f"rain {self._format_number(hourly_prec[index])}%"
             )
         current_text = ""
         if current:
             current_text = (
-                f"now {self._format_number(current.get('temperature_2m'))}C "
-                f"(feels {self._format_number(current.get('apparent_temperature'))}C)"
+                f"now {self._format_number(current.get('temperature_2m'))}{unit_suffix} "
+                f"(feels {self._format_number(current.get('apparent_temperature'))}{unit_suffix})"
             )
         weather_hourly = "; ".join(([current_text] if current_text else []) + hourly_parts)
 
@@ -1135,8 +1181,8 @@ class AIRadioRuntimeMixin:
         for index in range(min(len(daily_times), len(max_t), len(min_t), len(max_prec))):
             daily_parts.append(
                 f"{daily_times[index]}: "
-                f"{self._format_number(min_t[index])}-{self._format_number(max_t[index])}C, "
-                f"rain {self._format_number(max_prec[index])}%"
+                f"{self._format_number(min_t[index])}-{self._format_number(max_t[index])}"
+                f"{unit_suffix}, rain {self._format_number(max_prec[index])}%"
             )
         weather_daily = "; ".join(daily_parts)
         return weather_hourly, weather_daily

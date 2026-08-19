@@ -1,11 +1,11 @@
-"""Tests for the tracks controller explicit filter."""
+"""Tests for the tracks controller."""
 
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.media_items import ProviderMapping
+from music_assistant_models.media_items import Artist, ProviderMapping, UniqueList
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
@@ -159,3 +159,45 @@ async def test_match_provider_uses_full_track_mapping(music: MusicController) ->
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == list(full_track.provider_mappings)
+
+
+async def test_overwrite_update_keeps_artists_when_none_are_given(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An overwrite update carrying no artists must not clear the stored ones."""
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList()
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.tracks.get_library_item(db_track.item_id)
+    assert [artist.name for artist in refreshed.artists] == ["Test Artist"]
+    assert "Ignoring request to clear all artists" in caplog.text
+
+
+async def test_overwrite_update_replaces_artists(mass: MusicAssistant) -> None:
+    """An overwrite update carrying artists still replaces the stored ones."""
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList(
+        [
+            Artist(
+                item_id="other_artist",
+                provider="spotify_1",
+                name="Other Artist",
+                provider_mappings={
+                    ProviderMapping(
+                        item_id="other_artist",
+                        provider_domain="spotify",
+                        provider_instance="spotify_1",
+                    )
+                },
+            )
+        ]
+    )
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.tracks.get_library_item(db_track.item_id)
+    assert [artist.name for artist in refreshed.artists] == ["Other Artist"]
