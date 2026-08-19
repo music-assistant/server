@@ -7,6 +7,8 @@ frontend over a route on the MA webserver.
 Wire format to the browser:
 - binary [22][ts:8 BE int64 µs][1024 x uint8, 0x80 = zero] - waveform tail
 - binary [17][ts:8][flags:1, bit0 = downbeat] - beat schedule entries
+- text {"type":"color","payload":{field: [r,g,b]|null, ...}} - changed
+  color@v1 fields (aiosendspin.models.color.SessionUpdateColor)
 - text {"type":"stream/start"|"stream/clear"|"stream/end", ...}
 - replies to {"type":"client/time"} with {"type":"server/time"} (server clock)
 """
@@ -116,7 +118,7 @@ class MilkdropRelay:
                 dumps(
                     {
                         "type": "stream/start",
-                        "payload": {"visualizer": {"types": ["waveform", "beat"]}},
+                        "payload": {"visualizer": {"types": ["waveform", "beat", "color"]}},
                     }
                 ).decode()
             )
@@ -124,10 +126,13 @@ class MilkdropRelay:
             replayed_beats = self.taps.pending_beat_frames(tap)
             for frame in replayed_waves + replayed_beats:
                 await ws.send_bytes(frame)
+            if tap.last_color:
+                await ws.send_str(dumps({"type": "color", "payload": tap.last_color}).decode())
             self.logger.debug(
-                "Replayed %s waveform frame(s) and %s pending beat(s) to the viewer",
+                "Replayed %s waveform frame(s), %s pending beat(s) and color=%s to the viewer",
                 len(replayed_waves),
                 len(replayed_beats),
+                bool(tap.last_color),
             )
             await self._serve_session(ws, queue)
         finally:

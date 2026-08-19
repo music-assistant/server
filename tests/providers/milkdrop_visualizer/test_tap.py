@@ -5,12 +5,17 @@ from __future__ import annotations
 import struct
 from unittest.mock import Mock
 
+from aiosendspin.models.color import SessionUpdateColor
+from aiosendspin.models.types import UndefinedField
 from aiosendspin.server.roles import AudioChunk
+from orjson import loads
 
 from music_assistant.providers.milkdrop_visualizer.tap import (
     WAVE_SAMPLES,
     MilkdropWaveRole,
+    Tap,
     ViewerQueue,
+    _extract_color_update,
 )
 
 
@@ -109,3 +114,65 @@ def test_viewer_queue_evicts_control_only_when_no_binary_left() -> None:
     drained = [queue._items[i] for i in range(len(queue._items))]
     assert len(drained) == 2
     assert '{"type": "stream/start"}' in drained
+
+
+def _color_payload(**fields: tuple[int, int, int] | None) -> Mock:
+    """Build a ServerStatePayload-shaped mock whose color carries only the given fields."""
+    color = Mock(spec=SessionUpdateColor)
+    for name in (
+        "background_dark",
+        "background_light",
+        "primary",
+        "accent",
+        "on_dark",
+        "on_light",
+    ):
+        setattr(color, name, fields.get(name, UndefinedField()))
+    return Mock(color=color)
+
+
+def test_extract_color_update_skips_undefined_fields() -> None:
+    """Only fields the server actually touched make it into the update."""
+    payload = _color_payload(primary=(10, 20, 30))
+    assert _extract_color_update(payload) == {"primary": (10, 20, 30)}
+
+
+def test_extract_color_update_keeps_explicit_nulls() -> None:
+    """A field explicitly cleared to None is forwarded, not dropped like an undefined one."""
+    payload = _color_payload(primary=None)
+    assert _extract_color_update(payload) == {"primary": None}
+
+
+def test_extract_color_update_returns_empty_when_payload_has_no_color() -> None:
+    """A server/state message that doesn't touch color yields nothing to forward."""
+    assert _extract_color_update(Mock(color=None)) == {}
+
+
+def test_tap_apply_color_merges_into_cached_palette() -> None:
+    """Successive partial updates accumulate rather than overwrite the whole palette."""
+    tap = Tap("milkdrop-test")
+    tap.apply_color({"primary": (10, 20, 30)})
+    tap.apply_color({"accent": (1, 2, 3)})
+    assert tap.last_color == {"primary": (10, 20, 30), "accent": (1, 2, 3)}
+
+
+def test_tap_apply_color_fans_out_only_the_update() -> None:
+    """Viewers receive just what changed, not the whole accumulated palette."""
+    tap = Tap("milkdrop-test")
+    queue = ViewerQueue()
+    tap.queues.add(queue)
+    tap.apply_color({"primary": (10, 20, 30)})
+    tap.apply_color({"accent": (1, 2, 3)})
+    first = loads(queue._items[0])
+    second = loads(queue._items[1])
+    assert first == {"type": "color", "payload": {"primary": [10, 20, 30]}}
+    assert second == {"type": "color", "payload": {"accent": [1, 2, 3]}}
+
+
+def test_tap_apply_color_ignores_an_empty_update() -> None:
+    """An update with nothing new (e.g. an undefined-only payload) fans out nothing."""
+    tap = Tap("milkdrop-test")
+    queue = ViewerQueue()
+    tap.queues.add(queue)
+    tap.apply_color({})
+    assert not queue._items
