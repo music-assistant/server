@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import AsyncProcess
@@ -26,7 +26,7 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     select_free_port,
 )
-from music_assistant.providers.spotify_connect.clients.go_librespot import GoLibrespotClient
+from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
 from music_assistant.providers.spotify_connect.helpers import (
     generate_device_id,
     get_go_librespot_binary,
@@ -34,10 +34,11 @@ from music_assistant.providers.spotify_connect.helpers import (
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendStreamSource,
     BackendTrackMetadata,
 )
 
-from .base import SpotifyConnectBackend
+from .client import GoLibrespotClient
 
 if TYPE_CHECKING:
     import logging
@@ -72,6 +73,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         name: str,
         logger: logging.Logger,
         event_callback: BackendEventCallback,
+        crossfade_ms: int = 0,
+        loudness_normalization: bool = True,
     ) -> None:
         """
         Initialize the backend (cheap; the daemon is launched in ``start``).
@@ -84,6 +87,10 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         :param logger: Logger to use for diagnostics.
         :param event_callback: Awaited with a normalized BackendEvent for every
             state change the daemon reports.
+        :param crossfade_ms: Crossfade duration between tracks in milliseconds
+            (0 disables crossfade).
+        :param loudness_normalization: Whether Spotify's loudness normalization
+            should be applied to the audio.
         """
         self.mass = mass
         self.logger = logger
@@ -91,6 +98,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self._instance_id = instance_id
         self._publish_name = publish_name
         self._event_callback = event_callback
+        self._crossfade_ms = crossfade_ms
+        self._loudness_normalization = loudness_normalization
         self.cache_dir = os.path.join(self.mass.cache_path, instance_id)
         self._binary: str | None = None
         self._api_port: int = 0
@@ -157,6 +166,16 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 with suppress(asyncio.CancelledError):
                     await task
 
+    async def get_stream_source(self) -> BackendStreamSource:
+        """Return the CUSTOM stream source, consumed through the audio reader."""
+        # CUSTOM: the core pulls PCM through get_audio_reader. `-fflags nobuffer`
+        # keeps ffmpeg's own input buffering low so the controller's realtime
+        # pacer owns the (small, bounded) read-ahead.
+        return BackendStreamSource(
+            stream_type=StreamType.CUSTOM,
+            extra_input_args=["-fflags", "nobuffer"],
+        )
+
     def get_audio_reader(self) -> AudioChunkReader | None:
         """
         Return a PCM chunk reader bound to the currently running daemon.
@@ -188,6 +207,11 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         """Pause playback on the active session."""
         assert self._client is not None
         await self._client.pause()
+
+    async def deactivate(self) -> None:
+        """Release this device as the active Spotify Connect device."""
+        assert self._client is not None
+        await self._client.stop()
 
     async def next(self) -> None:
         """Skip to the next track."""
@@ -250,6 +274,11 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             # the provider pushes the player's volume instead.
             "external_volume": True,
             "volume_steps": VOLUME_STEPS,
+            # normalisation is applied by go-librespot itself (-14 LUFS target);
+            # crossfade_duration is in milliseconds, 0 disables it. The crossfade
+            # key needs go-librespot >= 0.8.0; older daemons ignore unknown keys.
+            "normalisation_disabled": not self._loudness_normalization,
+            "crossfade_duration": self._crossfade_ms,
             "zeroconf_enabled": True,
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},

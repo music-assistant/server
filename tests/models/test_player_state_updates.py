@@ -99,6 +99,18 @@ class TestUpdateStateChangeDetection:
         state_cls.assert_called_once()
         assert player.state.volume_level == 55
 
+    def test_changed_privacy_rebuilds_state(self, player: MockPlayer) -> None:
+        """A player turning private must reach clients, which decide where to show it."""
+        player._attr_private = True
+
+        with patch.object(
+            player_module, "PlayerState", wraps=player_module.PlayerState
+        ) as state_cls:
+            player.update_state(signal_event=False)
+
+        state_cls.assert_called_once()
+        assert player.state.private is True
+
     def test_mark_state_dirty_forces_recalculation(self, player: MockPlayer) -> None:
         """mark_state_dirty recalculates even when no own input changed."""
         with patch.object(

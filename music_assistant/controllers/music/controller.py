@@ -112,6 +112,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
+    album_retail_suffix_sql_match,
     compare_album_name,
     compare_strings,
     compare_track,
@@ -161,16 +162,17 @@ def _album_title_match(base: str, other: str) -> str:
     # a provider that spells out the retail suffix stores the album under the plain name
     # plus that suffix, so the pair is related from either side. The raw title decides which
     # side spelled it out, so an ordinary title that merely ends in those letters ("Step") is
-    # left alone; any dash style qualifies, only the space in front counts. This relates more
-    # titles than the album comparison accepts, which is what confirms the pair afterwards.
+    # left alone. This relates more titles than the album comparison accepts, which is what
+    # confirms the pair afterwards.
     matches = [f"{other}.search_name = {base}.search_name"]
     for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
         matches.append(
-            f"(rtrim({other}.name) LIKE '% {suffix}' "
+            f"({album_retail_suffix_sql_match(f'{other}.name', suffix)} "
             f"AND {other}.search_name = {base}.search_name || '{suffix}')"
         )
         matches.append(
-            f"(rtrim({base}.name) LIKE '% {suffix}' AND {other}.search_name = "
+            f"({album_retail_suffix_sql_match(f'{base}.name', suffix)} "
+            f"AND {other}.search_name = "
             f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
         )
     return " OR ".join(matches)

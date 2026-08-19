@@ -6,6 +6,29 @@ Music Assistant is an async Python music library manager that connects to stream
 
 - NEVER automatically reply on Github (PR's or Discussions) without explicit consent from the developer.
 
+## Usage policy
+
+Music Assistant streams music to the user's own speakers. It is not a way to download or keep
+copies of it, and we do not accept changes that make it one — see the
+[Usage Policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md).
+
+Flag it in review, and never write it yourself, when a change would:
+
+- expose a music service's own audio URL to anything outside the server (an API result, a
+  media item, or a route that hands it to a caller)
+- decode protected audio outside what the user's own account is entitled to, or keep the
+  decoded result rather than only playing it
+- call a service's API without throttling, or re-fetch what the cache already holds
+- write decoded audio from a streaming provider to disk
+- bypass a subscription tier, regional availability, or a service's stated concurrent-stream
+  limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)
+- add downloading, exporting, or archiving of provider audio, however it is framed
+
+Some guards in the codebase exist only for this reason and read as removable if you do not know
+that — the readrate pacing on the stream endpoints, and the filesystem-only restriction on
+background audio analysis. Leave them in place. `DEVELOPMENT.md` carries the same rules for
+provider authors.
+
 ## Development Commands
 
 - `scripts/setup.sh` - Initial setup (venv, dependencies, pre-commit hooks). Re-run after pulling latest code.

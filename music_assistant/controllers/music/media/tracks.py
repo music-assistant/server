@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -599,11 +598,7 @@ class TracksController(MediaControllerBase[Track]):
         if preview := track.metadata.preview:
             return preview
         # fallback to a preview/sample hosted by our own webserver
-        enc_track_id = urllib.parse.quote(item_id)
-        return (
-            f"{self.mass.webserver.base_url}/preview?"
-            f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
-        )
+        return self.mass.webserver.create_preview_url(provider_instance_id_or_domain, item_id)
 
     async def get_library_track_albums(
         self,

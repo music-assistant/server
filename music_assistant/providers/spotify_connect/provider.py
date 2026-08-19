@@ -12,39 +12,62 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     MediaType,
     PlaybackState,
     ProviderFeature,
     SourceControl,
-    StreamType,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
-from .backends.go_librespot import GoLibrespotBackend
+from .go_librespot import GoLibrespotBackend
 from .models import BackendEventType
+from .soloist import VOLUME_MODE_PLAYER_ONLY, VOLUME_MODE_SYNC_SPOTIFY, SoloistBackend
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
 
-    from .backends.base import SpotifyConnectBackend
+    from .base import SpotifyConnectBackend
     from .models import BackendEvent, BackendTrackMetadata
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
 DEFAULT_PUBLISH_NAME = "Music Assistant"
+
+# Backend selection, collected by the setup flow (stored in setup_data).
+CONF_BACKEND = "backend"
+BACKEND_GO_LIBRESPOT = "go_librespot"
+BACKEND_SOLOIST = "soloist"
+
+# Soloist-specific values collected by the setup flow (see CONF_BACKEND).
+CONF_API_KEY = "soloist_api_key"
+CONF_SOLOIST_CONSENT = "soloist_download_consent"
+CONF_VOLUME_MODE = "volume_mode"
+
+# Playback behavior applied by the Spotify engine itself (both backends).
+CONF_LOUDNESS_NORMALIZATION = "loudness_normalization"
+MAX_CROSSFADE_DURATION = 12  # seconds, matching the Spotify apps' slider
+
+# The selectable volume modes (labels resolve from strings.json), shared
+# between the runtime option and the setup flow.
+VOLUME_MODE_OPTIONS: Final = [
+    ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
+    ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
+]
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -98,14 +121,7 @@ class SpotifyConnectProvider(PluginProvider):
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
-        self._backend: SpotifyConnectBackend = GoLibrespotBackend(
-            mass,
-            instance_id=self.instance_id,
-            publish_name=self._publish_name,
-            name=self.name,
-            logger=self.logger,
-            event_callback=self._handle_backend_event,
-        )
+        self._backend: SpotifyConnectBackend = self._create_backend()
         self.logger.debug(
             "Init plugin with name '%s' for player '%s' with instance id '%s'",
             self.name,
@@ -136,6 +152,11 @@ class SpotifyConnectProvider(PluginProvider):
         # arrives during the debounce so we don't act on stale state from a dying
         # session.
         self._pending_play_media_task: asyncio.Task[None] | None = None
+        # holds the in-flight stop of a paused player (pipe-fed backends
+        # only); the stop dispatches right away, but a 'playing' event cancels
+        # it while it is still in flight (a slow player can hold it for up to
+        # 10s), so a resume is never killed by a stop landing late.
+        self._pending_pause_stop_task: asyncio.Task[None] | None = None
         self._last_session_active_time: float = 0
         self._last_volume_sent: int | None = None
         # Last context/track URIs seen on the event stream. Used to take playback
@@ -151,7 +172,54 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return runtime options for this provider."""
-        return (CONF_ENTRY_WARN_PREVIEW,)
+        # The backend selection and the soloist secrets are managed by the setup
+        # flow (stored in setup_data) and stay hidden; the volume mode is a
+        # visible runtime option for soloist configs.
+        is_soloist = self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_BACKEND,
+                type=ConfigEntryType.STRING,
+                default_value=BACKEND_GO_LIBRESPOT,
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_SOLOIST_CONSENT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_MODE,
+                type=ConfigEntryType.STRING,
+                default_value=VOLUME_MODE_PLAYER_ONLY,
+                required=False,
+                options=VOLUME_MODE_OPTIONS,
+                hidden=not is_soloist,
+            ),
+            ConfigEntry(
+                key=CONF_CROSSFADE_DURATION,
+                type=ConfigEntryType.INTEGER,
+                range=(0, MAX_CROSSFADE_DURATION),
+                default_value=0,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_LOUDNESS_NORMALIZATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -160,6 +228,7 @@ class SpotifyConnectProvider(PluginProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._cancel_pending_play_media()
+        self._cancel_pending_pause_stop()
         await self._backend.stop()
 
     @property
@@ -181,9 +250,9 @@ class SpotifyConnectProvider(PluginProvider):
         streamdetails without claiming the source and blocking a cross-queue
         handoff.
 
-        Raises AudioError when MA is not the active Spotify Connect device, since
-        playback can only be acquired while a Spotify session is connected to us
-        (entry must come from the Spotify app — see can_initiate below).
+        Raises AudioError when MA is not the active Spotify Connect device and
+        no previous playback context is known to resume — the user then has to
+        start playback from the Spotify app once.
         """
         if item_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
@@ -192,25 +261,24 @@ class SpotifyConnectProvider(PluginProvider):
         # playback back (makes us the active device) before audio is pulled.
         if not self._playing and not self._spotify_session_active and not self._last_context_uri:
             raise self._not_active_error()
-        # CUSTOM: the core pulls PCM from get_audio_stream. Reading the backend's
-        # audio pipe means a consumer is always attached, and it lets us end the
-        # stream cleanly when playback pauses so the player leaves the playing
-        # state. decoded_audio_format tells the core the PCM format while
-        # audio_format keeps the source codec for display; MA resamples to each
-        # player's format as needed.
-        # `-fflags nobuffer` keeps ffmpeg's own input buffering low so the
-        # controller's realtime pacer owns the (small, bounded) read-ahead.
+        # The backend describes how its audio is consumed: CUSTOM (the core pulls
+        # PCM from get_audio_stream) or a named pipe read directly by ffmpeg.
+        # decoded_audio_format tells the core the PCM format while audio_format
+        # keeps the source codec for display; MA resamples to each player's
+        # format as needed.
         # expiration=0: never reuse a cached streamdetails so the active-device
         # check above re-runs on every play attempt.
+        stream_source = await self._backend.get_stream_source()
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=self._backend.audio_format,
             decoded_audio_format=self._backend.decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,
-            stream_type=StreamType.CUSTOM,
+            stream_type=stream_source.stream_type,
+            path=stream_source.path,
             stream_metadata=self._stream_metadata,
-            extra_input_args=["-fflags", "nobuffer"],
+            extra_input_args=stream_source.extra_input_args,
             expiration=0,
         )
 
@@ -222,10 +290,15 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Yield raw PCM from the backend's audio pipe for the live AudioSource.
 
-        When playback pauses the backend stops writing PCM; we then end the
-        stream (clean EOF) so the consuming player leaves the playing state. The
-        next ``playing`` event re-triggers playback. ``seek_position`` is ignored —
-        seeking is handled upstream by Spotify, not by replaying the bytestream.
+        Only used for backends with a CUSTOM stream source (NAMED_PIPE backends
+        are read directly by the streams controller). When playback pauses the
+        backend stops writing PCM; we then end the stream (clean EOF) so the
+        consuming player leaves the playing state. The next ``playing`` event
+        re-triggers playback.
+
+        :param streamdetails: The StreamDetails of the AudioSource being streamed.
+        :param seek_position: Ignored — seeking is handled upstream by Spotify,
+            not by replaying the bytestream.
         """
         if streamdetails.item_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {streamdetails.item_id}")
@@ -341,6 +414,17 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
+        if self._playing:
+            # MA-side stop/queue-clear: release the Spotify session so the app
+            # drops the device as its playback target — the daemon would
+            # otherwise keep playing into a pipe nobody consumes and the app
+            # would stay tethered to the device. (Teardowns caused by a
+            # Spotify-side pause, deselect or a player handoff never reach
+            # here: those cleared _playing or replaced the session id first.)
+            try:
+                await self._backend.deactivate()
+            except Exception as err:
+                self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
     async def on_source_control(
         self,
@@ -384,6 +468,54 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.warning("Failed to send volume command to backend: %s", err)
             raise
 
+    def _create_backend(self) -> SpotifyConnectBackend:
+        """Construct the configured Spotify Connect backend implementation."""
+        # The backend choice and soloist secrets are collected by the setup flow
+        # into setup_data; a config migrated from before the backend choice
+        # existed yields None here, which intentionally selects go-librespot
+        # (the equality check must keep treating None as the default).
+        if self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST:
+            return SoloistBackend(
+                self.mass,
+                instance_id=self.instance_id,
+                publish_name=self._publish_name,
+                name=self.name,
+                logger=self.logger,
+                event_callback=self._handle_backend_event,
+                api_key=cast("str", self.get_setup_value(CONF_API_KEY) or ""),
+                consent=bool(self.get_setup_value(CONF_SOLOIST_CONSENT)),
+                volume_mode=self._resolve_volume_mode(),
+                crossfade_ms=self._resolve_crossfade_ms(),
+                loudness_normalization=self._resolve_loudness_normalization(),
+            )
+        return GoLibrespotBackend(
+            self.mass,
+            instance_id=self.instance_id,
+            publish_name=self._publish_name,
+            name=self.name,
+            logger=self.logger,
+            event_callback=self._handle_backend_event,
+            crossfade_ms=self._resolve_crossfade_ms(),
+            loudness_normalization=self._resolve_loudness_normalization(),
+        )
+
+    def _resolve_volume_mode(self) -> str:
+        """Return the configured volume mode (the provider options page is the only source)."""
+        return cast(
+            "str",
+            self.config.get_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY,
+        )
+
+    def _resolve_crossfade_ms(self) -> int:
+        """Return the configured crossfade duration in milliseconds (0 = disabled)."""
+        value = cast("int | None", self.config.get_value(CONF_CROSSFADE_DURATION))
+        return max(0, min(int(value or 0), MAX_CROSSFADE_DURATION)) * 1000
+
+    def _resolve_loudness_normalization(self) -> bool:
+        """Return whether Spotify's loudness normalization should be enabled."""
+        value = self.config.get_value(CONF_LOUDNESS_NORMALIZATION)
+        return True if value is None else bool(value)
+
     def _not_active_error(self) -> AudioError:
         """Build the localized 'not the active Spotify device' error, naming this device."""
         return AudioError(
@@ -418,9 +550,10 @@ class SpotifyConnectProvider(PluginProvider):
             can_next_previous=True,
             exclusive=True,
             allow_external_trigger=True,
-            # Cold-start from MA is unreliable (Spotify needs an existing
-            # playback context), so only allow external entry via the Spotify app.
-            can_initiate=False,
+            # Browsable/startable from MA: playback resumes the last known
+            # Spotify context (claiming active device status). Without any
+            # prior context a localized error points the user to the app.
+            can_initiate=True,
         )
 
     def _get_target_player_id(self) -> str | None:
@@ -473,12 +606,53 @@ class SpotifyConnectProvider(PluginProvider):
                 return False
             await asyncio.sleep(0.1)
 
+    async def _stop_paused_player(self, player_id: str) -> None:
+        """
+        Stop the active player after a pause on a backend without stream EOF.
+
+        :param player_id: The player currently consuming the live source.
+        """
+        self.logger.debug("Stopping player %s after pause", player_id)
+        try:
+            # bounded: an unresponsive player (e.g. a throttled web client) must
+            # not hold this task - and the player's playback lock - indefinitely
+            async with asyncio.timeout(10):
+                await self.mass.players.cmd_stop(player_id)
+            self.logger.debug("Player %s stopped after pause", player_id)
+        except TimeoutError:
+            self.logger.warning("Player %s did not stop within 10s after pause", player_id)
+        except Exception as err:
+            self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
+
     def _cancel_pending_play_media(self) -> None:
         """Cancel any pending deferred play_media trigger."""
         task = self._pending_play_media_task
         if task is not None and not task.done():
             task.cancel()
         self._pending_play_media_task = None
+
+    def _schedule_pause_stop(self, player_id: str) -> None:
+        """
+        Dispatch the stop of the paused player, replacing a still-pending one.
+
+        :param player_id: The player currently consuming the live source.
+        """
+        self._cancel_pending_pause_stop()
+        task = self.mass.create_task(self._stop_paused_player(player_id))
+        self._pending_pause_stop_task = task
+        task.add_done_callback(self._on_pause_stop_done)
+
+    def _cancel_pending_pause_stop(self) -> None:
+        """Cancel any pending deferred stop of a paused player."""
+        task = self._pending_pause_stop_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._pending_pause_stop_task = None
+
+    def _on_pause_stop_done(self, task: asyncio.Task[None]) -> None:
+        """Drop the pause-stop handle once its task finished (unless already replaced)."""
+        if self._pending_pause_stop_task is task:
+            self._pending_pause_stop_task = None
 
     async def _deferred_play_media_fire(self) -> None:
         """
@@ -545,6 +719,13 @@ class SpotifyConnectProvider(PluginProvider):
         if event.type is BackendEventType.FATAL_ERROR:
             self.unload_with_error(event.error or "Spotify Connect backend failed")
             return
+        if event.type is BackendEventType.ERROR:
+            # non-fatal backend error: surface it in the log only
+            self.logger.warning("Spotify Connect backend error: %s", event.error)
+            return
+        if event.type is BackendEventType.AUTH_REQUIRED:
+            self._handle_auth_required()
+            return
 
         # Remember the latest context/track so we can take playback back if the
         # user moves the active device away in the Spotify app (see on_source_selected).
@@ -563,7 +744,9 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.info("Spotify Connect session active for %s", self.name)
             # A new session starts at the backend's 100% volume default; push the
             # target player's volume so the Spotify app's slider is correct from
-            # device selection, before any playback starts.
+            # device selection, before any playback starts. (In the soloist
+            # player_only mode the backend pins 100% and ignores the pushed
+            # value — the app slider staying at 100 there is by design.)
             if player_id := self._get_target_player_id():
                 await self._sync_player_volume_to_spotify(player_id)
         elif event.type is BackendEventType.SESSION_INACTIVE:
@@ -572,26 +755,49 @@ class SpotifyConnectProvider(PluginProvider):
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
-                self.mass.create_task(self.mass.players.cmd_stop(prev_player_id))
+                # bounded like the pause path: a slow player must not hold the
+                # stop (and its playback lock) indefinitely
+                self._schedule_pause_stop(prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:
             self._playing = True
+            # A resume can arrive while the pause-stop is still in flight on a
+            # slow player; cancel it so it doesn't kill the restarted stream.
+            # (a stop that already completed is fine: play_media below restarts)
+            self._cancel_pending_pause_stop()
             # Externally triggered playback: kick a play_media on the target MA
             # player so the audio reaches a speaker. Deferred so a rapid
             # playing/active burst from a reconnecting session can cancel it.
-            if not self._in_use_by_queue and (
-                self._pending_play_media_task is None or self._pending_play_media_task.done()
+            # Only while the session is active: a daemon playing without being
+            # the active Connect device (e.g. right after a deactivate) must
+            # not grab MA players in a loop.
+            if (
+                not self._in_use_by_queue
+                and self._spotify_session_active
+                and (self._pending_play_media_task is None or self._pending_play_media_task.done())
             ):
                 self._pending_play_media_task = self.mass.create_task(
                     self._deferred_play_media_fire()
                 )
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
+            was_playing = self._playing
             self._playing = False
             # A pause/stop is the definitive "don't start": cancel a deferred fire
             # from a now-stale 'playing'. The active get_audio_stream sees the PCM
             # stop and ends the stream (clean EOF), so the player leaves the playing
             # state; the next 'playing' event re-fires play_media to resume.
             self._cancel_pending_play_media()
+            # A pipe-fed backend keeps delivering silence on pause (no EOF), so
+            # the player must be stopped actively; the claim stays so the next
+            # 'playing' event resumes playback like the EOF path does. Only the
+            # playing→paused transition fires it: the backend reports a pause
+            # through multiple events (state delta + snapshot).
+            if (
+                was_playing
+                and not self._backend.stream_ends_on_pause
+                and (player_id := self._active_player_id)
+            ):
+                self._schedule_pause_stop(player_id)
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(event.metadata)
@@ -610,6 +816,22 @@ class SpotifyConnectProvider(PluginProvider):
                 self.instance_id,
                 self._stream_metadata,
             )
+
+    def _handle_auth_required(self) -> None:
+        """Handle a lost Spotify login: reset session state and unload with an auth error."""
+        # the backend lost its Spotify login mid-session: stop treating the
+        # device as active and unload with an auth error so the UI flags
+        # the provider and routes the user through the setup flow
+        self._playing = False
+        self._spotify_session_active = False
+        self.logger.warning("Spotify Connect backend for %s requires (re)authentication", self.name)
+        self.unload_with_error(
+            LoginFailed(
+                "Spotify authentication required",
+                translation_key="soloist_auth_required",
+                translation_owner=self.translation_owner,
+            )
+        )
 
     def _apply_metadata(self, metadata: BackendTrackMetadata) -> None:
         """Update the live StreamMetadata from a normalized metadata event."""

@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import pytest
 from aiohttp import ClientError, WSMessage, WSMsgType
 
-from music_assistant.providers.spotify_connect import soloist
-from music_assistant.providers.spotify_connect.soloist import (
+from music_assistant.providers.spotify_connect.soloist import runtime as soloist
+from music_assistant.providers.spotify_connect.soloist.runtime import (
     BuildExpiredError,
     ConsentRequiredError,
     DownloadFailedError,
@@ -190,6 +190,12 @@ async def _fake_check_output(*args: str, **_kwargs: Any) -> tuple[int, bytes]:
 def fake_version_cmd(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the --version subprocess call with a marker-based fake."""
     monkeypatch.setattr(soloist, "check_output", _fake_check_output)
+
+
+@pytest.fixture(autouse=True)
+def _reset_verify_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the module-level recent-verification stamp between tests."""
+    monkeypatch.setattr(soloist, "_last_verified", None)
 
 
 @pytest.fixture
@@ -477,6 +483,35 @@ async def test_offline_with_expired_binary_raises(tmp_path: Path) -> None:
 
     with pytest.raises(BuildExpiredError):
         await manager.ensure_fresh(consent=True)
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_recent_verification_shared_across_managers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back-to-back ensure_fresh calls run the --version/CDN verification only once."""
+    archive = _build_archive(tmp_path / "a.tar.gz", {"soloist": _elf_binary("x86_64")})
+    manager1, session1 = _make_manager(tmp_path, _serve_archive(archive))
+    await manager1.ensure_binary(consent=True)
+    _age_metadata(tmp_path)  # old enough that a full verification also HEADs the CDN
+    version_calls: list[str] = []
+
+    async def _counting_check_output(*args: str, **kwargs: Any) -> tuple[int, bytes]:
+        version_calls.append(args[0])
+        return await _fake_check_output(*args, **kwargs)
+
+    monkeypatch.setattr(soloist, "check_output", _counting_check_output)
+    session1.requests.clear()
+    manager2, session2 = _make_manager(tmp_path, _serve_archive(archive))
+
+    path1 = await manager1.ensure_fresh(consent=True)
+    path2 = await manager2.ensure_fresh(consent=True)
+
+    assert path1 == path2 == manager1.binary_path
+    # the second manager reuses the just-completed verification entirely
+    assert len(version_calls) == 1
+    assert session1.requests == [("HEAD", _CDN_URL.format(arch="x86_64"))]
+    assert session2.requests == []
 
 
 @pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
@@ -817,3 +852,30 @@ async def test_expired_by_timestamp_is_replaced(tmp_path: Path) -> None:
     path = await manager.ensure_fresh(consent=True)
 
     assert b"GOOD-BUILD-B" in path.read_bytes()
+
+
+def test_parse_build_timestamp_reads_the_real_epoch_format() -> None:
+    """The observed 1.3.7 --version output carries the build date as a unix epoch."""
+    raw = "soloist 1.3.7.345 build 1787077868 (20260818) (gb24005ef46) (linux/aarch64)"
+    assert soloist._parse_build_timestamp(raw) == 1787077868.0
+    # an unrelated small number is not mistaken for a timestamp
+    assert soloist._parse_build_timestamp("soloist 1.2.3 build 42") is None
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_force_refresh_bypasses_verification_cache(tmp_path: Path) -> None:
+    """force=True re-verifies even inside the recently-verified window (exit-10 path)."""
+    archive = _build_archive(tmp_path / "a.tar.gz", {"soloist": _elf_binary("x86_64")})
+    manager, session = _make_manager(tmp_path, _serve_archive(archive))
+    await manager.ensure_fresh(consent=True)
+    # age the install into the update window: a real re-verification is now
+    # observable as an update check against the CDN
+    _age_metadata(tmp_path)
+    # within the cache window a plain call still short-circuits...
+    session.requests.clear()
+    await manager.ensure_fresh(consent=True)
+    assert session.requests == []
+    # ...but a forced call re-verifies against the CDN (same build: no download)
+    await manager.ensure_fresh(consent=True, force=True)
+    assert soloist._last_verified is not None
+    assert [method for method, _ in session.requests] == ["HEAD"]

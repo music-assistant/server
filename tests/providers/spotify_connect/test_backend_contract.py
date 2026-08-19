@@ -9,23 +9,26 @@ and commands flow out through the backend methods — no network, no processes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, SourceControl
+from music_assistant_models.enums import ContentType, MediaType, SourceControl, StreamType
+from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.providers.spotify_connect import provider as provider_mod
-from music_assistant.providers.spotify_connect.backends.base import SpotifyConnectBackend
-from music_assistant.providers.spotify_connect.backends.go_librespot import (
+from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendStreamSource,
     BackendTrackMetadata,
 )
 from music_assistant.providers.spotify_connect.provider import (
@@ -77,6 +80,13 @@ class FakeBackend(SpotifyConnectBackend):
         """Record the stop call."""
         self.calls.append(("stop", None))
 
+    async def get_stream_source(self) -> BackendStreamSource:
+        """Return the same CUSTOM stream source the go-librespot backend uses."""
+        return BackendStreamSource(
+            stream_type=StreamType.CUSTOM,
+            extra_input_args=["-fflags", "nobuffer"],
+        )
+
     def get_audio_reader(self) -> AudioChunkReader | None:
         """Return no audio reader (audio is not exercised in these tests)."""
         return None
@@ -96,6 +106,10 @@ class FakeBackend(SpotifyConnectBackend):
     async def pause(self) -> None:
         """Record a pause command."""
         self.calls.append(("pause", None))
+
+    async def deactivate(self) -> None:
+        """Record a deactivate command."""
+        self.calls.append(("deactivate", None))
 
     async def next(self) -> None:
         """Record a next command."""
@@ -141,6 +155,8 @@ def _make_provider(
     provider.logger = MagicMock()
     provider.config = MagicMock()
     provider.config.instance_id = _INSTANCE_ID
+    provider.manifest = MagicMock()
+    provider.manifest.domain = "spotify_connect"
     provider._backend = backend
     provider._publish_name = "Test Device"
     provider._default_player_id = PLAYER_ID_AUTO
@@ -153,6 +169,7 @@ def _make_provider(
     provider._playing = playing
     provider._spotify_session_active = session_active
     provider._pending_play_media_task = None
+    provider._pending_pause_stop_task = None
     provider._last_session_active_time = 0
     provider._last_volume_sent = last_volume_sent
     provider._last_context_uri = last_context_uri
@@ -192,7 +209,7 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     """An external 'playing' event starts play_media on the target player after the debounce."""
     monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
     backend = FakeBackend()
-    provider, mass = _make_provider(backend, active_player_id="player1")
+    provider, mass = _make_provider(backend, session_active=True, active_player_id="player1")
     mass.players.get_player.return_value = MagicMock()
 
     await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
@@ -204,11 +221,22 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
 
 
+async def test_playing_without_active_session_fires_no_play_media() -> None:
+    """A 'playing' from a daemon that is not the active Connect device grabs no player."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend, active_player_id="player1")
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+
+    assert provider._playing is True
+    assert provider._pending_play_media_task is None
+
+
 async def test_paused_within_debounce_cancels_play_media(monkeypatch: pytest.MonkeyPatch) -> None:
     """A 'paused' during the debounce window cancels the deferred play_media."""
     monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 5.0)
     backend = FakeBackend()
-    provider, mass = _make_provider(backend, active_player_id="player1")
+    provider, mass = _make_provider(backend, session_active=True, active_player_id="player1")
     mass.players.get_player.return_value = MagicMock()
 
     await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
@@ -328,6 +356,8 @@ async def test_session_inactive_stops_active_player() -> None:
     )
 
     await provider._handle_backend_event(BackendEvent(BackendEventType.SESSION_INACTIVE))
+    # the stop runs as a bounded background task; let it start
+    await asyncio.sleep(0)
 
     assert provider._spotify_session_active is False
     assert provider._playing is False
@@ -335,6 +365,58 @@ async def test_session_inactive_stops_active_player() -> None:
     assert provider._in_use_by_queue is None
     assert provider._active_session_id is None
     mass.players.cmd_stop.assert_called_once_with("player1")
+
+
+async def test_stream_teardown_while_playing_releases_spotify() -> None:
+    """An MA-side stop/queue-clear releases the Spotify session so the app drops the device."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
+
+    assert provider._in_use_by_queue is None
+    assert provider._active_session_id is None
+    assert backend.calls == [("deactivate", None)]
+
+
+async def test_stream_teardown_after_spotify_pause_does_not_pause_again() -> None:
+    """A teardown that resulted from a Spotify-side pause sends no pause command."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(
+        backend,
+        playing=False,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
+
+    assert backend.calls == []
+
+
+async def test_stale_stream_teardown_is_ignored() -> None:
+    """A late unselect from a superseded stream session releases and pauses nothing."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess2",
+    )
+
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
+
+    assert provider._in_use_by_queue == "queue1"
+    assert provider._active_session_id == "sess2"
+    assert backend.calls == []
 
 
 async def test_connection_lost_resets_session_without_stopping_players() -> None:
@@ -370,6 +452,21 @@ async def test_fatal_error_unloads_provider_with_error() -> None:
     mass.call_later.assert_called_once_with(
         1, mass.unload_provider_with_error, _INSTANCE_ID, "daemon kaput"
     )
+
+
+async def test_auth_required_resets_session_and_unloads_with_auth_error() -> None:
+    """AUTH_REQUIRED resets session state and unloads the provider with an auth error."""
+    backend = FakeBackend()
+    provider, mass = _make_provider(backend, playing=True, session_active=True)
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.AUTH_REQUIRED))
+
+    assert provider._playing is False
+    assert provider._spotify_session_active is False
+    mass.call_later.assert_called_once()
+    error = mass.call_later.call_args.args[3]
+    assert isinstance(error, LoginFailed)
+    assert error.translation_key == "soloist_auth_required"
 
 
 async def test_source_control_commands_dispatch_to_backend() -> None:
@@ -446,6 +543,34 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
     await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
 
     assert backend.calls == [("resume", None), ("set_volume", 25)]
+
+
+async def test_get_stream_details_built_from_backend_stream_source() -> None:
+    """StreamDetails mirror the backend's stream source, formats and live metadata."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    details = await provider.get_stream_details(AUDIO_SOURCE_ID, MediaType.AUDIO_SOURCE)
+
+    assert details.provider == _INSTANCE_ID
+    assert details.item_id == AUDIO_SOURCE_ID
+    assert details.media_type is MediaType.AUDIO_SOURCE
+    assert details.stream_type is StreamType.CUSTOM
+    assert details.path is None
+    assert details.extra_input_args == ["-fflags", "nobuffer"]
+    assert details.audio_format is backend.audio_format
+    assert details.decoded_audio_format is backend.decoded_audio_format
+    assert details.stream_metadata is provider._stream_metadata
+    assert details.expiration == 0
+
+
+async def test_go_librespot_stream_source_is_custom_with_nobuffer() -> None:
+    """The go-librespot backend delivers audio as a CUSTOM source with unbuffered input."""
+    source = await object.__new__(GoLibrespotBackend).get_stream_source()
+
+    assert source.stream_type is StreamType.CUSTOM
+    assert source.path is None
+    assert source.extra_input_args == ["-fflags", "nobuffer"]
 
 
 def _make_backend() -> GoLibrespotBackend:
@@ -532,3 +657,118 @@ def test_translate_event_volume_without_value_is_other() -> None:
     event = _make_backend()._translate_event("volume", {"max": 100})
     assert event.type is BackendEventType.OTHER
     assert event.volume is None
+
+
+async def test_paused_stops_player_when_stream_does_not_end() -> None:
+    """A pipe-fed backend (no EOF on pause) gets its player actively stopped."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(backend, playing=True, active_player_id="player-1")
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+    await asyncio.sleep(0)
+
+    assert provider._playing is False
+    assert stopped == ["player-1"]
+    # the claim survives so the next 'playing' event can resume playback
+    assert provider._active_player_id == "player-1"
+    # the finished stop task's handle is dropped again
+    await asyncio.sleep(0)
+    assert provider._pending_pause_stop_task is None
+
+
+async def test_duplicate_paused_events_stop_player_once() -> None:
+    """The backend reports a pause via multiple events; only one stop is issued."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(backend, playing=True, active_player_id="player-1")
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+    await asyncio.sleep(0)
+
+    assert stopped == ["player-1"]
+
+
+async def test_playing_cancels_pending_pause_stop() -> None:
+    """A quick resume cancels the in-flight pause-stop so it can't kill the new stream."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(
+        backend, playing=True, active_player_id="player-1", in_use_by_queue="queue1"
+    )
+    stop_started = asyncio.Event()
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stop_started.set()
+        await asyncio.sleep(3600)  # an unresponsive player holds the stop in flight
+        stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+    task = provider._pending_pause_stop_task
+    assert task is not None
+    async with asyncio.timeout(1.0):
+        await stop_started.wait()
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+
+    assert provider._pending_pause_stop_task is None
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert stopped == []  # the stale stop never reached the player
+
+
+async def test_paused_replaces_pending_pause_stop() -> None:
+    """A new pause-stop supersedes a still-pending one instead of piling up."""
+
+    class _PipeFedBackend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return False
+
+    backend = _PipeFedBackend()
+    provider, mass = _make_provider(backend, playing=True, active_player_id="player-1")
+    mass.players.cmd_stop = AsyncMock()
+    stale: Any = MagicMock()
+    stale.done.return_value = False
+    provider._pending_pause_stop_task = stale
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PAUSED))
+
+    stale.cancel.assert_called_once()
+    assert provider._pending_pause_stop_task is not stale
+    # let the replacement stop task run to completion (and drop its handle)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert provider._pending_pause_stop_task is None
