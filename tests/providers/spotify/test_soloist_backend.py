@@ -38,8 +38,10 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
     SoloistAuthState,
+    SoloistEntity,
     SoloistEvent,
     SoloistPlaybackState,
+    SoloistTrackChanged,
 )
 
 
@@ -285,6 +287,34 @@ async def test_missing_position_is_rejected_as_incomplete(tmp_path: Path) -> Non
     state.duration_ms = 200_000
     with pytest.raises(AudioError, match="incomplete"):
         await backend._evaluate_result(state, _make_proc(0))
+
+
+async def test_short_item_cannot_pass_at_position_zero(tmp_path: Path) -> None:
+    """The incomplete-tolerance scales down so a short item cannot pass unplayed."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.playing_seen = True
+    state.duration_ms = 8_000
+    state.last_position_ms = 0
+    with pytest.raises(AudioError, match="incomplete"):
+        await backend._evaluate_result(state, _make_proc(0))
+
+
+async def test_sink_is_suspended_when_the_item_ends(tmp_path: Path) -> None:
+    """An autoplay item change suspends the sink so next-track audio cannot render."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.item_seen.set()
+    state.demand_started = True
+    sink = AsyncMock()
+    event = SoloistEvent(
+        type="track_changed",
+        data=SoloistTrackChanged(item=SoloistEntity(uri="spotify:track:next", entity_type="track")),
+        raw={},
+    )
+    await backend._handle_event(state, sink, event)
+    assert state.ended.is_set()
+    sink.suspend.assert_awaited_once()
 
 
 async def test_delivery_within_tolerance_passes(tmp_path: Path) -> None:

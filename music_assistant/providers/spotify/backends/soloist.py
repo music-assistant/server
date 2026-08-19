@@ -426,6 +426,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
                 self._observe_item(state, data.item.uri, None)
+                await self._suspend_after_item_end(state, sink)
             return
         if isinstance(data, SoloistPositionSync):
             state.observe_position(data.position.position_ms)
@@ -440,6 +441,8 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
                     data.item.uri,
                     int(duration_ms) if isinstance(duration_ms, int | float) else None,
                 )
+                if await self._suspend_after_item_end(state, sink):
+                    return
             if data.position is not None:
                 state.observe_position(data.position.position_ms)
             if data.status == "playing":
@@ -457,6 +460,23 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
                     # fail closed: a sink with unknown suspend state would leak
                     # stall silence into (or withhold audio from) the PCM
                     state.fail(f"capture sink control failed: {err}")
+
+    async def _suspend_after_item_end(self, state: _TrackState, sink: PipeSink) -> bool:
+        """
+        Suspend the sink once the requested item is over.
+
+        This keeps the autoplayed next item from rendering into the capture
+        path while the tail drains.
+
+        :return: True when the item has ended (callers stop processing the event).
+        """
+        if not state.ended.is_set():
+            return False
+        if state.demand_started:
+            # best effort: on failure the duration cap still bounds the drain
+            with suppress(Exception):
+                await sink.suspend()
+        return True
 
     def _observe_item(self, state: _TrackState, uri: str, duration_ms: int | None) -> None:
         """Record whether the reported current item is (still) the requested one."""
@@ -633,10 +653,14 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         if not state.playing_seen:
             raise AudioError(f"Spotify Soloist never started playing {state.requested_uri}")
         # a missing final position is treated as incomplete: without a position
-        # report there is no evidence the item played to its end
+        # report there is no evidence the item played to its end; the tolerance
+        # scales down for short items so it can never span the whole duration
+        tolerance_ms = min(
+            _INCOMPLETE_TOLERANCE_MS, state.duration_ms // 2 if state.duration_ms else 0
+        )
         if state.duration_ms is not None and (
             state.last_position_ms is None
-            or state.last_position_ms + _INCOMPLETE_TOLERANCE_MS < state.duration_ms
+            or state.last_position_ms + tolerance_ms < state.duration_ms
         ):
             raise AudioError(
                 f"Spotify Soloist delivered incomplete audio for {state.requested_uri} "
