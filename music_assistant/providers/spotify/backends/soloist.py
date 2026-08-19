@@ -79,15 +79,18 @@ _BYTES_PER_SECOND: Final[int] = CAPTURE_SAMPLE_RATE * _FRAME_BYTES
 _CACHE_SIZE_MB: Final[int] = 512
 
 # The reader clocks the pipe sink, and thus how fast Spotify must deliver.
-# Measurements: 1.1x sustained is clean even on a cold cache, while 1.2x+
-# starves mid-track — so the sustained pace stays conservatively below that.
-# Running slightly above realtime deliberately banks a downstream cushion
-# during each track (~9s per 3 minutes) that absorbs the source-less gap at
-# the next track boundary; at exactly 1.0x every boundary gap reaches the
-# player, where timeline-synced outputs drop the late audio.
-_PACE_RATE: Final[float] = 1.05
-# extra head start right after the sink resumes (track start / cold seek)
-_PACE_BURST_S: Final[float] = 3.0
+# Both values are the result of live listening tests against the measured
+# delivery envelope (1.1x sustained is clean even on a cold cache, 1.2x+
+# starves mid-track):
+# - the sustained 1.1x banks a downstream cushion (~6s per minute) that
+#   absorbs the source-less gap at the next track boundary; at exactly 1.0x
+#   every boundary gap reaches the player, where timeline-synced outputs
+#   drop the late audio instead of delaying it.
+# - the burst must stay SMALL: during the burst window the read is unpaced,
+#   and demanding audio faster than the warming fetch pipeline can deliver
+#   destabilizes it — large bursts audibly worsened track starts.
+_PACE_RATE: Final[float] = 1.1
+_PACE_BURST_S: Final[float] = 0.5
 
 _READ_CHUNK_SIZE: Final[int] = 32768
 # one wait slice on the FIFO read; state (process exit, errors) is checked between slices
