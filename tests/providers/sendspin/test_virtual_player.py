@@ -55,6 +55,7 @@ async def test_create_virtual_player(mass: MusicAssistant) -> None:
     assert player is not None
     assert player.type == PlayerType.PLAYER
     assert player.hidden_by_default is True
+    assert player.private is True
     assert player.expose_to_ha_by_default is False
     assert PlayerFeature.VOLUME_SET not in player.supported_features
     assert PlayerFeature.VOLUME_MUTE not in player.supported_features
