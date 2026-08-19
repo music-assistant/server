@@ -46,7 +46,7 @@
       "label": "How should Music Assistant play Spotify audio?",
       "options": {
         "soloist": "Spotify Soloist (official, recommended for newer accounts)",
-        "librespot": "Legacy librespot (community)"
+        "librespot": "librespot (community)"
       }
     },
     "soloist_download_consent": {
@@ -97,11 +97,11 @@
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
-      "description": "Music Assistant can fetch Spotify audio in two ways:\n\n**Spotify Soloist (official, recommended for newer accounts)** — Spotify's official playback engine. Works with every account, including accounts created since December 2024, but needs a personal API key (created with a Spotify **Premium** account) and a few extra setup steps.\n\n**Legacy librespot (community)** — a community-built player. Simpler to set up, but it relies on reverse-engineered Spotify internals: it primarily works for accounts created before December 2024 and may stop working when Spotify changes something.\n\nGood to know about Spotify Soloist: one Spotify account can only fetch one song at a time. Music Assistant therefore fetches songs one by one, so gapless preload, crossfades and Smart Fades between songs are only available when you add more Spotify provider instances with different Spotify accounts."
+      "description": "Music Assistant can fetch Spotify audio in two ways:\n\n**Spotify Soloist (official, recommended for newer accounts)** — Spotify's official playback engine. Works with every account, including accounts created since December 2024, but needs a personal API key (created with a Spotify **Premium** account) and a few extra setup steps.\n\n**librespot (community)** — a community-built player. Simpler to set up, but it relies on reverse-engineered Spotify internals: it primarily works for accounts created before December 2024 and may stop working when Spotify changes something."
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",
-      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Music Assistant may not distribute it as part of its own installation — so if you continue, it is downloaded from Spotify's servers on your behalf and run for you.\n\nPlease read this before you continue:\n\n- You need a Spotify **Premium** account to create the required API key. This is a short manual step on the Spotify developer website, explained on the next screen.\n- Spotify's terms do not clearly allow using Soloist this way. Using it through Music Assistant may violate Spotify's Terms of Service and is entirely at your own risk.\n- Music Assistant will download the Soloist app from Spotify's servers, run it, keep it on disk, and automatically replace it whenever Spotify publishes an update.\n\nMore information: [Soloist documentation](https://developer.spotify.com/documentation/soloist) · [API key page](https://developer.spotify.com/dashboard/soloist) · [Spotify developer policy](https://developer.spotify.com/policy)"
+      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Music Assistant may not distribute it as part of its own installation — so if you continue, it is downloaded from Spotify's servers on your behalf and run for you.\n\nPlease read this before you continue:\n\n- You need a Spotify **Premium** account to create the required API key. This is a short manual step on the Spotify developer website, explained on the next screen.\n- Spotify's terms do not clearly allow using Soloist this way. Using it through Music Assistant may violate Spotify's Terms of Service and is entirely at your own risk.\n- One Spotify account can only fetch one song at a time, so Music Assistant fetches songs one by one. Gapless preload, crossfades and Smart Fades between songs are only available when you add more Spotify provider instances with different Spotify accounts.\n- Music Assistant will download the Soloist app from Spotify's servers, run it, keep it on disk, and automatically replace it whenever Spotify publishes an update.\n\nMore information: [Soloist documentation](https://developer.spotify.com/documentation/soloist) · [API key page](https://developer.spotify.com/dashboard/soloist) · [Spotify developer policy](https://developer.spotify.com/policy)"
     },
     "soloist_api_key": {
       "title": "Create your Soloist API key",
@@ -147,8 +147,8 @@
     "playback_not_completed": "Playback wasn't approved in time. Open the link again and paste the address of the page your browser ends up on.",
     "playback_auth_failed": "Approving playback didn't work. Please try again.",
     "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here.",
-    "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose legacy librespot instead.",
-    "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose legacy librespot instead.",
+    "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose librespot (community) instead.",
+    "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose librespot (community) instead.",
     "soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
     "soloist_pairing_not_completed": "Music Assistant Pairing wasn't selected in the Spotify app in time. Try again.",
     "soloist_pairing_failed": "Pairing with Spotify didn't work. Check that the API key is complete and try again.",
