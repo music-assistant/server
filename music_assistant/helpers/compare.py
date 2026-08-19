@@ -68,19 +68,23 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
 
 # retail suffixes a provider (notably Apple Music) appends to an EP/single title
 _ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
+# escaped, so an entry that happens to contain regex syntax stays a literal alternative
+_ALBUM_SUFFIX_ALTERNATION: Final = "|".join(re.escape(suffix) for suffix in _ALBUM_RETAIL_SUFFIXES)
 # the trailing retail suffix as it appears in a raw album title: set off by a dash
 # (any style, and only the space in front of it counts, so "K-EP" keeps its name) or
 # wrapped in brackets, which need no space to be unambiguous. A bare trailing word is
 # deliberately not accepted, as it is just as likely part of the title itself
 # ("The SL2 EP", "Saturday Night Single")
 _ALBUM_SUFFIX_PATTERN = re.compile(
-    rf"\s+[-\u2013\u2014]\s*(?P<suffix>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$"
-    rf"|\s*[(\[](?P<bracketed>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})[)\]]\s*$",
+    rf"\s+[-\u2013\u2014]\s*(?P<suffix>{_ALBUM_SUFFIX_ALTERNATION})\s*$"
+    rf"|\s*[(\[](?P<bracketed>{_ALBUM_SUFFIX_ALTERNATION})[)\]]\s*$",
     re.IGNORECASE,
 )
 # normalizing a title drops the separator, so the suffix survives as a plain trailing
 # fragment of the name key ("Foo - EP" -> "fooep"): appending one of these to a key
-# yields the key the same album is stored under when a provider spells out the suffix
+# yields the key the same album is stored under when a provider spells out the suffix.
+# It also reduces each key to alphanumerics, which is what lets the query builders
+# interpolate them into SQL directly.
 ALBUM_RETAIL_SUFFIX_KEYS: Final = tuple(
     create_safe_string(suffix, True, True) for suffix in _ALBUM_RETAIL_SUFFIXES
 )
