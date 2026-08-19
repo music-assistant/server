@@ -119,297 +119,6 @@ class OpenHomePlayer(Player):
         """Set the availability of the player."""
         self._attr_available = available
 
-    async def _device_connect(self) -> None:
-        """Connect Linn/OpenHome Media Device."""
-        self.logger.debug("Connecting to device at %s", self.description_url)
-
-        async with self.lock:
-            if self.profile:
-                self.logger.debug("Trying to connect when device already connected")
-                return
-
-            # Connect to the base UPNP device
-            if TYPE_CHECKING:
-                assert isinstance(self.provider, OpenHomePlayerProvider)  # for type checking
-            upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
-
-            # Create profile wrapper
-            if OhmDevice.is_profile_device(upnp_device):
-                self.profile = OhmDevice(upnp_device, self.provider.notify_server.event_handler)
-            else:
-                self.logger.debug("Device is not an OpenHome Profile: %s", upnp_device)
-                return
-
-            # Subscribe to event notifications
-            try:
-                self.profile.on_event = self._handle_event
-                await self.profile.async_subscribe_services(auto_resubscribe=True)
-            except UpnpResponseError as err:
-                # Device rejected subscription request.
-                # This is OK, variables will be polled instead.
-                self.logger.debug("Device rejected subscription: %r", err)
-                self.force_poll = True
-                # populate the state variables
-                await self.profile.async_update_state_variables()
-            except UpnpError as err:
-                # Don't leave the device half-constructed
-                self.profile.on_event = None
-                self.profile = None
-                self.logger.debug("Error while subscribing during device connect: %r", err)
-                raise
-            else:
-                # connect was successful, update device info
-                # assign device info
-                self._attr_device_info = DeviceInfo(
-                    model=self.profile.model_name,
-                    manufacturer=self.profile.manufacturer,
-                    model_id=self.profile.model_number,
-                    manufacturer_id=self.profile.device.manufacturer_url,
-                )
-
-                # Identifiers in descending priority MAC_ADDRESS, UUID, IP_ADDRESS
-                # MAC address is extracted from UUID if format of UDN is UUID
-                # OpenHome Player uses machine name so will be excluded
-                if OpenHomePlayer.is_valid_uuid(self.player_id):
-                    mac_address = OpenHomePlayer.get_mac_from_uuid(self.player_id)
-                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
-
-                # Add player_id (= UDN) as UUID identifier for identifying player across protocols
-                # Strip the "uuid:" prefix if present for proper matching
-                if self.player_id:
-                    self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id.removeprefix("uuid:"))
-
-                # Try to extract just the IP from the URL for matching
-                # All currently known examples have a higher priority identifier available
-                ip_address = self.profile.device.presentation_url or self.description_url
-                with suppress(ValueError):
-                    parsed = urlparse(ip_address)
-                    if parsed.hostname:
-                        self._attr_device_info.add_identifier(
-                            IdentifierType.IP_ADDRESS, parsed.hostname
-                        )
-
-                # Get the sources available
-                self.sources = await self.profile.async_visible_sources()
-                self._attr_source_list = self._source_list_from_sources(self.sources)
-
-    def _handle_event(
-            self,
-            service: UpnpService,
-            state_variables: Sequence[UpnpStateVariable[Any]],
-    ) -> None:
-        """Handle changed state variable(s) value event from Linn/OpenHome Media device."""
-        if not state_variables:
-            # Indicates a failure to resubscribe, check if device is still available
-            self.force_poll = True
-            return
-        #
-        # EventCallbackType = Callable[["UpnpService", Sequence["UpnpStateVariable"]], None]
-        #
-        # NOTE: service is a UpnpService and has state_variables property: see class definition in client.py
-        # NOTE: on initial subscription, all service variables are returned
-        # NOTE: subsequently, only state_variables with changed values will be sent
-        #
-        active_queue = self.mass.player_queues.get_active_queue(self.player_id)
-        if active_queue:
-            active_queue_id = active_queue.queue_id  # NOTE: no active queue for some sources
-        else:
-            active_queue_id = None
-
-        match service.service_id:
-            case ServiceId.CREDENTIALS:
-                pass
-            case ServiceId.INFO:
-                self.logger.debug("Info Event: %s", service.service_id)
-                for sv in state_variables:
-                    self.logger.debug("Info Event: %s %s", sv.name, sv.value)
-                    match sv.name:
-                        case InfoState.DURATION:
-                            if self._attr_current_media:
-                                self._attr_current_media.duration = sv.value
-                        case _:
-                            pass
-            case ServiceId.PINS:
-                pass
-            case ServiceId.PLAYLIST:
-                self.logger.debug("Playlist Event: %s", state_variables)
-                for sv in state_variables:
-                    match sv.name:
-                        case PlaylistState.TRANSPORT_STATE:
-                            self._attr_playback_state = self._transport_state_to_playback_state(sv.value)
-                        case PlaylistState.REPEAT:
-                            # TODO: mode dependent
-                            if active_queue_id is not None:
-                                self._attr_repeat_state = sv.value
-                            # if active_queue_id is not None:
-                            #     if sv.value:
-                            #         self.mass.player_queues.set_repeat(
-                            #             active_queue_id, RepeatMode.ALL
-                            #         )
-                            #     else:
-                            #         self.mass.player_queues.set_repeat(
-                            #             active_queue_id, RepeatMode.OFF
-                            #         )
-                        case PlaylistState.SHUFFLE:
-                            # TODO: mode dependent
-                            if active_queue_id is not None:
-                                self._attr_shuffle_state = sv.value
-                        case PlaylistState.ID:
-                            pass
-                        # Should play this element of the Playlist
-                        case PlaylistState.ID_ARRAY:
-                            pass
-                        # NOTE: playlist on Linn should be parsed and used to update playlist on MAss
-                        case PlaylistState.TRACKS_MAX:
-                            pass
-                        case PlaylistState.PROTOCOL_INFO:
-                            pass
-                        case _:
-                            self.logger.warning("Unhandled Playlist State Variable %s", sv.name)
-            case ServiceId.PRODUCT:
-                self.logger.debug("Product Event: %s", state_variables)
-                for sv in state_variables:
-                    match sv.name:
-                        # case ProductState.ATTRIBUTES:
-                        #      These form dict MANUFACTURER
-                        # case ProductState.MANUFACTURER_IMAGE_URI:
-                        # case ProductState.MANUFACTURER_INFO:
-                        # case ProductState.MANUFACTURER_NAME:
-                        # case ProductState.MANUFACTURER_URL:
-                        #      These form dict MODEL
-                        # case ProductState.MODEL_IMAGE_URI:
-                        # case ProductState.MODEL_INFO:
-                        # case ProductState.MODEL_NAME:
-                        # case ProductState.MODEL_URL:
-                        #      These form dict PRODUCT
-                        # case ProductState.PRODUCT_IMAGE_HIRES_URI:
-                        # case ProductState.PRODUCT_IMAGE_URI:
-                        # case ProductState.PRODUCT_INFO:
-                        # case ProductState.PRODUCT_NAME:
-                        # case ProductState.PRODUCT_ROOM:
-                        # case ProductState.PRODUCT_URL:
-
-                        # case ProductState.SOURCE_COUNT:
-                        case ProductState.SOURCE_INDEX:
-                            # TODO make it show in MAss - is it a different attribute? - check other providers
-                            # sources only updated on start - but will be fairly static
-                            active_source = next(
-                                (x for x in self.sources if x["Index"] == sv.value),
-                                None,
-                            )
-                            if active_source:
-                                self._attr_active_source = active_source["Name"]
-                            else:
-                                self._attr_active_source = "N/A"
-                            self.update_state()
-                        # case ProductState.SOURCE_XML:
-                        # case ProductState.STANDBY:
-                        # case ProductState.STANDBY_TRANSITIONING:
-                        case _:
-                            pass
-                # TODO update current source
-            case ServiceId.RADIO:
-                # TODO: add updates on Radio events
-                self.logger.debug("Radio Event: %s", state_variables)
-                for sv in state_variables:
-                    match sv.name:
-                        case RadioState.TRANSPORT_STATE:
-                            self._attr_playback_state = self._transport_state_to_playback_state(sv.value)
-            case ServiceId.RECEIVER:
-                pass
-            case ServiceId.SENDER:
-                pass
-            case ServiceId.TRANSPORT:
-                self.logger.debug("Transport Event: %s", state_variables)
-                for sv in state_variables:
-                    match sv.name:
-                        case TransportState.TRANSPORT_STATE:
-                            self._attr_playback_state = self._transport_state_to_playback_state(sv.value)
-                        case TransportState.REPEAT:
-                            if active_queue_id is not None:
-                                self._attr_repeat_state = sv.value
-                        case TransportState.SHUFFLE:
-                            if active_queue_id is not None:
-                                self._attr_shuffle_state = sv.value
-                        case _:
-                            pass
-            case ServiceId.VOLUME:
-                self.logger.debug("Volume Event: %s", state_variables)
-                for sv in state_variables:
-                    match sv.name:
-                        case VolumeState.MUTE:
-                            self._attr_volume_muted = sv.value
-                        case VolumeState.VOLUME:
-                            self._attr_volume_level = sv.value
-                        case _:
-                            pass  # NOTE: ignore any other state variables
-            case ServiceId.TIME:
-                # self.logger.debug("Time Event: %s", state_variables)
-                for sv in state_variables:
-                    match sv.name:
-                        case TimeState.TRACK_COUNT:
-                            pass
-                        case TimeState.DURATION:
-                            pass
-                        case TimeState.SECONDS:
-                            self._attr_elapsed_time = sv.value
-                            self._attr_elapsed_time_last_updated = time.time()
-                        case _:
-                            self.logger.error("Unknown State Variable: %s", sv.name)
-            case ServiceId.UPDATE:
-                pass
-            case _:
-                self.logger.warning("Unhandled event for service id: %s", service.service_id)
-
-        self.update_state()
-        self.last_seen = time.time()
-        # run when not Time event
-        if service.service_id != ServiceId.TIME:
-            self.mass.create_task(self._update_player())
-
-    async def _update_player(self) -> None:
-        """Update Linn/OpenHome Media Player."""
-        prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
-        prev_state = self.state
-        await self.set_dynamic_attributes()
-        current_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
-        current_state = self.state
-
-        if (prev_url != current_url) or (prev_state != current_state):
-            # fetch track details on state or url change
-            self.force_poll = True
-
-        try:
-            self.update_state()
-        except (KeyError, TypeError):
-            # at start the update might come faster than the config is initialized
-            await asyncio.sleep(2)
-            self.update_state()
-
-    def _set_player_features(self) -> None:
-        """Set Player Features based on config values and capabilities."""
-
-        supported_features: set[PlayerFeature] = set()
-        supported_features.add(PlayerFeature.PLAY_MEDIA)
-        supported_features.add(PlayerFeature.PAUSE)
-        supported_features.add(PlayerFeature.NEXT_PREVIOUS)
-        if self.profile:
-            if self.profile.has_product_standby:
-                supported_features.add(PlayerFeature.POWER)
-            if (
-                    self.profile.has_transport_seek_second_absolute
-                    # or self.profile.has_playlist_seek_second_absolute
-                    # or self.profile.has_radio_seek_second_absolute
-            ):
-                supported_features.add(PlayerFeature.SEEK)
-            if self.profile.has_volume_mute:
-                supported_features.add(PlayerFeature.VOLUME_MUTE)
-            if self.profile.has_volume_set:
-                supported_features.add(PlayerFeature.VOLUME_SET)
-            if self.profile.has_product_set_source_index:
-                supported_features.add(PlayerFeature.SELECT_SOURCE)
-
-        self._attr_supported_features = supported_features
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -712,25 +421,31 @@ class OpenHomePlayer(Player):
         await super().on_unload()
         await self._device_disconnect()
 
-    async def _device_disconnect(self) -> None:
-        """Destroy connections to the device."""
-        async with self.lock:
-            if not self.profile:
-                self.logger.debug("Disconnecting from device that's not connected")
-                return
-
-            self.logger.debug("Disconnecting from %s", self.profile.name)
-
-            self.profile.on_event = None
-            old_device = self.profile
-            self.profile = None
-            self.set_available(False)
-            await old_device.async_unsubscribe_services()
-        self.update_state()
 
     # endregion
 
     # region Linn/OpenHome Media specific helper functions
+    @staticmethod
+    def get_mac_from_uuid(uuid: str) -> str | None:
+        """Return a mac-address-like identifier from the UDN of the device."""
+        uuid = uuid.removeprefix("uuid:")
+        # extract text between first and last -
+        mac_like = uuid[uuid.find("-") + 1:uuid.rfind("-")]
+        mac_like = mac_like.replace("-", "")
+        # Format string like a MAC address i.e. XX:XX:XX:XX:XX:XX
+        mac_like = ":".join(mac_like[i: i + 2].upper() for i in range(0, 12, 2))
+        if len(mac_like) == 17:
+            return mac_like
+        return None
+
+    @staticmethod
+    def is_valid_uuid(uuid_string):
+        try:
+            UUID(uuid_string)
+            return True
+        except ValueError:
+            return False
+
     @staticmethod
     def _source_list_from_sources(sources) -> list[PlayerSource]:
         """Return MusicAssistant source list from the Linn/OpenHome Media device list of sources."""
@@ -786,23 +501,310 @@ class OpenHomePlayer(Player):
                 return PlaybackState.UNKNOWN
     # endregion
 
-    @staticmethod
-    def get_mac_from_uuid(uuid: str) -> str | None:
-        """Return a mac-address-like identifier from the UDN of the device."""
-        uuid = uuid.removeprefix("uuid:")
-        # extract text between first and last -
-        mac_like = uuid[uuid.find("-") + 1:uuid.rfind("-")]
-        mac_like = mac_like.replace("-", "")
-        # Format string like a MAC address i.e. XX:XX:XX:XX:XX:XX
-        mac_like = ":".join(mac_like[i: i + 2].upper() for i in range(0, 12, 2))
-        if len(mac_like) == 17:
-            return mac_like
-        return None
+    async def _device_connect(self) -> None:
+        """Connect Linn/OpenHome Media Device."""
+        self.logger.debug("Connecting to device at %s", self.description_url)
 
-    @staticmethod
-    def is_valid_uuid(uuid_string):
+        async with self.lock:
+            if self.profile:
+                self.logger.debug("Trying to connect when device already connected")
+                return
+
+            # Connect to the base UPNP device
+            if TYPE_CHECKING:
+                assert isinstance(self.provider, OpenHomePlayerProvider)  # for type checking
+            upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
+
+            # Create profile wrapper
+            if OhmDevice.is_profile_device(upnp_device):
+                self.profile = OhmDevice(upnp_device, self.provider.notify_server.event_handler)
+            else:
+                self.logger.debug("Device is not an OpenHome Profile: %s", upnp_device)
+                return
+
+            # Subscribe to event notifications
+            try:
+                self.profile.on_event = self._handle_event
+                await self.profile.async_subscribe_services(auto_resubscribe=True)
+            except UpnpResponseError as err:
+                # Device rejected subscription request.
+                # This is OK, variables will be polled instead.
+                self.logger.debug("Device rejected subscription: %r", err)
+                self.force_poll = True
+                # populate the state variables
+                await self.profile.async_update_state_variables()
+            except UpnpError as err:
+                # Don't leave the device half-constructed
+                self.profile.on_event = None
+                self.profile = None
+                self.logger.debug("Error while subscribing during device connect: %r", err)
+                raise
+            else:
+                # connect was successful, update device info
+                # assign device info
+                self._attr_device_info = DeviceInfo(
+                    model=self.profile.model_name,
+                    manufacturer=self.profile.manufacturer,
+                    model_id=self.profile.model_number,
+                    manufacturer_id=self.profile.device.manufacturer_url,
+                )
+
+                # Identifiers in descending priority MAC_ADDRESS, UUID, IP_ADDRESS
+                # MAC address is extracted from UUID if format of UDN is UUID
+                # OpenHome Player uses machine name so will be excluded
+                if OpenHomePlayer.is_valid_uuid(self.player_id):
+                    mac_address = OpenHomePlayer.get_mac_from_uuid(self.player_id)
+                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+
+                # Add player_id (= UDN) as UUID identifier for identifying player across protocols
+                # Strip the "uuid:" prefix if present for proper matching
+                if self.player_id:
+                    self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id.removeprefix("uuid:"))
+
+                # Try to extract just the IP from the URL for matching
+                # All currently known examples have a higher priority identifier available
+                ip_address = self.profile.device.presentation_url or self.description_url
+                with suppress(ValueError):
+                    parsed = urlparse(ip_address)
+                    if parsed.hostname:
+                        self._attr_device_info.add_identifier(
+                            IdentifierType.IP_ADDRESS, parsed.hostname
+                        )
+
+                # Get the sources available
+                self.sources = await self.profile.async_visible_sources()
+                self._attr_source_list = self._source_list_from_sources(self.sources)
+
+    async def _device_disconnect(self) -> None:
+        """Destroy connections to the device."""
+        async with self.lock:
+            if not self.profile:
+                self.logger.debug("Disconnecting from device that's not connected")
+                return
+
+            self.logger.debug("Disconnecting from %s", self.profile.name)
+
+            self.profile.on_event = None
+            old_device = self.profile
+            self.profile = None
+            self.set_available(False)
+            await old_device.async_unsubscribe_services()
+        self.update_state()
+
+    def _handle_event(
+            self,
+            service: UpnpService,
+            state_variables: Sequence[UpnpStateVariable[Any]],
+    ) -> None:
+        """Handle changed state variable(s) value event from Linn/OpenHome Media device."""
+        if not state_variables:
+            # Indicates a failure to resubscribe, check if device is still available
+            self.force_poll = True
+            return
+        #
+        # EventCallbackType = Callable[["UpnpService", Sequence["UpnpStateVariable"]], None]
+        #
+        # NOTE: service is a UpnpService and has state_variables property: see class definition in client.py
+        # NOTE: on initial subscription, all service variables are returned
+        # NOTE: subsequently, only state_variables with changed values will be sent
+        #
+        active_queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if active_queue:
+            active_queue_id = active_queue.queue_id  # NOTE: no active queue for some sources
+        else:
+            active_queue_id = None
+
+        match service.service_id:
+            case ServiceId.CREDENTIALS:
+                pass
+            case ServiceId.INFO:
+                self.logger.debug("Info Event: %s", service.service_id)
+                for sv in state_variables:
+                    self.logger.debug("Info Event: %s %s", sv.name, sv.value)
+                    match sv.name:
+                        case InfoState.DURATION:
+                            if self._attr_current_media:
+                                self._attr_current_media.duration = sv.value
+                        case _:
+                            pass
+            case ServiceId.PINS:
+                pass
+            case ServiceId.PLAYLIST:
+                self.logger.debug("Playlist Event: %s", state_variables)
+                for sv in state_variables:
+                    match sv.name:
+                        case PlaylistState.TRANSPORT_STATE:
+                            self._attr_playback_state = self._transport_state_to_playback_state(sv.value)
+                        case PlaylistState.REPEAT:
+                            # TODO: mode dependent
+                            if active_queue_id is not None:
+                                self._attr_repeat_state = sv.value
+                            # if active_queue_id is not None:
+                            #     if sv.value:
+                            #         self.mass.player_queues.set_repeat(
+                            #             active_queue_id, RepeatMode.ALL
+                            #         )
+                            #     else:
+                            #         self.mass.player_queues.set_repeat(
+                            #             active_queue_id, RepeatMode.OFF
+                            #         )
+                        case PlaylistState.SHUFFLE:
+                            # TODO: mode dependent
+                            if active_queue_id is not None:
+                                self._attr_shuffle_state = sv.value
+                        case PlaylistState.ID:
+                            pass
+                        # Should play this element of the Playlist
+                        case PlaylistState.ID_ARRAY:
+                            pass
+                        # NOTE: playlist on Linn should be parsed and used to update playlist on MAss
+                        case PlaylistState.TRACKS_MAX:
+                            pass
+                        case PlaylistState.PROTOCOL_INFO:
+                            pass
+                        case _:
+                            self.logger.warning("Unhandled Playlist State Variable %s", sv.name)
+            case ServiceId.PRODUCT:
+                self.logger.debug("Product Event: %s", state_variables)
+                for sv in state_variables:
+                    match sv.name:
+                        # case ProductState.ATTRIBUTES:
+                        #      These form dict MANUFACTURER
+                        # case ProductState.MANUFACTURER_IMAGE_URI:
+                        # case ProductState.MANUFACTURER_INFO:
+                        # case ProductState.MANUFACTURER_NAME:
+                        # case ProductState.MANUFACTURER_URL:
+                        #      These form dict MODEL
+                        # case ProductState.MODEL_IMAGE_URI:
+                        # case ProductState.MODEL_INFO:
+                        # case ProductState.MODEL_NAME:
+                        # case ProductState.MODEL_URL:
+                        #      These form dict PRODUCT
+                        # case ProductState.PRODUCT_IMAGE_HIRES_URI:
+                        # case ProductState.PRODUCT_IMAGE_URI:
+                        # case ProductState.PRODUCT_INFO:
+                        # case ProductState.PRODUCT_NAME:
+                        # case ProductState.PRODUCT_ROOM:
+                        # case ProductState.PRODUCT_URL:
+
+                        # case ProductState.SOURCE_COUNT:
+                        case ProductState.SOURCE_INDEX:
+                            # TODO make it show in MAss - is it a different attribute? - check other providers
+                            # sources only updated on start - but will be fairly static
+                            active_source = next(
+                                (x for x in self.sources if x["Index"] == sv.value),
+                                None,
+                            )
+                            if active_source:
+                                self._attr_active_source = active_source["Name"]
+                            else:
+                                self._attr_active_source = "N/A"
+                            self.update_state()
+                        # case ProductState.SOURCE_XML:
+                        # case ProductState.STANDBY:
+                        # case ProductState.STANDBY_TRANSITIONING:
+                        case _:
+                            pass
+                # TODO update current source
+            case ServiceId.RADIO:
+                # TODO: add updates on Radio events
+                self.logger.debug("Radio Event: %s", state_variables)
+                for sv in state_variables:
+                    match sv.name:
+                        case RadioState.TRANSPORT_STATE:
+                            self._attr_playback_state = self._transport_state_to_playback_state(sv.value)
+            case ServiceId.RECEIVER:
+                pass
+            case ServiceId.SENDER:
+                pass
+            case ServiceId.TRANSPORT:
+                self.logger.debug("Transport Event: %s", state_variables)
+                for sv in state_variables:
+                    match sv.name:
+                        case TransportState.TRANSPORT_STATE:
+                            self._attr_playback_state = self._transport_state_to_playback_state(sv.value)
+                        case TransportState.REPEAT:
+                            if active_queue_id is not None:
+                                self._attr_repeat_state = sv.value
+                        case TransportState.SHUFFLE:
+                            if active_queue_id is not None:
+                                self._attr_shuffle_state = sv.value
+                        case _:
+                            pass
+            case ServiceId.VOLUME:
+                self.logger.debug("Volume Event: %s", state_variables)
+                for sv in state_variables:
+                    match sv.name:
+                        case VolumeState.MUTE:
+                            self._attr_volume_muted = sv.value
+                        case VolumeState.VOLUME:
+                            self._attr_volume_level = sv.value
+                        case _:
+                            pass  # NOTE: ignore any other state variables
+            case ServiceId.TIME:
+                # self.logger.debug("Time Event: %s", state_variables)
+                for sv in state_variables:
+                    match sv.name:
+                        case TimeState.TRACK_COUNT:
+                            pass
+                        case TimeState.DURATION:
+                            pass
+                        case TimeState.SECONDS:
+                            self._attr_elapsed_time = sv.value
+                            self._attr_elapsed_time_last_updated = time.time()
+                        case _:
+                            self.logger.error("Unknown State Variable: %s", sv.name)
+            case ServiceId.UPDATE:
+                pass
+            case _:
+                self.logger.warning("Unhandled event for service id: %s", service.service_id)
+
+        self.update_state()
+        self.last_seen = time.time()
+        # run when not Time event
+        if service.service_id != ServiceId.TIME:
+            self.mass.create_task(self._update_player())
+
+    async def _update_player(self) -> None:
+        """Update Linn/OpenHome Media Player."""
+        prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
+        prev_state = self.state
+        await self.set_dynamic_attributes()
+        current_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
+        current_state = self.state
+
+        if (prev_url != current_url) or (prev_state != current_state):
+            # fetch track details on state or url change
+            self.force_poll = True
+
         try:
-            UUID(uuid_string)
-            return True
-        except ValueError:
-            return False
+            self.update_state()
+        except (KeyError, TypeError):
+            # at start the update might come faster than the config is initialized
+            await asyncio.sleep(2)
+            self.update_state()
+
+    def _set_player_features(self) -> None:
+        """Set Player Features based on config values and capabilities."""
+
+        supported_features: set[PlayerFeature] = set()
+        supported_features.add(PlayerFeature.PLAY_MEDIA)
+        supported_features.add(PlayerFeature.PAUSE)
+        supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if self.profile:
+            if self.profile.has_product_standby:
+                supported_features.add(PlayerFeature.POWER)
+            if (
+                    self.profile.has_transport_seek_second_absolute
+                    # or self.profile.has_playlist_seek_second_absolute
+                    # or self.profile.has_radio_seek_second_absolute
+            ):
+                supported_features.add(PlayerFeature.SEEK)
+            if self.profile.has_volume_mute:
+                supported_features.add(PlayerFeature.VOLUME_MUTE)
+            if self.profile.has_volume_set:
+                supported_features.add(PlayerFeature.VOLUME_SET)
+            if self.profile.has_product_set_source_index:
+                supported_features.add(PlayerFeature.SELECT_SOURCE)
+
+        self._attr_supported_features = supported_features
