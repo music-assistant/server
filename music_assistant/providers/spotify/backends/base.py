@@ -57,9 +57,7 @@ class SpotifyPlaybackBackend(ABC):
         """Release any resources held by the backend."""
 
     @abstractmethod
-    def stream_spotify_uri(
-        self, spotify_uri: str, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
+    def stream_spotify_uri(self, spotify_uri: str, seek_position: int = 0) -> AsyncGenerator[bytes]:
         """
         Yield the audio for one Spotify URI in this backend's audio format.
 

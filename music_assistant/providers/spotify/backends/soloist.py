@@ -655,8 +655,11 @@ def _trim_lead_silence(chunk: bytes, already_skipped: int) -> tuple[bytes, int]:
     """
     max_lead_trim = int(_MAX_LEAD_TRIM_S * _BYTES_PER_SECOND)
     stripped = chunk.lstrip(b"\x00")
-    if not stripped and already_skipped + len(chunk) <= max_lead_trim:
-        return b"", len(chunk)
+    if not stripped:
+        if already_skipped + len(chunk) <= max_lead_trim:
+            return b"", len(chunk)
+        # budget exhausted: this is genuine silence content, not infrastructure
+        return chunk, 0
     # keep sample-frame alignment when the audio starts mid-chunk
     offset = (len(chunk) - len(stripped)) // _FRAME_BYTES * _FRAME_BYTES
     return chunk[offset:], offset
