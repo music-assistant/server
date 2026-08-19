@@ -30,7 +30,10 @@ async def test_overwrite_update_replaces_artists(mass: MusicAssistant) -> None:
     """An overwrite update carrying artists still replaces the stored ones."""
     db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))
 
-    update = create_album("spotify_1", "album1", artist_name="Other Artist")
+    # a distinct artist id, so the stored relation is replaced rather than renamed
+    update = create_album(
+        "spotify_1", "album1", artist_name="Other Artist", artist_item_id="other_artist"
+    )
     await mass.music.albums.update_item_in_library(db_album.item_id, update, overwrite=True)
 
     refreshed = await mass.music.albums.get_library_item(db_album.item_id)
