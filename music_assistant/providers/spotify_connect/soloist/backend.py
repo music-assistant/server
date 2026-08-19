@@ -182,16 +182,12 @@ class SoloistBackend(SpotifyConnectBackend):
         self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
-        # Soloist decodes internally and does not expose the source codec or
-        # quality, so the display format reports an unknown source — we never
-        # claim a lossless source or a specific source bit depth.
-        self._audio_format = AudioFormat(
-            content_type=ContentType.UNKNOWN,
-            sample_rate=CAPTURE_SAMPLE_RATE,
-            channels=CAPTURE_CHANNELS,
-        )
         # the capture sink delivers fixed s32le/44.1kHz/2ch PCM (the pulse
-        # capture format) — that is what actually arrives on the named pipe
+        # capture format) — that is what actually arrives on the named pipe.
+        # Soloist decodes internally and never exposes the source codec or
+        # quality, so this capture format doubles as the display format: MA's
+        # input really is 32-bit PCM (24-bit lossless fits losslessly), while
+        # Spotify's upstream quality stays unknowable either way.
         self._capture_format = AudioFormat(
             content_type=ContentType.PCM_S32LE,
             codec_type=ContentType.PCM_S32LE,
@@ -199,6 +195,7 @@ class SoloistBackend(SpotifyConnectBackend):
             bit_depth=32,
             channels=CAPTURE_CHANNELS,
         )
+        self._audio_format = self._capture_format
 
     @property
     def audio_format(self) -> AudioFormat:

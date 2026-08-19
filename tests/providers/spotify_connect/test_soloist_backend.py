@@ -1071,19 +1071,15 @@ def test_sink_prefix_is_sanitized() -> None:
     assert backend._sink_prefix == "weird_id__"
 
 
-def test_audio_formats_unknown_source_and_capture_pcm() -> None:
-    """The display format reports an unknown source; decoded is the fixed capture PCM."""
+def test_audio_formats_report_the_capture_pcm() -> None:
+    """Display and decoded format both report the fixed capture PCM (s32le/44.1/2)."""
     backend, _events = _make_backend()
 
-    fmt = backend.audio_format
-    assert fmt.content_type is ContentType.UNKNOWN
-    assert fmt.sample_rate == 44100
-    assert fmt.channels == 2
-    decoded = backend.decoded_audio_format
-    assert decoded.content_type is ContentType.PCM_S32LE
-    assert decoded.sample_rate == 44100
-    assert decoded.bit_depth == 32
-    assert decoded.channels == 2
+    for fmt in (backend.audio_format, backend.decoded_audio_format):
+        assert fmt.content_type is ContentType.PCM_S32LE
+        assert fmt.sample_rate == 44100
+        assert fmt.bit_depth == 32
+        assert fmt.channels == 2
     assert backend.get_audio_reader() is None
 
 
