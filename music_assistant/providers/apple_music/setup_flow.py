@@ -48,7 +48,9 @@ async def run_setup(session: SetupSession) -> None:
     collected: dict[str, ConfigValueType] = {}
     # prefer the bundled developer token; only prompt for (and store) a manual one when
     # the bundle ships an empty/expired token, e.g. on development builds
-    app_token = MUSIC_APP_TOKEN
+    # a previously saved override (see the "user" step below) is tried first, so a
+    # reconfigure doesn't force a re-prompt once the bundled token has been overridden
+    app_token = str(session.context.setup_data.get(CONF_MUSIC_APP_TOKEN) or "") or MUSIC_APP_TOKEN
     # a throttled /v1/test says nothing about validity, so only an explicit rejection counts
     if await _app_token_accepted(mass, app_token) is False:
         app_token_errors: dict[str, str] | None = None
@@ -73,20 +75,45 @@ async def run_setup(session: SetupSession) -> None:
 
     errors: dict[str, str] | None = None
     while True:
-        user_values = await session.form(
-            [
-                CONF_ENTRY_UNOFFICIAL_PROVIDER,
+        # once a developer token has been resolved (bundled, accepted-inconclusive, or a
+        # previously typed override) there is no need to ask again on every re-render
+        user_entries: list[ConfigEntry] = [CONF_ENTRY_UNOFFICIAL_PROVIDER]
+        if CONF_MUSIC_APP_TOKEN not in collected:
+            user_entries.append(
                 ConfigEntry(
-                    key=CONF_MUSIC_USER_MANUAL_TOKEN,
+                    key=CONF_MUSIC_APP_TOKEN,
                     type=ConfigEntryType.SECURE_STRING,
                     required=False,
                     advanced=True,
                     help_link="https://www.music-assistant.io/music-providers/apple-music/",
-                ),
-            ],
+                )
+            )
+        user_entries.append(
+            ConfigEntry(
+                key=CONF_MUSIC_USER_MANUAL_TOKEN,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                advanced=True,
+                help_link="https://www.music-assistant.io/music-providers/apple-music/",
+            )
+        )
+        user_values = await session.form(
+            user_entries,
             step_id="user",
             errors=errors,
         )
+        errors = None
+        override_app_token = str(user_values.get(CONF_MUSIC_APP_TOKEN) or "").strip()
+        if override_app_token:
+            # advanced escape hatch: a self-supplied developer token always wins over the
+            # bundled/previously-resolved one and must be in place before the MusicKit page
+            # (which embeds it) is served below
+            if await _app_token_accepted(mass, override_app_token) is False:
+                errors = {CONF_MUSIC_APP_TOKEN: "invalid_value"}
+                continue
+            app_token = override_app_token
+            collected[CONF_MUSIC_APP_TOKEN] = app_token
+
         manual_token = str(user_values.get(CONF_MUSIC_USER_MANUAL_TOKEN) or "").strip()
         attempt = dict(collected)
         if manual_token:
