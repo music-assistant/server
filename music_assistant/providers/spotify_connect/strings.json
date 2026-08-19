@@ -29,7 +29,7 @@
     },
     "volume_mode": {
       "label": "Spotify app volume behavior",
-      "description": "'Player volume only' keeps the volume slider in the Spotify app pinned at 100% so the audio always arrives untouched; you control the volume on the Music Assistant player instead. 'Sync Spotify app volume' keeps the Spotify app's volume slider and the player volume in sync, so you can use either.",
+      "description": "'Player volume only' keeps the volume slider in the Spotify app pinned at 100% so the audio always arrives untouched; you control the volume on the Music Assistant player instead. 'Sync Spotify app volume' keeps the Spotify app's volume slider and the player volume in sync, so you can use either. Note: with volume sync, a large upward volume jump in the Spotify app can cause a very brief loud artifact while the volume correction catches up.",
       "options": {
         "player_only": "Player volume only (quality-first, default)",
         "sync_spotify": "Sync Spotify app volume"

@@ -21,8 +21,8 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.providers.spotify_connect import provider as provider_mod
-from music_assistant.providers.spotify_connect.backends.base import SpotifyConnectBackend
-from music_assistant.providers.spotify_connect.backends.go_librespot import (
+from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
 from music_assistant.providers.spotify_connect.models import (
@@ -341,6 +341,8 @@ async def test_session_inactive_stops_active_player() -> None:
     )
 
     await provider._handle_backend_event(BackendEvent(BackendEventType.SESSION_INACTIVE))
+    # the stop runs as a bounded background task; let it start
+    await asyncio.sleep(0)
 
     assert provider._spotify_session_active is False
     assert provider._playing is False
@@ -348,6 +350,58 @@ async def test_session_inactive_stops_active_player() -> None:
     assert provider._in_use_by_queue is None
     assert provider._active_session_id is None
     mass.players.cmd_stop.assert_called_once_with("player1")
+
+
+async def test_stream_teardown_while_playing_pauses_spotify() -> None:
+    """An MA-side stop/queue-clear pauses the Spotify session so the app reflects it."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
+
+    assert provider._in_use_by_queue is None
+    assert provider._active_session_id is None
+    assert backend.calls == [("pause", None)]
+
+
+async def test_stream_teardown_after_spotify_pause_does_not_pause_again() -> None:
+    """A teardown that resulted from a Spotify-side pause sends no pause command."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(
+        backend,
+        playing=False,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
+
+    assert backend.calls == []
+
+
+async def test_stale_stream_teardown_is_ignored() -> None:
+    """A late unselect from a superseded stream session releases and pauses nothing."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess2",
+    )
+
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
+
+    assert provider._in_use_by_queue == "queue1"
+    assert provider._active_session_id == "sess2"
+    assert backend.calls == []
 
 
 async def test_connection_lost_resets_session_without_stopping_players() -> None:

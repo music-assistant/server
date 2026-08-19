@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import pytest
 from aiohttp import ClientError, WSMessage, WSMsgType
 
-from music_assistant.providers.spotify_connect import soloist
-from music_assistant.providers.spotify_connect.soloist import (
+from music_assistant.providers.spotify_connect.soloist import runtime as soloist
+from music_assistant.providers.spotify_connect.soloist.runtime import (
     BuildExpiredError,
     ConsentRequiredError,
     DownloadFailedError,

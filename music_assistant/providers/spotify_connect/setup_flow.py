@@ -33,8 +33,7 @@ from . import (
     PLAYER_ID_AUTO,
     VOLUME_MODE_OPTIONS,
 )
-from .backends.soloist import VOLUME_MODE_PLAYER_ONLY
-from .soloist import UnsupportedPlatformError, verify_platform_supported
+from .soloist import VOLUME_MODE_PLAYER_ONLY, UnsupportedPlatformError, verify_platform_supported
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession

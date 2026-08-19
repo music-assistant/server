@@ -29,13 +29,15 @@ from music_assistant.helpers.pulse_capture import (
     PipeSink,
     get_pulse_capture_server,
 )
+from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
     BackendStreamSource,
     BackendTrackMetadata,
 )
-from music_assistant.providers.spotify_connect.soloist import (
+
+from .runtime import (
     EXIT_CODE_BUILD_EXPIRED,
     BuildExpiredError,
     SoloistAuthState,
@@ -51,8 +53,6 @@ from music_assistant.providers.spotify_connect.soloist import (
     SoloistVolumeChanged,
 )
 
-from .base import SpotifyConnectBackend
-
 if TYPE_CHECKING:
     import logging
 
@@ -62,7 +62,8 @@ if TYPE_CHECKING:
         AudioChunkReader,
         BackendEventCallback,
     )
-    from music_assistant.providers.spotify_connect.soloist import SoloistEntity, SoloistEvent
+
+    from .runtime import SoloistEntity, SoloistEvent
 
 # How Spotify-side volume changes are handled (see set_volume).
 VOLUME_MODE_PLAYER_ONLY: Final = "player_only"
@@ -313,6 +314,9 @@ class SoloistBackend(SpotifyConnectBackend):
             option, so playback starts at the beginning of the context.
         """
         assert self._client is not None
+        # a bare play starts local playback without a Connect transfer, leaving
+        # the Spotify apps unaware; claim active device status first
+        await self._client.activate(await_result=True)
         await self._client.play(uri)
         if skip_to_uri:
             self.logger.debug(

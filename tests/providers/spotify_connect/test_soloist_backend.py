@@ -15,15 +15,15 @@ import pytest
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import AudioError
 
-from music_assistant.providers.spotify_connect.backends import soloist as soloist_backend
-from music_assistant.providers.spotify_connect.backends.soloist import (
+from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
+from music_assistant.providers.spotify_connect.soloist import backend as soloist_backend
+from music_assistant.providers.spotify_connect.soloist.backend import (
     CACHE_SIZE_MB,
     VOLUME_MODE_PLAYER_ONLY,
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
 )
-from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
-from music_assistant.providers.spotify_connect.soloist import (
+from music_assistant.providers.spotify_connect.soloist.runtime import (
     BuildExpiredError,
     ConsentRequiredError,
     SoloistAuthState,
@@ -1094,7 +1094,11 @@ async def test_transport_commands_map_to_client() -> None:
     backend._client = client
 
     await backend.play("spotify:album:x", skip_to_uri="spotify:track:y")
+    # play claims active device status first (Connect transfer), then plays
+    client.activate.assert_awaited_once_with(await_result=True)
     client.play.assert_awaited_once_with("spotify:album:x")
+    call_names = [name for name, _args, _kwargs in client.mock_calls]
+    assert call_names.index("activate") < call_names.index("play")
 
     await backend.resume()
     client.resume.assert_awaited_once_with()

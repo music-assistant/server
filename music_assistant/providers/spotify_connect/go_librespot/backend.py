@@ -26,7 +26,7 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     select_free_port,
 )
-from music_assistant.providers.spotify_connect.clients.go_librespot import GoLibrespotClient
+from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
 from music_assistant.providers.spotify_connect.helpers import (
     generate_device_id,
     get_go_librespot_binary,
@@ -38,7 +38,7 @@ from music_assistant.providers.spotify_connect.models import (
     BackendTrackMetadata,
 )
 
-from .base import SpotifyConnectBackend
+from .client import GoLibrespotClient
 
 if TYPE_CHECKING:
     import logging

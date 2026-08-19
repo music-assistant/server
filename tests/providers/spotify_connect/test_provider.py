@@ -16,16 +16,16 @@ from music_assistant.providers.spotify_connect import (
     CONF_VOLUME_MODE,
     SpotifyConnectProvider,
 )
-from music_assistant.providers.spotify_connect.backends.go_librespot import (
+from music_assistant.providers.spotify_connect.go_librespot.backend import (
     API_PORT_RANGE_END,
     API_PORT_RANGE_START,
     GoLibrespotBackend,
 )
-from music_assistant.providers.spotify_connect.backends.soloist import (
+from music_assistant.providers.spotify_connect.go_librespot.client import GoLibrespotClient
+from music_assistant.providers.spotify_connect.soloist.backend import (
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
 )
-from music_assistant.providers.spotify_connect.clients.go_librespot import GoLibrespotClient
 
 
 async def test_backend_start_probes_api_port_on_ipv4_loopback() -> None:
@@ -37,12 +37,12 @@ async def test_backend_start_probes_api_port_on_ipv4_loopback() -> None:
 
     with (
         patch(
-            "music_assistant.providers.spotify_connect.backends.go_librespot"
+            "music_assistant.providers.spotify_connect.go_librespot.backend"
             ".get_go_librespot_binary",
             return_value="/usr/bin/go-librespot",
         ),
         patch(
-            "music_assistant.providers.spotify_connect.backends.go_librespot.select_free_port",
+            "music_assistant.providers.spotify_connect.go_librespot.backend.select_free_port",
             new=AsyncMock(return_value=38801),
         ) as select_port,
     ):
@@ -80,15 +80,15 @@ async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> No
 
     with (
         patch(
-            "music_assistant.providers.spotify_connect.backends.go_librespot.is_port_in_use",
+            "music_assistant.providers.spotify_connect.go_librespot.backend.is_port_in_use",
             new=AsyncMock(return_value=True),
         ) as port_probe,
         patch(
-            "music_assistant.providers.spotify_connect.backends.go_librespot.select_free_port",
+            "music_assistant.providers.spotify_connect.go_librespot.backend.select_free_port",
             new=AsyncMock(return_value=38801),
         ),
         patch(
-            "music_assistant.providers.spotify_connect.backends.go_librespot.AsyncProcess",
+            "music_assistant.providers.spotify_connect.go_librespot.backend.AsyncProcess",
             return_value=proc,
         ),
         patch.object(GoLibrespotBackend, "_write_config") as write_config,

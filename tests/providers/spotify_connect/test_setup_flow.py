@@ -22,11 +22,11 @@ from music_assistant.providers.spotify_connect import (
     CONF_VOLUME_MODE,
 )
 from music_assistant.providers.spotify_connect import setup_flow as spotify_flow
-from music_assistant.providers.spotify_connect.backends.soloist import (
+from music_assistant.providers.spotify_connect.soloist.backend import (
     VOLUME_MODE_PLAYER_ONLY,
     VOLUME_MODE_SYNC_SPOTIFY,
 )
-from music_assistant.providers.spotify_connect.soloist import UnsupportedPlatformError
+from music_assistant.providers.spotify_connect.soloist.runtime import UnsupportedPlatformError
 
 if TYPE_CHECKING:
     from music_assistant_models.setup_flow import SetupFlowStep

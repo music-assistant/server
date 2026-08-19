@@ -29,9 +29,9 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
-from .backends.go_librespot import GoLibrespotBackend
-from .backends.soloist import VOLUME_MODE_PLAYER_ONLY, VOLUME_MODE_SYNC_SPOTIFY, SoloistBackend
+from .go_librespot import GoLibrespotBackend
 from .models import BackendEventType
+from .soloist import VOLUME_MODE_PLAYER_ONLY, VOLUME_MODE_SYNC_SPOTIFY, SoloistBackend
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
-    from .backends.base import SpotifyConnectBackend
+    from .base import SpotifyConnectBackend
     from .models import BackendEvent, BackendTrackMetadata
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
@@ -399,6 +399,16 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
+        if self._playing:
+            # MA-side stop/queue-clear: pause the Spotify session so the app
+            # reflects it — the daemon would otherwise keep playing into a
+            # pipe nobody consumes. (Teardowns caused by a Spotify-side pause,
+            # deselect or a player handoff never reach here: those cleared
+            # _playing or replaced the session id first.)
+            try:
+                await self._backend.pause()
+            except Exception as err:
+                self.logger.debug("Failed to pause Spotify session on stream teardown: %s", err)
 
     async def on_source_control(
         self,
@@ -716,7 +726,9 @@ class SpotifyConnectProvider(PluginProvider):
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
-                self.mass.create_task(self.mass.players.cmd_stop(prev_player_id))
+                # bounded like the pause path: a slow player must not hold the
+                # stop (and its playback lock) indefinitely
+                self._schedule_pause_stop(prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:
             self._playing = True

@@ -7,7 +7,7 @@ multiple Spotify Connect daemons.
 
 The MA-facing logic lives in ``provider.py``; everything specific to one
 Spotify Connect implementation (currently go-librespot) lives behind the
-``SpotifyConnectBackend`` contract in ``backends/``.
+``SpotifyConnectBackend`` contract in ``base.py`` (one implementation per subdirectory).
 """
 
 from __future__ import annotations
