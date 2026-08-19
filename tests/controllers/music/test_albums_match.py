@@ -36,6 +36,18 @@ THIRD_BARCODE = "093624912514"
 BASE_MAPPING = ProviderMapping(
     item_id="base-prov", provider_domain="tidal", provider_instance="tidal_1"
 )
+# every way a provider may spell out the retail suffix on one and the same album
+RETAIL_SUFFIX_NAMES = [
+    "Stargazing - EP",
+    "Stargazing -EP",
+    "Stargazing (EP)",
+    "Stargazing [EP]",
+    "Stargazing - Single",
+    "Stargazing -Single",
+    "Stargazing (Single)",
+    "Stargazing [Single]",
+    "Stargazing (single)",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -840,18 +852,15 @@ async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
     expected = ["stargazing", "stargazingep", "stargazingsingle"]
     with _insert_harness(candidates=[]) as harness:
         assert await searched_names(harness, "Stargazing") == expected
-        for spelling in ("Stargazing - EP", "Stargazing -EP", "Stargazing (EP)", "Stargazing [EP]"):
+        for spelling in RETAIL_SUFFIX_NAMES:
             assert await searched_names(harness, spelling) == expected, spelling
 
 
-@pytest.mark.parametrize(
-    "suffixed_name",
-    ["Stargazing - EP", "Stargazing -EP", "Stargazing (EP)", "Stargazing [EP]"],
-)
+@pytest.mark.parametrize("suffixed_name", RETAIL_SUFFIX_NAMES)
 async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
     mass: MusicAssistant, suffixed_name: str
 ) -> None:
-    """An 'X - EP' from one provider joins the existing 'X' row instead of duplicating it."""
+    """A title naming the format joins the existing plain-title row instead of duplicating it."""
     artist = await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
