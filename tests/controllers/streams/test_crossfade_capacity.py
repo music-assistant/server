@@ -46,6 +46,11 @@ def _buffer(duration_available: float, ready: bool) -> AudioBuffer:
     return audio_buffer
 
 
+def _delivered_buffer() -> SimpleNamespace:
+    """Build the outgoing track's buffer, with its source done delivering."""
+    return SimpleNamespace(eof=True, cancelled=False)
+
+
 def test_ready_incoming_buffer_keeps_smart_crossfade() -> None:
     """A fully resident incoming buffer keeps the requested Smart Fade."""
     audio = StreamsAudio(MagicMock())
@@ -128,7 +133,8 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
-        buffer=None,
+        buffer=_delivered_buffer(),
+        is_realtime=False,
     )
     next_details = SimpleNamespace(
         audio_format=pcm_format,
@@ -136,6 +142,7 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
         duration=16,
         seek_position=0,
         uri="test://next",
+        is_realtime=False,
     )
     current_item = SimpleNamespace(
         queue_id="queue-1",
@@ -216,7 +223,8 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
-        buffer=None,
+        buffer=_delivered_buffer(),
+        is_realtime=False,
     )
     next_details = SimpleNamespace(
         audio_format=pcm_format,
@@ -225,6 +233,7 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
         seek_position=0,
         uri="test://next",
         volume_normalization_mode=None,
+        is_realtime=False,
     )
     current_item = SimpleNamespace(
         queue_id="queue-1",

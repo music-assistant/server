@@ -1081,7 +1081,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
-        buffer=None,
+        buffer=SimpleNamespace(eof=True, cancelled=False),
+        is_realtime=False,
     )
     first_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1107,6 +1108,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=raw_seek_position,
         seconds_streamed=0,
         duration=120,
+        is_realtime=False,
     )
     skipped_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1156,8 +1158,9 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
         if queue_item is first_item:
+            # warmup worth of audio, then a full crossfade tail
             yield bytes(pcm_format.pcm_sample_size * 8)
-            yield bytes(pcm_format.pcm_sample_size)
+            yield bytes(pcm_format.pcm_sample_size * 8)
         else:
             eager_seek_positions.append(queue_item.streamdetails.seek_position)
 
