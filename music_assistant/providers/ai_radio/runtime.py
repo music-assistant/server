@@ -1002,7 +1002,6 @@ class AIRadioRuntimeMixin:
         }
         country_code = country.upper() if len(country) == 2 and country.isalpha() else ""
         if country_code:
-            # the API's real filter is countryCode; a plain "country" param is silently ignored
             geocode_params["countryCode"] = country_code
         geocode = await self._open_meteo_get_json(
             "https://geocoding-api.open-meteo.com/v1/search",
