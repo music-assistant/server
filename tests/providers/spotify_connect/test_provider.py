@@ -207,12 +207,25 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
         value=VOLUME_MODE_SYNC_SPOTIFY,
     )
 
+    provider.config.values[CONF_CROSSFADE_DURATION] = ConfigEntry(
+        key=CONF_CROSSFADE_DURATION,
+        type=ConfigEntryType.INTEGER,
+        value=8,
+    )
+    provider.config.values[CONF_LOUDNESS_NORMALIZATION] = ConfigEntry(
+        key=CONF_LOUDNESS_NORMALIZATION,
+        type=ConfigEntryType.BOOLEAN,
+        value=False,
+    )
+
     backend = provider._create_backend()
 
     assert isinstance(backend, SoloistBackend)
     assert backend._api_key == "soloist-api-key-0123456789abcdef"
     assert backend._consent is True
     assert backend._volume_mode == VOLUME_MODE_SYNC_SPOTIFY
+    assert backend._crossfade_ms == 8000
+    assert backend._loudness_normalization is False
 
 
 def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:

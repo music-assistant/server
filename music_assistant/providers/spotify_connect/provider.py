@@ -509,7 +509,7 @@ class SpotifyConnectProvider(PluginProvider):
     def _resolve_crossfade_ms(self) -> int:
         """Return the configured crossfade duration in milliseconds (0 = disabled)."""
         value = cast("int | None", self.config.get_value(CONF_CROSSFADE_DURATION))
-        return min(int(value or 0), MAX_CROSSFADE_DURATION) * 1000
+        return max(0, min(int(value or 0), MAX_CROSSFADE_DURATION)) * 1000
 
     def _resolve_loudness_normalization(self) -> bool:
         """Return whether Spotify's loudness normalization should be enabled."""

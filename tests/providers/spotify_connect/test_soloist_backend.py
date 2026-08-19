@@ -1366,3 +1366,13 @@ def test_audio_prefs_write_failure_is_non_fatal(tmp_path: Path) -> None:
     backend._data_dir = Path("/proc/no-such-place")
 
     backend._write_audio_prefs()  # must not raise
+
+
+def test_audio_prefs_corrupt_file_is_non_fatal(tmp_path: Path) -> None:
+    """A prefs file with invalid UTF-8 (truncated write) does not block the spawn."""
+    backend = _prefs_backend(tmp_path, crossfade_ms=8000, normalization=True)
+    settings = backend._data_dir / "settings"
+    settings.mkdir(parents=True)
+    (settings / "prefs").write_bytes(b"core.clock_delta=0\naudio.play_bitrate\xc3")
+
+    backend._write_audio_prefs()  # must not raise

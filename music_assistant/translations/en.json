@@ -2319,7 +2319,7 @@
   "provider.spotify_connect.config_entries.backend.label": "Playback engine",
   "provider.spotify_connect.config_entries.backend.options.go_librespot": "go-librespot (community)",
   "provider.spotify_connect.config_entries.backend.options.soloist": "Spotify Soloist (official, recommended)",
-  "provider.spotify_connect.config_entries.crossfade_duration.description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, on transitions between playlist or queue tracks — album tracks that run into each other keep playing gapless.",
+  "provider.spotify_connect.config_entries.crossfade_duration.description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, so exactly which track transitions fade is up to Spotify (album tracks that run into each other typically keep playing gapless).",
   "provider.spotify_connect.config_entries.crossfade_duration.label": "Crossfade duration (seconds)",
   "provider.spotify_connect.config_entries.loudness_normalization.description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio exactly as mastered.",
   "provider.spotify_connect.config_entries.loudness_normalization.label": "Loudness normalization",

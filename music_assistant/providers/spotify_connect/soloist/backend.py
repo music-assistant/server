@@ -532,7 +532,7 @@ class SoloistBackend(SpotifyConnectBackend):
                     ]
                 prefs_file.parent.mkdir(parents=True, exist_ok=True)
                 prefs_file.write_text("\n".join([*lines, *managed_lines]) + "\n", encoding="utf-8")
-        except OSError as err:
+        except (OSError, UnicodeDecodeError) as err:
             self.logger.warning("Failed to write the Spotify audio settings: %s", err)
 
     async def _daemon_runner(self) -> None:

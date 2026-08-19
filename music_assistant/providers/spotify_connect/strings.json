@@ -37,7 +37,7 @@
     },
     "crossfade_duration": {
       "label": "Crossfade duration (seconds)",
-      "description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, on transitions between playlist or queue tracks — album tracks that run into each other keep playing gapless."
+      "description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, so exactly which track transitions fade is up to Spotify (album tracks that run into each other typically keep playing gapless)."
     },
     "loudness_normalization": {
       "label": "Loudness normalization",
