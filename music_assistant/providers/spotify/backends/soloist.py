@@ -99,8 +99,10 @@ _MAX_LEAD_TRIM_S: Final[float] = 2.0
 # how far the last observed playback position may fall short of the item's
 # duration before the delivered PCM is rejected as incomplete
 _INCOMPLETE_TOLERANCE_MS: Final[int] = 10000
-# after process exit, how long to keep draining the FIFO toward the duration cap
+# after the item ends, how long to keep draining the FIFO toward the duration cap
 _DRAIN_TIMEOUT_S: Final[float] = 2.0
+# how long the daemon gets to finish its own shutdown before it is closed
+_NATURAL_EXIT_TIMEOUT_S: Final[int] = 3
 
 
 class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
@@ -147,7 +149,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         # expired build) propagate so the provider load fails with a clear error
         manager = SoloistBinaryManager(self.mass)
         self._binary = await manager.ensure_fresh(self._consent)
-        await asyncio.to_thread(self._adopt_paired_session)
+        await self._adopt_paired_session()
         if not await asyncio.to_thread(self._has_stored_session):
             raise LoginFailed(
                 "Spotify Soloist is not paired with a Spotify account",
@@ -269,11 +271,17 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             ch if ch.isalnum() or ch in "_.-" else "_" for ch in self.provider.instance_id
         )
 
-    def _adopt_paired_session(self) -> None:
-        """Move a session paired by the setup flow into the per-instance data dir (blocking)."""
+    async def _adopt_paired_session(self) -> None:
+        """Adopt a session paired by the setup flow into the per-instance data dir."""
         pending = str(self.provider.get_setup_value(CONF_SOLOIST_SESSION_DIR) or "")
         if not pending:
             return
+        await asyncio.to_thread(self._move_paired_session, pending)
+        # config writes schedule tasks and must therefore run on the event loop
+        self.provider._update_setup_data(CONF_SOLOIST_SESSION_DIR, None)
+
+    def _move_paired_session(self, pending: str) -> None:
+        """Move the paired session files into the canonical data dir (blocking)."""
         source = Path(self.mass.storage_path) / pending
         canonical = self._data_dir
         if source.is_dir() and source != canonical:
@@ -282,7 +290,6 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             canonical.parent.mkdir(parents=True, exist_ok=True)
             source.replace(canonical)
             canonical.chmod(0o700)
-        self.provider._update_setup_data(CONF_SOLOIST_SESSION_DIR, None)
 
     def _has_stored_session(self) -> bool:
         """Return whether the data dir holds a stored (paired) session (blocking)."""
@@ -447,7 +454,19 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         except TimeoutError:
             self._raise_startup_error(state, proc, "timed out waiting for playback to start")
         if state.error or not state.item_seen.is_set():
+            if proc.returncode == EXIT_CODE_BUILD_EXPIRED:
+                # an expired build exits with code 10 right at spawn
+                await self._replace_expired_build()
+                raise AudioError("Spotify Soloist build expired; installed a replacement")
             self._raise_startup_error(state, proc, "exited before playback started")
+
+    async def _replace_expired_build(self) -> None:
+        """Replace the expired soloist build so the next item can play."""
+        # bypass the verify cache — it would hand back the same expired binary
+        with suppress(SoloistError):
+            self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(
+                self._consent, force=True
+            )
 
     def _raise_startup_error(self, state: _TrackState, proc: AsyncProcess, detail: str) -> None:
         """Raise the most specific startup failure for the requested item."""
@@ -510,13 +529,13 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         while True:
             if state.error:
                 raise AudioError(f"Spotify Soloist: {state.error}")
-            if state.ended.is_set():
-                break
             # the duration may only arrive with a later playback_state event
             expected_bytes = state.expected_bytes(seek_position)
-            if proc.returncode is not None:
-                # the FIFO keeps delivering (silence) after the process
-                # exits; drain briefly toward the duration cap, then stop
+            if state.ended.is_set() or proc.returncode is not None:
+                # the item is over (or the daemon exited), but its audio tail
+                # may still sit in the FIFO/reader buffers — drain briefly
+                # toward the duration cap, then stop (the FIFO itself keeps
+                # delivering silence and never ends)
                 if drain_deadline is None:
                     drain_deadline = loop.time() + _DRAIN_TIMEOUT_S
                 if expected_bytes is None or loop.time() >= drain_deadline:
@@ -550,8 +569,8 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
                 break
             # realtime pacing: the reader clocks the pipe sink, and thus how
             # fast Spotify must deliver — never run ahead of realtime beyond
-            # the initial burst (no pacing needed once the process exited)
-            if pace_start is not None and proc.returncode is None:
+            # the initial burst (no pacing needed once the item is over)
+            if pace_start is not None and proc.returncode is None and not state.ended.is_set():
                 resume_at = pace_start + (bytes_out / _BYTES_PER_SECOND) - _PACE_BURST_S
                 if (delay := resume_at - loop.time()) > 0:
                     await asyncio.sleep(delay)
@@ -564,17 +583,18 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         silence), so the last observed playback position is checked against the
         item's duration as well.
         """
+        # in single-track mode the daemon exits by itself when the item is
+        # done; give it a moment so the exit code reflects its own verdict
+        # rather than our teardown signal
+        with suppress(TimeoutError):
+            await proc.wait_with_timeout(_NATURAL_EXIT_TIMEOUT_S)
+        forced_close = proc.returncode is None
         await proc.close()
         returncode = proc.returncode
         if returncode == EXIT_CODE_BUILD_EXPIRED:
-            # replace the expired build now so the next item plays; bypass the
-            # verify cache — it would hand back the same binary
-            with suppress(SoloistError):
-                self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(
-                    self._consent, force=True
-                )
+            await self._replace_expired_build()
             raise AudioError("Spotify Soloist build expired; installed a replacement")
-        if returncode != 0:
+        if not forced_close and returncode != 0:
             raise AudioError(
                 f"Spotify Soloist exited with code {returncode} for {state.requested_uri}"
             )
@@ -625,9 +645,10 @@ class _TrackState:
     def observe_position(self, position_ms: int) -> None:
         """Record a reported playback position (and confirm a pending seek)."""
         self.last_position_ms = position_ms
-        if (
-            self.seek_target_ms is not None
-            and position_ms >= self.seek_target_ms - _SEEK_TOLERANCE_MS
+        # the floor of 1 keeps a pre-seek report of position 0 from confirming
+        # a small seek target that falls inside the tolerance window
+        if self.seek_target_ms is not None and position_ms >= max(
+            1, self.seek_target_ms - _SEEK_TOLERANCE_MS
         ):
             self.seek_confirmed.set()
 
@@ -651,9 +672,13 @@ async def _open_fifo_reader(
         os.close(fd)
         raise
     reader = asyncio.StreamReader(limit=_READ_CHUNK_SIZE * 2)
-    transport, _ = await loop.connect_read_pipe(
-        partial(asyncio.StreamReaderProtocol, reader), pipe_file
-    )
+    try:
+        transport, _ = await loop.connect_read_pipe(
+            partial(asyncio.StreamReaderProtocol, reader), pipe_file
+        )
+    except BaseException:
+        pipe_file.close()
+        raise
     return reader, transport
 
 

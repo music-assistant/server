@@ -55,10 +55,9 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         :raises LoginFailed: When no playback credential is configured, which requires
             the user to re-run the setup flow.
         """
-        try:
-            self._librespot_bin = await get_librespot_binary()
-        except RuntimeError as err:
-            raise LoginFailed(str(err)) from err
+        # a missing binary is a platform problem, not an auth problem: let the
+        # RuntimeError surface as a plain setup failure
+        self._librespot_bin = await get_librespot_binary()
         credentials = self.provider.get_setup_value(CONF_LIBRESPOT_CREDENTIALS)
         if not credentials:
             # Spotify's login5 refuses credentials minted with any client id other than the one

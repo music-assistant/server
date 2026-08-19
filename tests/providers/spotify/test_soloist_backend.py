@@ -78,6 +78,16 @@ def test_seek_is_confirmed_only_within_tolerance() -> None:
     assert state.seek_confirmed.is_set()
 
 
+def test_small_seek_target_is_not_confirmed_by_a_pre_seek_zero_report() -> None:
+    """A position 0 report never confirms a small seek target inside the tolerance."""
+    state = _TrackState("spotify:track:abc")
+    state.seek_target_ms = 1_500
+    state.observe_position(0)
+    assert not state.seek_confirmed.is_set()
+    state.observe_position(1_400)
+    assert state.seek_confirmed.is_set()
+
+
 def test_expected_bytes_math() -> None:
     """The expected PCM byte count follows duration and seek; unknown duration is None."""
     state = _TrackState("spotify:track:abc")
@@ -153,6 +163,38 @@ async def test_expired_build_is_replaced_and_reported(
     manager.ensure_fresh.assert_awaited_once_with(True, force=True)
 
 
+async def test_expired_build_at_spawn_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired build exiting 10 right at spawn triggers the forced refresh too."""
+    backend = _make_backend(tmp_path, {CONF_SOLOIST_API_KEY: "k" * 20, CONF_SOLOIST_CONSENT: True})
+    manager = _install_fake_binary_manager(monkeypatch)
+    state = _TrackState("spotify:track:abc")
+    proc = _make_proc(10)
+    proc.wait = AsyncMock(return_value=10)
+    with pytest.raises(AudioError, match="expired"):
+        await backend._await_item_ready(state, proc)
+    manager.ensure_fresh.assert_awaited_once_with(True, force=True)
+
+
+async def test_forced_close_does_not_fail_a_complete_delivery(tmp_path: Path) -> None:
+    """A daemon that had to be closed forcefully is not judged by its signal exit code."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.playing_seen = True
+    state.duration_ms = 200_000
+    state.last_position_ms = 195_000
+    proc = MagicMock()
+    proc.returncode = None
+    proc.wait_with_timeout = AsyncMock(side_effect=TimeoutError)
+
+    async def _close() -> None:
+        proc.returncode = -2
+
+    proc.close = AsyncMock(side_effect=_close)
+    await backend._evaluate_result(state, proc)
+
+
 async def test_nonzero_exit_fails_the_item(tmp_path: Path) -> None:
     """A nonzero daemon exit code rejects the delivered PCM."""
     backend = _make_backend(tmp_path)
@@ -200,7 +242,7 @@ async def test_delivery_within_tolerance_passes(tmp_path: Path) -> None:
     await backend._evaluate_result(state, _make_proc(0))
 
 
-def test_adopt_paired_session_moves_into_the_canonical_dir(
+async def test_adopt_paired_session_moves_into_the_canonical_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A session paired by the setup flow is adopted into the per-instance data dir."""
@@ -212,7 +254,7 @@ def test_adopt_paired_session_moves_into_the_canonical_dir(
     update_setup_data = MagicMock()
     monkeypatch.setattr(prov, "_update_setup_data", update_setup_data)
     backend = SoloistSingleTrackBackend(prov)
-    backend._adopt_paired_session()
+    await backend._adopt_paired_session()
     canonical = storage / "spotify" / "spotify--test" / SOLOIST_DATA_DIR_NAME
     assert (canonical / "session.bin").read_bytes() == b"session"
     assert not pending.exists()
@@ -306,6 +348,7 @@ def _make_proc(returncode: int) -> MagicMock:
     """Return a finished AsyncProcess stand-in with the given exit code."""
     proc = MagicMock()
     proc.close = AsyncMock()
+    proc.wait_with_timeout = AsyncMock(return_value=returncode)
     proc.returncode = returncode
     return proc
 
