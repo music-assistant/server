@@ -17,8 +17,13 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.providers.spotify_connect.soloist import SoloistBinaryManager
+from music_assistant.providers.spotify_connect.soloist.runtime import (
+    WS_ADDR_FILE,
+    WS_PORT_FILE,
+)
 
-from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
+from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE, PAIRING_DEVICE_NAME
 
 LOGGER = logging.getLogger(__name__)
 PAIRING_LOG_TIMESTAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^ ]+ ")
@@ -33,6 +38,8 @@ LOOPBACK_RESPONSE_HTML = """
 
 if TYPE_CHECKING:
     import aiohttp
+
+    from music_assistant.mass import MusicAssistant
 
 
 async def get_librespot_binary() -> str:
@@ -122,6 +129,67 @@ async def librespot_credentials_via_token(librespot_bin: str, access_token: str)
         return await asyncio.to_thread(_read_credentials_file, credentials_file)
 
 
+async def pair_soloist_session(mass: MusicAssistant, api_key: str, data_dir: Path) -> None:
+    """
+    Pair a Spotify account with soloist and store the session in the given data dir.
+
+    Advertises a Spotify Connect device and blocks until the user selects it in the
+    official Spotify app; the caller is expected to bound the wait (the setup flow's
+    step deadline cancels it).
+
+    :param mass: The MusicAssistant instance.
+    :param api_key: The user's personal Soloist API key (secret, kept out of all logs).
+    :param data_dir: Directory the paired session is stored in.
+    :raises LoginFailed: When pairing did not complete with a stored session.
+    """
+    binary = await SoloistBinaryManager(mass).ensure_fresh(consent=True)
+
+    def _prepare() -> None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # the paired session holds the Spotify device identity and login session
+        data_dir.chmod(0o700)
+
+    await asyncio.to_thread(_prepare)
+    with tempfile.TemporaryDirectory() as cache_dir:
+        args = [
+            str(binary),
+            "--pair",
+            "--device-name",
+            PAIRING_DEVICE_NAME,
+            "--api-key",
+            api_key,
+            "--data-dir",
+            str(data_dir),
+            "--cache-dir",
+            cache_dir,
+        ]
+        # the explicit process name keeps AsyncProcess logging free of the argv
+        # (which carries the API key)
+        async with AsyncProcess(args, stderr=True, name="soloist-pair") as pair_proc:
+            pair_proc.attach_stderr_reader(
+                asyncio.create_task(_log_soloist_pairing_output(pair_proc, api_key))
+            )
+            returncode = await pair_proc.wait()
+    if returncode != 0:
+        raise LoginFailed(f"Soloist pairing failed (exit code {returncode})")
+    if not await asyncio.to_thread(soloist_session_present, data_dir):
+        raise LoginFailed("Soloist did not store a paired session")
+
+
+def soloist_session_present(data_dir: Path) -> bool:
+    """
+    Return whether a soloist data dir holds a stored (paired) session (blocking).
+
+    The session storage format is opaque; any persisted file besides the WebSocket
+    endpoint files counts as a stored session.
+
+    :param data_dir: The soloist data directory to inspect.
+    """
+    if not data_dir.is_dir():
+        return False
+    return any(entry.name not in (WS_ADDR_FILE, WS_PORT_FILE) for entry in data_dir.iterdir())
+
+
 async def await_loopback_authorization(port: int, path: str) -> dict[str, str]:
     """
     Serve the loopback redirect target and return the OAuth params the browser arrives with.
@@ -200,6 +268,15 @@ async def get_spotify_token(
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
+
+
+async def _log_soloist_pairing_output(pair_proc: AsyncProcess, api_key: str) -> None:
+    """Log the pairing daemon's output (API key redacted) so failures are diagnosable."""
+    async for line in pair_proc.iter_stderr():
+        # the third-party binary's own output may echo argv (which carries the
+        # api key), so redact it before logging
+        text = line.replace(api_key, "<redacted>") if api_key else line
+        LOGGER.debug("[soloist-pair] %s", text)
 
 
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:

@@ -11,6 +11,22 @@ CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
 
+# Playback backend selection; configs predating the choice default to librespot
+CONF_PLAYBACK_BACKEND = "playback_backend"
+BACKEND_LIBRESPOT = "librespot"
+BACKEND_SOLOIST = "soloist"
+
+# Soloist-specific values collected by the setup flow (see CONF_PLAYBACK_BACKEND)
+CONF_SOLOIST_API_KEY = "soloist_api_key"
+CONF_SOLOIST_CONSENT = "soloist_download_consent"
+# a session paired by the setup flow, as a directory relative to the storage
+# path; adopted into the per-instance data dir on the next provider (re)load
+CONF_SOLOIST_SESSION_DIR = "soloist_session_dir"
+SOLOIST_DATA_DIR_NAME = "soloist-data"
+SOLOIST_PAIRING_DIR = "spotify/pairing"
+# device name for single-track playback; not advertised to the Spotify apps
+SOLOIST_DEVICE_NAME = "Music Assistant"
+
 # Librespot playback authorization
 #
 # Spotify's login5 endpoint only accepts a stored credential that was minted with the same

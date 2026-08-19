@@ -22,6 +22,7 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.oauth import authorization_code_from_url
 from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
 from music_assistant.providers.spotify.constants import (
     CONF_LIBRESPOT_CREDENTIALS,
     CREDENTIALS_FILE,
@@ -44,7 +45,6 @@ def _make_provider(credentials: str | None, cache_dir: str) -> SpotifyProvider:
     prov.logger = MagicMock()
     prov.available = True
     prov.cache_dir = cache_dir
-    prov._librespot_bin = "/bin/librespot"
     setup_data = {CONF_LIBRESPOT_CREDENTIALS: credentials} if credentials is not None else {}
     mass = MagicMock()
     # get_setup_value reads the live setup_data blob from the store
@@ -56,34 +56,47 @@ def _make_provider(credentials: str | None, cache_dir: str) -> SpotifyProvider:
     return prov
 
 
+def _make_backend(prov: SpotifyProvider, monkeypatch: pytest.MonkeyPatch) -> LibrespotBackend:
+    """Return a LibrespotBackend for the given provider with a stubbed binary lookup."""
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.backends.librespot.get_librespot_binary",
+        AsyncMock(return_value="/bin/librespot"),
+    )
+    return LibrespotBackend(prov)
+
+
 async def test_stored_credential_is_installed_for_librespot(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The stored credential is written to librespot's cache so login5 accepts it."""
     cache_dir = tmp_path / "cache"
     prov = _make_provider(STORED_CREDENTIALS, str(cache_dir))
-    await prov._setup_librespot_auth()
+    await _make_backend(prov, monkeypatch).setup()
     written = json.loads((cache_dir / CREDENTIALS_FILE).read_text(encoding="utf-8"))
     assert written["auth_data"] == "blob"
 
 
-async def test_stale_cached_credential_is_replaced(tmp_path: Path) -> None:
+async def test_stale_cached_credential_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A credential left in the cache from an earlier (now rejected) mint is overwritten."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     credentials_file = cache_dir / CREDENTIALS_FILE
     credentials_file.write_text('{"username": "tester", "auth_data": "stale"}', encoding="utf-8")
     prov = _make_provider(STORED_CREDENTIALS, str(cache_dir))
-    await prov._setup_librespot_auth()
+    await _make_backend(prov, monkeypatch).setup()
     written = json.loads(credentials_file.read_text(encoding="utf-8"))
     assert written["auth_data"] == "blob"
 
 
-async def test_missing_credential_requires_reauth(tmp_path: Path) -> None:
+async def test_missing_credential_requires_reauth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without a stored credential the provider fails with an auth error (AUTH_REQUIRED)."""
     prov = _make_provider(None, str(tmp_path / "cache"))
     with pytest.raises(LoginFailed) as err:
-        await prov._setup_librespot_auth()
+        await _make_backend(prov, monkeypatch).setup()
     # the error code is what actually drives the provider to AUTH_REQUIRED (and so the
     # reconfigure prompt); the translation key is what the user reads
     assert err.value.error_code in _AUTH_ERROR_CODES
