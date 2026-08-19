@@ -90,7 +90,7 @@ _CACHE_SIZE_MB: Final[int] = 512
 #   and demanding audio faster than the warming fetch pipeline can deliver
 #   destabilizes it — large bursts audibly worsened track starts.
 _PACE_RATE: Final[float] = 1.1
-_PACE_BURST_S: Final[float] = 0.5
+_PACE_BURST_S: Final[float] = 1.0
 
 _READ_CHUNK_SIZE: Final[int] = 32768
 # one wait slice on the FIFO read; state (process exit, errors) is checked between slices
@@ -99,7 +99,9 @@ _READ_SLICE_S: Final[float] = 1.0
 _STALL_TIMEOUT_S: Final[float] = 30.0
 # waiting for the daemon's WS endpoint, events and the requested item to appear
 _STARTUP_TIMEOUT_S: Final[float] = 30.0
-_SEEK_CONFIRM_TIMEOUT_S: Final[float] = 10.0
+_SEEK_CONFIRM_TIMEOUT_S: Final[float] = 15.0
+# a seek is re-sent at this interval until a position anchor confirms it
+_SEEK_RETRY_INTERVAL_S: Final[float] = 2.0
 # position reported by a seek anchor may fall slightly before the requested target
 _SEEK_TOLERANCE_MS: Final[int] = 2000
 # Infrastructure silence precedes the first decoded sample; trim at most this
@@ -550,12 +552,19 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         # commands travel over the events connection
         if not state.client_ready.is_set():
             raise AudioError("Spotify Soloist WebSocket connection not ready for seek")
-        await client.seek(target_ms)
-        try:
-            async with asyncio.timeout(_SEEK_CONFIRM_TIMEOUT_S):
-                await state.seek_confirmed.wait()
-        except TimeoutError:
-            raise AudioError(f"Spotify Soloist did not confirm seeking to {target_ms}ms") from None
+        # the engine silently drops a seek that arrives while the track is
+        # still loading (verified via event trace), so re-send it until a
+        # position anchor confirms it landed
+        deadline = asyncio.get_running_loop().time() + _SEEK_CONFIRM_TIMEOUT_S
+        while True:
+            await client.seek(target_ms)
+            with suppress(TimeoutError):
+                async with asyncio.timeout(_SEEK_RETRY_INTERVAL_S):
+                    await state.seek_confirmed.wait()
+            if state.seek_confirmed.is_set():
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AudioError(f"Spotify Soloist did not confirm seeking to {target_ms}ms")
 
     async def _read_pcm(
         self,
