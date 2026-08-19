@@ -493,6 +493,28 @@ async def test_keeps_an_ep_apart_from_the_single_of_the_same_name(mass: MusicAss
     assert await mass.music.tracks.get_library_item(track_2.item_id)
 
 
+@pytest.mark.parametrize("spelling", ["-EP", "(EP)", "[EP]"])
+@pytest.mark.parametrize("suffix_on_second", [False, True])
+async def test_merges_a_plain_title_with_any_spelled_out_suffix(
+    mass: MusicAssistant, spelling: str, suffix_on_second: bool
+) -> None:
+    """A plain title and one naming the format are the same album, however it is written."""
+    specs = [_TrackSpec(), _TrackSpec("qobuz_instance")]
+    index = 1 if suffix_on_second else 0
+    specs[index] = specs[index]._replace(album_name=f"{specs[index].album_name} {spelling}")
+    track_1, track_2 = await _build_duplicate_pair(mass, *specs)
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 @pytest.mark.parametrize("suffix_on_second", [False, True])
 async def test_a_suffix_without_a_dash_is_left_to_the_album_comparison(
     mass: MusicAssistant, suffix_on_second: bool

@@ -69,8 +69,9 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
 # retail suffixes a provider (notably Apple Music) appends to an EP/single title
 _ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
 # the trailing retail suffix as it appears in a raw album title: set off by a dash
-# (any style, the space after it is optional) or wrapped in brackets. A bare trailing
-# word is deliberately not accepted, as it is just as likely part of the title itself
+# (any style, and only the space in front of it counts, so "K-EP" keeps its name) or
+# wrapped in brackets, which need no space to be unambiguous. A bare trailing word is
+# deliberately not accepted, as it is just as likely part of the title itself
 # ("The SL2 EP", "Saturday Night Single")
 _ALBUM_SUFFIX_PATTERN = re.compile(
     rf"\s+[-\u2013\u2014]\s*(?P<suffix>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$"
@@ -770,6 +771,19 @@ def strip_album_retail_suffix(name: str) -> str:
     # the suffix carries no identity information: Apple Music appends it to EP/single
     # titles while already setting album_type
     return _ALBUM_SUFFIX_PATTERN.sub("", name)
+
+
+def album_retail_suffix_sql_match(name_column: str, suffix_key: str) -> str:
+    """
+    Return a SQL condition that holds when a raw album title spells out a retail suffix.
+
+    :param name_column: SQL expression yielding the raw album title.
+    :param suffix_key: One of :data:`ALBUM_RETAIL_SUFFIX_KEYS`.
+    """
+    # any non-alphanumeric in front of the word sets it off, so an ordinary title that
+    # merely ends in those letters ("Step", "Singles") is left alone. Trailing brackets are
+    # trimmed first, which lets one condition cover every separator a provider may use
+    return f"upper(rtrim({name_column}, ' )]')) GLOB '*[^A-Z0-9]{suffix_key.upper()}'"
 
 
 def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> bool | None:

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import (
@@ -839,11 +840,16 @@ async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
     expected = ["stargazing", "stargazingep", "stargazingsingle"]
     with _insert_harness(candidates=[]) as harness:
         assert await searched_names(harness, "Stargazing") == expected
-        assert await searched_names(harness, "Stargazing - EP") == expected
+        for spelling in ("Stargazing - EP", "Stargazing -EP", "Stargazing (EP)", "Stargazing [EP]"):
+            assert await searched_names(harness, spelling) == expected, spelling
 
 
+@pytest.mark.parametrize(
+    "suffixed_name",
+    ["Stargazing - EP", "Stargazing -EP", "Stargazing (EP)", "Stargazing [EP]"],
+)
 async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
-    mass: MusicAssistant,
+    mass: MusicAssistant, suffixed_name: str
 ) -> None:
     """An 'X - EP' from one provider joins the existing 'X' row instead of duplicating it."""
     artist = await mass.music.artists.add_item_to_library(
@@ -875,7 +881,7 @@ async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title
         Album(
             item_id="suffixed",
             provider="apple_music_1",
-            name="Stargazing - EP",
+            name=suffixed_name,
             artists=UniqueList([artist]),
             provider_mappings={
                 ProviderMapping(
