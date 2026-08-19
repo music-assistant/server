@@ -1307,3 +1307,82 @@ async def test_start_failure_releases_capture_server(
 
     # the acquire must be paired with a release despite the aborted startup
     assert server.released
+
+
+def _prefs_backend(tmp_path: Path, *, crossfade_ms: int, normalization: bool) -> SoloistBackend:
+    """Build a backend with the given audio behavior, rooted in a real tmp data dir."""
+    backend, _ = _make_backend(base_dir=tmp_path)
+    backend._crossfade_ms = crossfade_ms
+    backend._loudness_normalization = normalization
+    backend._data_dir = tmp_path / "soloist-data"
+    return backend
+
+
+def test_audio_prefs_written_to_global_and_per_user(tmp_path: Path) -> None:
+    """Managed keys are replaced in the global and every per-user prefs store."""
+    backend = _prefs_backend(tmp_path, crossfade_ms=8000, normalization=False)
+    settings = backend._data_dir / "settings"
+    (settings / "Users" / "alice-user").mkdir(parents=True)
+    (settings / "prefs").write_text("core.clock_delta=0\naudio.crossfade_v2=false\n")
+    (settings / "Users" / "alice-user" / "prefs").write_text(
+        "audio.play_bitrate_non_metered_enumeration=5\naudio.crossfade.time_v2=99\n"
+    )
+
+    backend._write_audio_prefs()
+
+    global_prefs = (settings / "prefs").read_text().splitlines()
+    user_prefs = (settings / "Users" / "alice-user" / "prefs").read_text().splitlines()
+    for prefs in (global_prefs, user_prefs):
+        assert "audio.crossfade_v2=true" in prefs
+        assert "audio.crossfade.time_v2=8000" in prefs
+        assert "audio.normalize_v2=false" in prefs
+    # foreign keys survive, replaced stale values do not
+    assert "core.clock_delta=0" in global_prefs
+    assert "audio.play_bitrate_non_metered_enumeration=5" in user_prefs
+    assert "audio.crossfade_v2=false" not in global_prefs
+    assert "audio.crossfade.time_v2=99" not in user_prefs
+
+
+def test_audio_prefs_crossfade_off_omits_the_time_key(tmp_path: Path) -> None:
+    """
+    Crossfade off writes crossfade_v2=false and no time key.
+
+    Sub-second time values silently disable crossfade, so the time key may only
+    exist while crossfade is enabled.
+    """
+    backend = _prefs_backend(tmp_path, crossfade_ms=0, normalization=True)
+
+    backend._write_audio_prefs()
+
+    global_prefs = (backend._data_dir / "settings" / "prefs").read_text()
+    assert "audio.crossfade_v2=false" in global_prefs
+    assert "audio.crossfade.time_v2" not in global_prefs
+    assert "audio.normalize_v2=true" in global_prefs
+
+
+def test_audio_prefs_write_failure_is_non_fatal(tmp_path: Path) -> None:
+    """A failing prefs write logs a warning instead of blocking the daemon spawn."""
+    backend = _prefs_backend(tmp_path, crossfade_ms=8000, normalization=True)
+    backend._data_dir = Path("/proc/no-such-place")
+
+    backend._write_audio_prefs()  # must not raise
+
+
+def test_audio_prefs_corrupt_file_skips_only_that_store(tmp_path: Path) -> None:
+    """
+    A prefs file with invalid UTF-8 (truncated write) does not block the spawn.
+
+    Only the corrupt store is skipped; the remaining stores are still updated.
+    """
+    backend = _prefs_backend(tmp_path, crossfade_ms=8000, normalization=True)
+    settings = backend._data_dir / "settings"
+    (settings / "Users" / "alice-user").mkdir(parents=True)
+    corrupt = b"core.clock_delta=0\naudio.play_bitrate\xc3"
+    (settings / "prefs").write_bytes(corrupt)
+
+    backend._write_audio_prefs()  # must not raise
+
+    # the corrupt global store is left untouched, the per-user store is written
+    assert (settings / "prefs").read_bytes() == corrupt
+    user_prefs = (settings / "Users" / "alice-user" / "prefs").read_text()
+    assert "audio.crossfade.time_v2=8000" in user_prefs

@@ -100,11 +100,17 @@ a fresh daemon reporting `logged_in: false` while awaiting pairing is normal.
 
 ## Audio behavior settings
 
-Quality, loudness normalization, crossfade and automix are governed by Spotify — the
-public CLI/WebSocket surface exposes no controls for them, and the Spotify apps grey these
-settings out for Connect targets. The engine does read the classic desktop-client prefs
-file in its data dir (verified: `audio.crossfade_v2`, `audio.normalize_v2`), which is the
-basis for planned opt-in config entries.
+The public CLI/WebSocket surface exposes no audio-behavior controls, and the Spotify apps
+grey these settings out for Connect targets. The engine does read the classic
+desktop-client prefs stores in its data dir at startup, which is how the provider's
+loudness normalization and crossfade settings are applied: the backend rewrites
+`audio.crossfade_v2`, `audio.crossfade.time_v2` (milliseconds — sub-second values
+silently disable crossfade) and `audio.normalize_v2` before every daemon spawn, in both
+the global `settings/prefs` and every per-user `settings/Users/*/prefs` (per-user values
+override global ones per key; the engine scrubs foreign keys from the global store when
+it rewrites it, hence the refresh on every spawn). Crossfade applies to playlist/queue
+transitions; consecutive album tracks keep playing gapless and manual skips stay hard
+cuts (engine behavior, matching desktop Spotify).
 
 ## Security
 
