@@ -8,6 +8,7 @@ import shutil
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -148,37 +149,45 @@ class SpotifyProvider(MusicProvider):
         # playback authorization is independent of the Web API tokens
         self.backend = self._create_backend()
         await self.backend.setup()
-        if not isinstance(self.backend, SoloistSingleTrackBackend):
-            # a paired soloist session left behind by a backend switch holds
-            # login material and is of no further use: remove it
-            await asyncio.to_thread(self._remove_soloist_session_dir)
-        # try login which will raise if it fails (logs in global session)
-        await self.login()
+        try:
+            if not isinstance(self.backend, SoloistSingleTrackBackend):
+                # a paired soloist session left behind by a backend switch holds
+                # login material and is of no further use: remove it
+                await asyncio.to_thread(self._remove_soloist_session_dir)
+            # try login which will raise if it fails (logs in global session)
+            await self.login()
 
-        # Check if user has a custom client ID with valid dev token
-        client_id = self.get_setup_value(CONF_CLIENT_ID)
-        dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
+            # Check if user has a custom client ID with valid dev token
+            client_id = self.get_setup_value(CONF_CLIENT_ID)
+            dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
 
-        if client_id and dev_token and self._sp_user:
-            await self.login_dev()
-            # Verify user matches
-            userinfo = await self._get_data("me", use_global_session=False)
-            if userinfo["id"] != self._sp_user["id"]:
-                raise LoginFailed(
-                    "Developer session must use the same Spotify account as the main session."
+            if client_id and dev_token and self._sp_user:
+                await self.login_dev()
+                # Verify user matches
+                userinfo = await self._get_data("me", use_global_session=False)
+                if userinfo["id"] != self._sp_user["id"]:
+                    raise LoginFailed(
+                        "Developer session must use the same Spotify account as the main session."
+                    )
+                # loosen the throttler when a custom client id is used
+                self.throttler = ThrottlerManager(rate_limit=45, period=30)
+                self.dev_session_active = True
+                self.logger.info("Developer Spotify session active.")
+
+            self._audiobooks_supported = await self._test_audiobook_support()
+            if not self._audiobooks_supported:
+                self.logger.info(
+                    "Audiobook support disabled: Audiobooks are not available in your region. "
+                    "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
+                    "for supported countries."
                 )
-            # loosen the throttler when a custom client id is used
-            self.throttler = ThrottlerManager(rate_limit=45, period=30)
-            self.dev_session_active = True
-            self.logger.info("Developer Spotify session active.")
-
-        self._audiobooks_supported = await self._test_audiobook_support()
-        if not self._audiobooks_supported:
-            self.logger.info(
-                "Audiobook support disabled: Audiobooks are not available in your region. "
-                "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
-                "for supported countries."
-            )
+        except BaseException:
+            # a failed load is never registered, so unload() will not run:
+            # release whatever the backend acquired (e.g. the shared pulse
+            # capture server) before propagating
+            with suppress(Exception):
+                await self.backend.unload()
+            raise
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -118,40 +119,46 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     setup_data = dict(session.context.setup_data)
-    # the global session always (re)authenticates: a refresh token cannot be reused across a
-    # re-auth and secure values are never prefilled back into the flow
-    setup_data[CONF_REFRESH_TOKEN_GLOBAL] = await _pkce_authenticate(
-        session, app_var("spotify_client_id"), step_id="authenticate"
-    )
-    # playback authorization is separate from the Web API tokens and depends on
-    # the explicitly chosen playback backend
-    await _setup_playback(session, setup_data)
-    # everything needed is collected by now; the developer key is a purely optional extra,
-    # so it is offered as an opt-in rather than a field the user has to reason about
-    client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
-    errors: dict[str, str] | None = None
-    while True:
-        optin_values = await session.form(
-            [replace(CONF_ENTRY_USE_DEV_KEY, value=bool(client_id_default))],
-            step_id="developer_optin",
-            errors=errors,
-            last_step=True,
+    try:
+        # the global session always (re)authenticates: a refresh token cannot be reused across a
+        # re-auth and secure values are never prefilled back into the flow
+        setup_data[CONF_REFRESH_TOKEN_GLOBAL] = await _pkce_authenticate(
+            session, app_var("spotify_client_id"), step_id="authenticate"
         )
-        if not optin_values.get(CONF_USE_DEV_KEY):
-            # opted out: clear any previously stored developer session
-            setup_data[CONF_CLIENT_ID] = None
-            setup_data[CONF_REFRESH_TOKEN_DEV] = None
-            try:
-                await session.finish(setup_data)
+        # playback authorization is separate from the Web API tokens and depends on
+        # the explicitly chosen playback backend
+        await _setup_playback(session, setup_data)
+        # everything needed is collected by now; the developer key is a purely optional extra,
+        # so it is offered as an opt-in rather than a field the user has to reason about
+        client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
+        errors: dict[str, str] | None = None
+        while True:
+            optin_values = await session.form(
+                [replace(CONF_ENTRY_USE_DEV_KEY, value=bool(client_id_default))],
+                step_id="developer_optin",
+                errors=errors,
+                last_step=True,
+            )
+            if not optin_values.get(CONF_USE_DEV_KEY):
+                # opted out: clear any previously stored developer session
+                setup_data[CONF_CLIENT_ID] = None
+                setup_data[CONF_REFRESH_TOKEN_DEV] = None
+                try:
+                    await session.finish(setup_data)
+                    return
+                except SetupFlowError as err:
+                    errors = {"base": err.translation_key or str(err)}
+                    continue
+            client_id_default, errors = await _authorize_developer_key(
+                session, setup_data, client_id_default
+            )
+            if errors is None:
                 return
-            except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
-                continue
-        client_id_default, errors = await _authorize_developer_key(
-            session, setup_data, client_id_default
-        )
-        if errors is None:
-            return
+    finally:
+        if not session.finished:
+            # a soloist session paired by this flow holds reusable login
+            # material; never leave it behind when the flow did not complete
+            await _discard_pairing_dir(session)
 
 
 async def _authorize_developer_key(
@@ -198,7 +205,14 @@ async def _setup_playback(session: SetupSession, setup_data: dict[str, Any]) -> 
     :param setup_data: The setup data collected so far, updated in place.
     """
     stored_backend = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "")
-    preselect = stored_backend or _default_backend()
+    if stored_backend:
+        preselect = stored_backend
+    elif session.context.instance_id:
+        # an instance predating the backend choice runs librespot; a routine
+        # reconfigure must not nudge it onto another playback path
+        preselect = BACKEND_LIBRESPOT
+    else:
+        preselect = _default_backend()
     errors: dict[str, str] | None = None
     while True:
         selected = await _choose_playback_backend(session, preselect, errors)
@@ -413,6 +427,12 @@ async def _pair_soloist(session: SetupSession, setup_data: dict[str, Any]) -> No
         expires_in=PAIRING_TIMEOUT,
     )
     setup_data[CONF_SOLOIST_SESSION_DIR] = pairing_dir
+
+
+async def _discard_pairing_dir(session: SetupSession) -> None:
+    """Remove this flow's private pairing directory, if it created one."""
+    pairing_dir = Path(session.mass.storage_path) / SOLOIST_PAIRING_DIR / session.flow_id
+    await asyncio.to_thread(shutil.rmtree, pairing_dir, ignore_errors=True)
 
 
 async def _authorize_playback(session: SetupSession) -> str:

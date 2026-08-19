@@ -85,7 +85,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         """
         # librespot's --single-track parser wants its own spotify://type:id form
         librespot_uri = spotify_uri.replace("spotify:", "spotify://", 1)
-        self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
+        self.logger.log(VERBOSE_LOG_LEVEL, "Start streaming %s using librespot", spotify_uri)
         if not self._librespot_bin:
             raise AudioError("Librespot binary not available")
 

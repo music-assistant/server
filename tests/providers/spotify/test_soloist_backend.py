@@ -180,6 +180,16 @@ async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
         await backend._evaluate_result(state, _make_proc(0))
 
 
+async def test_missing_position_is_rejected_as_incomplete(tmp_path: Path) -> None:
+    """Without any position report there is no evidence the item played to its end."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.playing_seen = True
+    state.duration_ms = 200_000
+    with pytest.raises(AudioError, match="incomplete"):
+        await backend._evaluate_result(state, _make_proc(0))
+
+
 async def test_delivery_within_tolerance_passes(tmp_path: Path) -> None:
     """A last position within the incomplete-tolerance of the duration passes."""
     backend = _make_backend(tmp_path)

@@ -24,6 +24,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from aiohttp import ClientError
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError, LoginFailed
 from music_assistant_models.media_items import AudioFormat
@@ -361,19 +362,29 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
     async def _run_events(
         self, client: SoloistClient, state: _TrackState, sink: PipeSink, proc: AsyncProcess
     ) -> None:
-        """Connect the WebSocket client and feed events into the track state."""
-        try:
-            if not await client.wait_until_ready(_STARTUP_TIMEOUT_S):
-                state.fail("soloist did not publish its WebSocket endpoint")
+        """Keep the WebSocket client connected and feed events into the track state."""
+        if not await client.wait_until_ready(_STARTUP_TIMEOUT_S):
+            state.fail("soloist did not publish its WebSocket endpoint")
+            return
+        state.client_ready.set()
+        while True:
+            try:
+                await client.listen_events(partial(self._handle_event, state, sink))
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, OSError, ClientError, SoloistError) as err:
+                # ordinary connection drop; reconnect while the daemon is alive
+                # so the completion state does not go stale mid-track
+                self.logger.debug("soloist events connection dropped: %s", err)
+            except Exception as err:
+                # a defect in event handling must surface loudly and fail the
+                # stream: continuing would validate against stale state
+                self.logger.exception("Unexpected error while handling soloist events")
+                state.fail(f"event handling failed: {err}")
                 return
-            state.client_ready.set()
-            await client.listen_events(partial(self._handle_event, state, sink))
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            # a dropped connection while the process is exiting is normal; a
-            # drop mid-track surfaces through the stall/exit handling instead
-            self.logger.debug("soloist events connection ended: %s", err)
+            if proc.returncode is not None:
+                return
+            await asyncio.sleep(1)
 
     async def _handle_event(self, state: _TrackState, sink: PipeSink, event: SoloistEvent) -> None:
         """Track playback/auth state for the current item and gate the sink on buffering."""
@@ -569,14 +580,15 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             )
         if not state.playing_seen:
             raise AudioError(f"Spotify Soloist never started playing {state.requested_uri}")
-        if (
-            state.duration_ms is not None
-            and state.last_position_ms is not None
-            and state.last_position_ms + _INCOMPLETE_TOLERANCE_MS < state.duration_ms
+        # a missing final position is treated as incomplete: without a position
+        # report there is no evidence the item played to its end
+        if state.duration_ms is not None and (
+            state.last_position_ms is None
+            or state.last_position_ms + _INCOMPLETE_TOLERANCE_MS < state.duration_ms
         ):
             raise AudioError(
                 f"Spotify Soloist delivered incomplete audio for {state.requested_uri} "
-                f"(reached {state.last_position_ms}ms of {state.duration_ms}ms)"
+                f"(reached {state.last_position_ms or 0}ms of {state.duration_ms}ms)"
             )
 
 
