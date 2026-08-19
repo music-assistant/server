@@ -115,10 +115,19 @@ ATTR_RENDERED_TEXT = "ai_radio_rendered_text"
 ATTR_HOST_ID = "ai_radio_host_id"
 ATTR_QUEUE_DJ = "ai_radio_queue_dj"
 ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
+ATTR_WEATHER_REQUIRED = "ai_radio_weather_required"
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays
 DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_daily>"})
+
+# the deferred placeholders that need a successful weather fetch to say anything at all
+WEATHER_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<weather_daily>")
+
+# substituted for an unresolved weather token in clips that still air
+NO_WEATHER_DATA_INSTRUCTION = (
+    "(no weather data available - leave out all weather talk, do not invent a forecast)"
+)
 
 # HA drops a tts_proxy token 60s after its last use at the lowest configurable time_memory
 CLIP_STREAMDETAILS_EXPIRATION = 60

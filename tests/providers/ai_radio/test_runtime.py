@@ -35,6 +35,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_PROMPT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
@@ -381,6 +382,36 @@ def test_weather_strings_are_rounded_to_whole_numbers() -> None:
     assert daily == "2026-08-10: 11-21C, rain 31%"
 
 
+def test_weather_strings_hourly_window_starts_at_the_first_upcoming_hour() -> None:
+    """current.time sits on a 15-minute grid; the hourly window starts at the first non-past hour."""
+    runtime = DummyRuntime()
+    hours = [f"2026-08-19T{hour:02d}:00" for hour in range(24)]
+    payload = {
+        "current": {
+            "time": "2026-08-19T15:45",
+            "temperature_2m": 20.0,
+            "apparent_temperature": 19.0,
+        },
+        "hourly": {
+            "time": hours,
+            "temperature_2m": [15.0] * 24,
+            "precipitation_probability": [0] * 24,
+        },
+        "daily": {
+            "time": [],
+            "temperature_2m_min": [],
+            "temperature_2m_max": [],
+            "precipitation_probability_max": [],
+        },
+    }
+
+    hourly, _daily = runtime._format_weather_strings(payload)
+
+    assert hourly.split("; ")[1].startswith("2026-08-19 16:00")
+    assert "2026-08-19 15:00" not in hourly
+    assert "2026-08-19 00:00" not in hourly
+
+
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
     """Skip weather preparation when the configured location is incomplete."""
     runtime = DummyRuntime()
@@ -416,6 +447,67 @@ def test_extract_location_defaults_to_empty_when_unset() -> None:
     runtime = DummyRuntime()
 
     assert runtime._extract_location() == ("", "")
+
+
+def _stub_open_meteo_get_json(
+    calls: list[tuple[str, dict[str, Any]]],
+    geocode_results: list[dict[str, Any]],
+) -> Callable[..., Awaitable[dict[str, Any]]]:
+    """Stub _open_meteo_get_json, recording every call and answering the geocoding request."""
+
+    async def _fake(base_url: str, params: dict[str, Any], _timeout_seconds: int) -> dict[str, Any]:
+        calls.append((base_url, dict(params)))
+        if "geocoding-api" in base_url:
+            return {"results": geocode_results}
+        return {"hourly": {}, "daily": {}, "current": {}}
+
+    return _fake
+
+
+async def test_fetch_open_meteo_weather_sends_country_code_not_country() -> None:
+    """The geocoding request filters by countryCode, the API's real parameter name."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign, assignment]
+        calls,
+        [
+            {
+                "latitude": 52.37,
+                "longitude": 4.9,
+                "country": "Netherlands",
+                "country_code": "NL",
+                "timezone": "Europe/Amsterdam",
+            }
+        ],
+    )
+
+    await runtime._fetch_open_meteo_weather(city="Amsterdam", country="NL", timeout_seconds=10)
+
+    _geocode_url, geocode_params = next(call for call in calls if "geocoding-api" in call[0])
+    assert geocode_params["countryCode"] == "NL"
+    assert "country" not in geocode_params
+
+
+async def test_fetch_open_meteo_weather_raises_when_no_result_matches_the_country() -> None:
+    """A same-named city in the wrong country must raise, never silently pick results[0]."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    # every candidate is a Cambridge, but none of them is in New Zealand
+    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign, assignment]
+        calls,
+        [
+            {
+                "latitude": 52.2,
+                "longitude": 0.12,
+                "country": "United Kingdom",
+                "country_code": "GB",
+                "timezone": "Europe/London",
+            }
+        ],
+    )
+
+    with pytest.raises(MusicAssistantError, match="Cambridge"):
+        await runtime._fetch_open_meteo_weather(city="Cambridge", country="NZ", timeout_seconds=10)
 
 
 @pytest.mark.parametrize("timezone_value", ["Asia/Tokyo", "  Asia/Tokyo  "])
@@ -802,6 +894,179 @@ def test_plan_sections_includes_section_when_required_placeholder_is_present() -
     assert planned[0].section_id == "Weather"
 
 
+def test_standalone_weather_section_is_weather_required() -> None:
+    """A section that only speaks weather is flagged so a failed fetch skips it, not fakes it."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=_weather_guarded_station(),
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is True
+
+
+def _merge_weather_news_station() -> dict[str, Any]:
+    """Return a station whose between-songs slot merges a weather-guarded section with news."""
+    return {
+        "sections": [
+            {
+                "id": "Weather",
+                "name": "Weather",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Current weather: <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            },
+            {
+                "id": "News",
+                "name": "News",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Give the headlines.",
+                "constraints": {"max_chars": 200},
+            },
+            {
+                "id": "Smoother",
+                "name": "Between Songs Mix",
+                "type": "ai_meta",
+                "prompt": "Combine these: <section_drafts>",
+            },
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Weather",
+                            "chance": 1.0,
+                            "guards": {"require_placeholders_present": ["<weather_hourly>"]},
+                        }
+                    },
+                    {"OPTIONAL": {"section": "News", "chance": 1.0, "guards": {}}},
+                ],
+            }
+        ],
+        "merge_section_id": "Smoother",
+    }
+
+
+def test_merged_weather_and_news_clip_is_not_weather_required() -> None:
+    """A merged clip must still carry the news half even when weather data is missing."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=_merge_weather_news_station(),
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
+def test_mixed_purpose_section_without_a_weather_guard_is_not_weather_required() -> None:
+    """A prompt that just mentions the weather must not skip the whole clip on a failed fetch."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Intro",
+                "name": "Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Introduce <next_songinfo> and mention the weather <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Intro"}]}],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
+def test_alternative_weather_section_is_not_weather_required() -> None:
+    """An ALTERNATIVE section carries no guards, so it never blocks a clip on weather data."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Weather",
+                "name": "Weather",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Current weather: <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [{"ALTERNATIVE": {"choices": [{"section": "Weather", "weight": 100}]}}],
+            }
+        ],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
 def _stub_track(item_id: str) -> Track:
     """Build a minimal Track with one available ProviderMapping, for build_queue_item."""
     return Track(
@@ -943,6 +1208,28 @@ def test_clip_item_carries_host_id() -> None:
 
     assert item.extra_attributes[ATTR_HOST_ID] == "rick"
     assert item.extra_attributes[ATTR_SESSION_ID] == "sess"
+
+
+def test_clip_item_carries_weather_required_flag() -> None:
+    """A planned clip's weather_required flag travels onto the queue item's attributes."""
+    runtime = DummyRuntime()
+    section = PlannedSection(
+        order=0,
+        clip_id="sess_000",
+        section_id="Weather",
+        section_name="Weather",
+        when="between_songs",
+        insert_at_index=1,
+        prompt="Current weather: <weather_hourly>.",
+        max_chars=0,
+        web_search_mode="disabled",
+        weather_required=True,
+    )
+    program = {"id": "station_a", "host_id": "rick"}
+
+    item = runtime._section_to_clip_item("queue-1", "sess", program, section)
+
+    assert item.extra_attributes[ATTR_WEATHER_REQUIRED] is True
 
 
 async def test_get_ai_engine_requires_a_configured_selection() -> None:
