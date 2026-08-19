@@ -782,7 +782,9 @@ def album_retail_suffix_sql_match(name_column: str, suffix_key: str) -> str:
     """
     # any non-alphanumeric in front of the word sets it off, so an ordinary title that
     # merely ends in those letters ("Step", "Singles") is left alone. Trailing brackets are
-    # trimmed first, which lets one condition cover every separator a provider may use
+    # trimmed first, which lets one condition cover every separator a provider may use.
+    # Deliberately looser than the pattern above, as this only selects the pairs the album
+    # comparison is then held to
     return f"upper(rtrim({name_column}, ' )]')) GLOB '*[^A-Z0-9]{suffix_key.upper()}'"
 
 

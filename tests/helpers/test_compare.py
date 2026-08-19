@@ -1,5 +1,7 @@
 """Tests for mediaitem compare helper functions."""
 
+import sqlite3
+
 import pytest
 from music_assistant_models import media_items
 from music_assistant_models.enums import ExternalID
@@ -471,6 +473,35 @@ def test_compare_album_evidence_retail_suffix_spelled_differently_matches() -> N
         assert (
             compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
         ), spelling
+
+
+def test_album_retail_suffix_sql_match_needs_the_suffix_set_off() -> None:
+    """The pre-filter condition sees every separator style, but not an ordinary title."""
+    connection = sqlite3.connect(":memory:")
+
+    def relates(name: str, suffix_key: str) -> bool:
+        condition = compare.album_retail_suffix_sql_match("?", suffix_key)
+        return bool(connection.execute(f"SELECT {condition}", (name,)).fetchone()[0])
+
+    for name in (
+        "Album A - EP",
+        "Album A -EP",
+        "Album A \u2013 EP",
+        "Album A \u2014EP",
+        "Album A (EP)",
+        "Album A [EP]",
+        "Album A - ep",
+        # a bare trailing word is related here on purpose and refused by the comparison
+        "The SL2 EP",
+    ):
+        assert relates(name, "ep"), name
+    for name in ("Step", "Sleep", "EP"):
+        assert not relates(name, "ep"), name
+
+    assert relates("Think of You - Single", "single")
+    assert relates("Brazen 'Weep' (CD1) (single)", "single")
+    for name in ("Singles", "Every Single Day"):
+        assert not relates(name, "single"), name
 
 
 def test_compare_album_evidence_bare_suffix_word_stays_part_of_the_title() -> None:
