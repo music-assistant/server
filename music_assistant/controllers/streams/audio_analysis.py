@@ -75,6 +75,8 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
+# Background analysis is deliberately limited to the user's own files: pulling a streaming
+# service's catalogue for audio nobody asked to hear is not something we do. Keep it that way.
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
