@@ -12,17 +12,20 @@ from pathlib import Path
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
+    CACHE_ATTR_HLS_CMAF_BLOCKED,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
     _build_overlay_mixer,
     _get_overlay_volume_filter,
     get_ffmpeg_args,
+    get_ffmpeg_hls_cmaf_input_args,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
     parse_ffmpeg_duration,
@@ -1174,3 +1177,17 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert abs(_rms_db(out) - _rms_db(main)) < 0.5
+
+
+async def test_get_ffmpeg_hls_cmaf_input_args_relax_a_build_that_blocks_cmaf() -> None:
+    """A build whose HLS demuxer rejects CMAF gets the extension check turned off."""
+    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: True})
+
+    assert get_ffmpeg_hls_cmaf_input_args() == ["-extension_picky", "0"]
+
+
+async def test_get_ffmpeg_hls_cmaf_input_args_leave_a_capable_build_alone() -> None:
+    """A build that accepts CMAF keeps its extension check, which guards hostile playlists."""
+    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: False})
+
+    assert get_ffmpeg_hls_cmaf_input_args() == []
