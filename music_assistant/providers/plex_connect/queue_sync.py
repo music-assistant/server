@@ -41,6 +41,8 @@ class QueueSyncMixin:
 
         async def _send_timeline_to_server(self) -> None: ...
 
+        def _selected_item_index(self, playqueue: PlayQueue) -> int: ...
+
     def _collect_synced_keys(self, player_id: str) -> list[str]:
         """
         Return Plex item_id keys for every track currently in the MA queue.
@@ -209,6 +211,26 @@ class QueueSyncMixin:
             )
             LOGGER.info(f"Replaced queue with {len(all_tracks)} tracks")
 
+    def _plex_index_for_ma_index(self, playqueue: PlayQueue, ma_index: int) -> int:
+        """
+        Return the index in the Plex queue holding the MA queue item at ``ma_index``.
+
+        The two queues are not positionally aligned: playback starts at the item Plex has
+        selected, so MA index 0 holds that item and the items before it wrap around to the
+        tail. Positions are therefore matched on playQueueItemID rather than compared
+        directly, falling back to whichever item Plex reports as selected.
+
+        :param playqueue: The Plex play queue.
+        :param ma_index: An index into the Music Assistant queue.
+        :return: The matching index within ``playqueue.items``.
+        """
+        item_id = self.play_queue_item_ids.get(ma_index)
+        if item_id is not None:
+            for index, item in enumerate(playqueue.items):
+                if plex_item_fields(item)[1] == item_id:
+                    return index
+        return self._selected_item_index(playqueue)
+
     async def _replace_remaining_queue(
         self, player_id: str, playqueue: PlayQueue, current_index: int
     ) -> None:
@@ -219,11 +241,16 @@ class QueueSyncMixin:
         :param playqueue: The Plex play queue to load.
         :param current_index: The current track index in the MA queue.
         """
+        plex_index = self._plex_index_for_ma_index(playqueue, current_index)
+
+        # Wrap around just like the initial load does, so refreshing an unchanged Plex
+        # queue is a no-op instead of dropping the items that wrapped to the tail.
+        remaining_items = playqueue.items[plex_index + 1 :] + playqueue.items[:plex_index]
+
         remaining_tracks = []
         new_item_mappings = {}
 
-        for i in range(current_index + 1, len(playqueue.items)):
-            item = playqueue.items[i]
+        for item in remaining_items:
             track_key, play_queue_item_id = plex_item_fields(item)
 
             if track_key:
@@ -231,7 +258,7 @@ class QueueSyncMixin:
                     track = await self.provider.get_track(track_key)
                     remaining_tracks.append(track)
                     if play_queue_item_id:
-                        new_item_mappings[current_index + 1 + len(remaining_tracks) - 1] = (
+                        new_item_mappings[current_index + len(remaining_tracks)] = (
                             play_queue_item_id
                         )
                 except Exception as e:
@@ -244,6 +271,13 @@ class QueueSyncMixin:
                 media=remaining_tracks,  # type: ignore[arg-type]
                 option=QueueOption.REPLACE_NEXT,
             )
+            # REPLACE_NEXT drops every item after the current one, so their ids go with
+            # them; rebuild the map so it stays keyed by MA index.
+            self.play_queue_item_ids = {
+                index: item_id
+                for index, item_id in self.play_queue_item_ids.items()
+                if index <= current_index
+            }
             self.play_queue_item_ids.update(new_item_mappings)
             LOGGER.info(
                 f"Replaced {len(remaining_tracks)} tracks after current track "
@@ -251,11 +285,6 @@ class QueueSyncMixin:
             )
         else:
             LOGGER.debug("No tracks after current track in Plex queue")
-
-        for i, item in enumerate(playqueue.items):
-            _, play_queue_item_id = plex_item_fields(item)
-            if play_queue_item_id:
-                self.play_queue_item_ids[i] = play_queue_item_id
 
     async def _create_plex_playqueue_from_ma(self) -> None:
         """Create a new Plex PlayQueue mirroring the current MA queue."""
