@@ -171,7 +171,8 @@ if TYPE_CHECKING:
 
 # ruff: noqa: PLR0915
 
-# Seconds of PCM yielded directly to the player before the crossfade holdback starts buffering.
+# Seconds of PCM at the start of a track that are yielded straight to the player,
+# never held back for a crossfade.
 WARMUP_DURATION = 8
 # Minimum overlap used when the full incoming crossfade buffer was not prepared.
 MIN_CROSSFADE_FALLBACK_DURATION = 5
@@ -1671,6 +1672,7 @@ class StreamsAudio:
         warmup_bytes = 0
         total_chunks_received = 0
         holdback_armed = False
+        holdback_filled = False
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         async for chunk in self.get_queue_item_stream(
             queue_item,
@@ -1693,7 +1695,7 @@ class StreamsAudio:
 
             if not holdback_armed:
                 holdback_armed = self._crossfade_holdback_allowed(
-                    queue_item.streamdetails or streamdetails, crossfade_buffer_size
+                    queue_item.streamdetails or streamdetails, crossfade_buffer_duration
                 )
                 if not holdback_armed:
                     # holding audio back now would only shrink the player's lead
@@ -1707,6 +1709,7 @@ class StreamsAudio:
             if len(buffer) < crossfade_buffer_size:
                 await asyncio.sleep(0)
                 continue
+            holdback_filled = True
             # yield everything above the crossfade buffer
             while len(buffer) > crossfade_buffer_size:
                 yield bytes(buffer[: pcm_format.pcm_sample_size])
@@ -1742,10 +1745,9 @@ class StreamsAudio:
         transition_mode = CrossfadeMode.DISABLED
         fade_in_buffer_duration = 0.0
         fade_in_playback_speed = 1.0
-        # a fade needs the complete outgoing tail: a holdback that armed too late
-        # (or not at all) leaves too little audio of this track to fade out with
-        fade_out_ready = 0 < crossfade_buffer_size <= len(buffer)
-        if fade_out_ready and next_queue_item and next_queue_item.streamdetails:
+        # a fade needs a complete outgoing tail, which a holdback that armed too late
+        # (or not at all) never collected
+        if holdback_filled and next_queue_item and next_queue_item.streamdetails:
             fade_in_playback_speed = cast(
                 "float", next_queue_item.extra_attributes.get("playback_speed", 1.0)
             )
@@ -2169,6 +2171,7 @@ class StreamsAudio:
             warmup_bytes = 0
             first_chunk_received = False
             holdback_armed = False
+            holdback_filled = False
 
             async for chunk in self.get_queue_item_stream(
                 queue_track,
@@ -2219,7 +2222,7 @@ class StreamsAudio:
 
                 if not last_fadeout_part and not holdback_armed:
                     holdback_armed = self._crossfade_holdback_allowed(
-                        queue_track.streamdetails, crossfade_buffer_size
+                        queue_track.streamdetails, crossfade_buffer_duration
                     )
                     if not holdback_armed:
                         # holding audio back now would only shrink the player's lead
@@ -2237,6 +2240,8 @@ class StreamsAudio:
                 if len(crossfade_buffer) < required_buffer_size:
                     await asyncio.sleep(0)
                     continue
+                if holdback_armed:
+                    holdback_filled = True
 
                 # handle crossfade of previous track and new track
                 if (
@@ -2351,9 +2356,9 @@ class StreamsAudio:
                 queue_track.streamdetails.seek_position = raw_seek_position
                 # full tail was pre-counted and is now yielded as-is
                 last_fadeout_part = b""
-            # a fade needs the complete outgoing tail: a holdback that armed too late
-            # (or not at all) leaves too little audio of this track to fade out with
-            if 0 < crossfade_buffer_size <= len(crossfade_buffer) and self.crossfade_allowed(
+            # a fade needs a complete outgoing tail, which a holdback that armed too late
+            # (or not at all) never collected
+            if holdback_filled and self.crossfade_allowed(
                 queue_track,
                 crossfade_mode=crossfade_mode,
                 player_id=queue.queue_id,
@@ -3314,21 +3319,25 @@ class StreamsAudio:
             )
 
     def _crossfade_holdback_allowed(
-        self, streamdetails: StreamDetails, crossfade_buffer_size: int
+        self, streamdetails: StreamDetails, tail_seconds: float
     ) -> bool:
         """
         Return whether the outgoing tail may be held back for a crossfade.
 
         :param streamdetails: Stream details of the track being streamed.
-        :param crossfade_buffer_size: Size of the tail to hold back, in bytes.
+        :param tail_seconds: Length of the tail to hold back, in seconds.
         """
-        if crossfade_buffer_size <= 0 or streamdetails.is_realtime:
+        if tail_seconds <= 0 or streamdetails.is_realtime:
+            return False
+        audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
+        if audio_buffer is None:
             return False
         # While the source is still delivering, it is what limits playback: withholding
         # a tail on top of that eats into the lead the player needs. Once the source is
-        # done the remaining audio is resident, so the tail comes for free.
-        audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
-        return audio_buffer is not None and audio_buffer.eof
+        # done the remaining audio is resident, so the tail comes for free. A buffer that
+        # is too small to ever hold the tail is the exception - waiting for the source
+        # there would only lose the fade.
+        return audio_buffer.eof or audio_buffer.max_size_seconds < tail_seconds
 
     def _select_buffered_crossfade(
         self,
