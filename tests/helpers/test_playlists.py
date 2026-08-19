@@ -23,6 +23,8 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.helpers import playlists
 from music_assistant.helpers.playlists import (
+    AlbumInfo,
+    ArtistInfo,
     ImageInfo,
     IsHLSPlaylist,
     PlaylistItem,
@@ -35,6 +37,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u,
     parse_m3u_playlist_image,
     parse_m3u_playlist_name,
+    sanitize_m3u_value,
 )
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +346,54 @@ def test_generate_m3u_empty() -> None:
     """Test generating an empty M3U playlist."""
     result = generate_m3u("Empty Playlist", [])
     assert result == "#EXTM3U\n#PLAYLIST:Empty Playlist\n"
+
+
+@pytest.mark.parametrize(
+    "line_break",
+    ["\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+)
+def test_generate_m3u_never_splits_an_entry_over_multiple_lines(line_break: str) -> None:
+    """Test that a line break inside a value cannot split an entry into a second entry."""
+    items = [
+        PlaylistItem(
+            path="spotify://track/abc123",
+            length="240",
+            title=f"Artist - Song (feat. Mad{line_break}elyn Brown)",
+            metadata={"media_type": "track", "name": f"Song{line_break}X"},
+            providers=[ProviderMappingInfo(domain="spotify", item_id="abc123")],
+            images=[
+                ImageInfo(type="thumb", path=f"https://img{line_break}.jpg", provider="spotify")
+            ],
+            artists=[
+                ArtistInfo(
+                    name=f"Mad{line_break}elyn Brown",
+                    provider_domain="spotify",
+                    item_id="art1",
+                    provider_instance="spotify",
+                )
+            ],
+            album=AlbumInfo(
+                name=f"The{line_break}Album",
+                provider_domain="spotify",
+                item_id="alb1",
+                provider_instance="spotify",
+            ),
+        ),
+    ]
+    result = generate_m3u(f"My{line_break}Playlist", items, f"https://cover{line_break}.jpg")
+
+    parsed = parse_m3u(result)
+    assert len(parsed) == 1
+    assert parsed[0].path == "spotify://track/abc123"
+    assert parse_m3u_playlist_name(result) == "My Playlist".replace(" ", " " * len(line_break))
+
+
+def test_generate_m3u_leaves_values_without_line_breaks_alone() -> None:
+    """Test that sanitizing only touches line breaks."""
+    title = "Artist - Song (feat. Madelyn Brown)"
+    assert sanitize_m3u_value(title) == title
+    items = [PlaylistItem(path="spotify://track/abc123", title=title, length="240")]
+    assert f"#EXTINF:240,{title}\n" in generate_m3u("My Playlist", items)
 
 
 def test_generate_m3u_no_extinf_without_title() -> None:
