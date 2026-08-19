@@ -16,7 +16,9 @@ Flag it in review, and never write it yourself, when a change would:
 
 - expose a music service's own audio URL to anything outside the server (an API result, a
   media item, or a route that hands it to a caller)
-- decode or work around DRM instead of skipping the affected item
+- decode protected audio outside what the user's own account is entitled to, or keep the
+  decoded result rather than only playing it
+- call a service's API without throttling, or re-fetch what the cache already holds
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream
   limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)

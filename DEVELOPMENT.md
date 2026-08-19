@@ -128,9 +128,20 @@ A provider that talks to a music service must therefore:
 
 * **Authenticate as the user.** Fetch audio the way an ordinary client would, using the
   account the user configured. Do not bypass a subscription tier or regional availability.
-* **Leave copy protection alone.** Skip DRM-protected content rather than decoding it. The
-  [Soundcloud](./music_assistant/providers/soundcloud/__init__.py) provider is the reference:
-  encrypted transcodings raise and the item is left out.
+* **Decode only what the user is entitled to.** Where a service protects its audio, obtain the
+  key or licence the way its own client does, for the account the user configured — see
+  [Apple Music](./music_assistant/providers/apple_music/streaming.py) (Widevine) and
+  [Deezer](./music_assistant/providers/deezer/streaming.py) (Blowfish). Decode in order to
+  play, never to produce a file. Where there is no licence path for the account, skip the item
+  rather than reaching for one: the
+  [Soundcloud](./music_assistant/providers/soundcloud/__init__.py) provider does exactly that.
+* **Be a well-behaved client of the API.** Put a
+  [`Throttler` or `ThrottlerManager`](./music_assistant/helpers/throttle_retry.py) in front of a
+  service's API and set it to what that service actually tolerates, and put
+  [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
+  instead of asking again. Back off on a 429 rather than retrying into it.
+  A provider that hammers a service puts every Music Assistant user's account at risk, not just
+  the developer's.
 * **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
   does not serialize it. Never place it on a media item, an API result, or a route that hands
   it to a caller.
