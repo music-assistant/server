@@ -20,6 +20,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import aiohttp
 from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import InvalidProviderURI
 from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.constants import SENDSPIN_SERVER_PORT
@@ -30,7 +31,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import join_task
 
 from .constants import (
@@ -99,15 +100,28 @@ def _int_param(query: MultiMapping[str], name: str, default: int, max_val: int =
         return default
 
 
-def _is_media_item_uri(uri: str) -> bool:
+async def _is_media_item_uri(uri: str) -> bool:
     """
     Check that a caller-supplied uri names a media item rather than a raw stream URL.
 
-    A bare http(s)/rtsp/rtmp URL resolves to the builtin provider, which would make the
-    server fetch and play whatever the caller names. Every uri the bridge hands out is a
-    media item uri, so nothing legitimate is rejected here.
+    Both spellings of a raw URL — bare, and wrapped as ``builtin://<media_type>/<url>`` —
+    resolve to the builtin provider, which would make the server fetch and play whatever
+    the caller names, so the resolved provider is what decides rather than the uri text.
+    The bridge only ever hands out uris of library or music provider items.
     """
-    return "://" in uri and not uri.startswith(BUILTIN_URL_SCHEMES)
+    if "://" not in uri:
+        # keeps an item_id-shaped value away from parse_uri's local-file branch
+        return False
+    try:
+        _, provider_instance_id_or_domain, _ = await parse_uri(uri)
+    except InvalidProviderURI:
+        return False
+    return provider_instance_id_or_domain != "builtin"
+
+
+def _is_audio_path(path: str) -> bool:
+    """Check whether the path is one of the audio routes."""
+    return path.startswith(("/stream/", "/msx/audio/"))
 
 
 def _strip_known_extension(value: str) -> str:
@@ -551,6 +565,11 @@ class MSXHTTPServer:
         The web player (/web) and MSX plugin (/msx/plugin.html) are served from the
         same origin, so browser playback-control POSTs are always same-origin.
         MSX TV app only makes GET requests. This matches MA's own webserver pattern.
+
+        The audio routes are the exception and get no header at all: a media element
+        plays a cross-origin source without CORS, and the kiosk visualizer reads the
+        stream same-origin, so withholding it costs nothing and keeps a cross-origin
+        fetch() from reading the audio.
         """
         if request.method == "OPTIONS":
             return web.Response(
@@ -561,7 +580,8 @@ class MSXHTTPServer:
                 }
             )
         response: web.StreamResponse = await handler(request)
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        if not _is_audio_path(request.path):
+            response.headers["Access-Control-Allow-Origin"] = "*"
         return response
 
     # --- MSX Bootstrap Routes ---
@@ -1415,7 +1435,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         player_id = _strip_known_extension(request.match_info["player_id"])
 
         uri = request.query.get("uri")
-        if not uri or not _is_media_item_uri(uri):
+        if not uri or not await _is_media_item_uri(uri):
             return web.Response(status=400, text="Invalid uri parameter")
 
         from_playlist = request.query.get("from_playlist") == "1"
@@ -1423,7 +1443,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         player = self.provider.mass.players.get_player(player_id)
         if not player or not isinstance(player, MSXPlayer):
             return web.Response(status=404, text="Player not found")
-        if rejected := self._reject_invalid_stream_token(request, player):
+        if rejected := self._reject_invalid_stream_token(request, player_id):
             return rejected
         self.provider.on_player_activity(player_id)
 
@@ -2063,7 +2083,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         player = self.provider.mass.players.get_player(player_id)
         if not player or not isinstance(player, MSXPlayer):
             return web.Response(status=404, text="Player not found")
-        if rejected := self._reject_invalid_stream_token(request, player):
+        if rejected := self._reject_invalid_stream_token(request, player_id):
             return rejected
         self.provider.on_player_activity(player_id)
 
@@ -2529,9 +2549,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     # --- Playback Control ---
 
-    @staticmethod
     def _reject_invalid_stream_token(
-        request: web.Request, player: MSXPlayer
+        self, request: web.Request, player_id: str
     ) -> web.Response | None:
         """
         Reject an audio request that does not carry the player's own stream token.
@@ -2540,7 +2559,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         itself generated. This stops a request that was never handed out — a web page
         firing an <audio> tag at this LAN server, or an old URL replayed from a log.
         """
-        expected = player.stream_token
+        expected = self.provider.get_stream_token(player_id)
         if not expected or not secrets.compare_digest(request.query.get("token", ""), expected):
             return web.Response(status=403, text="Invalid or missing stream token")
         return None
@@ -2573,7 +2592,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         player_id = body.get("player_id")
         if not track_uri or not player_id:
             return web.json_response({"error": "Missing track_uri or player_id"}, status=400)
-        if not _is_media_item_uri(track_uri):
+        if not await _is_media_item_uri(track_uri):
             return web.json_response({"error": "Invalid track_uri"}, status=400)
 
         if self._get_msx_player(player_id) is None:

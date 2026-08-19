@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import time
 from collections import deque
 from collections.abc import AsyncIterator
@@ -276,6 +277,7 @@ class MSXBridgeProvider(PlayerProvider):
     bridge_manager: MSXSendspinBridgeManager | None = None
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
+    _stream_tokens: dict[str, str]  # player_id -> audio token
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
     _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
@@ -287,6 +289,7 @@ class MSXBridgeProvider(PlayerProvider):
         super().__init__(*args, **kwargs)
         self._player_last_activity = {}
         self._pending_unregisters = {}
+        self._stream_tokens = {}
         self._shared_streams = {}
         self._shared_stream_lock = asyncio.Lock()
         self._background_tasks = set()
@@ -421,6 +424,7 @@ class MSXBridgeProvider(PlayerProvider):
             except Exception:
                 self.logger.exception("Error unregistering player %s", player.player_id)
         self._player_last_activity.clear()
+        self._stream_tokens.clear()
         self.logger.info("MSX Bridge provider unloaded")
 
     async def get_owner_username(self) -> str | None:
@@ -609,14 +613,17 @@ class MSXBridgeProvider(PlayerProvider):
 
     def get_stream_token(self, player_id: str) -> str:
         """
-        Return the token that authorizes the audio routes for the given player.
+        Return the token that authorizes the audio routes for the given player, minting it once.
 
-        Empty for an unknown player, which yields a URL the audio routes reject.
+        Kept for the provider's lifetime rather than the player's: an idle TV is unregistered
+        after the configured timeout, and rotating there would strand the URLs a long-running
+        kiosk has already cached. A reload restarts the HTTP server anyway.
 
         :param player_id: The player to build an audio URL for.
         """
-        player = self.mass.players.get_player(player_id, raise_unavailable=False)
-        return player.stream_token if isinstance(player, MSXPlayer) else ""
+        if (token := self._stream_tokens.get(player_id)) is None:
+            token = self._stream_tokens[player_id] = secrets.token_urlsafe(16)
+        return token
 
     def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
         """

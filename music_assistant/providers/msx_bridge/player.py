@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import secrets
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -25,7 +24,6 @@ class MSXPlayer(Player):
 
     current_stream_url: str | None = None
     output_format: str = "mp3"
-    stream_token: str
     _skip_ws_notify: bool = False
     _propagating: bool = False
     _playing_from_queue: bool = False
@@ -72,10 +70,6 @@ class MSXPlayer(Player):
         self._attr_volume_level = 100
         self.output_format = output_format
         self._media_ready = asyncio.Event()
-        # TVs cannot send auth headers, so the audio routes are gated on this token
-        # carried in the URL. It is minted per player object, so it rotates whenever
-        # the player re-registers (idle timeout, provider reload).
-        self.stream_token = secrets.token_urlsafe(16)
 
     @property
     def requires_flow_mode(self) -> bool:
