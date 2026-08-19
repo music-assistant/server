@@ -532,13 +532,7 @@ async def test_merge_honors_outer_event_suppression(mass: MusicAssistant) -> Non
             await mass.music.genres.merge_library_items(target.item_id, source.item_id)
     finally:
         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
-    # unrelated background chatter (a debounced TASKS_UPDATED) can land in the same window,
-    # so assert on the media item events this test is actually about
-    assert [
-        call.args[0]
-        for call in signal_event.call_args_list
-        if call.args and str(call.args[0].value).startswith("media_item")
-    ] == []
+    signal_event.assert_not_called()
 
 
 async def test_genre_merge_rejects_different_taxonomies(mass: MusicAssistant) -> None:

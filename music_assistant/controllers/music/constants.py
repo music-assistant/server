@@ -42,6 +42,10 @@ RECOMMENDATIONS_ITEMS_TIMEOUT: Final[int] = 30
 # contractually fast (no live backend calls) so a short timeout suffices
 RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 
+# how long after a provider is loaded its library sync runs for the first time,
+# leaving the rest of the startup work room to settle first
+INITIAL_SYNC_DELAY: Final[int] = 10
+
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
