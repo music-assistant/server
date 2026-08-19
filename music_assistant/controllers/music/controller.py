@@ -109,7 +109,13 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
-from music_assistant.helpers.compare import compare_strings, compare_track, compare_version
+from music_assistant.helpers.compare import (
+    ALBUM_RETAIL_SUFFIX_KEYS,
+    compare_album_name,
+    compare_strings,
+    compare_track,
+    compare_version,
+)
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
     from_utc_timestamp,
@@ -144,15 +150,41 @@ class RecentPlayedTrack(NamedTuple):
     artists: list[ItemMapping]
 
 
+def _album_title_match(base: str, other: str) -> str:
+    """
+    Return a query part relating two album rows that may name the same album.
+
+    :param base: Alias of the album row the match is expressed against.
+    :param other: Alias of the album row related to it.
+    """
+    # a provider that spells out the retail suffix stores the album under the plain name
+    # plus that suffix, so the pair is related from either side. The raw title decides which
+    # side spelled it out, so an ordinary title that merely ends in those letters ("Step") is
+    # left alone; any dash style qualifies, only the space in front counts. This relates more
+    # titles than the album comparison accepts, which is what confirms the pair afterwards.
+    matches = [f"{other}.search_name = {base}.search_name"]
+    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
+        matches.append(
+            f"(rtrim({other}.name) LIKE '% {suffix}' "
+            f"AND {other}.search_name = {base}.search_name || '{suffix}')"
+        )
+        matches.append(
+            f"(rtrim({base}.name) LIKE '% {suffix}' AND {other}.search_name = "
+            f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
+        )
+    return " OR ".join(matches)
+
+
 # Selects pairs of library track rows that are likely the same recording held twice,
 # once per music provider. Both rows must carry the same normalized title, share a track
 # artist and sit within a few seconds of each other. The album term is the decisive one:
-# both rows must appear at the same position on an album with the same normalized title,
-# so the merge always rests on two providers agreeing on where the track belongs rather
-# than on title and duration alone. Titles that normalize to nothing (symbol-only album
-# names) are excluded there, as they would match every other such album. Rows that already
-# share a provider are skipped, as a provider listing the same recording twice is a
-# separate (and far riskier) case.
+# both rows must appear at the same position on an album with the same title, so the merge
+# always rests on two providers agreeing on where the track belongs rather than on title and
+# duration alone. Titles are related loosely enough to see past a spelled-out retail suffix,
+# leaving the identity for the album comparison the pair is then held to. Titles that
+# normalize to nothing (symbol-only album names) are excluded there, as they would match
+# every other such album. Rows that already share a provider are skipped, as a provider
+# listing the same recording twice is a separate (and far riskier) case.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
 SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
 FROM {DB_TABLE_TRACKS} t1
@@ -172,9 +204,12 @@ WHERE (t1.item_id > :cursor_item_id_1
     JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
     JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = t2.item_id
     JOIN {DB_TABLE_ALBUMS} al2
-      ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
+      ON al2.item_id = at2.album_id AND ({_album_title_match("al1", "al2")})
     WHERE at1.track_id = t1.item_id
+      -- a title that is nothing but the suffix strips to nothing, which would relate it to
+      -- every symbol-only album, so neither side may normalize away
       AND al1.search_name != ''
+      AND al2.search_name != ''
       -- an unreported position is stored as 0, so two of those agree on nothing;
       -- a missing disc number does read as disc 1, the way compare_track takes it
       -- for local files that carry no disc tag
@@ -190,19 +225,21 @@ WHERE (t1.item_id > :cursor_item_id_1
 ORDER BY t1.item_id, t2.item_id
 """
 
-# Returns the edition of every album appearance that made the two tracks a candidate, so the
-# pair can be held to agreeing on the edition and not just on the album title. The album terms
-# mirror the candidate query exactly: an appearance the pair does not share a position on says
-# nothing about the edition of the one it does.
+# Returns the title and edition of every album appearance that made the two tracks a
+# candidate, so the pair can be held to agreeing on both. The album terms mirror the candidate
+# query exactly: an appearance the pair does not share a position on says nothing about the
+# album of the one it does.
 _SHARED_ALBUM_EDITIONS_QUERY = f"""
-SELECT al1.version AS version_1, al2.version AS version_2
+SELECT al1.name AS name_1, al2.name AS name_2,
+       al1.version AS version_1, al2.version AS version_2
 FROM {DB_TABLE_ALBUM_TRACKS} at1
 JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
 JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = :item_id_2
 JOIN {DB_TABLE_ALBUMS} al2
-  ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
+  ON al2.item_id = at2.album_id AND ({_album_title_match("al1", "al2")})
 WHERE at1.track_id = :item_id_1
   AND al1.search_name != ''
+  AND al2.search_name != ''
   AND at1.track_number > 0
   AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
   AND at1.track_number = at2.track_number
@@ -2834,14 +2871,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param item_id_1: Library ID of the first track.
         :param item_id_2: Library ID of the second track.
         """
-        # the candidate query can only compare album titles, and an edition is held apart
-        # from the title: without this an original and its remaster or deluxe edition look
-        # like the same album whenever neither track carries a version of its own
+        # the query relates titles loosely so a spelled-out retail suffix cannot hide a
+        # shared album, which leaves the identity for the album comparison to confirm. An
+        # edition is held apart from the title: without that an original and its remaster or
+        # deluxe edition look like the same album whenever neither track carries a version
         rows = await self.database.get_rows_from_query(
             _SHARED_ALBUM_EDITIONS_QUERY,
             {"item_id_1": item_id_1, "item_id_2": item_id_2},
         )
-        return any(compare_version(row["version_1"], row["version_2"]) for row in rows)
+        return any(
+            compare_album_name(row["name_1"], row["name_2"])
+            and compare_version(row["version_1"], row["version_2"])
+            for row in rows
+        )
 
     async def _merge_duplicate_track_pair(self, item_id_1: int, item_id_2: int) -> bool:
         """
@@ -2853,9 +2895,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         track_1 = await self.tracks.get_library_item(item_id_1)
         track_2 = await self.tracks.get_library_item(item_id_2)
-        # the candidate query already established that both rows sit at the same position on
-        # an equally titled album, which is the album agreement strict mode looks for, so the
-        # remaining check is run in non-strict mode. Its version check is reinstated here
+        # the checks below establish that both rows sit at the same position on an equally
+        # titled album, which is the album agreement strict mode looks for, so the remaining
+        # check is run in non-strict mode. Its version check is reinstated here
         # explicitly: without it a remaster, remix or radio edit of equal length would be
         # accepted as the original.
         if not compare_version(track_1.version, track_2.version):
