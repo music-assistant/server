@@ -282,7 +282,7 @@ def test_holdback_rejected_when_crossfade_buffer_size_is_zero() -> None:
     """A zero-size crossfade buffer has nothing to hold back."""
     audio = StreamsAudio(MagicMock())
     streamdetails = SimpleNamespace(
-        is_realtime=False, buffer=SimpleNamespace(eof=True, max_size_seconds=300)
+        is_realtime=False, buffer=SimpleNamespace(eof=True, has_error=False, max_size_seconds=300)
     )
 
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 0) is False
@@ -292,7 +292,7 @@ def test_holdback_rejected_for_realtime_source() -> None:
     """A realtime source's tail is never held back, even once its buffer reaches EOF."""
     audio = StreamsAudio(MagicMock())
     streamdetails = SimpleNamespace(
-        is_realtime=True, buffer=SimpleNamespace(eof=True, max_size_seconds=300)
+        is_realtime=True, buffer=SimpleNamespace(eof=True, has_error=False, max_size_seconds=300)
     )
 
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 10) is False
@@ -310,7 +310,7 @@ def test_holdback_rejected_before_source_reaches_eof() -> None:
     """A still-filling buffer keeps limiting playback, so its tail is not held back yet."""
     audio = StreamsAudio(MagicMock())
     streamdetails = SimpleNamespace(
-        is_realtime=False, buffer=SimpleNamespace(eof=False, max_size_seconds=300)
+        is_realtime=False, buffer=SimpleNamespace(eof=False, has_error=False, max_size_seconds=300)
     )
 
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 10) is False
@@ -320,17 +320,28 @@ def test_holdback_allowed_once_source_reaches_eof() -> None:
     """A fully delivered, non-realtime source may hold back its tail for a crossfade."""
     audio = StreamsAudio(MagicMock())
     streamdetails = SimpleNamespace(
-        is_realtime=False, buffer=SimpleNamespace(eof=True, max_size_seconds=300)
+        is_realtime=False, buffer=SimpleNamespace(eof=True, has_error=False, max_size_seconds=300)
     )
 
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 10) is True
+
+
+def test_holdback_rejected_for_a_failed_source() -> None:
+    """A source that failed is skipped without a fade, so its tail is played out instead."""
+    audio = StreamsAudio(MagicMock())
+    streamdetails = SimpleNamespace(
+        is_realtime=False,
+        buffer=SimpleNamespace(eof=True, has_error=True, max_size_seconds=300),
+    )
+
+    assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 10) is False
 
 
 def test_holdback_allowed_when_the_buffer_can_never_hold_the_tail() -> None:
     """A buffer smaller than the tail collects it while the source runs, or loses the fade."""
     audio = StreamsAudio(MagicMock())
     streamdetails = SimpleNamespace(
-        is_realtime=False, buffer=SimpleNamespace(eof=False, max_size_seconds=15)
+        is_realtime=False, buffer=SimpleNamespace(eof=False, has_error=False, max_size_seconds=15)
     )
 
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 45) is True
@@ -375,7 +386,7 @@ async def test_smartfade_realtime_current_item_yields_all_audio_without_crossfad
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
-        buffer=SimpleNamespace(eof=True, cancelled=False, max_size_seconds=300),
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=True,
     )
     # a fully resident, ready incoming buffer - the realtime flag on the outgoing
@@ -459,7 +470,7 @@ async def test_smartfade_still_filling_buffer_yields_all_audio_without_crossfade
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
-        buffer=SimpleNamespace(eof=False, cancelled=False, max_size_seconds=300),
+        buffer=SimpleNamespace(eof=False, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=False,
     )
     next_details = SimpleNamespace(
@@ -542,7 +553,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     # the source is done delivering, so only the realtime flag can deny the holdback
     realtime_details = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, max_size_seconds=300),
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
         stream_error=False,
         uri="test://realtime",
@@ -651,7 +662,7 @@ async def test_smartfade_unaligned_chunks_still_crossfade(
         seek_position=0,
         seconds_streamed=0,
         uri="test://current",
-        buffer=SimpleNamespace(eof=True, cancelled=False, max_size_seconds=300),
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=False,
     )
     next_details = SimpleNamespace(

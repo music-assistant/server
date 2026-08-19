@@ -48,7 +48,7 @@ def _buffer(duration_available: float, ready: bool) -> AudioBuffer:
 
 def _delivered_buffer() -> SimpleNamespace:
     """Build the outgoing track's buffer, with its source done delivering."""
-    return SimpleNamespace(eof=True, cancelled=False)
+    return SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300)
 
 
 def test_ready_incoming_buffer_keeps_smart_crossfade() -> None:

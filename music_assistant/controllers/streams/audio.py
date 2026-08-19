@@ -3330,7 +3330,9 @@ class StreamsAudio:
         if tail_seconds <= 0 or streamdetails.is_realtime:
             return False
         audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
-        if audio_buffer is None:
+        if audio_buffer is None or audio_buffer.has_error:
+            # a failed source is skipped without a fade, so its remaining audio is
+            # better off played out than held back for one
             return False
         # While the source is still delivering, it is what limits playback: withholding
         # a tail on top of that eats into the lead the player needs. Once the source is

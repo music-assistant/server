@@ -1081,7 +1081,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
-        buffer=SimpleNamespace(eof=True, cancelled=False),
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=False,
     )
     first_item = SimpleNamespace(
