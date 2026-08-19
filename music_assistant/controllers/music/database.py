@@ -197,7 +197,7 @@ class MusicDatabaseSetupMixin:
                     "a full rescan will be performed, this can take a while!",
                 )
                 if not isinstance(err, MusicAssistantError):
-                    self.logger.exception(err)
+                    self.logger.exception("Unexpected error during database migration")
 
                 await self._database.close()
                 await asyncio.to_thread(os.remove, db_path)

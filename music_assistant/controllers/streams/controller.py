@@ -1574,13 +1574,12 @@ class StreamsController(CoreController):
         finally:
             try:
                 await prov.on_source_unselected(source_id, queue_id, stream_session_id)
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "on_source_unselected raised for provider %s source %s queue %s: %s",
+                    "on_source_unselected raised for provider %s source %s queue %s",
                     prov.instance_id,
                     source_id,
                     queue_id,
-                    err,
                 )
 
     def _update_audio_processing_context(
