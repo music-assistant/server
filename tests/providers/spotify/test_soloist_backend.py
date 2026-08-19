@@ -78,6 +78,19 @@ def test_seek_is_confirmed_only_within_tolerance() -> None:
     assert state.seek_confirmed.is_set()
 
 
+def test_position_never_regresses_and_stops_at_item_end() -> None:
+    """The end-of-item stop snapshot (position 0) must not erase the observed progress."""
+    state = _TrackState("spotify:track:abc")
+    state.observe_position(70_000)
+    # the daemon's stop/idle snapshot reports position 0 right before shutdown
+    state.observe_position(0)
+    assert state.last_position_ms == 70_000
+    # positions after the item ended belong to the (autoplay) next item
+    state.ended.set()
+    state.observe_position(90_000)
+    assert state.last_position_ms == 70_000
+
+
 def test_small_seek_target_is_not_confirmed_by_a_pre_seek_zero_report() -> None:
     """A position 0 report never confirms a small seek target inside the tolerance."""
     state = _TrackState("spotify:track:abc")

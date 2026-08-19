@@ -666,7 +666,14 @@ class _TrackState:
 
     def observe_position(self, position_ms: int) -> None:
         """Record a reported playback position (and confirm a pending seek)."""
-        self.last_position_ms = position_ms
+        if self.ended.is_set():
+            # positions reported after the item ended describe the (autoplay)
+            # next item, not the requested one
+            return
+        # keep the furthest position: the daemon's stop/idle snapshot at the
+        # end of the item reports position 0 and must not erase the progress
+        # the completeness validation relies on (verified live)
+        self.last_position_ms = max(self.last_position_ms or 0, position_ms)
         # the floor of 1 keeps a pre-seek report of position 0 from confirming
         # a small seek target that falls inside the tolerance window
         if self.seek_target_ms is not None and position_ms >= max(
