@@ -244,8 +244,9 @@ RUN set -x \
         libasound2 \
         # PortAudio for local audio output (sounddevice)
         libportaudio2 \
-        # Allows pipewire devices to be detected when running in docker container. (local audio)
-        pipewire-alsa \
+        # PipeWire stack (daemon + libs) required by the pipewire-alsa plugin
+        # unpacked below (host pipewire access in docker, local audio)
+        pipewire \
         # Allows pulse audio devices to be detected using pactl. (local audio)
         pulseaudio-utils \
         # PulseAudio daemon for MA's private audio-capture server (spotify connect soloist)
@@ -257,6 +258,18 @@ RUN set -x \
         # AirPlay receiver dependencies (shairport-sync)
         libconfig11 \
         libpopt0 \
+    # pipewire-alsa (ALSA apps -> host pipewire, needed for local audio in docker)
+    # declares Conflicts: pulseaudio because both want to own the ALSA default
+    # device, but there is no file overlap, so unpack it outside dpkg and keep
+    # the ALSA default routed to pipewire by removing pulseaudio's
+    # default-routing and autospawn snippets
+    && (cd /tmp && apt-get download pipewire-alsa) \
+    && dpkg-deb -x /tmp/pipewire-alsa_*.deb / \
+    && rm /tmp/pipewire-alsa_*.deb \
+    && rm -f \
+        /etc/alsa/conf.d/99-pulse.conf \
+        /usr/share/alsa/alsa.conf.d/pulse.conf \
+        /etc/pulse/client.conf.d/01-enable-autospawn.conf \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f \
