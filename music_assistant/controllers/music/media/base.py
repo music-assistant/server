@@ -165,6 +165,7 @@ class TrackSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library track."""
 
     has_album: bool
+    has_artists: bool
 
 
 @dataclass(slots=True)
