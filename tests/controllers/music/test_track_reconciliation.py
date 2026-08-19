@@ -30,6 +30,17 @@ from music_assistant.mass import MusicAssistant
 
 _DUPLICATE_NAME = "Shared Track Title"
 _REPORT_FAILURE = "music_assistant.controllers.music.controller.report_current_task_failure"
+# every way a provider may set off a retail suffix, next to the plain dashed spelling
+# another provider uses for the same format
+_RETAIL_SUFFIX_SPELLING_PAIRS = [
+    ("EP", "-EP"),
+    ("EP", "(EP)"),
+    ("EP", "[EP]"),
+    ("Single", "-Single"),
+    ("Single", "(Single)"),
+    ("Single", "[Single]"),
+    ("Single", "(single)"),
+]
 
 
 class _TrackSpec(NamedTuple):
@@ -457,6 +468,28 @@ async def test_merges_across_a_spelled_out_retail_suffix(
         await mass.music.tracks.get_library_item(track_2.item_id)
 
 
+@pytest.mark.parametrize(("suffix", "spelling"), _RETAIL_SUFFIX_SPELLING_PAIRS)
+async def test_merges_when_providers_set_off_the_suffix_differently(
+    mass: MusicAssistant, suffix: str, spelling: str
+) -> None:
+    """Providers disagreeing on how the retail suffix is written still share an album."""
+    track_1, track_2 = await _build_duplicate_pair(
+        mass,
+        _TrackSpec(album_name=f"Shared Album - {suffix}"),
+        _TrackSpec("qobuz_instance", album_name=f"Shared Album {spelling}"),
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 async def test_keeps_an_ep_apart_from_the_single_of_the_same_name(mass: MusicAssistant) -> None:
     """Two titles that each name their format and disagree are different releases."""
     track_1, track_2 = await _build_duplicate_pair(
@@ -469,6 +502,28 @@ async def test_keeps_an_ep_apart_from_the_single_of_the_same_name(mass: MusicAss
 
     assert await mass.music.tracks.get_library_item(track_1.item_id)
     assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+@pytest.mark.parametrize("spelling", [spelling for _, spelling in _RETAIL_SUFFIX_SPELLING_PAIRS])
+@pytest.mark.parametrize("suffix_on_second", [False, True])
+async def test_merges_a_plain_title_with_any_spelled_out_suffix(
+    mass: MusicAssistant, spelling: str, suffix_on_second: bool
+) -> None:
+    """A plain title and one naming the format are the same album, however it is written."""
+    specs = [_TrackSpec(), _TrackSpec("qobuz_instance")]
+    index = 1 if suffix_on_second else 0
+    specs[index] = specs[index]._replace(album_name=f"{specs[index].album_name} {spelling}")
+    track_1, track_2 = await _build_duplicate_pair(mass, *specs)
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    surviving = await mass.music.tracks.get_library_item(track_1.item_id)
+    assert {mapping.provider_domain for mapping in surviving.provider_mappings} == {
+        "spotify",
+        "qobuz",
+    }
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
 
 
 @pytest.mark.parametrize("suffix_on_second", [False, True])

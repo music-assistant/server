@@ -1213,6 +1213,7 @@ class SendspinPlayer(SendspinBasePlayer):
             self._attr_device_info.add_identifier(id_type, id_value)
         self.is_web_player = False
         self._attr_hidden_by_default = False
+        self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_type = PlayerType.PROTOCOL
 
@@ -1659,6 +1660,7 @@ class SendspinPlayer(SendspinBasePlayer):
         ).is_virtual_player(self.player_id)
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
+        self._attr_private = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
@@ -2206,4 +2208,5 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     _attr_type = PlayerType.UNKNOWN
     _attr_hidden_by_default = True
+    _attr_private = True
     _attr_expose_to_ha_by_default = False

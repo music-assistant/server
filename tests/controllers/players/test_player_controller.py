@@ -1575,6 +1575,9 @@ class TestRegisterOrUpdateTypeTransition:
     ) -> None:
         """A universal parent hands its config to the player that replaces it."""
         controller = self._prepare(mock_mass)
+        # tasks start eagerly, so a removal scheduled while the player is released runs
+        # before the handover does and would take the wrapper out from under it
+        use_real_create_task(mock_mass)
         provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
         universal_provider = MockProvider(
             "universal_player", instance_id="universal_player", mass=mock_mass
@@ -1593,18 +1596,26 @@ class TestRegisterOrUpdateTypeTransition:
         )
         migrated: list[tuple[str, str]] = []
 
-        with patch.object(
-            controller,
-            "_migrate_universal_player_config",
-            side_effect=lambda old, new: migrated.append((old, new)),
+        with (
+            patch.object(
+                controller,
+                "_migrate_universal_player_config",
+                side_effect=lambda old, new: migrated.append((old, new)),
+            ),
+            patch.object(controller, "unregister", wraps=controller.unregister) as mock_unregister,
         ):
             child._attr_type = PlayerType.PLAYER
             await controller.register_or_update(child)
 
-        # a leftover active link makes the wrapper refuse the handover to the player it
-        # is being replaced by, stranding the user's settings on a player on its way out
+        # the wrapper is on its way out, so the user's settings have to move to the
+        # player that replaces it, which is left standalone rather than a child of it
         assert migrated == [("universal_1", "child")]
         assert child.protocol_parent_id is None
+        # an earlier removal never gets that far: it leaves the wrapper's config behind
+        # and the handover no longer finds the wrapper to carry anything over
+        mock_unregister.assert_awaited_once_with(
+            "universal_1", permanent=True, replacement_player_id="child"
+        )
 
     async def test_player_to_protocol_detaches_its_children(self, mock_mass: MagicMock) -> None:
         """A player that becomes a protocol child releases the protocols it owned."""
