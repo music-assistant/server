@@ -30,7 +30,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
-from .tap import TapManager, ViewerQueue, get_sendspin_provider
+from .tap import CONF_COLOR_TINT, TapManager, ViewerQueue, get_sendspin_provider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -114,11 +114,16 @@ class MilkdropRelay:
         self._sessions.add(ws)
 
         try:
+            # Only advertise color when the tint option is enabled, so viewers
+            # are not promised a message type that will never arrive.
+            types = ["waveform", "beat"]
+            if self.provider.config.get_value(CONF_COLOR_TINT):
+                types.append("color")
             await ws.send_str(
                 dumps(
                     {
                         "type": "stream/start",
-                        "payload": {"visualizer": {"types": ["waveform", "beat", "color"]}},
+                        "payload": {"visualizer": {"types": types}},
                     }
                 ).decode()
             )

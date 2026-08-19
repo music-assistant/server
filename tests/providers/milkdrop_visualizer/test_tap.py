@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import struct
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 from aiosendspin.models.color import SessionUpdateColor
 from aiosendspin.models.types import UndefinedField
@@ -11,12 +11,17 @@ from aiosendspin.server.roles import AudioChunk
 from orjson import loads
 
 from music_assistant.providers.milkdrop_visualizer.tap import (
+    _COLOR_FIELDS,
+    CONF_COLOR_TINT,
+    MILKDROP_ROLE_ID,
     WAVE_SAMPLES,
     MilkdropWaveRole,
     Tap,
+    TapManager,
     ViewerQueue,
     _extract_color_update,
 )
+from music_assistant.providers.sendspin.bridge_role import COLOR_BRIDGE_ROLE_ID
 
 
 def _stereo_chunk(mono_values: list[int], *, dangling_sample: bool = False) -> AudioChunk:
@@ -119,14 +124,7 @@ def test_viewer_queue_evicts_control_only_when_no_binary_left() -> None:
 def _color_payload(**fields: tuple[int, int, int] | None) -> Mock:
     """Build a ServerStatePayload-shaped mock whose color carries only the given fields."""
     color = Mock(spec=SessionUpdateColor)
-    for name in (
-        "background_dark",
-        "background_light",
-        "primary",
-        "accent",
-        "on_dark",
-        "on_light",
-    ):
+    for name in _COLOR_FIELDS:
         setattr(color, name, fields.get(name, UndefinedField()))
     return Mock(color=color)
 
@@ -176,3 +174,40 @@ def test_tap_apply_color_ignores_an_empty_update() -> None:
     tap.queues.add(queue)
     tap.apply_color({})
     assert not queue._items
+
+
+def _tap_manager(*, color_tint: bool) -> tuple[TapManager, MagicMock, MagicMock, MagicMock]:
+    """Build a TapManager against mocks, returning it with the sendspin api and roles."""
+    provider = MagicMock()
+    provider.config.get_value.side_effect = lambda key: (
+        color_tint if key == CONF_COLOR_TINT else None
+    )
+    sendspin = MagicMock()
+    provider.mass.get_provider.return_value = sendspin
+    wave_role = MagicMock()
+    color_role = MagicMock()
+    viz_client = MagicMock()
+    viz_client.roles_by_family.side_effect = lambda family: {
+        "visualizer": [wave_role],
+        "color": [color_role],
+    }[family]
+    sendspin.server_api.register_external_player.return_value = viz_client
+    return TapManager(provider), sendspin, wave_role, color_role
+
+
+def test_register_client_includes_color_role_when_tint_enabled() -> None:
+    """With color tint on, the tap registers the color role and wires its callback."""
+    manager, sendspin, _wave_role, color_role = _tap_manager(color_tint=True)
+    manager._register_client(Tap("milkdrop-test"))
+    hello = sendspin.server_api.register_external_player.call_args.args[0]
+    assert hello.supported_roles == [MILKDROP_ROLE_ID, COLOR_BRIDGE_ROLE_ID]
+    color_role.set_callbacks.assert_called_once()
+
+
+def test_register_client_omits_color_role_when_tint_disabled() -> None:
+    """With color tint off, no color role is registered and nothing is wired to it."""
+    manager, sendspin, _wave_role, color_role = _tap_manager(color_tint=False)
+    manager._register_client(Tap("milkdrop-test"))
+    hello = sendspin.server_api.register_external_player.call_args.args[0]
+    assert hello.supported_roles == [MILKDROP_ROLE_ID]
+    color_role.set_callbacks.assert_not_called()

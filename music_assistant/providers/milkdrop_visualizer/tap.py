@@ -9,6 +9,7 @@ waveform frames. One tap is shared by every viewer of the same target player.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import struct
 from collections import deque
@@ -16,6 +17,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from aiosendspin.models.color import SessionUpdateColor
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.types import UndefinedField
@@ -49,14 +51,10 @@ MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
 CONF_COLOR_TINT = "color_tint"
 DEFAULT_COLOR_TINT = True
-# color@v1 fields (see aiosendspin.models.color.SessionUpdateColor).
-_COLOR_FIELDS = (
-    "background_dark",
-    "background_light",
-    "primary",
-    "accent",
-    "on_dark",
-    "on_light",
+# color@v1 palette fields, derived from the model so a field added upstream
+# is forwarded without touching this list.
+_COLOR_FIELDS = tuple(
+    field.name for field in dataclasses.fields(SessionUpdateColor) if field.name != "timestamp"
 )
 # How long to wait for the Sendspin provider to register a player for a freshly
 # created tap client, before grouping it onto the player being visualized.
