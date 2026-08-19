@@ -298,11 +298,16 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         source = Path(self.mass.storage_path) / pending
         canonical = self._data_dir
         if source.is_dir() and source != canonical:
-            if canonical.exists():
-                shutil.rmtree(canonical, ignore_errors=True)
+            # stage first: a failed copy must never leave the canonical dir
+            # half-written or destroy the currently working session
+            staging = canonical.with_name(canonical.name + ".new")
+            shutil.rmtree(staging, ignore_errors=True)
             canonical.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, canonical)
-            canonical.chmod(0o700)
+            shutil.copytree(source, staging)
+            staging.chmod(0o700)
+            if canonical.exists():
+                shutil.rmtree(canonical)
+            staging.replace(canonical)
 
     def _has_stored_session(self) -> bool:
         """Return whether the data dir holds a stored (paired) session (blocking)."""

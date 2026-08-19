@@ -150,10 +150,6 @@ class SpotifyProvider(MusicProvider):
         self.backend = self._create_backend()
         await self.backend.setup()
         try:
-            if not isinstance(self.backend, SoloistSingleTrackBackend):
-                # a paired soloist session left behind by a backend switch holds
-                # login material and is of no further use: remove it
-                await asyncio.to_thread(self._remove_soloist_session_dir)
             # try login which will raise if it fails (logs in global session)
             await self.login()
 
@@ -181,6 +177,12 @@ class SpotifyProvider(MusicProvider):
                     "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
                     "for supported countries."
                 )
+            if not isinstance(self.backend, SoloistSingleTrackBackend):
+                # a paired soloist session left behind by a backend switch holds
+                # login material and is of no further use: remove it — only now
+                # that the load succeeded, so a failed load (and its config
+                # rollback) still has the working session
+                await asyncio.to_thread(self._remove_soloist_session_dir)
         except BaseException:
             # a failed load is never registered, so unload() will not run:
             # release whatever the backend acquired (e.g. the shared pulse

@@ -78,6 +78,34 @@ def test_seek_is_confirmed_only_within_tolerance() -> None:
     assert state.seek_confirmed.is_set()
 
 
+async def test_read_pcm_trims_lead_silence_and_caps_at_the_duration(tmp_path: Path) -> None:
+    """The PCM loop drops the capture pre-roll and delivers exactly the item's duration."""
+    import asyncio  # noqa: PLC0415
+
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.duration_ms = 100  # 100ms -> 4410 frames
+    expected = state.expected_bytes(0)
+    assert expected is not None
+    reader = asyncio.StreamReader()
+    # capture pre-roll silence, then audio, then the endless post-item silence
+    reader.feed_data(bytes(2 * _FRAME_BYTES))
+    reader.feed_data(b"\x01" * (expected + 4 * _FRAME_BYTES))
+    proc = MagicMock()
+    proc.returncode = None
+    chunks = []
+
+    async def _consume() -> None:
+        async for chunk in backend._read_pcm(state, reader, proc, 0):
+            chunks.append(chunk)
+
+    await asyncio.wait_for(_consume(), 5)
+    data = b"".join(chunks)
+    assert len(data) == expected
+    # the pre-roll was dropped, so the delivered PCM starts with the audio
+    assert data[0] == 1
+
+
 def test_position_never_regresses_and_stops_at_item_end() -> None:
     """The end-of-item stop snapshot (position 0) must not erase the observed progress."""
     state = _TrackState("spotify:track:abc")
