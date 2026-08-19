@@ -55,7 +55,8 @@ SUPPORTED_FEATURES = {
 SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 
 # Soundcloud serves DRM protected (encrypted HLS) audio for part of its catalog, mostly major
-# label releases. Playing those requires a Widevine/FairPlay CDM, which we do not have.
+# label releases. Playing those requires a Widevine/FairPlay CDM, which we do not have, and
+# working around it is not something we will do - such tracks are skipped instead.
 # Such a track does still advertise plain mp3 transcodings, but requesting one of those returns
 # a 404, so the presence of an encrypted protocol is what tells us the track is unplayable.
 DRM_PROTOCOL_MARKER = "encrypted"

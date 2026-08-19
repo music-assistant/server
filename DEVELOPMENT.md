@@ -120,6 +120,29 @@ Create a file called `__init__.py` inside the folder of your provider. This file
     3. Streaming an https stream that uses an expiring URL, see the [Qobuz](./music_assistant/providers/qobuz/__init__.py) provider as an example
 
 
+**Rules for providers that stream from a music service**
+
+Music Assistant plays music to your own speakers; it is not a way to download or keep
+copies of it. See the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md).
+A provider that talks to a commercial music service must therefore:
+
+* **Authenticate as the user.** Fetch audio the way an ordinary client would, using the
+  account the user configured. Do not bypass a subscription tier or regional availability.
+* **Leave copy protection alone.** Skip DRM-protected content rather than decoding it. The
+  [Soundcloud](./music_assistant/providers/soundcloud/__init__.py) provider is the reference:
+  encrypted transcodings raise and the item is left out.
+* **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
+  does not serialize it. Never place it on a media item, an API result, or a route that hands
+  it to a caller.
+* **Do not persist decoded audio.** Streaming providers must return a stream, not bytes cached
+  to disk.
+* **Honour the service's own limits.** Where a service states how many streams one account may
+  run at once, override `max_concurrent_streams` with that number — see
+  [`MusicProvider`](./music_assistant/models/music_provider.py). Apple Music, Pandora and
+  YouTube Music are set to 1, Spotify to 2.
+
+Changes that weaken any of these will not be accepted, however useful they are otherwise.
+
 ## ▶️ Building your own Player Provider
 A Player Provider is the provider type that adds support for a 'target of playback' to Music Assistant. Sonos, Chromecast and AirPlay are examples of a Player Provider.
 All Providers (of all types) can be found in the `music_assistant/providers` folder.
