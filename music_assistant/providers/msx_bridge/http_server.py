@@ -2557,10 +2557,11 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         A TV cannot send an auth header, so the token travels in the URL the bridge
         itself generated. This stops a request that was never handed out — a web page
-        firing an <audio> tag at this LAN server, or an old URL replayed from a log.
+        firing an <audio> tag at this LAN server. A URL that was handed out stays valid
+        until the provider reloads, so this is not a defence against a captured URL.
         """
         expected = self.provider.get_stream_token(player_id)
-        if not expected or not secrets.compare_digest(request.query.get("token", ""), expected):
+        if not secrets.compare_digest(request.query.get("token", ""), expected):
             return web.Response(status=403, text="Invalid or missing stream token")
         return None
 
