@@ -297,6 +297,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "active_group": state.active_group,
         "enabled": state.enabled,
         "hide_in_ui": state.hide_in_ui,
+        "private": state.private,
         "expose_to_ha": state.expose_to_ha,
         "icon": state.icon,
         "group_volume": state.group_volume,
@@ -2378,6 +2379,7 @@ class Player(ABC):
         device_info = self._attr_device_info
         return {
             "type": self.type,
+            "private": self.private,
             "available": self.available,
             "name": self.name,
             "needs_setup": self.needs_setup,
