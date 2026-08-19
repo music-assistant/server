@@ -124,7 +124,7 @@ Create a file called `__init__.py` inside the folder of your provider. This file
 
 Music Assistant plays music to your own speakers; it is not a way to download or keep
 copies of it. See the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md).
-A provider that talks to a commercial music service must therefore:
+A provider that talks to a music service must therefore:
 
 * **Authenticate as the user.** Fetch audio the way an ordinary client would, using the
   account the user configured. Do not bypass a subscription tier or regional availability.
