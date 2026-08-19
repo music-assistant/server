@@ -138,8 +138,7 @@ A provider that talks to a music service must therefore:
   to disk.
 * **Honour the service's own limits.** Where a service states how many streams one account may
   run at once, override `max_concurrent_streams` with that number — see
-  [`MusicProvider`](./music_assistant/models/music_provider.py). Apple Music, Pandora and
-  YouTube Music are set to 1, Spotify to 2.
+  [`MusicProvider`](./music_assistant/models/music_provider.py).
 
 Changes that weaken any of these will not be accepted, however useful they are otherwise.
 
