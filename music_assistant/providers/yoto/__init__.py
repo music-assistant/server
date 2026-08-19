@@ -23,11 +23,15 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     AudioFormat,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
+    Radio,
     Track,
     UniqueList,
 )
@@ -49,6 +53,9 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_RADIOS,
 }
 
 
@@ -95,7 +102,11 @@ class YotoProvider(MusicProvider):
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         await self._handle_yoto_api_call(self.client.update_library())
-        for card in self.client.library.values():
+        for card in [
+            card
+            for card in self.client.library.values()
+            if card.category in ["music", "activities", "sfx", "none", None]
+        ]:
             yield self._parse_album(card)
 
     async def get_album(self, prov_album_id: str) -> Album:
@@ -167,30 +178,68 @@ class YotoProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
-        Get stream details for a track.
+        Get stream details for a track, audiobook, podcast episode, or radio.
 
-        :param item_id: Track ID formatted as {card_id}:{chapter_key}.
+        :param item_id: Item ID.
         :param media_type: Media type of the item.
         """
+        if media_type in (MediaType.RADIO, MediaType.AUDIOBOOK) and ":" not in item_id:
+            card_id = item_id
+            await self._handle_yoto_api_call(self.client.update_card_detail(card_id))
+            card = self.client.library.get(card_id)
+            if not card:
+                raise MediaNotFoundError(f"Card {card_id} not found")
+
+            track_paths = []
+            total_duration = 0
+            for chapter in card.chapters.values():
+                for track in chapter.tracks.values():
+                    if track.trackUrl:
+                        track_paths.append(
+                            MultiPartPath(path=track.trackUrl, duration=track.duration)
+                        )
+                        if track.duration:
+                            total_duration += track.duration
+
+            if not track_paths:
+                raise MediaNotFoundError(f"No audio URLs found for card {card_id}")
+
+            # Use format from first track
+            first_track = next(iter(next(iter(card.chapters.values())).tracks.values()), None)
+            format_str = first_track.format if first_track else None
+            content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
+
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=AudioFormat(content_type=content_type),
+                media_type=media_type,
+                stream_type=StreamType.HTTP,
+                duration=total_duration if total_duration > 0 else None,
+                path=track_paths,
+                allow_seek=True,
+                can_seek=True,
+            )
+
         if ":" not in item_id:
-            raise InvalidProviderID(f"Invalid track ID format: {item_id}")
+            raise InvalidProviderID(f"Invalid item ID format: {item_id}")
         card_id, chapter_key = item_id.split(":", 1)
         await self._handle_yoto_api_call(self.client.update_card_detail(card_id))
         card = self.client.library.get(card_id)
         if not card:
             raise MediaNotFoundError(f"Card {card_id} not found")
 
-        chapter = card.chapters.get(chapter_key)
-        if not chapter:
+        card_chapter = card.chapters.get(chapter_key)
+        if not card_chapter:
             raise MediaNotFoundError(f"Chapter {chapter_key} not found for card {card_id}")
 
-        first_track = next(iter(chapter.tracks.values()), None)
+        first_track = next(iter(card_chapter.tracks.values()), None)
         format_str = first_track.format if first_track else None
         content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
 
         track_paths = [
             MultiPartPath(path=track.trackUrl, duration=track.duration)
-            for track in chapter.tracks.values()
+            for track in card_chapter.tracks.values()
             if track.trackUrl
         ]
 
@@ -201,13 +250,95 @@ class YotoProvider(MusicProvider):
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(content_type=content_type),
-            media_type=MediaType.TRACK,
+            media_type=media_type,
             stream_type=StreamType.HTTP,
-            duration=chapter.duration,
+            duration=card_chapter.duration
+            if card_chapter.duration
+            else None,  # seems like a nop, but this maps Literal[0] -> None
             path=track_paths,
             allow_seek=True,
             can_seek=True,
         )
+
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
+        """Retrieve library audiobooks from the provider."""
+        await self._handle_yoto_api_call(self.client.update_library())
+        for card in [card for card in self.client.library.values() if card.category == "stories"]:
+            yield self._parse_audiobook(card)
+
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details by id."""
+        card: YotoCard | None = None
+        if prov_audiobook_id in self.client.library:
+            card = self.client.library[prov_audiobook_id]
+        else:
+            await self._handle_yoto_api_call(self.client.update_card_detail(prov_audiobook_id))
+            card = self.client.library.get(prov_audiobook_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {prov_audiobook_id} not found")
+        return self._parse_audiobook(card)
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
+        """Retrieve library podcasts from the provider."""
+        await self._handle_yoto_api_call(self.client.update_library())
+        for card in [card for card in self.client.library.values() if card.category == "podcast"]:
+            yield self._parse_podcast(card)
+
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details by id."""
+        card: YotoCard | None = None
+        if prov_podcast_id in self.client.library:
+            card = self.client.library[prov_podcast_id]
+        else:
+            await self._handle_yoto_api_call(self.client.update_card_detail(prov_podcast_id))
+            card = self.client.library.get(prov_podcast_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {prov_podcast_id} not found")
+        return self._parse_podcast(card)
+
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
+        """Get all PodcastEpisodes for given podcast id."""
+        await self._handle_yoto_api_call(self.client.update_card_detail(prov_podcast_id))
+        card = self.client.library.get(prov_podcast_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {prov_podcast_id} not found")
+        podcast = self._parse_podcast(card)
+
+        for idx, chapter in enumerate(card.chapters.values()):
+            yield self._parse_podcast_episode(prov_podcast_id, chapter, idx, podcast)
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get (full) podcast episode details by id."""
+        if ":" not in prov_episode_id:
+            raise InvalidProviderID(f"Invalid episode ID format: {prov_episode_id}")
+        card_id, _chapter_key = prov_episode_id.split(":", 1)
+        await self._handle_yoto_api_call(self.client.update_card_detail(card_id))
+        card = self.client.library.get(card_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {card_id} not found")
+        podcast = self._parse_podcast(card)
+        for idx, chapter in enumerate(card.chapters.values()):
+            if f"{card_id}:{chapter.key or str(idx + 1)}" == prov_episode_id:
+                return self._parse_podcast_episode(card_id, chapter, idx, podcast)
+        raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Retrieve library radio stations from the provider."""
+        await self._handle_yoto_api_call(self.client.update_library())
+        for card in [card for card in self.client.library.values() if card.category == "radio"]:
+            yield self._parse_radio(card)
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio details by id."""
+        card: YotoCard | None = None
+        if prov_radio_id in self.client.library:
+            card = self.client.library[prov_radio_id]
+        else:
+            await self._handle_yoto_api_call(self.client.update_card_detail(prov_radio_id))
+            card = self.client.library.get(prov_radio_id)
+        if not card:
+            raise MediaNotFoundError(f"Card {prov_radio_id} not found")
+        return self._parse_radio(card)
 
     async def _handle_yoto_api_call(self, api_call: Awaitable[None]) -> None:
         """Handle Yoto API calls and wrap errors in appropriate exceptions."""
@@ -357,6 +488,165 @@ class YotoProvider(MusicProvider):
                     ]
                 )
                 if (album.metadata and album.metadata.images)
+                else None,
+            ),
+        )
+
+    def _parse_audiobook(self, card: YotoCard) -> Audiobook:
+        """Parse Yoto card into a Music Assistant Audiobook."""
+        card_id = card.id
+        title = card.title or "Unknown Card"
+
+        return Audiobook(
+            item_id=card_id,
+            provider=self.instance_id,
+            name=title,
+            authors=UniqueList([card.author] if card.author else []),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=card_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(
+                description=card.description,
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=card.cover_image_large,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                )
+                if card.cover_image_large
+                else None,
+            ),
+        )
+
+    def _parse_podcast(self, card: YotoCard) -> Podcast:
+        """Parse Yoto card into a Music Assistant Podcast."""
+        card_id = card.id
+        title = card.title or f"Unknown Podcast {card_id}"
+
+        return Podcast(
+            item_id=card_id,
+            provider=self.instance_id,
+            name=title,
+            publisher=card.author,
+            total_episodes=len(card.chapters) if card.chapters else None,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=card_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(
+                description=card.description,
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=card.cover_image_large,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                )
+                if card.cover_image_large
+                else None,
+            ),
+        )
+
+    def _parse_podcast_episode(
+        self, card_id: str, chapter: YotoChapter, idx: int, podcast: Podcast
+    ) -> PodcastEpisode:
+        """Parse Yoto chapter into a Music Assistant PodcastEpisode."""
+        chapter_key = chapter.key or str(idx + 1)
+        episode_id = f"{card_id}:{chapter_key}"
+        chapter_title = chapter.title or f"Episode {idx + 1}"
+
+        chapter_duration = chapter.duration
+        if not chapter_duration and chapter.tracks:
+            chapter_duration = sum(
+                t.duration for t in chapter.tracks.values() if isinstance(t.duration, (int, float))
+            )
+
+        format_str = None
+        if chapter.tracks:
+            first_tr = next(iter(chapter.tracks.values()))
+            format_str = first_tr.format
+        content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
+
+        return PodcastEpisode(
+            item_id=episode_id,
+            provider=self.instance_id,
+            name=chapter_title,
+            duration=chapter_duration if chapter_duration else 0,
+            position=idx + 1,
+            podcast=ItemMapping(
+                item_id=card_id,
+                provider=self.instance_id,
+                name=podcast.name,
+                media_type=MediaType.PODCAST,
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=episode_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(content_type=content_type),
+                )
+            },
+            metadata=MediaItemMetadata(
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=podcast.metadata.images[0].path,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                )
+                if (podcast.metadata and podcast.metadata.images)
+                else None,
+            ),
+        )
+
+    def _parse_radio(self, card: YotoCard) -> Radio:
+        """Parse Yoto card into a Music Assistant Radio."""
+        card_id = card.id
+        title = card.title or "Unknown Card"
+        cover_url = card.cover_image_large
+
+        return Radio(
+            item_id=card_id,
+            provider=self.instance_id,
+            name=title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=card_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(
+                description=card.description,
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=cover_url,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                )
+                if cover_url
                 else None,
             ),
         )

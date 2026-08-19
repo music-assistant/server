@@ -9,6 +9,6 @@
   ],
   "multi_instance": true,
   "credits": ["[Yoto API](https://github.com/cdnninja/yoto_api)"],
-  "requirements": ["yoto-api==4.3.2", "pkce==1.0.3"],
+  "requirements": ["yoto-api==4.3.4", "pkce==1.0.3"],
   "documentation": "https://music-assistant.io/music-providers/yoto/"
 }
