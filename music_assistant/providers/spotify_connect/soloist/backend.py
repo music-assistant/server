@@ -18,6 +18,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from aiohttp import ClientError
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
@@ -631,8 +632,13 @@ class SoloistBackend(SpotifyConnectBackend):
                 await self._client.listen_events(self._handle_event)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except (TimeoutError, OSError, ClientError, SoloistError) as err:
+                # ordinary connection drop; the loop reconnects quietly
                 self.logger.debug("soloist events websocket dropped: %s", err)
+            except Exception:
+                # a defect in event handling must not kill the control plane,
+                # but unlike a connection drop it has to surface loudly
+                self.logger.exception("Unexpected error while handling soloist events")
             if not self._stop_called:
                 await asyncio.sleep(RESTART_DELAY_S)
 
