@@ -19,7 +19,7 @@ Flag it in review, and never write it yourself, when a change would:
 - decode or work around DRM instead of skipping the affected item
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream
-  limit (see `max_concurrent_streams` in `models/music_provider.py`)
+  limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)
 - add downloading, exporting, or archiving of provider audio, however it is framed
 
 Several guards in the codebase exist only for this reason and read as removable if you do not
