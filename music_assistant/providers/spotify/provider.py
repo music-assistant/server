@@ -197,7 +197,11 @@ class SpotifyProvider(MusicProvider):
         Read from the stored config (not the backend instance): this property is
         already consulted while the provider object is being constructed.
         """
-        if self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST:
+        # tolerate a bare instance: the stream-limit declaration tests read this
+        # without constructing the provider
+        if getattr(self, "mass", None) is not None and (
+            self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST
+        ):
             # a Spotify account supports a single active Soloist session
             return 1
         # Spotify accounts tolerate two concurrent sessions (main + librespot)
