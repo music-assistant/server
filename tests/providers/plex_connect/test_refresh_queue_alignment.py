@@ -141,3 +141,44 @@ async def test_refresh_replaces_only_what_follows_the_buffered_item() -> None:
 
     expected = [f"/library/metadata/{n}" for n in [*range(3, 12), 0]]
     assert handler.queued_keys() == expected
+
+
+async def test_refresh_on_a_windowed_queue_resumes_after_the_current_item() -> None:
+    """
+    A window that omits MA index 0 must still resume right after the current item.
+
+    The server returns a window centred on the playing track, so on a long queue the
+    item MA started from is not in the response and no rotation can be derived from it.
+    """
+    handler = _QueueHandler()
+    items = [
+        SimpleNamespace(key=f"/library/metadata/{n}", playQueueItemID=1000 + n)
+        for n in range(40, 100)
+    ]
+    playqueue = SimpleNamespace(
+        items=items,
+        playQueueSelectedItemID=1060,
+        playQueueSelectedItemOffset=60,
+    )
+    # MA started from track 0, which this window does not contain.
+    handler.play_queue_item_ids = {0: 1000, 60: 1060}
+    handler.queue.current_index = 60
+    handler.queue.index_in_buffer = 60
+
+    await handler._replace_remaining_queue("player1", playqueue, 60)
+
+    assert handler.queued_keys() == [f"/library/metadata/{n}" for n in range(61, 100)]
+
+
+async def test_refresh_after_playback_wrapped_past_the_origin() -> None:
+    """Once playback reaches the wrapped tail, only the tracks before the origin remain."""
+    handler = _QueueHandler()
+    playqueue = _make_playqueue(12, selected_index=4)
+    # Playback began at Plex index 4 and has reached MA index 9, which is Plex index 1.
+    handler.play_queue_item_ids = {0: 1004, 9: 1001}
+    handler.queue.current_index = 9
+    handler.queue.index_in_buffer = 9
+
+    await handler._replace_remaining_queue("player1", playqueue, 9)
+
+    assert handler.queued_keys() == ["/library/metadata/2", "/library/metadata/3"]

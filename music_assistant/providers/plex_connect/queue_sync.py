@@ -211,24 +211,25 @@ class QueueSyncMixin:
             )
             LOGGER.info(f"Replaced queue with {len(all_tracks)} tracks")
 
-    def _plex_origin_index(self, playqueue: PlayQueue) -> int:
+    def _plex_index_of(self, playqueue: PlayQueue, ma_index: int) -> int | None:
         """
-        Return the index in the Plex queue of the track sitting at MA queue index 0.
+        Return where the MA queue item at ``ma_index`` sits in the fetched Plex queue.
 
-        Playback starts at the item Plex has selected and the items before it wrap around
-        to the tail, so the MA queue is the Plex queue rotated by this index. It is matched
-        on playQueueItemID rather than by position, falling back to whichever item Plex
-        reports as selected.
+        Matched on playQueueItemID rather than by position: the MA queue is a rotation of
+        the Plex queue, and the server may return only a window of it, so the two index
+        spaces are not interchangeable.
 
         :param playqueue: The Plex play queue.
-        :return: The index within ``playqueue.items`` that MA queue index 0 maps to.
+        :param ma_index: An index into the Music Assistant queue.
+        :return: The index within ``playqueue.items``, or None if that item is absent.
         """
-        item_id = self.play_queue_item_ids.get(0)
-        if item_id is not None:
-            for index, item in enumerate(playqueue.items):
-                if plex_item_fields(item)[1] == item_id:
-                    return index
-        return self._selected_item_index(playqueue)
+        item_id = self.play_queue_item_ids.get(ma_index)
+        if item_id is None:
+            return None
+        for index, item in enumerate(playqueue.items):
+            if plex_item_fields(item)[1] == item_id:
+                return index
+        return None
 
     def _replace_next_base_index(self, player_id: str, current_index: int) -> int:
         """
@@ -264,12 +265,22 @@ class QueueSyncMixin:
         """
         base_index = self._replace_next_base_index(player_id, current_index)
 
-        # Rebuild the Plex queue in MA's rotated order, then take just the tail that the
-        # replace will actually drop. Slicing the unrotated Plex list would re-queue
-        # tracks that are still in front of the player.
-        origin = self._plex_origin_index(playqueue)
-        rotated = playqueue.items[origin:] + playqueue.items[:origin]
-        remaining_items = rotated[base_index + 1 :]
+        # Walk forward from the item MA keeps last, wrapping at the track playback began
+        # on. MA positions are not Plex positions -- the MA queue is a rotation of the
+        # Plex one, and the server may return only a window of it.
+        anchor = self._plex_index_of(playqueue, base_index)
+        if anchor is None:
+            anchor = self._selected_item_index(playqueue)
+        origin = self._plex_index_of(playqueue, 0)
+
+        items = playqueue.items
+        if origin is None:
+            # Without the rotation origin in this window there is no wrap we can trust,
+            # so take everything Plex still lists after the current track.
+            remaining_items = items[anchor + 1 :]
+        else:
+            count = (origin - anchor - 1) % len(items)
+            remaining_items = [items[(anchor + 1 + i) % len(items)] for i in range(count)]
 
         remaining_tracks = []
         new_item_mappings = {}
