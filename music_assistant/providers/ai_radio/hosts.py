@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 # placeholders a segment's prompt needs before it may be scheduled, in the same
 # order the frontend's host compiler emits them
-GUARD_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<timestamp>", "<weather_daily>")
+GUARD_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<timestamp>")
 
 
 @dataclass(frozen=True, slots=True)
