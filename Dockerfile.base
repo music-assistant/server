@@ -244,8 +244,8 @@ RUN set -x \
         libasound2 \
         # PortAudio for local audio output (sounddevice)
         libportaudio2 \
-        # PipeWire client stack for host pipewire access in docker (local audio);
-        # the ALSA plugin itself is unpacked from pipewire-alsa below
+        # PipeWire stack (daemon + libs) required by the pipewire-alsa plugin
+        # unpacked below (host pipewire access in docker, local audio)
         pipewire \
         # Allows pulse audio devices to be detected using pactl. (local audio)
         pulseaudio-utils \
