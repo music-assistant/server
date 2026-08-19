@@ -53,8 +53,9 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 - **Taking playback back**: when the user moved the active device away in the Spotify app
   and presses play in MA, the last seen context is (re)started on this device — the
   backend's `play()` contract includes claiming active device status.
-- **Stream teardown → pause**: stopping the MA player or clearing the queue pauses the
-  Spotify session, so the Spotify app reflects it.
+- **Stream teardown → release**: stopping the MA player or clearing the queue releases
+  the Spotify session (`deactivate`), so the Spotify app drops the device as its
+  playback target instead of staying tethered to it.
 - **Session inactive → bounded stop**: when the user deselects the device in the Spotify
   app, the active MA player is stopped (bounded, so a slow player cannot wedge it).
 - **Live metadata**: title/artist/album/artwork/position are pushed into the active queue
