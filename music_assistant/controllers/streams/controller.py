@@ -901,7 +901,12 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
-                    extra_input_args=self._output_pacing_args(queue_item),
+                    extra_input_args=[
+                        "-readrate",
+                        SINGLE_ITEM_READRATE,
+                        "-readrate_initial_burst",
+                        SINGLE_ITEM_READRATE_INITIAL_BURST,
+                    ],
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -1683,26 +1688,6 @@ class StreamsController(CoreController):
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
-
-    def _output_pacing_args(self, queue_item: QueueItem) -> list[str]:
-        """
-        Return the ffmpeg input args that pace a single queue item towards a player.
-
-        Empty for sources that are the user's own, which are served unpaced.
-
-        :param queue_item: Queue item being served.
-        """
-        if not (streamdetails := queue_item.streamdetails):
-            return []
-        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
-        if not isinstance(provider, MusicProvider) or not provider.is_streaming_provider:
-            return []
-        return [
-            "-readrate",
-            SINGLE_ITEM_READRATE,
-            "-readrate_initial_burst",
-            SINGLE_ITEM_READRATE_INITIAL_BURST,
-        ]
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
