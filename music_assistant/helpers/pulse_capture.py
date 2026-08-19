@@ -310,6 +310,9 @@ class PulseCaptureServer:
             # private dir must never be accessible to other local users
             self._base_dir.chmod(0o700)
             self._socket_path.unlink(missing_ok=True)
+            # a stale pid file from a hard shutdown makes pulse refuse to start
+            # ("daemon already running") when that pid is reused by any process
+            (self._base_dir / "pid").unlink(missing_ok=True)
             # a hard shutdown skips sink cleanup; sweep leftover FIFOs from
             # previous runs (a fresh daemon has no modules yet)
             for stale_fifo in self._base_dir.glob("*.pcm"):
