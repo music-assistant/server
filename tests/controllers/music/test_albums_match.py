@@ -860,7 +860,7 @@ async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
 async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
     mass: MusicAssistant, suffixed_name: str
 ) -> None:
-    """An 'X - EP' from one provider joins the existing 'X' row instead of duplicating it."""
+    """A title naming the format joins the existing plain-title row instead of duplicating it."""
     artist = await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
