@@ -41,6 +41,7 @@ from .constants import (
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     CONF_TTS_LOUDNESS_BOOST,
@@ -49,10 +50,12 @@ from .constants import (
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
+    NO_WEATHER_DATA_INSTRUCTION,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
     TTS_SPEECHNORM_FILTER,
+    WEATHER_PLACEHOLDER_TOKENS,
 )
 from .helpers import coerce_int, soft_limit_text
 
@@ -295,6 +298,23 @@ class AIRadioRenderMixin:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
         deferred = await self._resolve_deferred_placeholders(prompt)
+        empty_weather_tokens = [
+            token
+            for token in WEATHER_PLACEHOLDER_TOKENS
+            if token in prompt and not deferred.get(token)
+        ]
+        if empty_weather_tokens:
+            if attributes.get(ATTR_WEATHER_REQUIRED):
+                error = "weather data unavailable for a weather-required clip"
+                self.logger.warning(
+                    "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
+                )
+                self._record_skip(queue_item, error)
+                raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
+            # weather is optional here, so the LLM is told to leave it out rather than
+            # being handed an empty token and inventing a forecast for it
+            for token in empty_weather_tokens:
+                deferred[token] = NO_WEATHER_DATA_INSTRUCTION
         resolved = prompt
         for key, value in deferred.items():
             resolved = resolved.replace(key, value)
@@ -332,8 +352,7 @@ class AIRadioRenderMixin:
         values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
         # weather is the only deferred placeholder that costs a network round-trip, so it is
         # only fetched when the prompt actually references it
-        weather_tokens = ("<weather_hourly>", "<weather_daily>")
-        if any(token in prompt for token in weather_tokens):
+        if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
             values.update(await self._prepare_weather_tokens())
         return values
 

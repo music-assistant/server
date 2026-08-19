@@ -41,11 +41,13 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
     MIN_LOUDNESS_REFERENCE_SECONDS,
+    NO_WEATHER_DATA_INSTRUCTION,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
@@ -494,6 +496,54 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
 
     assert session.skipped_sections == 1
     assert session.last_render_error
+
+
+class NoWeatherRenderer(DummyRenderer):
+    """Renderer whose weather fetch always fails, leaving deferred weather tokens empty."""
+
+    async def _prepare_weather_tokens(self) -> dict[str, str]:
+        self.weather_calls += 1
+        return {}
+
+
+async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() -> None:
+    """A weather-required clip with no forecast data is skipped instead of airing a guess."""
+    renderer = NoWeatherRenderer()
+    session = SessionState(session_id="sess", station_id="st")
+    renderer._sessions = {"sess": session}
+    item = _clip_item("sess_001", **{ATTR_WEATHER_REQUIRED: True})
+    _attach_queue(renderer, [item])
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert session.skipped_sections == 1
+    assert session.last_render_error
+    assert renderer.llm_prompts == []
+
+
+async def test_non_weather_required_clip_renders_with_no_data_instruction() -> None:
+    """A non-weather-required clip still airs, told to leave the forecast out rather than guess."""
+    renderer = NoWeatherRenderer()
+    item = _clip_item("sess_001", **{ATTR_WEATHER_REQUIRED: False})
+    _attach_queue(renderer, [item])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert NO_WEATHER_DATA_INSTRUCTION in renderer.llm_prompts[0]
+    assert "<weather_hourly>" not in renderer.llm_prompts[0]
+
+
+async def test_missing_weather_required_attribute_defaults_to_not_required() -> None:
+    """An older queue item with no weather_required attribute must not be treated as required."""
+    renderer = NoWeatherRenderer()
+    item = _clip_item("sess_001")
+    assert ATTR_WEATHER_REQUIRED not in item.extra_attributes
+    _attach_queue(renderer, [item])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert NO_WEATHER_DATA_INSTRUCTION in renderer.llm_prompts[0]
 
 
 async def test_probe_failure_is_not_fatal() -> None:

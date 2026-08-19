@@ -42,6 +42,7 @@ from .constants import (
     ATTR_PROMPT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TIMEZONE,
@@ -57,6 +58,7 @@ from .constants import (
     SHOW_START_TIMEOUT_SECONDS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
+    WEATHER_PLACEHOLDER_TOKENS,
     WEB_SEARCH_MODE_RANK,
 )
 from .helpers import (
@@ -675,6 +677,7 @@ class AIRadioRuntimeMixin:
             if str(section.get("type", "ai_text")).strip().lower() != "ai_text":
                 continue
             prompt = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
+            weather_required = any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS)
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             if max_chars > 0:
                 prompt += (
@@ -692,6 +695,7 @@ class AIRadioRuntimeMixin:
                     prompt=prompt,
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
+                    weather_required=weather_required,
                     history_events=[(section_id, slot_event(slot))],
                 )
             )
@@ -749,11 +753,16 @@ class AIRadioRuntimeMixin:
         total_max_chars = 0
         max_web_mode = "disabled"
         merged_names: list[str] = []
+        # a merged clip only depends on weather when none of its drafts can stand on their
+        # own without it, so e.g. a weather+news merge must still air the news half
+        all_weather_required = True
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
             section_name = self._resolve_section_name(section, section_id)
             merged_names.append(section_name)
             prompt_base = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
+            if not any(token in prompt_base for token in WEATHER_PLACEHOLDER_TOKENS):
+                all_weather_required = False
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             total_max_chars += max_chars
             prompt_lines.append(f"{index}. [{section_id}] {prompt_base}")
@@ -788,6 +797,7 @@ class AIRadioRuntimeMixin:
             prompt=meta_prompt,
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
+            weather_required=all_weather_required,
             history_events=history_events,
         )
 
@@ -864,6 +874,7 @@ class AIRadioRuntimeMixin:
                 ATTR_PROMPT: section.prompt,
                 ATTR_MAX_CHARS: section.max_chars,
                 ATTR_WEB_SEARCH_MODE: section.web_search_mode,
+                ATTR_WEATHER_REQUIRED: section.weather_required,
             }
         )
         return queue_item
@@ -941,10 +952,9 @@ class AIRadioRuntimeMixin:
 
     def _program_uses_weather_placeholders(self, program: dict[str, Any]) -> bool:
         """Return whether the program references weather placeholders."""
-        weather_tokens = ("<weather_hourly>", "<weather_daily>")
         for section in program.get("sections", []):
             prompt = str(section.get("prompt", ""))
-            if any(token in prompt for token in weather_tokens):
+            if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
                 return True
 
         for rule in program.get("section_order", []):
@@ -955,7 +965,7 @@ class AIRadioRuntimeMixin:
                     continue
                 guards = optional.get("guards", {})
                 required = guards.get("require_placeholders_present", [])
-                if any(str(token) in weather_tokens for token in required):
+                if any(str(token) in WEATHER_PLACEHOLDER_TOKENS for token in required):
                     return True
         return False
 
@@ -993,7 +1003,8 @@ class AIRadioRuntimeMixin:
         }
         country_code = country.upper() if len(country) == 2 and country.isalpha() else ""
         if country_code:
-            geocode_params["country"] = country_code
+            # the API's real filter is countryCode; a plain "country" param is silently ignored
+            geocode_params["countryCode"] = country_code
         geocode = await self._open_meteo_get_json(
             "https://geocoding-api.open-meteo.com/v1/search",
             geocode_params,
@@ -1003,7 +1014,7 @@ class AIRadioRuntimeMixin:
         if not isinstance(results, list) or not results:
             raise MusicAssistantError(f"No geocoding result for {city}, {country}")
 
-        selected = results[0]
+        selected: dict[str, Any] | None = None
         country_lc = country.lower()
         for candidate in results:
             if not isinstance(candidate, dict):
@@ -1016,6 +1027,15 @@ class AIRadioRuntimeMixin:
             if country_code and candidate_country_code == country_code:
                 selected = candidate
                 break
+
+        if selected is None:
+            if country:
+                # a same-named city in another country is worse than no forecast at all
+                raise MusicAssistantError(
+                    f"No geocoding result for {city} matched configured country {country}"
+                )
+            first = results[0]
+            selected = first if isinstance(first, dict) else None
 
         if not isinstance(selected, dict):
             raise MusicAssistantError(f"No valid geocoding result for {city}, {country}")

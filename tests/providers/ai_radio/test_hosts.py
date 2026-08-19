@@ -11,7 +11,13 @@ import pytest
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.ai_radio.constants import DEFAULT_LLM_INSTRUCTIONS
-from music_assistant.providers.ai_radio.hosts import AIRadioHostsMixin
+from music_assistant.providers.ai_radio.hosts import (
+    AIRadioHostsMixin,
+    GUARD_PLACEHOLDER_TOKENS,
+    _Plays,
+    _PresetSegment,
+    _optional_flow_item,
+)
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
@@ -583,3 +589,20 @@ def test_music_nerd_preset_compiles_its_recurring_segments_as_optional() -> None
             ],
         },
     ]
+
+
+def test_guard_detects_the_daily_weather_placeholder() -> None:
+    """A segment referencing <weather_daily> lists it among its required placeholders."""
+    segment = _PresetSegment(
+        segment_id="weather_daily_test",
+        name="Weather",
+        prompt="Tomorrow's outlook: <weather_daily>.",
+        web_search="disabled",
+        max_chars=200,
+        plays=_Plays("occasionally", 20),
+    )
+
+    flow_item = _optional_flow_item("weather_daily_test", segment)
+
+    assert "<weather_daily>" in GUARD_PLACEHOLDER_TOKENS
+    assert "<weather_daily>" in flow_item["OPTIONAL"]["guards"]["require_placeholders_present"]

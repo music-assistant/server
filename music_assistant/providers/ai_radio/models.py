@@ -34,6 +34,9 @@ class PlannedSection:
     prompt: str
     max_chars: int
     web_search_mode: str
+    # true when every part of this clip depends on weather data, so a failed fetch should
+    # skip the clip entirely rather than air it with the forecast talk left out
+    weather_required: bool = False
     # the guard history events this plan claimed, as (section_id, (song, minute)). a caller
     # that drops the plan can drop these too, so a clip that never aired carries no weight
     history_events: list[tuple[str, tuple[int, float]]] = field(default_factory=list)
