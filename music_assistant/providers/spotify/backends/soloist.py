@@ -22,7 +22,7 @@ import shutil
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NoReturn
 
 from aiohttp import ClientError
 from music_assistant_models.enums import ContentType
@@ -94,8 +94,11 @@ _STARTUP_TIMEOUT_S: Final[float] = 30.0
 _SEEK_CONFIRM_TIMEOUT_S: Final[float] = 10.0
 # position reported by a seek anchor may fall slightly before the requested target
 _SEEK_TOLERANCE_MS: Final[int] = 2000
-# infrastructure silence precedes the first decoded sample; trim at most this much
-_MAX_LEAD_TRIM_S: Final[float] = 2.0
+# Infrastructure silence precedes the first decoded sample; trim at most this
+# much. Kept small on purpose: the trim cannot tell capture pre-roll from a
+# genuinely digitally-silent intro, so the budget bounds what an intro can lose
+# while still covering the measured pre-roll (~140 ms).
+_MAX_LEAD_TRIM_S: Final[float] = 0.5
 # how far the last observed playback position may fall short of the item's
 # duration before the delivered PCM is rejected as incomplete
 _INCOMPLETE_TOLERANCE_MS: Final[int] = 10000
@@ -215,8 +218,12 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             # the reader must be attached before the sink starts producing, or
             # the sink's first writes go to a reader-less FIFO and are dropped
             reader, transport = await _open_fifo_reader(sink.fifo_path)
-            await sink.resume()
+            # hand sink control to the event handler first, then resume only
+            # when playback is actually running — resuming while soloist still
+            # buffers would capture the buffering silence
             state.demand_started = True
+            if state.last_status == "playing":
+                await sink.resume()
             async for chunk in self._read_pcm(state, reader, proc, seek_position):
                 yield chunk
             await self._evaluate_result(state, proc)
@@ -276,19 +283,25 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         pending = str(self.provider.get_setup_value(CONF_SOLOIST_SESSION_DIR) or "")
         if not pending:
             return
-        await asyncio.to_thread(self._move_paired_session, pending)
+        await asyncio.to_thread(self._copy_paired_session, pending)
         # config writes schedule tasks and must therefore run on the event loop
         self.provider._update_setup_data(CONF_SOLOIST_SESSION_DIR, None)
 
-    def _move_paired_session(self, pending: str) -> None:
-        """Move the paired session files into the canonical data dir (blocking)."""
+    def _copy_paired_session(self, pending: str) -> None:
+        """
+        Copy the paired session files into the canonical data dir (blocking).
+
+        A copy (not a move) so the flow-private source survives a failed
+        provider load: the setup flow can then retry its finish step and adopt
+        the same pairing again. The source is removed when the flow ends.
+        """
         source = Path(self.mass.storage_path) / pending
         canonical = self._data_dir
         if source.is_dir() and source != canonical:
             if canonical.exists():
                 shutil.rmtree(canonical, ignore_errors=True)
             canonical.parent.mkdir(parents=True, exist_ok=True)
-            source.replace(canonical)
+            shutil.copytree(source, canonical)
             canonical.chmod(0o700)
 
     def _has_stored_session(self) -> bool:
@@ -407,6 +420,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             state.observe_position(data.position.position_ms)
             return
         if isinstance(data, SoloistPlaybackState):
+            state.last_status = data.status
             if data.item is not None and data.item.uri:
                 playback = data.item.decorations.get("playback")
                 duration_ms = playback.get("duration_ms") if isinstance(playback, dict) else None
@@ -423,11 +437,15 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             # on rebuffering; suspending it keeps that silence out of the
             # delivered PCM (the paced reader simply waits)
             if state.demand_started and data.status in ("buffering", "playing"):
-                with suppress(Exception):
+                try:
                     if data.status == "buffering":
                         await sink.suspend()
                     else:
                         await sink.resume()
+                except Exception as err:
+                    # fail closed: a sink with unknown suspend state would leak
+                    # stall silence into (or withhold audio from) the PCM
+                    state.fail(f"capture sink control failed: {err}")
 
     def _observe_item(self, state: _TrackState, uri: str, duration_ms: int | None) -> None:
         """Record whether the reported current item is (still) the requested one."""
@@ -456,17 +474,21 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         if state.error or not state.item_seen.is_set():
             if proc.returncode == EXIT_CODE_BUILD_EXPIRED:
                 # an expired build exits with code 10 right at spawn
-                await self._replace_expired_build()
-                raise AudioError("Spotify Soloist build expired; installed a replacement")
+                await self._handle_expired_build()
             self._raise_startup_error(state, proc, "exited before playback started")
 
-    async def _replace_expired_build(self) -> None:
-        """Replace the expired soloist build so the next item can play."""
-        # bypass the verify cache — it would hand back the same expired binary
-        with suppress(SoloistError):
+    async def _handle_expired_build(self) -> NoReturn:
+        """Replace the expired soloist build and fail the item with an accurate message."""
+        try:
+            # bypass the verify cache — it would hand back the same expired binary
             self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(
                 self._consent, force=True
             )
+        except SoloistError as err:
+            raise AudioError(
+                "Spotify Soloist build expired and no replacement could be installed"
+            ) from err
+        raise AudioError("Spotify Soloist build expired; a replacement was installed, retry")
 
     def _raise_startup_error(self, state: _TrackState, proc: AsyncProcess, detail: str) -> None:
         """Raise the most specific startup failure for the requested item."""
@@ -592,8 +614,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         await proc.close()
         returncode = proc.returncode
         if returncode == EXIT_CODE_BUILD_EXPIRED:
-            await self._replace_expired_build()
-            raise AudioError("Spotify Soloist build expired; installed a replacement")
+            await self._handle_expired_build()
         if not forced_close and returncode != 0:
             raise AudioError(
                 f"Spotify Soloist exited with code {returncode} for {state.requested_uri}"
@@ -631,6 +652,7 @@ class _TrackState:
         self.seek_target_ms: int | None = None
         self.duration_ms: int | None = None
         self.last_position_ms: int | None = None
+        self.last_status: str | None = None
         self.playing_seen = False
         self.logged_out = False
         self.demand_started = False

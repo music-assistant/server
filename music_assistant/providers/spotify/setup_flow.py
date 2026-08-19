@@ -155,10 +155,10 @@ async def run_setup(session: SetupSession) -> None:
             if errors is None:
                 return
     finally:
-        if not session.finished:
-            # a soloist session paired by this flow holds reusable login
-            # material; never leave it behind when the flow did not complete
-            await _discard_pairing_dir(session)
+        # a soloist session paired by this flow holds reusable login material;
+        # adoption copies it into the instance's own storage during finish, so
+        # the flow-private copy is always discarded once the flow is over
+        await _discard_pairing_dir(session)
 
 
 async def _authorize_developer_key(

@@ -148,6 +148,21 @@ async def test_sink_is_not_gated_before_demand_started(tmp_path: Path) -> None:
     await backend._handle_event(state, sink, _playback_event("playing"))
     sink.suspend.assert_not_awaited()
     sink.resume.assert_not_awaited()
+    # the latest status is recorded either way, so the stream startup can
+    # decide whether resuming the sink is safe yet
+    assert state.last_status == "playing"
+
+
+async def test_failed_sink_control_fails_the_stream(tmp_path: Path) -> None:
+    """A failed suspend/resume fails the stream instead of leaking stall silence."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.demand_started = True
+    sink = AsyncMock()
+    sink.suspend.side_effect = RuntimeError("pactl failed")
+    await backend._handle_event(state, sink, _playback_event("buffering"))
+    assert state.error is not None
+    assert "capture sink control failed" in state.error
 
 
 async def test_expired_build_is_replaced_and_reported(
@@ -257,7 +272,9 @@ async def test_adopt_paired_session_moves_into_the_canonical_dir(
     await backend._adopt_paired_session()
     canonical = storage / "spotify" / "spotify--test" / SOLOIST_DATA_DIR_NAME
     assert (canonical / "session.bin").read_bytes() == b"session"
-    assert not pending.exists()
+    # a copy, not a move: the flow-private source must survive a failed
+    # provider load so the setup flow can retry (the flow removes it at its end)
+    assert (pending / "session.bin").exists()
     update_setup_data.assert_called_once_with(CONF_SOLOIST_SESSION_DIR, None)
 
 
