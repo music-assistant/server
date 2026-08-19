@@ -51,8 +51,7 @@ MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
 CONF_COLOR_TINT = "color_tint"
 DEFAULT_COLOR_TINT = True
-# color@v1 palette fields, derived from the model so a field added upstream
-# is forwarded without touching this list.
+# Derived from the model, so a field added upstream is forwarded automatically.
 _COLOR_FIELDS = tuple(
     field.name for field in dataclasses.fields(SessionUpdateColor) if field.name != "timestamp"
 )

@@ -7,8 +7,7 @@ frontend over a route on the MA webserver.
 Wire format to the browser:
 - binary [22][ts:8 BE int64 µs][1024 x uint8, 0x80 = zero] - waveform tail
 - binary [17][ts:8][flags:1, bit0 = downbeat] - beat schedule entries
-- text {"type":"color","payload":{field: [r,g,b]|null, ...}} - changed
-  color@v1 fields (aiosendspin.models.color.SessionUpdateColor)
+- text {"type":"color","payload":{field: [r,g,b]|null, ...}} - changed color@v1 fields
 - text {"type":"stream/start"|"stream/clear"|"stream/end", ...}
 - replies to {"type":"client/time"} with {"type":"server/time"} (server clock)
 """
@@ -114,8 +113,7 @@ class MilkdropRelay:
         self._sessions.add(ws)
 
         try:
-            # Only advertise color when the tint option is enabled, so viewers
-            # are not promised a message type that will never arrive.
+            # Don't advertise a message type that will never arrive.
             types = ["waveform", "beat"]
             if self.provider.config.get_value(CONF_COLOR_TINT):
                 types.append("color")
