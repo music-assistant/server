@@ -97,13 +97,22 @@ _ELF_IDENT: Final[dict[str, tuple[int, int]]] = {
 # the single-flight install lock is shared process-wide as well.
 _INSTALL_LOCK: Final = asyncio.Lock()
 
+# One successful ensure_fresh covers all provider instances starting together:
+# skip re-verifying the shared binary (a --version spawn plus a CDN update
+# check) when the last verification completed less than this long ago.
+_VERIFY_CACHE_SECONDS: Final[float] = 60.0
+_last_verified: float | None = None
+
 _VERSION_CMD_TIMEOUT: Final[float] = 10.0
 _DOWNLOAD_TIMEOUT: Final[float] = 300.0
 _HEAD_TIMEOUT: Final[float] = 30.0
 
 # --version output is free-form text (the docs give no schema); fish out a
-# version token and an ISO-like timestamp defensively.
+# version token and a build timestamp defensively. Observed 1.3.7 output:
+# "soloist 1.3.7.345 build 1787077868 (20260818) (gb24005ef46) (linux/aarch64)"
+# — the build timestamp is a unix epoch; an ISO-like date is kept as fallback.
 _VERSION_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"\bv?(\d+\.\d+(?:\.\d+)*)\b")
+_BUILD_EPOCH_RE: Final[re.Pattern[str]] = re.compile(r"\bbuild\s+(\d{9,11})\b")
 _TIMESTAMP_RE: Final[re.Pattern[str]] = re.compile(
     r"\b(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?)\b"
 )
@@ -117,25 +126,39 @@ _COMMAND_RESULT_TIMEOUT: Final[float] = 10.0
 class SoloistError(MusicAssistantError):
     """Base error for all soloist helper failures."""
 
+    # the soloist strings are authored once, in the spotify_connect provider's
+    # strings.json, regardless of which provider raised the error
+    translation_owner = "provider.spotify_connect"
+
 
 class ConsentRequiredError(SoloistError):
     """A download from Spotify's CDN is needed but the user did not consent (yet)."""
+
+    translation_key = "soloist_consent_required"
 
 
 class UnsupportedPlatformError(SoloistError):
     """No official soloist build exists for this platform/architecture."""
 
+    translation_key = "soloist_unsupported_platform"
+
 
 class DownloadFailedError(SoloistError):
     """The soloist release archive could not be downloaded."""
+
+    translation_key = "soloist_download_failed"
 
 
 class InvalidArchiveError(SoloistError):
     """The downloaded release archive or its binary failed validation."""
 
+    translation_key = "soloist_invalid_archive"
+
 
 class BuildExpiredError(SoloistError):
     """The soloist build passed its 90-day expiry and no replacement is available."""
+
+    translation_key = "soloist_build_expired"
 
 
 @dataclass
@@ -353,7 +376,7 @@ class SoloistBinaryManager:
             await self._install_with_consent(consent, arch)
             return self._binary_path
 
-    async def ensure_fresh(self, consent: bool) -> Path:
+    async def ensure_fresh(self, consent: bool, *, force: bool = False) -> Path:
         """
         Return a validated soloist binary, refreshing it when it is (close to) expiry.
 
@@ -365,6 +388,8 @@ class SoloistBinaryManager:
         :param consent: Whether the user consented to downloading from Spotify's
             CDN. Without consent a still-valid installed binary is returned
             as-is (no proactive refresh).
+        :param force: Re-verify even when another caller just did — required
+            when the daemon itself reported the build expired (exit code 10).
         :raises ConsentRequiredError: A download is needed but consent was not given.
         :raises UnsupportedPlatformError: No soloist build exists for this platform.
         :raises DownloadFailedError: No usable binary is installed and the download failed.
@@ -372,33 +397,21 @@ class SoloistBinaryManager:
         :raises BuildExpiredError: The installed build expired and no valid
             replacement could be obtained.
         """
+        global _last_verified  # noqa: PLW0603
         arch = _resolve_architecture()
         async with _INSTALL_LOCK:
-            returncode = await self._installed_returncode()
-            if returncode not in (0, EXIT_CODE_BUILD_EXPIRED):
-                # missing or broken install: plain (re)install
-                await self._install_with_consent(consent, arch)
+            # provider instances starting together share one shared install;
+            # skip re-verifying when another caller just did successfully
+            if (
+                not force
+                and _last_verified is not None
+                and time.monotonic() - _last_verified < _VERIFY_CACHE_SECONDS
+                and self._binary_path.is_file()
+            ):
                 return self._binary_path
-            expired = returncode == EXIT_CODE_BUILD_EXPIRED or self._installed_expired()
-            if not expired and (not consent or not self._due_for_update()):
-                return self._binary_path
-            if expired and not consent:
-                raise ConsentRequiredError(
-                    "Updating the expired soloist binary requires user consent"
-                )
-            if not expired and not await self._update_available(arch):
-                return self._binary_path
-            try:
-                await self._download_and_install(arch)
-            except SoloistError as err:
-                if expired:
-                    if isinstance(err, DownloadFailedError):
-                        raise BuildExpiredError(
-                            "soloist build expired and no replacement could be downloaded"
-                        ) from err
-                    raise
-                LOGGER.warning("soloist update failed, keeping the current binary: %s", err)
-            return self._binary_path
+            binary = await self._ensure_fresh_locked(consent, arch)
+            _last_verified = time.monotonic()
+            return binary
 
     def diagnostics(self) -> dict[str, Any]:
         """
@@ -421,6 +434,32 @@ class SoloistBinaryManager:
             "expires_at": (metadata.build_timestamp or metadata.installed_at)
             + _BUILD_EXPIRY_SECONDS,
         }
+
+    async def _ensure_fresh_locked(self, consent: bool, arch: str) -> Path:
+        """Verify/refresh the installed binary (see ensure_fresh; runs under _INSTALL_LOCK)."""
+        returncode = await self._installed_returncode()
+        if returncode not in (0, EXIT_CODE_BUILD_EXPIRED):
+            # missing or broken install: plain (re)install
+            await self._install_with_consent(consent, arch)
+            return self._binary_path
+        expired = returncode == EXIT_CODE_BUILD_EXPIRED or self._installed_expired()
+        if not expired and (not consent or not self._due_for_update()):
+            return self._binary_path
+        if expired and not consent:
+            raise ConsentRequiredError("Updating the expired soloist binary requires user consent")
+        if not expired and not await self._update_available(arch):
+            return self._binary_path
+        try:
+            await self._download_and_install(arch)
+        except SoloistError as err:
+            if expired:
+                if isinstance(err, DownloadFailedError):
+                    raise BuildExpiredError(
+                        "soloist build expired and no replacement could be downloaded"
+                    ) from err
+                raise
+            LOGGER.warning("soloist update failed, keeping the current binary: %s", err)
+        return self._binary_path
 
     async def _install_with_consent(self, consent: bool, arch: str) -> None:
         """Download and install the binary, requiring user consent first."""
@@ -503,6 +542,10 @@ class SoloistBinaryManager:
 
     async def _download_and_install(self, arch: str) -> None:
         """Download, validate and atomically install the binary for the given architecture."""
+        global _last_verified  # noqa: PLW0603
+        # a (re)install invalidates any recent-verification claim about the
+        # previous binary
+        _last_verified = None
         url = CDN_URL_TEMPLATE.format(arch=arch)
         try:
             await asyncio.to_thread(self._install_dir.mkdir, parents=True, exist_ok=True)
@@ -941,6 +984,15 @@ class SoloistClient:
         self._pending_results.clear()
 
 
+def verify_platform_supported() -> None:
+    """
+    Verify an official soloist build exists for this platform.
+
+    :raises UnsupportedPlatformError: soloist has no build for this OS/architecture.
+    """
+    _resolve_architecture()
+
+
 @dataclass
 class _BinaryMetadata(DataClassDictMixin):
     """Install metadata persisted next to the soloist binary."""
@@ -1053,6 +1105,11 @@ def _parse_version_token(version_output: str) -> str | None:
 
 def _parse_build_timestamp(version_output: str) -> float | None:
     """Best-effort extraction of the build timestamp from free-form ``--version`` output."""
+    if epoch_match := _BUILD_EPOCH_RE.search(version_output):
+        epoch = float(epoch_match.group(1))
+        # sanity range guard so an unrelated number is not taken for a timestamp
+        if 1_500_000_000 <= epoch <= 4_100_000_000:
+            return epoch
     for match in _TIMESTAMP_RE.finditer(version_output):
         candidate = match.group(1).replace("Z", "+00:00")
         try:
