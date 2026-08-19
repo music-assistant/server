@@ -68,9 +68,14 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
 
 # retail suffixes a provider (notably Apple Music) appends to an EP/single title
 _ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
-# the trailing retail suffix (any dash style) as it appears in a raw album title
+# the trailing retail suffix as it appears in a raw album title: set off by a dash
+# (any style, the space after it is optional) or wrapped in brackets. A bare trailing
+# word is deliberately not accepted, as it is just as likely part of the title itself
+# ("The SL2 EP", "Saturday Night Single")
 _ALBUM_SUFFIX_PATTERN = re.compile(
-    rf"\s+[-\u2013\u2014]\s+(?P<suffix>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$", re.IGNORECASE
+    rf"\s+[-\u2013\u2014]\s*(?P<suffix>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$"
+    rf"|\s*[(\[](?P<bracketed>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})[)\]]\s*$",
+    re.IGNORECASE,
 )
 # normalizing a title drops the separator, so the suffix survives as a plain trailing
 # fragment of the name key ("Foo - EP" -> "fooep"): appending one of these to a key
@@ -793,7 +798,9 @@ def _normalize_version_tokens(value: str) -> tuple[str, ...]:
 def _album_retail_suffix(name: str) -> str:
     """Return the retail suffix an album title spells out, or an empty string."""
     match = _ALBUM_SUFFIX_PATTERN.search(name)
-    return match.group("suffix").casefold() if match else ""
+    if not match:
+        return ""
+    return (match.group("suffix") or match.group("bracketed")).casefold()
 
 
 def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:

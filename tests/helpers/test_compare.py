@@ -446,13 +446,46 @@ def test_compare_album_evidence_name_hyphenation_vs_spacing_matches() -> None:
 
 
 def test_compare_album_evidence_name_retail_suffix_stripped() -> None:
-    """An Apple-style ' - EP'/' - Single' retail suffix does not block a match."""
-    for suffix in (" - EP", " - Single", " \u2013 EP"):
+    """A retail suffix, however a provider sets it off, does not block a match."""
+    for suffix in (
+        " - EP",
+        " -EP",
+        " \u2013 EP",
+        " (EP)",
+        " [EP]",
+        " - Single",
+        " (Single)",
+    ):
         album_a = _album(name=f"Album A{suffix}")
         album_b = _album(item_id="2", provider="test2", name="Album A")
         assert (
             compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
         ), suffix
+
+
+def test_compare_album_evidence_retail_suffix_spelled_differently_matches() -> None:
+    """Two providers setting off the same retail suffix differently name the same album."""
+    for spelling in (" -EP", " \u2013 EP", " (EP)", " [EP]"):
+        album_a = _album(name="Album A - EP")
+        album_b = _album(item_id="2", provider="test2", name=f"Album A{spelling}")
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), spelling
+
+
+def test_compare_album_evidence_bare_suffix_word_stays_part_of_the_title() -> None:
+    """A trailing suffix word that is not set off belongs to the title itself."""
+    for name in ("The SL2 EP", "Saturday Night Single"):
+        album_a = _album(name=name)
+        album_b = _album(item_id="2", provider="test2", name=name.rsplit(" ", 1)[0])
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+        ), name
+
+    # two providers spelling that same title identically still match
+    album_a = _album(name="The SL2 EP")
+    album_b = _album(item_id="2", provider="test2", name="The SL2 EP")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
 
 
 def test_compare_album_evidence_bordering_symbol_marks_a_different_release() -> None:
