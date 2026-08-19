@@ -644,6 +644,7 @@ class AIRadioRuntimeMixin:
             key = f"{slot.when}:{slot.at_index}"
             grouped[key].append((section_id, slot, placeholders))
 
+        weather_guarded_ids = self._weather_guarded_section_ids(program)
         planned: list[PlannedSection] = []
         order_index = 0
         processed_keys: set[str] = set()
@@ -665,6 +666,7 @@ class AIRadioRuntimeMixin:
                     section_by_id=section_by_id,
                     session_id=session_id,
                     history_events=[(item[0], slot_event(item[1])) for item in grouped_items],
+                    weather_guarded_ids=weather_guarded_ids,
                 )
                 planned.append(merged)
                 order_index += 1
@@ -677,7 +679,7 @@ class AIRadioRuntimeMixin:
             if str(section.get("type", "ai_text")).strip().lower() != "ai_text":
                 continue
             prompt = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
-            weather_required = any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS)
+            weather_required = section_id in weather_guarded_ids
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             if max_chars > 0:
                 prompt += (
@@ -745,6 +747,7 @@ class AIRadioRuntimeMixin:
         section_by_id: dict[str, dict[str, Any]],
         session_id: str,
         history_events: list[tuple[str, tuple[int, float]]],
+        weather_guarded_ids: set[str],
     ) -> PlannedSection:
         """Build a merged ai_meta section for one slot."""
         section_ids = [item[0] for item in grouped_items]
@@ -753,15 +756,13 @@ class AIRadioRuntimeMixin:
         total_max_chars = 0
         max_web_mode = "disabled"
         merged_names: list[str] = []
-        # a weather+news merge must still air the news half, so only all-weather merges require it
-        all_weather_required = True
+        # a weather+news merge must still air the news half, so only all-guarded merges require it
+        all_weather_required = all(section_id in weather_guarded_ids for section_id in section_ids)
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
             section_name = self._resolve_section_name(section, section_id)
             merged_names.append(section_name)
             prompt_base = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
-            if not any(token in prompt_base for token in WEATHER_PLACEHOLDER_TOKENS):
-                all_weather_required = False
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             total_max_chars += max_chars
             prompt_lines.append(f"{index}. [{section_id}] {prompt_base}")
@@ -967,6 +968,22 @@ class AIRadioRuntimeMixin:
                 if any(str(token) in WEATHER_PLACEHOLDER_TOKENS for token in required):
                     return True
         return False
+
+    def _weather_guarded_section_ids(self, program: dict[str, Any]) -> set[str]:
+        """Return OPTIONAL section ids whose guards require a weather placeholder."""
+        guarded: set[str] = set()
+        for rule in program.get("section_order", []):
+            flow = rule.get("flow", [])
+            for item in flow:
+                optional = item.get("OPTIONAL")
+                if not optional:
+                    continue
+                section_id = str(optional.get("section", "")).strip()
+                guards = optional.get("guards", {})
+                required = guards.get("require_placeholders_present", [])
+                if section_id and any(str(t) in WEATHER_PLACEHOLDER_TOKENS for t in required):
+                    guarded.add(section_id)
+        return guarded
 
     def _extract_location(self) -> tuple[str, str]:
         """Extract weather location (city/country) from the provider config."""

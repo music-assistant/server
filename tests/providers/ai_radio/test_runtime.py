@@ -919,7 +919,7 @@ def test_standalone_weather_section_is_weather_required() -> None:
 
 
 def _merge_weather_news_station() -> dict[str, Any]:
-    """Return a station whose between-songs slot merges a weather section with a news one."""
+    """Return a station whose between-songs slot merges a weather-guarded section with news."""
     return {
         "sections": [
             {
@@ -948,7 +948,16 @@ def _merge_weather_news_station() -> dict[str, Any]:
         "section_order": [
             {
                 "when": "between_songs",
-                "flow": [{"MUST": "Weather"}, {"MUST": "News"}],
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Weather",
+                            "chance": 1.0,
+                            "guards": {"require_placeholders_present": ["<weather_hourly>"]},
+                        }
+                    },
+                    {"OPTIONAL": {"section": "News", "chance": 1.0, "guards": {}}},
+                ],
             }
         ],
         "merge_section_id": "Smoother",
@@ -972,7 +981,86 @@ def test_merged_weather_and_news_clip_is_not_weather_required() -> None:
         minute_offset=0.0,
         history_state={},
         allowed_slot_when=["between_songs"],
-        runtime_tokens={},
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
+def test_mixed_purpose_section_without_a_weather_guard_is_not_weather_required() -> None:
+    """A prompt that just mentions the weather must not skip the whole clip on a failed fetch."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Intro",
+                "name": "Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Introduce <next_songinfo> and mention the weather <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Intro"}]}],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
+def test_alternative_weather_section_is_not_weather_required() -> None:
+    """An ALTERNATIVE section carries no guards, so it never blocks a clip on weather data."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Weather",
+                "name": "Weather",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Current weather: <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [{"ALTERNATIVE": {"choices": [{"section": "Weather", "weight": 100}]}}],
+            }
+        ],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
     )
 
     assert len(planned) == 1
