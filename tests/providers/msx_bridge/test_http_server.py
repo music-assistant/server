@@ -827,6 +827,27 @@ async def test_msx_audio_rejects_raw_stream_url(
         await client.close()
 
 
+async def test_api_play_rejects_non_string_body_values(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A malformed body must be a 400, not a 500 from the uri guard."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        for body in (
+            {"track_uri": 123, "player_id": "msx_test"},
+            {"track_uri": True, "player_id": "msx_test"},
+            {"track_uri": "library://track/1", "player_id": 42},
+        ):
+            resp = await client.post("/api/play", json=body)
+            assert resp.status == 400
+        mass_mock.player_queues.play_media.assert_not_called()
+    finally:
+        await client.close()
+
+
 async def test_api_play_rejects_raw_stream_url(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:

@@ -2591,6 +2591,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         track_uri = body.get("track_uri")
         player_id = body.get("player_id")
+        # the body is untyped JSON, so the type matters as much as the presence
+        if not isinstance(track_uri, str) or not isinstance(player_id, str):
+            return web.json_response({"error": "Invalid track_uri or player_id"}, status=400)
         if not track_uri or not player_id:
             return web.json_response({"error": "Missing track_uri or player_id"}, status=400)
         if not await _is_media_item_uri(track_uri):
