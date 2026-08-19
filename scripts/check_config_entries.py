@@ -149,7 +149,7 @@ def _iter_python_files() -> list[str]:
     """Return all shipped provider/controller Python files (skipping ``_*``/``test`` templates)."""
     result: list[str] = []
     for root, dirs, files in os.walk(PACKAGE_ROOT):
-        parts = root.split(os.sep)
+        parts = Path(root).parts
         if "providers" in parts:
             index = parts.index("providers")
             if len(parts) > index + 1 and (

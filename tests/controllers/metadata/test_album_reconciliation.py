@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import AlbumType, ProviderFeature
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
@@ -284,6 +284,85 @@ async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the
     second = await _add_album(mass, second_title, artist, provider_instance="qobuz_1")
 
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+async def test_reconcile_duplicate_albums_selects_spelled_out_retail_suffix_sibling(
+    mass: MusicAssistant,
+) -> None:
+    """A leftover 'X - EP' row is paired with its plain-title sibling, which now stores it."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Kygo",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    plain = await _add_album(mass, "Stargazing", artist, provider_instance="spotify_1")
+    suffixed = await _add_album(
+        mass,
+        "Stargazing - EP",
+        artist,
+        album_type=AlbumType.SINGLE,
+        provider_instance="apple_music_1",
+    )
+    assert plain.item_id != suffixed.item_id
+
+    assert await _reconciled_ids(mass) == {plain.item_id, suffixed.item_id}
+
+
+async def test_reconcile_duplicate_albums_selects_retail_suffix_on_a_symbol_only_title(
+    mass: MusicAssistant,
+) -> None:
+    """A retail suffix on a title that normalizes to nothing still reaches the matcher."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Nils Frahm",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    await _add_album(mass, "...", artist, provider_instance="spotify_1")
+    suffixed = await _add_album(
+        mass,
+        "... - EP",
+        artist,
+        album_type=AlbumType.SINGLE,
+        provider_instance="apple_music_1",
+    )
+
+    assert await _reconciled_ids(mass) == {suffixed.item_id}
+
+
+async def test_reconcile_duplicate_albums_ignores_a_title_merely_ending_in_a_suffix_word(
+    mass: MusicAssistant,
+) -> None:
+    """An ordinary title that just ends in the suffix letters is not a retail-suffix sibling."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Vangelis",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    await _add_album(mass, "Step", artist, provider_instance="spotify_1")
+    await _add_album(mass, "St", artist, provider_instance="qobuz_1")
+
+    assert await _reconciled_ids(mass) == set()
 
 
 async def test_reconcile_duplicate_albums_ignores_other_albums_by_the_same_artist(
@@ -591,6 +670,7 @@ async def test_reconcile_duplicate_albums_merges_conflicting_mapping_via_safe_pa
     provider.domain = "spotify"
     provider.instance_id = "spotify_1"
     provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.ALBUM}
     provider.is_streaming_provider = True
 
     search_result = Album(
@@ -612,7 +692,6 @@ async def test_reconcile_duplicate_albums_merges_conflicting_mapping_via_safe_pa
     with (
         patch.object(mass.music.albums, "search", AsyncMock(return_value=[search_result])),
         patch.object(mass.music.albums, "get_provider_item", AsyncMock(return_value=search_result)),
-        patch.object(mass.music, "library_supported", Mock(return_value=True)),
         patch.object(type(mass.music), "providers", new_callable=PropertyMock) as providers_mock,
     ):
         providers_mock.return_value = [provider]

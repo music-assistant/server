@@ -15,6 +15,7 @@ import os
 # if TYPE_CHECKING:
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from signal import SIGINT
 from types import TracebackType
 from typing import Self
@@ -68,7 +69,7 @@ class AsyncProcess:
         """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
-            name = args[0].split(os.sep)[-1]
+            name = Path(args[0]).name
         self.name = name
         self.logger = LOGGER.getChild(name)
         self._args = args

@@ -148,6 +148,7 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
         next_item,
         reason="prepare_next",
         capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+        allow_provider_match=False,
     )
     assert mass.create_task.call_args.kwargs == {
         "task_id": "prepare_next_audio_buffer_queue-1",

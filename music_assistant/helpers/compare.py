@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 from enum import Enum
 from functools import lru_cache
+from typing import Final
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.helpers import create_safe_string
@@ -64,8 +66,24 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "session",
 }
 
-# trailing " - EP" / " - Single" retail suffix (any dash style), as appended by Apple Music
-_ALBUM_SUFFIX_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+(?:EP|Single)\s*$", re.IGNORECASE)
+# retail suffixes a provider (notably Apple Music) appends to an EP/single title
+_ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
+# the trailing retail suffix as it appears in a raw album title: set off by a dash
+# (any style, and only the space in front of it counts, so "K-EP" keeps its name) or
+# wrapped in brackets, which need no space to be unambiguous. A bare trailing word is
+# deliberately not accepted, as it is just as likely part of the title itself
+# ("The SL2 EP", "Saturday Night Single")
+_ALBUM_SUFFIX_PATTERN = re.compile(
+    rf"\s+[-\u2013\u2014]\s*(?P<suffix>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})\s*$"
+    rf"|\s*[(\[](?P<bracketed>{'|'.join(_ALBUM_RETAIL_SUFFIXES)})[)\]]\s*$",
+    re.IGNORECASE,
+)
+# normalizing a title drops the separator, so the suffix survives as a plain trailing
+# fragment of the name key ("Foo - EP" -> "fooep"): appending one of these to a key
+# yields the key the same album is stored under when a provider spells out the suffix
+ALBUM_RETAIL_SUFFIX_KEYS: Final = tuple(
+    create_safe_string(suffix, True, True) for suffix in _ALBUM_RETAIL_SUFFIXES
+)
 
 # duration tolerances (seconds) for track comparisons: an external-id corroborated
 # match allows more duration drift than a bare title/version fallback
@@ -737,12 +755,37 @@ def compare_version(base_version: str, compare_version: str) -> bool:
 
 def compare_album_name(base_name: str, compare_name: str) -> bool:
     """Return True if two album titles are the same identity, ignoring formatting drift."""
-    # the retail suffix carries no identity information: Apple Music appends it to
-    # EP/single titles while already setting album_type
+    base_suffix = _album_retail_suffix(base_name)
+    compare_suffix = _album_retail_suffix(compare_name)
+    if base_suffix and compare_suffix and base_suffix != compare_suffix:
+        # both titles name their format and they disagree: an EP is not the single of
+        # the same name, however much of the title the two share
+        return False
     return compare_strings(
-        _ALBUM_SUFFIX_PATTERN.sub("", base_name),
-        _ALBUM_SUFFIX_PATTERN.sub("", compare_name),
+        strip_album_retail_suffix(base_name), strip_album_retail_suffix(compare_name)
     )
+
+
+def strip_album_retail_suffix(name: str) -> str:
+    """Return an album title without its retail suffix ("Foo - EP" -> "Foo")."""
+    # the suffix carries no identity information: Apple Music appends it to EP/single
+    # titles while already setting album_type
+    return _ALBUM_SUFFIX_PATTERN.sub("", name)
+
+
+def album_retail_suffix_sql_match(name_column: str, suffix_key: str) -> str:
+    """
+    Return a SQL condition that holds when a raw album title spells out a retail suffix.
+
+    :param name_column: SQL expression yielding the raw album title.
+    :param suffix_key: One of :data:`ALBUM_RETAIL_SUFFIX_KEYS`.
+    """
+    # any non-alphanumeric in front of the word sets it off, so an ordinary title that
+    # merely ends in those letters ("Step", "Singles") is left alone. Trailing brackets are
+    # trimmed first, which lets one condition cover every separator a provider may use.
+    # Deliberately looser than the pattern above, as this only selects the pairs the album
+    # comparison is then held to
+    return f"upper(rtrim({name_column}, ' )]')) GLOB '*[^A-Z0-9]{suffix_key.upper()}'"
 
 
 def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> bool | None:
@@ -766,6 +809,14 @@ def _normalize_version_tokens(value: str) -> tuple[str, ...]:
         _VERSION_WORD_ALIASES.get(token, token) for token in re.findall(r"[^\W_]+", stripped_value)
     )
     return tuple(sorted({token for token in tokens if token not in _VERSION_IGNORE_WORDS}))
+
+
+def _album_retail_suffix(name: str) -> str:
+    """Return the retail suffix an album title spells out, or an empty string."""
+    match = _ALBUM_SUFFIX_PATTERN.search(name)
+    if not match:
+        return ""
+    return (match.group("suffix") or match.group("bracketed")).casefold()
 
 
 def _is_dynamic_radio(item: Radio | ItemMapping) -> bool:
@@ -814,7 +865,26 @@ def _compare_safe_strings(base: str, compare: str) -> bool:
 @lru_cache(maxsize=1024)
 def _normalize_name(name: str) -> str:
     """Return a punctuation/diacritic/whitespace-insensitive name for identity checks."""
-    return create_safe_string(name, True, True)
+    core = create_safe_string(name, True, True)
+    if not core:
+        # a name made up entirely of symbols is decided on its complete raw spelling
+        return core
+    stripped = name.strip()
+    # a symbol bordering the title belongs to it ("MOTOMAMI +"), however it is spaced,
+    # while punctuation and symbols between words are drift two spellings may differ on
+    return f"{_edge_symbols(stripped)}{core}{_edge_symbols(stripped[::-1])[::-1]}"
+
+
+def _edge_symbols(name: str) -> str:
+    """Return the run of identity-bearing symbols at the start of a title."""
+    # only a mathematical symbol is a title's own wording (Ed Sheeran's operators);
+    # currency and modifier symbols stand in for letters ("bbno$", a backtick for an
+    # apostrophe), which normalization folds away like the punctuation they replace
+    for index, char in enumerate(name):
+        # a symbol anyascii spells out (∂ -> d) already sits in the normalized name
+        if unicodedata.category(char) != "Sm" or create_safe_string(char, True, True):
+            return name[:index].casefold()
+    return name.casefold()
 
 
 def _track_positions(tracks: Sequence[Track]) -> dict[tuple[int, int], Track]:

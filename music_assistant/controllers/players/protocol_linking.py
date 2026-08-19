@@ -178,7 +178,16 @@ class ProtocolLinkingMixin:
             )
             if result:
                 return
-            # Link was refused or parent has active domain - fall through to search
+            if not self.get_player(cached_parent_id):
+                # The persisted owner has not registered yet: wait for it instead of
+                # letting another parent's cached ids or identifiers claim this
+                # protocol. Delayed evaluation links it elsewhere if the owner
+                # never shows up.
+                self._schedule_protocol_evaluation(protocol_player)
+                return
+            # The parent is registered but did not take the link (it is a group, the
+            # cached id points at the protocol player itself, or the parent already
+            # has an active link from this domain) - fall through to generic matching.
 
         # Look for a matching native player
         if self._try_link_to_existing_player(protocol_player, protocol_domain):
@@ -197,7 +206,7 @@ class ProtocolLinkingMixin:
         :param protocol_player: The protocol player to link.
         :param cached_parent_id: The cached parent player ID.
         :param protocol_domain: The protocol domain (e.g., "airplay").
-        :return: True if handled (linked or waiting), False if should fall through.
+        :return: True if the link was restored, False if the caller must resolve the parent.
         """
         if parent_player := self.get_player(cached_parent_id):
             if parent_player.state.type == PlayerType.GROUP:
@@ -965,6 +974,8 @@ class ProtocolLinkingMixin:
             if protocol_player.underlying_player_id:
                 # Derived protocol players link via their underlying player instead
                 continue
+            if self._awaits_unregistered_owner(protocol_player, native_player.player_id):
+                continue
 
             protocol_domain = protocol_player.provider.domain
 
@@ -995,6 +1006,8 @@ class ProtocolLinkingMixin:
                 continue
             if protocol_player.underlying_player_id:
                 continue
+            if self._awaits_unregistered_owner(protocol_player, native_player.player_id):
+                continue
             protocol_domain = protocol_player.provider.domain
             if self._parent_has_active_protocol_from_domain(native_player, protocol_domain):
                 continue
@@ -1009,6 +1022,18 @@ class ProtocolLinkingMixin:
         # native player (derived players riding on the protocol players linked
         # above are handled by _add_protocol_link itself).
         self._link_derived_protocols_of(native_player)
+
+    def _awaits_unregistered_owner(self, protocol_player: Player, candidate_parent_id: str) -> bool:
+        """
+        Check if a protocol player is reserved for a persisted owner that is still starting up.
+
+        :param protocol_player: The unlinked protocol player.
+        :param candidate_parent_id: The player that wants to claim it.
+        """
+        owner_id = self._get_cached_protocol_parent_id(protocol_player.player_id)
+        if owner_id is None or owner_id == candidate_parent_id:
+            return False
+        return self.get_player(owner_id) is None
 
     def _check_replace_universal_player(self, native_player: Player) -> None:
         """Check if a universal player should be replaced by this native player."""
@@ -1043,10 +1068,20 @@ class ProtocolLinkingMixin:
             # A derived protocol rides on another output, so a base and everything riding
             # on it can only move together: refusing one of them holds back the group.
             for group in self._group_protocol_links(player):
+                # A device that kept its id across a type change is still listed as one of
+                # the outputs of the wrapper it replaces. It cannot be taken over from
+                # itself, so leaving it in would mark it refused and abort the takeover.
+                movable = [
+                    (linked, protocol_player)
+                    for linked, protocol_player in group
+                    if protocol_player.player_id != native_player.player_id
+                ]
+                if not movable:
+                    continue
                 domains = {
                     protocol_player.player_id: linked.protocol_domain
                     or protocol_player.provider.domain
-                    for linked, protocol_player in group
+                    for linked, protocol_player in movable
                 }
                 if any(
                     self._parent_has_active_protocol_from_domain(
@@ -1056,7 +1091,7 @@ class ProtocolLinkingMixin:
                 ):
                     refused_protocol_ids.update(domains.keys())
                     continue
-                for _, protocol_player in group:
+                for _, protocol_player in movable:
                     protocol_player.set_protocol_parent_id(None)
                     self._add_protocol_link(
                         native_player, protocol_player, domains[protocol_player.player_id]
@@ -1085,6 +1120,10 @@ class ProtocolLinkingMixin:
             self._remove_protocol_ids_from_parent(
                 player, migrated_protocol_ids | {native_player.player_id}
             )
+            # Drop the player's own side of that entry as well, so its config cannot
+            # claim to be a protocol child of the wrapper it is replacing.
+            if self._get_cached_protocol_parent_id(native_player.player_id) == player.player_id:
+                self._clear_protocol_parent_id(native_player.player_id)
             native_player.refresh_state()
 
             if refused_protocol_ids:
@@ -1400,6 +1439,9 @@ class ProtocolLinkingMixin:
 
         # Set protocol player's parent
         protocol_player.set_protocol_parent_id(native_player.player_id)
+        # Ownership is exclusive: a parent that still lists this protocol would show it
+        # twice and hold its domain slot against a genuine protocol of that domain.
+        self._evict_protocol_from_other_parents(protocol_player.player_id, native_player.player_id)
 
         # Persist linked protocol IDs to config for fast restart
         # (only for non-universal players, as universal players handle this themselves)
@@ -1447,6 +1489,33 @@ class ProtocolLinkingMixin:
             # removals because the merge approach will preserve the ID in the cache
         # Always clear the cached parent ID (for both native and universal parents)
         self._clear_protocol_parent_id(protocol_player_id)
+
+    def _evict_protocol_from_other_parents(self, protocol_player_id: str, parent_id: str) -> None:
+        """
+        Drop a protocol's output entry from every parent except the one that owns it.
+
+        A parent that still holds an active entry while another parent takes the protocol
+        is out of date, so its stored ownership is dropped as well. Parents that already gave
+        up the active entry keep theirs and can still offer the protocol for re-enabling.
+
+        :param protocol_player_id: Player id of the protocol player that got a new parent.
+        :param parent_id: Player id of the parent that now owns it.
+        """
+        for player in list(self._players.values()):
+            if player.player_id == parent_id:
+                continue
+            if not any(
+                link.output_protocol_id == protocol_player_id
+                for link in player.linked_output_protocols
+            ):
+                continue
+            self._remove_protocol_ids_from_parent(player, {protocol_player_id})
+            self.logger.debug(
+                "Removed stale output %s from %s: it is owned by %s",
+                protocol_player_id,
+                player.player_id,
+                parent_id,
+            )
 
     def _save_linked_protocol_ids(self, native_player: Player) -> None:
         """
@@ -1566,6 +1635,18 @@ class ProtocolLinkingMixin:
             if protocol_id in linked_protocol_ids:
                 continue  # Already linked
 
+            protocol_player = self.get_player(protocol_id)
+            # A protocol that another parent owns is not ours to claim: it would show up
+            # on both parents and occupy this parent's domain slot, keeping a genuine
+            # protocol of that domain out. The live owner leads; a protocol that is still
+            # waiting for its owner to register only has the persisted one. The cached id
+            # is kept, so the protocol is recovered once its owner releases it.
+            owner_id = protocol_player.protocol_parent_id if protocol_player else None
+            if owner_id is None:
+                owner_id = self._get_cached_protocol_parent_id(protocol_id)
+            if owner_id is not None and owner_id != native_player.player_id:
+                continue
+
             # Get protocol player config to determine the protocol domain
             protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
             if not protocol_config:
@@ -1589,7 +1670,6 @@ class ProtocolLinkingMixin:
 
             # Resolve the derived-transport edge from the live player when
             # registered, else from the persisted edge in config
-            protocol_player = self.get_player(protocol_id)
             derived_from = (
                 protocol_player.underlying_player_id
                 if protocol_player

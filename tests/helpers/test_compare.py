@@ -1,5 +1,7 @@
 """Tests for mediaitem compare helper functions."""
 
+import sqlite3
+
 import pytest
 from music_assistant_models import media_items
 from music_assistant_models.enums import ExternalID
@@ -446,13 +448,161 @@ def test_compare_album_evidence_name_hyphenation_vs_spacing_matches() -> None:
 
 
 def test_compare_album_evidence_name_retail_suffix_stripped() -> None:
-    """An Apple-style ' - EP'/' - Single' retail suffix does not block a match."""
-    for suffix in (" - EP", " - Single", " \u2013 EP"):
+    """A retail suffix, however a provider sets it off, does not block a match."""
+    for suffix in (
+        " - EP",
+        " -EP",
+        " \u2013 EP",
+        " (EP)",
+        " [EP]",
+        " - Single",
+        " (Single)",
+    ):
         album_a = _album(name=f"Album A{suffix}")
         album_b = _album(item_id="2", provider="test2", name="Album A")
         assert (
             compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
         ), suffix
+
+
+def test_compare_album_evidence_retail_suffix_spelled_differently_matches() -> None:
+    """Two providers setting off the same retail suffix differently name the same album."""
+    for spelling in (" -EP", " \u2013 EP", " (EP)", " [EP]"):
+        album_a = _album(name="Album A - EP")
+        album_b = _album(item_id="2", provider="test2", name=f"Album A{spelling}")
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), spelling
+
+
+def test_album_retail_suffix_sql_match_needs_the_suffix_set_off() -> None:
+    """The pre-filter condition sees every separator style, but not an ordinary title."""
+    connection = sqlite3.connect(":memory:")
+
+    def relates(name: str, suffix_key: str) -> bool:
+        condition = compare.album_retail_suffix_sql_match("?", suffix_key)
+        return bool(connection.execute(f"SELECT {condition}", (name,)).fetchone()[0])
+
+    for name in (
+        "Album A - EP",
+        "Album A -EP",
+        "Album A \u2013 EP",
+        "Album A \u2014EP",
+        "Album A (EP)",
+        "Album A [EP]",
+        "Album A - ep",
+        # a bare trailing word is related here on purpose and refused by the comparison
+        "The SL2 EP",
+    ):
+        assert relates(name, "ep"), name
+    for name in ("Step", "Sleep", "EP"):
+        assert not relates(name, "ep"), name
+
+    assert relates("Think of You - Single", "single")
+    assert relates("Brazen 'Weep' (CD1) (single)", "single")
+    for name in ("Singles", "Every Single Day"):
+        assert not relates(name, "single"), name
+
+
+def test_compare_album_evidence_bare_suffix_word_stays_part_of_the_title() -> None:
+    """A trailing suffix word that is not set off belongs to the title itself."""
+    for name in ("The SL2 EP", "Saturday Night Single"):
+        album_a = _album(name=name)
+        album_b = _album(item_id="2", provider="test2", name=name.rsplit(" ", 1)[0])
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+        ), name
+
+    # two providers spelling that same title identically still match
+    album_a = _album(name="The SL2 EP")
+    album_b = _album(item_id="2", provider="test2", name="The SL2 EP")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_bordering_symbol_marks_a_different_release() -> None:
+    """A bonus edition marked by a symbol at either end of the title is a release of its own."""
+    for name in ("MOTOMAMI +", "MOTOMAMI+", "+ MOTOMAMI", "+MOTOMAMI"):
+        album_a = _album(name="MOTOMAMI", year=2022)
+        album_b = _album(item_id="2", provider="test2", name=name, year=2022)
+
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+        ), name
+        assert compare.compare_album(album_a, album_b) is False, name
+
+    # how the symbol is spaced is still formatting the two providers may differ on
+    album_a = _album(name="MOTOMAMI +", year=2022)
+    album_b = _album(item_id="2", provider="test2", name="MOTOMAMI+", year=2022)
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_symbol_standing_in_for_letters_is_still_drift() -> None:
+    """A symbol used to spell a letter is folded away, so both spellings still match."""
+    for stylized, plain in (("bbno$", "bbno"), ("\u0060Round Midnight", "'Round Midnight")):
+        album_a = _album(name=stylized)
+        album_b = _album(item_id="2", provider="test2", name=plain)
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), stylized
+
+    # a mathematical symbol anyascii spells out is counted once, not twice
+    album_a = _album(name="Partial \u2202")
+    album_b = _album(item_id="2", provider="test2", name="Partial d")
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_symbol_only_titles_identify_their_own_album() -> None:
+    """A symbol-titled album (Ed Sheeran's '+', '=', '÷') matches only its own spelling."""
+    for name in ("+", "=", "÷", "\u00d7"):
+        assert (
+            compare.compare_album_evidence(
+                _album(name=name), _album(item_id="2", provider="test2", name=f"{name} ")
+            )
+            == compare.AlbumMatchEvidence.MATCH
+        ), name
+    # a symbol-only title is decided on its complete raw spelling, punctuation included
+    for base_name, compare_name in (
+        ("+", "="),
+        ("+", "÷"),
+        ("=", "÷"),
+        ("\u00d7", "÷"),
+        ("+", "+!"),
+    ):
+        assert (
+            compare.compare_album_evidence(
+                _album(name=base_name), _album(item_id="2", provider="test2", name=compare_name)
+            )
+            == compare.AlbumMatchEvidence.NO_MATCH
+        ), (base_name, compare_name)
+
+
+def test_compare_album_evidence_standalone_separator_between_words_is_drift() -> None:
+    """A symbol standing between words is a separator, so it never blocks a match."""
+    album_a = _album(name="HIStory - PAST, PRESENT AND FUTURE - BOOK I", year=1995)
+    album_b = _album(
+        item_id="2",
+        provider="test2",
+        name="HIStory: Past, Present and Future, Book I",
+        year=1995,
+    )
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+
+
+def test_compare_album_evidence_ep_and_single_of_the_same_name_stay_distinct() -> None:
+    """Two titles naming a different format are separate releases, whatever base they share."""
+    album_a = _album(name="Stargazing - EP", year=2023)
+    album_b = _album(item_id="2", provider="test2", name="Stargazing - Single", year=2023)
+
+    assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
+
+    # either spelling still matches the plain title, which names no format at all
+    for name in ("Stargazing - EP", "Stargazing - Single"):
+        album_a = _album(name=name, year=2023)
+        album_b = _album(item_id="2", provider="test2", name="Stargazing", year=2023)
+        assert (
+            compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.MATCH
+        ), name
 
 
 def test_compare_album_evidence_punctuation_only_title_whitespace_drift_matches() -> None:

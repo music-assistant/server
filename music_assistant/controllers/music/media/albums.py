@@ -31,11 +31,13 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.helpers.compare import (
+    ALBUM_RETAIL_SUFFIX_KEYS,
     AlbumMatchEvidence,
     album_tracks_have_positions,
     compare_album_evidence,
     compare_artists,
     loose_compare_strings,
+    strip_album_retail_suffix,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
@@ -471,7 +473,7 @@ class AlbumsController(MediaControllerBase[Album]):
             provider = self.mass.get_provider(provider_id)
             if not provider or not isinstance(provider, MusicProvider):
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.ALBUM):
+            if MediaType.ALBUM not in provider.supported_media_types:
                 continue
             # TODO: filter by artists in db for non-streaming providers
             search_query = streaming_search_query if provider.is_streaming_provider else album.name
@@ -552,7 +554,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.ALBUM):
+            if MediaType.ALBUM not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
@@ -666,6 +668,11 @@ class AlbumsController(MediaControllerBase[Album]):
             prov = cast("MusicProvider", prov)
             return await prov.get_album_tracks(item_id)
         return []
+
+    def _library_match_names(self, item: Album | ItemMapping) -> list[str]:
+        """Return the normalized album names, with and without a spelled-out retail suffix."""
+        base_name = create_safe_string(strip_album_retail_suffix(item.name), True, True)
+        return [base_name, *(f"{base_name}{suffix}" for suffix in ALBUM_RETAIL_SUFFIX_KEYS)]
 
     async def _confirm_library_candidate(self, db_item: Album, item: Album | ItemMapping) -> bool:
         """

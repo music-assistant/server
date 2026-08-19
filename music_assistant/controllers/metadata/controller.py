@@ -42,6 +42,10 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.compare import (
+    ALBUM_RETAIL_SUFFIX_KEYS,
+    album_retail_suffix_sql_match,
+)
 from music_assistant.helpers.images import cleanup_thumb_cache
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.throttle_retry import Throttler
@@ -618,13 +622,31 @@ def _duplicate_album_sibling_guard() -> str:
         f"({DB_TABLE_ALBUMS}.search_name != '' OR "
         f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
     )
+    # a provider that spells out the retail suffix stores the album under the plain name
+    # plus that suffix, so the pair is related from either side. The raw title decides
+    # which side spelled it out, so an ordinary title that merely ends in those letters
+    # ("Step") is left alone.
+    # Every alternative stays an equality on dup.search_name, keeping the name index in use.
+    own_name = f"{DB_TABLE_ALBUMS}.search_name"
+    matches_name = [f"dup.search_name = {own_name}"]
+    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
+        matches_name.append(
+            f"({album_retail_suffix_sql_match('dup.name', suffix)} "
+            f"AND dup.search_name = {own_name} || '{suffix}')"
+        )
+        matches_name.append(
+            f"({album_retail_suffix_sql_match(f'{DB_TABLE_ALBUMS}.name', suffix)} "
+            f"AND dup.search_name = "
+            f"substr({own_name}, 1, length({own_name}) - {len(suffix)}))"
+        )
+    same_name = " OR ".join(matches_name)
     # deliberately an identity-only pre-filter: which editions may be merged is decided by
     # the album comparison, which escalates an ambiguous edition to tracklists and
     # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright
     return (
         f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
         f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
-        f"AND dup.search_name = {DB_TABLE_ALBUMS}.search_name "
+        f"AND ({same_name}) "
         f"AND {same_title} AND {shares_artist})"
     )
 

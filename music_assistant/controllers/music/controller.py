@@ -55,16 +55,23 @@ from music_assistant_models.media_items.media_item import MediaCollection
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
+    CONF_TRACK_RECONCILIATION_CURSOR,
+    CONF_TRACK_RECONCILIATION_RESCAN_DUE,
     DATABASE_CLEANUP_TASK_ID,
     DB_SCHEMA_VERSION,
+    INITIAL_SYNC_DELAY,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     SEARCH_CACHE_EXPIRATION_COMBINED,
@@ -72,6 +79,9 @@ from music_assistant.controllers.music.constants import (
     SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
     SEARCH_PROVIDER_HARD_TIMEOUT,
     SEARCH_PROVIDER_SOFT_TIMEOUT,
+    TRACK_RECONCILIATION_BATCH_SIZE,
+    TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+    TRACK_RECONCILIATION_TASK_ID,
 )
 from music_assistant.controllers.music.database import (
     PLAYLOG_CONFLICT_KEYS,
@@ -91,10 +101,23 @@ from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.music.recommendations.controller import (
     RecommendationsController,
 )
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress,
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
-from music_assistant.helpers.compare import compare_strings, compare_version
+from music_assistant.helpers.compare import (
+    ALBUM_RETAIL_SUFFIX_KEYS,
+    album_retail_suffix_sql_match,
+    compare_album_name,
+    compare_strings,
+    compare_track,
+    compare_version,
+)
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
     from_utc_timestamp,
@@ -106,7 +129,7 @@ from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE, MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -129,11 +152,111 @@ class RecentPlayedTrack(NamedTuple):
     artists: list[ItemMapping]
 
 
+def _album_title_match(base: str, other: str) -> str:
+    """
+    Return a query part relating two album rows that may name the same album.
+
+    :param base: Alias of the album row the match is expressed against.
+    :param other: Alias of the album row related to it.
+    """
+    # a provider that spells out the retail suffix stores the album under the plain name
+    # plus that suffix, so the pair is related from either side. The raw title decides which
+    # side spelled it out, so an ordinary title that merely ends in those letters ("Step") is
+    # left alone. This relates more titles than the album comparison accepts, which is what
+    # confirms the pair afterwards.
+    matches = [f"{other}.search_name = {base}.search_name"]
+    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
+        matches.append(
+            f"({album_retail_suffix_sql_match(f'{other}.name', suffix)} "
+            f"AND {other}.search_name = {base}.search_name || '{suffix}')"
+        )
+        matches.append(
+            f"({album_retail_suffix_sql_match(f'{base}.name', suffix)} "
+            f"AND {other}.search_name = "
+            f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
+        )
+    return " OR ".join(matches)
+
+
+# Selects pairs of library track rows that are likely the same recording held twice,
+# once per music provider. Both rows must carry the same normalized title, share a track
+# artist and sit within a few seconds of each other. The album term is the decisive one:
+# both rows must appear at the same position on an album with the same title, so the merge
+# always rests on two providers agreeing on where the track belongs rather than on title and
+# duration alone. Titles are related loosely enough to see past a spelled-out retail suffix,
+# leaving the identity for the album comparison the pair is then held to. Titles that
+# normalize to nothing (symbol-only album names) are excluded there, as they would match
+# every other such album. Rows that already share a provider are skipped, as a provider
+# listing the same recording twice is a separate (and far riskier) case.
+_DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
+SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
+FROM {DB_TABLE_TRACKS} t1
+JOIN {DB_TABLE_TRACKS} t2
+  ON t2.search_name = t1.search_name
+ AND t2.item_id > t1.item_id
+ AND abs(t2.duration - t1.duration) <= :max_duration_delta
+WHERE (t1.item_id > :cursor_item_id_1
+       OR (t1.item_id = :cursor_item_id_1 AND t2.item_id > :cursor_item_id_2))
+  AND EXISTS (
+    SELECT 1 FROM {DB_TABLE_TRACK_ARTISTS} ta1
+    JOIN {DB_TABLE_TRACK_ARTISTS} ta2
+      ON ta2.artist_id = ta1.artist_id AND ta2.track_id = t2.item_id
+    WHERE ta1.track_id = t1.item_id)
+  AND EXISTS (
+    SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} at1
+    JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
+    JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = t2.item_id
+    JOIN {DB_TABLE_ALBUMS} al2
+      ON al2.item_id = at2.album_id AND ({_album_title_match("al1", "al2")})
+    WHERE at1.track_id = t1.item_id
+      -- a title that is nothing but the suffix strips to nothing, which would relate it to
+      -- every symbol-only album, so neither side may normalize away
+      AND al1.search_name != ''
+      AND al2.search_name != ''
+      -- an unreported position is stored as 0, so two of those agree on nothing;
+      -- a missing disc number does read as disc 1, the way compare_track takes it
+      -- for local files that carry no disc tag
+      AND at1.track_number > 0
+      AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
+      AND at1.track_number = at2.track_number)
+  AND NOT EXISTS (
+    SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm1
+    JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm2
+      ON pm2.provider_domain = pm1.provider_domain
+     AND pm2.media_type = 'track' AND pm2.item_id = t2.item_id
+    WHERE pm1.media_type = 'track' AND pm1.item_id = t1.item_id)
+ORDER BY t1.item_id, t2.item_id
+"""
+
+# Returns the title and edition of every album appearance that made the two tracks a
+# candidate, so the pair can be held to agreeing on both. The album terms mirror the candidate
+# query exactly: an appearance the pair does not share a position on says nothing about the
+# album of the one it does.
+_SHARED_ALBUM_EDITIONS_QUERY = f"""
+SELECT al1.name AS name_1, al2.name AS name_2,
+       al1.version AS version_1, al2.version AS version_2
+FROM {DB_TABLE_ALBUM_TRACKS} at1
+JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
+JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = :item_id_2
+JOIN {DB_TABLE_ALBUMS} al2
+  ON al2.item_id = at2.album_id AND ({_album_title_match("al1", "al2")})
+WHERE at1.track_id = :item_id_1
+  AND al1.search_name != ''
+  AND al2.search_name != ''
+  AND at1.track_number > 0
+  AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
+  AND at1.track_number = at2.track_number
+"""
+
+
 class MusicController(MusicDatabaseSetupMixin, CoreController):
     """Several helpers around the musicproviders."""
 
     domain: str = "music"
     config: CoreConfig
+    # where the duplicate track walk stands; restored from config on startup
+    _track_reconciliation_cursor: tuple[int, int] | None = (0, 0)
+    _track_reconciliation_rescan_due: bool = False
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -202,6 +325,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Handle logic after all core controllers have been set up."""
         self._register_database_cleanup_task()
         self._register_provider_mapping_correction_task()
+        self._restore_track_reconciliation_state()
+        self._register_track_reconciliation_task()
         self.genres.register_scheduled_scan_task()
 
     async def close(self) -> None:
@@ -2180,21 +2305,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Return whether the provider declares LIBRARY support for the given media type."""
         if provider.type != ProviderType.MUSIC:
             return False
-        if media_type == MediaType.ARTIST:
-            return provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS)
-        if media_type == MediaType.ALBUM:
-            return provider.supports_feature(ProviderFeature.LIBRARY_ALBUMS)
-        if media_type == MediaType.TRACK:
-            return provider.supports_feature(ProviderFeature.LIBRARY_TRACKS)
-        if media_type == MediaType.PLAYLIST:
-            return provider.supports_feature(ProviderFeature.LIBRARY_PLAYLISTS)
-        if media_type == MediaType.RADIO:
-            return provider.supports_feature(ProviderFeature.LIBRARY_RADIOS)
-        if media_type == MediaType.AUDIOBOOK:
-            return provider.supports_feature(ProviderFeature.LIBRARY_AUDIOBOOKS)
-        if media_type == MediaType.PODCAST:
-            return provider.supports_feature(ProviderFeature.LIBRARY_PODCASTS)
-        return False
+        if (feature := LIBRARY_FEATURE_BY_MEDIA_TYPE.get(media_type)) is None:
+            return False
+        return provider.supports_feature(feature)
 
     def library_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
         """Return whether the provider supports library add/remove for the given media type."""
@@ -2583,6 +2696,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if self.active_sync_tasks:
             return
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
+        # freshly synced content is the only source of new duplicates, so the reconciliation
+        # pass owes the library another walk; it starts once the current one reaches the end,
+        # since rewinding right now would keep re-examining the same prefix forever
+        self._set_track_reconciliation_state(self._track_reconciliation_cursor, True)
         self._queue_database_cleanup_task()
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
@@ -2619,6 +2736,195 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_retry=True,
         )
 
+    def _register_track_reconciliation_task(self) -> BackgroundTask:
+        """Register the recurring duplicate track reconciliation background task."""
+        # runs every hour rather than spread across the day: it is bounded to a small
+        # batch of candidates per run and never leaves the local database
+        return self.mass.tasks.register_scheduled_task(
+            task_id=TRACK_RECONCILIATION_TASK_ID,
+            name="Reconcile duplicate tracks",
+            handler=self._reconcile_duplicate_tracks,
+            schedule=TaskSchedule.hourly(),
+            translation_key="reconcile_duplicate_tracks",
+            translation_owner=self.translation_owner,
+            metadata={
+                "task_domain": "music_track_reconciliation",
+            },
+            allow_retry=True,
+        )
+
+    async def _reconcile_duplicate_tracks(self) -> None:
+        """Merge a small batch of library tracks that are held twice across providers."""
+        if self.active_sync_tasks:
+            # a sync is still filling in albums and mappings, so hold off rather than
+            # judge duplicates against a half-populated library
+            update_current_task_progress_text("Waiting for music sync completion")
+            return
+        self._start_next_pass_if_due()
+        if (cursor := self._track_reconciliation_cursor) is None:
+            # the library has been walked end to end and nothing has been synced since,
+            # so there is nothing to look for: skip the query rather than scan for a miss
+            update_current_task_progress_text("No duplicate tracks found")
+            return
+        update_current_task_progress_text("Searching for duplicate tracks")
+        rows = await self.database.get_rows_from_query(
+            _DUPLICATE_TRACK_CANDIDATES_QUERY,
+            {
+                "max_duration_delta": TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+                "cursor_item_id_1": cursor[0],
+                "cursor_item_id_2": cursor[1],
+            },
+            limit=TRACK_RECONCILIATION_BATCH_SIZE,
+        )
+        if not rows:
+            self._set_track_reconciliation_state(None, self._track_reconciliation_rescan_due)
+            update_current_task_progress_text("No duplicate tracks found")
+            return
+        merged = 0
+        retry_due = False
+        examined = cursor
+        try:
+            for index, row in enumerate(rows, 1):
+                update_current_task_progress_from_index(
+                    index, len(rows), f"Checking duplicate track {index}/{len(rows)}"
+                )
+                try:
+                    if await self._merge_duplicate_track_pair(
+                        int(row["item_id_1"]), int(row["item_id_2"])
+                    ):
+                        merged += 1
+                except MediaNotFoundError:
+                    # an earlier merge in this batch already absorbed one of the two rows
+                    pass
+                except MusicAssistantError as err:
+                    # a pair that failed on something transient deserves another look
+                    retry_due = True
+                    report_current_task_failure(str(err))
+                    self.logger.warning(
+                        "Error while reconciling duplicate tracks %s and %s: %s",
+                        row["item_id_1"],
+                        row["item_id_2"],
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                    )
+                examined = (int(row["item_id_1"]), int(row["item_id_2"]))
+        finally:
+            # resume after the pair examined last, so candidates this run refused can never
+            # starve the ones behind them, not even a further pair of the same track that the
+            # batch boundary cut off. Recording it even when the run is cut short keeps the
+            # pairs it did not reach for the next run rather than skipping past them.
+            walked_to_end = len(rows) < TRACK_RECONCILIATION_BATCH_SIZE and examined == (
+                int(rows[-1]["item_id_1"]),
+                int(rows[-1]["item_id_2"]),
+            )
+            # a merge moves album and artist relations onto the surviving row, which can make
+            # it a duplicate of a row this walk has already passed, so ask for another pass
+            self._set_track_reconciliation_state(
+                None if walked_to_end else examined,
+                self._track_reconciliation_rescan_due or merged > 0 or retry_due,
+            )
+        update_current_task_progress(100, f"Merged {merged} duplicate track(s)")
+
+    def _restore_track_reconciliation_state(self) -> None:
+        """Pick the duplicate track walk back up where the previous run left it."""
+        cursor = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_TRACK_RECONCILIATION_CURSOR, [0, 0]
+        )
+        self._track_reconciliation_cursor = (
+            (int(cursor[0]), int(cursor[1])) if len(cursor) == 2 else None
+        )
+        self._track_reconciliation_rescan_due = bool(
+            self.mass.config.get_raw_core_config_value(
+                self.domain, CONF_TRACK_RECONCILIATION_RESCAN_DUE, False
+            )
+        )
+
+    def _set_track_reconciliation_state(
+        self, cursor: tuple[int, int] | None, rescan_due: bool
+    ) -> None:
+        """
+        Record how far the duplicate track walk has come, surviving a restart.
+
+        :param cursor: The pair examined last, or None once the walk reached the end.
+        :param rescan_due: Whether a completed sync still owes the library another pass.
+        """
+        self._track_reconciliation_cursor = cursor
+        self._track_reconciliation_rescan_due = rescan_due
+        self.mass.config.set_raw_core_config_value(
+            self.domain, CONF_TRACK_RECONCILIATION_CURSOR, list(cursor) if cursor else []
+        )
+        self.mass.config.set_raw_core_config_value(
+            self.domain, CONF_TRACK_RECONCILIATION_RESCAN_DUE, rescan_due
+        )
+
+    def _start_next_pass_if_due(self) -> None:
+        """Rewind the duplicate track walk if a sync has added content and the walk is done."""
+        # rewinding a walk still in progress would keep re-examining the same first
+        # candidates, so a pending rescan waits for the current one to reach the end
+        if not self._track_reconciliation_rescan_due:
+            return
+        if self._track_reconciliation_cursor is not None:
+            return
+        self._set_track_reconciliation_state((0, 0), False)
+
+    async def _albums_agree_on_edition(self, item_id_1: int, item_id_2: int) -> bool:
+        """
+        Check that two tracks share an album whose edition matches as well as its title.
+
+        :param item_id_1: Library ID of the first track.
+        :param item_id_2: Library ID of the second track.
+        """
+        # the query relates titles loosely so a spelled-out retail suffix cannot hide a
+        # shared album, which leaves the identity for the album comparison to confirm. An
+        # edition is held apart from the title: without that an original and its remaster or
+        # deluxe edition look like the same album whenever neither track carries a version
+        rows = await self.database.get_rows_from_query(
+            _SHARED_ALBUM_EDITIONS_QUERY,
+            {"item_id_1": item_id_1, "item_id_2": item_id_2},
+        )
+        return any(
+            compare_album_name(row["name_1"], row["name_2"])
+            and compare_version(row["version_1"], row["version_2"])
+            for row in rows
+        )
+
+    async def _merge_duplicate_track_pair(self, item_id_1: int, item_id_2: int) -> bool:
+        """
+        Merge two candidate rows if they are confirmed to be the same track.
+
+        :param item_id_1: Library ID of the lower-numbered candidate row.
+        :param item_id_2: Library ID of the higher-numbered candidate row.
+        :return: True when the rows were merged, False when they were left alone.
+        """
+        track_1 = await self.tracks.get_library_item(item_id_1)
+        track_2 = await self.tracks.get_library_item(item_id_2)
+        # the checks below establish that both rows sit at the same position on an equally
+        # titled album, which is the album agreement strict mode looks for, so the remaining
+        # check is run in non-strict mode. Its version check is reinstated here
+        # explicitly: without it a remaster, remix or radio edit of equal length would be
+        # accepted as the original.
+        if not compare_version(track_1.version, track_2.version):
+            return False
+        if not await self._albums_agree_on_edition(item_id_1, item_id_2):
+            return False
+        if not compare_track(track_1, track_2, strict=False):
+            return False
+        # keep the row that carries the most provider mappings so the fewest mappings and
+        # relations have to move; equal counts keep the oldest row, which the query orders first
+        target, source = (
+            (track_1, track_2)
+            if len(track_1.provider_mappings) >= len(track_2.provider_mappings)
+            else (track_2, track_1)
+        )
+        self.logger.debug(
+            "Merging duplicate track %s (id %s) into id %s",
+            target.name,
+            source.item_id,
+            target.item_id,
+        )
+        await self.tracks.merge_library_items(target.item_id, source.item_id)
+        return True
+
     def _queue_database_cleanup_task(self) -> BackgroundTask:
         """Queue the post-sync database cleanup as a managed background task."""
         self._register_database_cleanup_task()
@@ -2641,7 +2947,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name=self._get_sync_task_name(provider, media_type),
             handler=self._create_provider_sync_handler(provider, media_type),
             schedule=provider.get_default_library_sync_schedule(media_type),
-            initial_delay=10 if is_initial else None,
+            initial_delay=INITIAL_SYNC_DELAY if is_initial else None,
             translation_key=self._get_sync_task_translation_key(media_type),
             translation_args=[provider.name],
             translation_owner=self.translation_owner,
