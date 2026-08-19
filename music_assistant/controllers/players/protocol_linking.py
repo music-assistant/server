@@ -1776,9 +1776,11 @@ class ProtocolLinkingMixin:
                 return
             parent = self.get_player(parent_id)
             if parent is not None and parent.provider.domain == "universal_player":
-                # drop only the active edge and leave the rest to the link evaluation,
-                # which replaces the wrapper with this player: a leftover edge makes it
-                # hand the player over to itself, which it refuses, abandoning the swap
+                # release only this player's own edge: dropping the rest belongs to the
+                # takeover that replaces the wrapper with it. The generic unlink below
+                # would instead unregister the wrapper it empties, and that removal lands
+                # before the takeover, stranding the user's settings on a player on its
+                # way out
                 self._remove_protocol_link(parent, existing.player_id)
                 return
             existing.set_protocol_parent_id(parent_id)
