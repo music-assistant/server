@@ -21,6 +21,7 @@ import json
 import random
 import string
 import time
+from collections import deque
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -53,7 +54,10 @@ class TidalPlayReportingManager:
         # desktop install's persistent client id).
         self._device_token = "".join(random.choices(string.ascii_letters + string.digits, k=16))
         # Format info captured at stream start, keyed by track id, consumed by on_played.
-        self._pending: dict[str, dict[str, Any]] = {}
+        # A deque per track (not a single dict) so back-to-back repeats of the same
+        # track each get their own slot instead of clobbering one another; on_played
+        # calls are expected to arrive in the same order the streams were registered.
+        self._pending: dict[str, deque[dict[str, Any]]] = {}
 
     def register_stream(
         self, item_id: str, quality: str, asset_presentation: str, audio_mode: str
@@ -67,13 +71,15 @@ class TidalPlayReportingManager:
         :param audio_mode: Tidal's audioMode string for this stream.
         """
         self._prune_stale_pending()
-        self._pending[item_id] = {
-            "tidal_session_id": str(uuid4()),
-            "tidal_quality": quality,
-            "tidal_asset_presentation": asset_presentation,
-            "tidal_audio_mode": audio_mode,
-            "registered_at": time.time(),
-        }
+        self._pending.setdefault(item_id, deque()).append(
+            {
+                "tidal_session_id": str(uuid4()),
+                "tidal_quality": quality,
+                "tidal_asset_presentation": asset_presentation,
+                "tidal_audio_mode": audio_mode,
+                "registered_at": time.time(),
+            }
+        )
 
     async def report_played(
         self, item_id: str, duration: int | None, position: int, fully_played: bool
@@ -86,7 +92,7 @@ class TidalPlayReportingManager:
         :param position: The player's last known position in seconds.
         :param fully_played: Whether MA considers the track to have been played to the end.
         """
-        session = self._pending.pop(item_id, None)
+        session = self._pop_pending(item_id)
         if not session or not fully_played or not duration:
             # Skipped/interrupted plays use a different, never-live-verified event
             # shape - silently drop rather than guess.
@@ -301,11 +307,24 @@ class TidalPlayReportingManager:
         form[f"{prefix}.MessageAttribute.2.Value.DataType"] = "String"
         form[f"{prefix}.MessageAttribute.2.Value.StringValue"] = json.dumps(headers_blob)
 
+    def _pop_pending(self, item_id: str) -> dict[str, Any] | None:
+        """Pop the oldest still-pending registration for a track id, if any."""
+        queue = self._pending.get(item_id)
+        if not queue:
+            return None
+        session = queue.popleft()
+        if not queue:
+            del self._pending[item_id]
+        return session
+
     def _prune_stale_pending(self) -> None:
         """Drop registered streams that never got a terminal on_played callback."""
         cutoff = time.time() - PENDING_TTL_SECONDS
-        stale = [
-            item_id for item_id, entry in self._pending.items() if entry["registered_at"] < cutoff
-        ]
-        for item_id in stale:
-            del self._pending[item_id]
+        for item_id in list(self._pending):
+            queue = self._pending[item_id]
+            # Entries are appended in registration order, so the oldest is always
+            # first - stop at the first non-stale one instead of scanning the rest.
+            while queue and queue[0]["registered_at"] < cutoff:
+                queue.popleft()
+            if not queue:
+                del self._pending[item_id]

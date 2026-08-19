@@ -37,7 +37,7 @@ def test_register_stream_records_pending_session(
         TRACK_ID, quality="LOSSLESS", asset_presentation="FULL", audio_mode="STEREO"
     )
 
-    session = reporting_manager._pending[TRACK_ID]
+    session = reporting_manager._pending[TRACK_ID][0]
     assert session["tidal_quality"] == "LOSSLESS"
     assert session["tidal_asset_presentation"] == "FULL"
     assert session["tidal_audio_mode"] == "STEREO"
@@ -102,13 +102,38 @@ async def test_report_played_consumes_the_pending_entry(
     assert provider_mock.mass.http_session.post.call_count == 1
 
 
+async def test_report_played_handles_back_to_back_repeats_of_the_same_track(
+    reporting_manager: TidalPlayReportingManager, provider_mock: Mock
+) -> None:
+    """Test two overlapping registrations of the same track each get their own session."""
+    _mock_post_response(provider_mock, status=200)
+    reporting_manager.register_stream(TRACK_ID, "LOSSLESS", "FULL", "STEREO")
+    first_session_id = reporting_manager._pending[TRACK_ID][0]["tidal_session_id"]
+    # second play prebuffers/registers before the first one's on_played arrives
+    reporting_manager.register_stream(TRACK_ID, "LOSSLESS", "FULL", "STEREO")
+    second_session_id = reporting_manager._pending[TRACK_ID][1]["tidal_session_id"]
+    assert first_session_id != second_session_id
+
+    await reporting_manager.report_played(TRACK_ID, duration=180, position=180, fully_played=True)
+    first_form = provider_mock.mass.http_session.post.call_args.kwargs["data"]
+    first_body = json.loads(first_form["SendMessageBatchRequestEntry.1.MessageBody"])
+    assert first_body["payload"]["streamingSessionId"] == first_session_id
+
+    await reporting_manager.report_played(TRACK_ID, duration=180, position=180, fully_played=True)
+    second_form = provider_mock.mass.http_session.post.call_args.kwargs["data"]
+    second_body = json.loads(second_form["SendMessageBatchRequestEntry.1.MessageBody"])
+    assert second_body["payload"]["streamingSessionId"] == second_session_id
+
+    assert TRACK_ID not in reporting_manager._pending
+
+
 async def test_report_played_sends_correlated_batch_on_completion(
     reporting_manager: TidalPlayReportingManager, provider_mock: Mock
 ) -> None:
     """Test a fully-played track sends one batch of 5 events sharing one session id."""
     _mock_post_response(provider_mock, status=200)
     reporting_manager.register_stream(TRACK_ID, "LOSSLESS", "FULL", "STEREO")
-    session_id = reporting_manager._pending[TRACK_ID]["tidal_session_id"]
+    session_id = reporting_manager._pending[TRACK_ID][0]["tidal_session_id"]
 
     await reporting_manager.report_played(TRACK_ID, duration=180, position=175, fully_played=True)
 
