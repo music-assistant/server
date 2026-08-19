@@ -256,6 +256,7 @@ def _media_fingerprint(fingerprint: dict[str, Any], prefix: str, media: PlayerMe
     fingerprint[f"{prefix}.duration"] = media.duration
     fingerprint[f"{prefix}.source_id"] = media.source_id
     fingerprint[f"{prefix}.queue_item_id"] = media.queue_item_id
+    fingerprint[f"{prefix}.queue_session_id"] = media.queue_session_id
     fingerprint[f"{prefix}.elapsed_time"] = media.elapsed_time
     fingerprint[f"{prefix}.elapsed_time_last_updated"] = media.elapsed_time_last_updated
     # the palette object is carried/reused as-is until the image changes,
