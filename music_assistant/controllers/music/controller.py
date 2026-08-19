@@ -1480,7 +1480,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
         seconds_played: int | None = None,
         is_playing: bool = False,
@@ -1493,7 +1493,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Mark item as played in playlog.
 
-        :param media_item: The media item to mark as played.
+        :param media_item: The media item to mark as played. A minimized ItemMapping,
+            as handed out by e.g. the recommendation rows, is resolved to its full item.
         :param fully_played: If True, mark the item as fully played.
         :param seconds_played: The number of seconds played.
         :param is_playing: If True, the item is currently playing.
@@ -1517,6 +1518,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_item.media_type != MediaType.PLAYLIST
         ):
             return
+        media_item = await self._resolve_playlog_item(media_item)
 
         params = {
             "item_id": media_item.item_id,
@@ -1648,16 +1650,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/mark_unplayed", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_unplayed(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         userid: str | None = None,
     ) -> None:
         """
         Mark item as unplayed in playlog.
 
-        :param media_item: The media item to mark as unplayed.
+        :param media_item: The media item to mark as unplayed. A minimized ItemMapping,
+            as handed out by e.g. the recommendation rows, is resolved to its full item.
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         """
+        media_item = await self._resolve_playlog_item(media_item)
         params = {
             "item_id": media_item.item_id,
             "provider": media_item.provider,
@@ -2968,6 +2972,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 elif mapping_or_instance_id.provider_instance in user.provider_filter:
                     return user
         return None
+
+    async def _resolve_playlog_item(self, media_item: MediaItemType | ItemMapping) -> MediaItemType:
+        """
+        Return the full media item for a (possibly minimized) media item reference.
+
+        :param media_item: The media item to resolve, either full or an ItemMapping.
+        """
+        # rows such as 'In progress' and 'Recently played' hand out ItemMapping objects,
+        # which carry no provider mappings, duration or parent item, so the playlog
+        # commands have to look up the real item before they can do their work
+        if not isinstance(media_item, ItemMapping):
+            return media_item
+        resolved = await self.get_item(
+            media_item.media_type,
+            media_item.item_id,
+            media_item.provider,
+            allow_update_metadata=False,
+        )
+        if isinstance(resolved, BrowseFolder):
+            msg = f"{media_item.uri} does not resolve to a media item"
+            raise MediaNotFoundError(msg)
+        return resolved
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
