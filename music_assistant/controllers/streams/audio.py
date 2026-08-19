@@ -2577,7 +2577,7 @@ class StreamsAudio:
                     try:
                         key, value = line.decode("latin-1", errors="ignore").split(":", 1)
                         headers[key.strip().lower()] = value.strip()
-                    except UnicodeDecodeError, ValueError:
+                    except (UnicodeDecodeError, ValueError):
                         continue
 
             # Get metadata interval
@@ -3394,6 +3394,19 @@ class StreamsAudio:
             return self.get_multi_file_stream(streamdetails, seek_position), 0, extra_input_args
         # regular single file/url stream
         assert isinstance(streamdetails.path, str)  # for type checking
+        # WORKAROUND: WAV/AIFF containers can embed a non-PCM bitstream
+        # As a result, DTS 5.1 packed into WAV plays back as white noise!
+        # (e.g. DTS, intended for SPDIF/HDMI passthrough) while declaring
+        # PCM in the fmt chunk. With ffmpeg's default probesize/
+        # analyzeduration, the demuxer's content-sniffing heuristic
+        # doesn't have enough data to detect the embedded bitstream and
+        # falls back to trusting the fmt chunk, causing the payload to
+        # be treated as raw PCM downstream. Only applies to WAV/AIFF -
+        # other containers don't have this ambiguity.
+        if streamdetails.path.lower().rsplit(".", 1)[-1] in ("wav", "aiff", "aif"):
+            # 256 KB probesize / 0.5s duration is enough to detect embedded
+            # DTS-in-WAV while keeping I/O overhead and latency virtually zero.
+            extra_input_args += ["-probesize", "256000", "-analyzeduration", "500000"]
         return streamdetails.path, seek_position, extra_input_args
 
     async def _iter_audio_source_pcm(
@@ -3633,7 +3646,7 @@ class StreamsAudio:
         except TimeoutError:
             self.logger.debug("Timeout during Shoutcast validation for %s", url)
             return False
-        except OSError, ConnectionError:
+        except (OSError, ConnectionError):
             self.logger.debug("Connection failed during Shoutcast validation for %s", url)
             return False
         except UnicodeDecodeError:
