@@ -57,6 +57,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistTrackChanged,
+    SoloistVolumeChanged,
 )
 
 from .base import SpotifyPlaybackBackend
@@ -402,7 +403,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         state.client_ready.set()
         while True:
             try:
-                await client.listen_events(partial(self._handle_event, state, sink))
+                await client.listen_events(partial(self._handle_event, state, sink, client))
             except asyncio.CancelledError:
                 raise
             except (TimeoutError, OSError, ClientError, SoloistError) as err:
@@ -419,7 +420,9 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
                 return
             await asyncio.sleep(1)
 
-    async def _handle_event(self, state: _TrackState, sink: PipeSink, event: SoloistEvent) -> None:
+    async def _handle_event(
+        self, state: _TrackState, sink: PipeSink, client: SoloistClient, event: SoloistEvent
+    ) -> None:
         """Track playback/auth state for the current item and gate the sink on buffering."""
         data = event.data
         if isinstance(data, SoloistAuthState):
@@ -432,6 +435,9 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             return
         if isinstance(data, SoloistPositionSync):
             state.observe_position(data.position.position_ms)
+            return
+        if isinstance(data, SoloistVolumeChanged):
+            await self._repin_volume(state, client, data.volume)
             return
         if isinstance(data, SoloistPlaybackState):
             state.last_status = data.status
@@ -447,21 +453,45 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
                     return
             if data.position is not None:
                 state.observe_position(data.position.position_ms)
+            if data.volume is not None:
+                await self._repin_volume(state, client, data.volume)
             if data.status == "playing":
                 state.playing_seen = True
             # the pipe sink writes silence into the FIFO while soloist stalls
-            # on rebuffering; suspending it keeps that silence out of the
-            # delivered PCM (the paced reader simply waits)
-            if state.demand_started and data.status in ("buffering", "playing"):
+            # on rebuffering (or someone paused it from the Spotify app);
+            # suspending it keeps that silence out of the delivered PCM
+            if state.demand_started and data.status in ("buffering", "playing", "paused"):
                 try:
-                    if data.status == "buffering":
-                        await sink.suspend()
-                    else:
+                    if data.status == "playing":
                         await sink.resume()
+                    else:
+                        await sink.suspend()
                 except Exception as err:
                     # fail closed: a sink with unknown suspend state would leak
                     # stall silence into (or withhold audio from) the PCM
                     state.fail(f"capture sink control failed: {err}")
+            if data.status == "paused" and state.demand_started and not state.ended.is_set():
+                # this stream has no user-facing pause: someone paused it from
+                # the Spotify app — resume playback (a persistently re-paused
+                # stream ends through the stall timeout)
+                with suppress(Exception):
+                    await client.resume()
+
+    async def _repin_volume(self, state: _TrackState, client: SoloistClient, volume: int) -> None:
+        """
+        Pin the daemon back at unity volume when the Spotify app changed it.
+
+        Off-unity volume would attenuate the captured PCM; the MA player owns
+        the audible volume.
+        """
+        if volume == 100 or state.pin_in_flight:
+            return
+        state.pin_in_flight = True
+        try:
+            with suppress(Exception):
+                await client.set_volume(100)
+        finally:
+            state.pin_in_flight = False
 
     async def _suspend_after_item_end(self, state: _TrackState, sink: PipeSink) -> bool:
         """
@@ -700,6 +730,7 @@ class _TrackState:
         self.playing_seen = False
         self.logged_out = False
         self.demand_started = False
+        self.pin_in_flight = False
         self.error: str | None = None
 
     def fail(self, message: str) -> None:

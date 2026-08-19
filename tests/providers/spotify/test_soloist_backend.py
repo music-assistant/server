@@ -42,6 +42,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistEvent,
     SoloistPlaybackState,
     SoloistTrackChanged,
+    SoloistVolumeChanged,
 )
 
 
@@ -161,10 +162,11 @@ async def test_auth_event_records_logout(tmp_path: Path) -> None:
     backend = _make_backend(tmp_path)
     state = _TrackState("spotify:track:abc")
     sink = AsyncMock()
+    client = AsyncMock()
     event = SoloistEvent(
         type="auth_state", data=SoloistAuthState(logged_in=False, is_active=False), raw={}
     )
-    await backend._handle_event(state, sink, event)
+    await backend._handle_event(state, sink, client, event)
     assert state.logged_out is True
 
 
@@ -174,10 +176,11 @@ async def test_buffering_gates_the_sink_once_demand_started(tmp_path: Path) -> N
     state = _TrackState("spotify:track:abc")
     state.demand_started = True
     sink = AsyncMock()
-    await backend._handle_event(state, sink, _playback_event("buffering"))
+    client = AsyncMock()
+    await backend._handle_event(state, sink, client, _playback_event("buffering"))
     sink.suspend.assert_awaited_once()
     sink.resume.assert_not_awaited()
-    await backend._handle_event(state, sink, _playback_event("playing"))
+    await backend._handle_event(state, sink, client, _playback_event("playing"))
     sink.resume.assert_awaited_once()
     assert state.playing_seen is True
 
@@ -187,8 +190,9 @@ async def test_sink_is_not_gated_before_demand_started(tmp_path: Path) -> None:
     backend = _make_backend(tmp_path)
     state = _TrackState("spotify:track:abc")
     sink = AsyncMock()
-    await backend._handle_event(state, sink, _playback_event("buffering"))
-    await backend._handle_event(state, sink, _playback_event("playing"))
+    client = AsyncMock()
+    await backend._handle_event(state, sink, client, _playback_event("buffering"))
+    await backend._handle_event(state, sink, client, _playback_event("playing"))
     sink.suspend.assert_not_awaited()
     sink.resume.assert_not_awaited()
     # the latest status is recorded either way, so the stream startup can
@@ -202,8 +206,9 @@ async def test_failed_sink_control_fails_the_stream(tmp_path: Path) -> None:
     state = _TrackState("spotify:track:abc")
     state.demand_started = True
     sink = AsyncMock()
+    client = AsyncMock()
     sink.suspend.side_effect = RuntimeError("pactl failed")
-    await backend._handle_event(state, sink, _playback_event("buffering"))
+    await backend._handle_event(state, sink, client, _playback_event("buffering"))
     assert state.error is not None
     assert "capture sink control failed" in state.error
 
@@ -300,6 +305,34 @@ async def test_short_item_cannot_pass_at_position_zero(tmp_path: Path) -> None:
         await backend._evaluate_result(state, _make_proc(0))
 
 
+async def test_app_volume_change_is_pinned_back_to_unity(tmp_path: Path) -> None:
+    """A Spotify-app volume change is pinned back to 100 so the PCM stays unity gain."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    sink = AsyncMock()
+    client = AsyncMock()
+    event = SoloistEvent(type="volume_changed", data=SoloistVolumeChanged(volume=55), raw={})
+    await backend._handle_event(state, sink, client, event)
+    client.set_volume.assert_awaited_once_with(100)
+    # a report of unity volume needs no correction
+    client.set_volume.reset_mock()
+    event = SoloistEvent(type="volume_changed", data=SoloistVolumeChanged(volume=100), raw={})
+    await backend._handle_event(state, sink, client, event)
+    client.set_volume.assert_not_awaited()
+
+
+async def test_app_pause_is_fought_with_a_resume(tmp_path: Path) -> None:
+    """A pause from the Spotify app suspends the sink and resumes playback."""
+    backend = _make_backend(tmp_path)
+    state = _TrackState("spotify:track:abc")
+    state.demand_started = True
+    sink = AsyncMock()
+    client = AsyncMock()
+    await backend._handle_event(state, sink, client, _playback_event("paused"))
+    sink.suspend.assert_awaited_once()
+    client.resume.assert_awaited_once()
+
+
 async def test_sink_is_suspended_when_the_item_ends(tmp_path: Path) -> None:
     """An autoplay item change suspends the sink so next-track audio cannot render."""
     backend = _make_backend(tmp_path)
@@ -307,12 +340,13 @@ async def test_sink_is_suspended_when_the_item_ends(tmp_path: Path) -> None:
     state.item_seen.set()
     state.demand_started = True
     sink = AsyncMock()
+    client = AsyncMock()
     event = SoloistEvent(
         type="track_changed",
         data=SoloistTrackChanged(item=SoloistEntity(uri="spotify:track:next", entity_type="track")),
         raw={},
     )
-    await backend._handle_event(state, sink, event)
+    await backend._handle_event(state, sink, client, event)
     assert state.ended.is_set()
     sink.suspend.assert_awaited_once()
 
