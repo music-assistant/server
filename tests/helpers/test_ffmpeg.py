@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
-from music_assistant_models.helpers import set_global_cache_values
+from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
@@ -24,6 +24,7 @@ from music_assistant.helpers.ffmpeg import (
     _build_filtergraph_args,
     _build_overlay_mixer,
     _get_overlay_volume_filter,
+    check_ffmpeg_version,
     get_ffmpeg_args,
     get_ffmpeg_hls_cmaf_input_args,
     get_ffmpeg_overlay_stream,
@@ -1191,3 +1192,88 @@ async def test_get_ffmpeg_hls_cmaf_input_args_leave_a_capable_build_alone() -> N
     await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: False})
 
     assert get_ffmpeg_hls_cmaf_input_args() == []
+
+
+# Trimmed `ffmpeg -h demuxer=hls` output for the three generations of the segment extension
+# check: absent before 7.1.1, present without CMAF in 7.1.1, present with CMAF from 7.1.2 on.
+_HLS_OPTIONS_WITHOUT_CHECK = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_HLS_OPTIONS_BLOCKING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
+  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_HLS_OPTIONS_ALLOWING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4")
+  -allowed_segment_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4,html")
+  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_FFMPEG_VERSION_OUTPUT = (
+    b"ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers\n"
+    b"configuration: --enable-libsoxr\n"
+)
+
+
+def _fake_ffmpeg_probes(
+    monkeypatch: pytest.MonkeyPatch, hls_options: bytes, hls_returncode: int = 0
+) -> None:
+    """Answer the version and HLS demuxer probes with canned output."""
+
+    async def _check_output(
+        *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
+    ) -> tuple[int, bytes]:
+        if "-h" in args:
+            return (hls_returncode, hls_options)
+        return (0, _FFMPEG_VERSION_OUTPUT)
+
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.check_output", _check_output)
+
+
+async def test_check_ffmpeg_version_finds_a_demuxer_that_blocks_cmaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that is picky about extensions but does not know CMAF blocks those segments."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is True
+
+
+async def test_check_ffmpeg_version_leaves_a_demuxer_that_whitelists_cmaf_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that lists CMAF among the extensions it accepts needs no relaxation."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_leaves_a_demuxer_without_the_check_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that never gained the extension check accepts CMAF as it is."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_WITHOUT_CHECK)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable probe must not relax a check that may well be doing its job."""
+    _fake_ffmpeg_probes(monkeypatch, b"Unknown demuxer 'hls'.\n", hls_returncode=1)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False

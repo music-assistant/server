@@ -694,6 +694,9 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
     opt-in per caller: pass these only for a playlist from a source known to serve CMAF, never
     for a playlist URL that a user supplied. Empty on builds that accept CMAF on their own.
     """
+    # allowed_extensions cannot narrow this: the demuxer matches a segment URL against that
+    # option *and* against a hardcoded per-format extension list that no option reaches, so
+    # switching the check off is the only lever over the second one.
     if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
         return ["-extension_picky", "0"]
     return []
@@ -729,7 +732,8 @@ async def check_ffmpeg_version() -> None:
     # .cmfa segments some services serve; 7.1.2 whitelisted them, see
     # https://trac.ffmpeg.org/ticket/11526. Probe the demuxer rather than compare versions,
     # which builds from git report as e.g. "N-121037-g1234567". A probe that fails reads as
-    # "not blocked", so the check stays in place. Drop this once FFmpeg 7.1.2 is the minimum.
+    # "not blocked", so the check stays in place. Drop this once every supported build
+    # whitelists CMAF.
     _, hls_options = await check_output("ffmpeg", "-hide_banner", "-h", "demuxer=hls")
     cmaf_blocked = b"extension_picky" in hls_options and b"cmfa" not in hls_options
     # use globals as in-memory cache
