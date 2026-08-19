@@ -1695,7 +1695,9 @@ class StreamsAudio:
 
             if not holdback_armed:
                 holdback_armed = self._crossfade_holdback_allowed(
-                    queue_item.streamdetails or streamdetails, crossfade_buffer_duration
+                    queue_item.streamdetails or streamdetails,
+                    crossfade_buffer_duration,
+                    playback_speed,
                 )
                 if not holdback_armed:
                     # holding audio back now would only shrink the player's lead
@@ -2222,7 +2224,9 @@ class StreamsAudio:
 
                 if not last_fadeout_part and not holdback_armed:
                     holdback_armed = self._crossfade_holdback_allowed(
-                        queue_track.streamdetails, crossfade_buffer_duration
+                        queue_track.streamdetails,
+                        crossfade_buffer_duration,
+                        track_playback_speed,
                     )
                     if not holdback_armed:
                         # holding audio back now would only shrink the player's lead
@@ -3319,15 +3323,16 @@ class StreamsAudio:
             )
 
     def _crossfade_holdback_allowed(
-        self, streamdetails: StreamDetails, tail_seconds: float
+        self, streamdetails: StreamDetails, tail_seconds: float, playback_speed: float = 1.0
     ) -> bool:
         """
         Return whether the outgoing tail may be held back for a crossfade.
 
         :param streamdetails: Stream details of the track being streamed.
-        :param tail_seconds: Length of the tail to hold back, in seconds.
+        :param tail_seconds: Length of the tail to hold back, in seconds of playback.
+        :param playback_speed: Playback-speed multiplier of the track.
         """
-        if tail_seconds <= 0 or streamdetails.is_realtime:
+        if tail_seconds <= 0 or playback_speed <= 0 or streamdetails.is_realtime:
             return False
         audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
         if audio_buffer is None or audio_buffer.has_error:
@@ -3339,7 +3344,7 @@ class StreamsAudio:
         # done the remaining audio is resident, so the tail comes for free. A buffer that
         # is too small to ever hold the tail is the exception - waiting for the source
         # there would only lose the fade.
-        return audio_buffer.eof or audio_buffer.max_size_seconds < tail_seconds
+        return audio_buffer.eof or audio_buffer.max_size_seconds / playback_speed < tail_seconds
 
     def _select_buffered_crossfade(
         self,

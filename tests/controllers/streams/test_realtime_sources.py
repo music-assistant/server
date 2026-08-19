@@ -348,6 +348,17 @@ def test_holdback_allowed_when_the_buffer_can_never_hold_the_tail() -> None:
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 10) is False
 
 
+def test_holdback_capacity_accounts_for_playback_speed() -> None:
+    """Buffer capacity is source time, so faster playback leaves fewer seconds to fade with."""
+    audio = StreamsAudio(MagicMock())
+    streamdetails = SimpleNamespace(
+        is_realtime=False, buffer=SimpleNamespace(eof=False, has_error=False, max_size_seconds=60)
+    )
+
+    assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 45) is False
+    assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 45, 2.0) is True
+
+
 # -- StreamsAudio._select_buffered_crossfade --
 
 
