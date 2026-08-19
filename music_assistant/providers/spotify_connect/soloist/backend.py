@@ -88,6 +88,17 @@ BINARY_REFRESH_INTERVAL_S: Final = 24 * 3600
 # of on the (side-effect-free) stream request.
 GENERATION_WATCH_INTERVAL_S: Final = 5
 
+# The classic desktop-client prefs keys (bare key=value lines) through which the
+# engine's audio behavior is controlled. The per-user prefs override the global
+# prefs per key, so both stores are (re)written before every daemon spawn.
+# NOTE: audio.crossfade.time_v2 is in MILLISECONDS; sub-second values silently
+# disable crossfade (verified empirically), so the key is only written when
+# crossfade is enabled (>= 1000 ms).
+_PREF_CROSSFADE: Final = "audio.crossfade_v2"
+_PREF_CROSSFADE_TIME: Final = "audio.crossfade.time_v2"
+_PREF_NORMALIZE: Final = "audio.normalize_v2"
+_MANAGED_PREFS: Final = (_PREF_CROSSFADE, _PREF_CROSSFADE_TIME, _PREF_NORMALIZE)
+
 # playback_state/playback_changed status values mapped to normalized events;
 # undocumented values degrade to OTHER.
 _STATUS_EVENTS: Final[dict[str, BackendEventType]] = {
@@ -108,7 +119,7 @@ class SoloistBackend(SpotifyConnectBackend):
     over the daemon's local WebSocket API.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         mass: MusicAssistant,
         *,
@@ -120,6 +131,8 @@ class SoloistBackend(SpotifyConnectBackend):
         api_key: str,
         consent: bool,
         volume_mode: str = VOLUME_MODE_PLAYER_ONLY,
+        crossfade_ms: int = 0,
+        loudness_normalization: bool = True,
     ) -> None:
         """
         Initialize the backend (cheap; the daemon is launched in ``start``).
@@ -139,6 +152,10 @@ class SoloistBackend(SpotifyConnectBackend):
         :param volume_mode: VOLUME_MODE_PLAYER_ONLY to let MA/the player own the
             volume exclusively, VOLUME_MODE_SYNC_SPOTIFY to mirror the Spotify
             app's volume onto the MA player.
+        :param crossfade_ms: Crossfade duration between tracks in milliseconds
+            (0 disables crossfade).
+        :param loudness_normalization: Whether Spotify's loudness normalization
+            should be applied to the audio.
         """
         self.mass = mass
         self.logger = logger
@@ -148,6 +165,8 @@ class SoloistBackend(SpotifyConnectBackend):
         self._api_key = api_key
         self._consent = consent
         self._volume_mode = volume_mode
+        self._crossfade_ms = crossfade_ms
+        self._loudness_normalization = loudness_normalization
         self._data_dir = Path(mass.storage_path) / "spotify_connect" / instance_id / "soloist-data"
         self._cache_dir = Path(mass.cache_path) / instance_id / "soloist-cache"
         # PA sink names end up in space-delimited module arguments and env vars
@@ -477,6 +496,45 @@ class SoloistBackend(SpotifyConnectBackend):
             "127.0.0.1:0",
         ]
 
+    def _write_audio_prefs(self) -> None:
+        """
+        Write the configured audio behavior into the engine's prefs stores (blocking).
+
+        Both the global prefs and every existing per-user prefs file are updated:
+        per-user values override the global ones per key, and a per-user file only
+        appears after an account paired — the global store covers that account's
+        first session until the next daemon (re)spawn refreshes both.
+
+        Best-effort: a write failure must never block playback, so errors are
+        logged and the daemon spawns with the engine's previous settings.
+        """
+        settings_dir = self._data_dir / "settings"
+        prefs_files = [settings_dir / "prefs"]
+        managed_lines = [
+            f"{_PREF_CROSSFADE}={'true' if self._crossfade_ms else 'false'}",
+            f"{_PREF_NORMALIZE}={'true' if self._loudness_normalization else 'false'}",
+        ]
+        if self._crossfade_ms:
+            managed_lines.insert(1, f"{_PREF_CROSSFADE_TIME}={self._crossfade_ms}")
+        try:
+            users_dir = settings_dir / "Users"
+            if users_dir.is_dir():
+                prefs_files += [
+                    user_dir / "prefs" for user_dir in users_dir.iterdir() if user_dir.is_dir()
+                ]
+            for prefs_file in prefs_files:
+                lines = []
+                if prefs_file.is_file():
+                    lines = [
+                        line
+                        for line in prefs_file.read_text(encoding="utf-8").splitlines()
+                        if line.split("=", 1)[0] not in _MANAGED_PREFS
+                    ]
+                prefs_file.parent.mkdir(parents=True, exist_ok=True)
+                prefs_file.write_text("\n".join([*lines, *managed_lines]) + "\n", encoding="utf-8")
+        except OSError as err:
+            self.logger.warning("Failed to write the Spotify audio settings: %s", err)
+
     async def _daemon_runner(self) -> None:
         """Run and supervise the soloist daemon, restarting (and refreshing) as needed."""
         # Loop forever; stop() cancels this task and the explicit stop-check below
@@ -490,6 +548,10 @@ class SoloistBackend(SpotifyConnectBackend):
                 sink = await self._ensure_fresh_sink()
                 server = self._server
                 assert server is not None  # guaranteed by _ensure_fresh_sink
+                # the engine only reads its prefs at startup (and scrubs foreign
+                # keys from the global store when it rewrites it), so refresh the
+                # audio settings on every spawn, while the daemon is down
+                await asyncio.to_thread(self._write_audio_prefs)
                 # the explicit process name keeps AsyncProcess logging free of
                 # the argv (which carries the API key)
                 self._proc = proc = AsyncProcess(

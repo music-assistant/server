@@ -26,7 +26,7 @@ from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFound
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
 from .go_librespot import GoLibrespotBackend
@@ -57,6 +57,10 @@ BACKEND_SOLOIST = "soloist"
 CONF_API_KEY = "soloist_api_key"
 CONF_SOLOIST_CONSENT = "soloist_download_consent"
 CONF_VOLUME_MODE = "volume_mode"
+
+# Playback behavior applied by the Spotify engine itself (both backends).
+CONF_LOUDNESS_NORMALIZATION = "loudness_normalization"
+MAX_CROSSFADE_DURATION = 12  # seconds, matching the Spotify apps' slider
 
 # The selectable volume modes (labels resolve from strings.json), shared
 # between the runtime option and the setup flow.
@@ -201,6 +205,19 @@ class SpotifyConnectProvider(PluginProvider):
                 required=False,
                 options=VOLUME_MODE_OPTIONS,
                 hidden=not is_soloist,
+            ),
+            ConfigEntry(
+                key=CONF_CROSSFADE_DURATION,
+                type=ConfigEntryType.INTEGER,
+                range=(0, MAX_CROSSFADE_DURATION),
+                default_value=0,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_LOUDNESS_NORMALIZATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
             ),
         )
 
@@ -468,6 +485,8 @@ class SpotifyConnectProvider(PluginProvider):
                 api_key=cast("str", self.get_setup_value(CONF_API_KEY) or ""),
                 consent=bool(self.get_setup_value(CONF_SOLOIST_CONSENT)),
                 volume_mode=self._resolve_volume_mode(),
+                crossfade_ms=self._resolve_crossfade_ms(),
+                loudness_normalization=self._resolve_loudness_normalization(),
             )
         return GoLibrespotBackend(
             self.mass,
@@ -476,6 +495,8 @@ class SpotifyConnectProvider(PluginProvider):
             name=self.name,
             logger=self.logger,
             event_callback=self._handle_backend_event,
+            crossfade_ms=self._resolve_crossfade_ms(),
+            loudness_normalization=self._resolve_loudness_normalization(),
         )
 
     def _resolve_volume_mode(self) -> str:
@@ -484,6 +505,16 @@ class SpotifyConnectProvider(PluginProvider):
             "str",
             self.config.get_value(CONF_VOLUME_MODE) or VOLUME_MODE_PLAYER_ONLY,
         )
+
+    def _resolve_crossfade_ms(self) -> int:
+        """Return the configured crossfade duration in milliseconds (0 = disabled)."""
+        value = cast("int | None", self.config.get_value(CONF_CROSSFADE_DURATION))
+        return min(int(value or 0), MAX_CROSSFADE_DURATION) * 1000
+
+    def _resolve_loudness_normalization(self) -> bool:
+        """Return whether Spotify's loudness normalization should be enabled."""
+        value = self.config.get_value(CONF_LOUDNESS_NORMALIZATION)
+        return True if value is None else bool(value)
 
     def _not_active_error(self) -> AudioError:
         """Build the localized 'not the active Spotify device' error, naming this device."""

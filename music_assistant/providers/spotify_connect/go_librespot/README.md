@@ -80,9 +80,10 @@ makes MA the active device again and the Spotify apps follow.
 
 ## Audio behavior settings
 
-go-librespot supports loudness normalization (`normalisation_*`, on by default targeting
--14 LUFS) and `crossfade_duration` (ms) in its config — not yet exposed as MA config
-entries (planned, together with the Soloist equivalents).
+The provider's loudness normalization and crossfade settings are written into the
+generated config: `normalisation_disabled` (normalization targets -14 LUFS when on) and
+`crossfade_duration` (milliseconds, 0 = off). The crossfade key needs go-librespot
+>= 0.8.0 — older daemons ignore unknown config keys, so it is written unconditionally.
 
 ## Known limitations
 
