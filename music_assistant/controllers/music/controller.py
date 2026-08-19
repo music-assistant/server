@@ -1518,11 +1518,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_item.media_type != MediaType.PLAYLIST
         ):
             return
+        # the playlog is keyed by the identity the caller referenced, which a minimized item
+        # keeps even when it resolves to the library equivalent of that same item
+        reference = media_item
         media_item = await self._resolve_playlog_item(media_item)
 
         params = {
-            "item_id": media_item.item_id,
-            "provider": media_item.provider,
+            "item_id": reference.item_id,
+            "provider": reference.provider,
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
@@ -1661,10 +1664,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         """
+        # the playlog is keyed by the identity the caller referenced, which a minimized item
+        # keeps even when it resolves to the library equivalent of that same item
+        reference = media_item
         media_item = await self._resolve_playlog_item(media_item)
         params = {
-            "item_id": media_item.item_id,
-            "provider": media_item.provider,
+            "item_id": reference.item_id,
+            "provider": reference.provider,
             "media_type": media_item.media_type.value,
         }
         # try to figure out the user that triggered the action

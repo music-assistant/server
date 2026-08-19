@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import (
+    Audiobook,
     ItemMapping,
     Podcast,
     PodcastEpisode,
@@ -29,6 +30,8 @@ PROVIDER_ID = "podcastfeed--LxfKPLhS"
 PODCAST_ID = "stay-forever"
 EPISODE_ID = "49d77a72faa63de8145f1d8d7b3a17d9"
 EPISODE_NAME = "Forbidden Forest (SF 130)"
+AUDIOBOOK_PROVIDER = "filesystem_local--AbCd"
+AUDIOBOOK_ID = "book-001"
 
 
 class _StubPodcastProvider(MusicProvider):
@@ -172,3 +175,93 @@ async def test_mark_unplayed_clears_a_minimized_podcast_episode(mass: MusicAssis
         await mass.music.mark_item_unplayed(_minimized_episode(), userid=user.user_id)
 
     assert not await _playlog_rows(mass)
+
+
+async def test_mark_played_keeps_the_provider_identity_of_a_library_backed_audiobook(
+    mass: MusicAssistant,
+) -> None:
+    """A row referencing the provider identity is written under that identity, not the library one."""
+    user = await mass.webserver.auth.create_user("markplayedaudiobook")
+    db_book = await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id=AUDIOBOOK_ID,
+            provider=AUDIOBOOK_PROVIDER,
+            name="A Library Audiobook",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIOBOOK_ID,
+                    provider_domain="filesystem_local",
+                    provider_instance=AUDIOBOOK_PROVIDER,
+                )
+            },
+        )
+    )
+
+    await mass.music.mark_item_played(
+        ItemMapping(
+            item_id=AUDIOBOOK_ID,
+            provider=AUDIOBOOK_PROVIDER,
+            name="A Library Audiobook",
+            media_type=MediaType.AUDIOBOOK,
+        ),
+        fully_played=True,
+        userid=user.user_id,
+    )
+
+    rows = await mass.music.database.get_rows(
+        DB_TABLE_PLAYLOG, {"media_type": MediaType.AUDIOBOOK.value}
+    )
+    assert [(row["item_id"], row["provider"]) for row in rows] == [
+        (AUDIOBOOK_ID, AUDIOBOOK_PROVIDER)
+    ]
+    assert db_book.item_id != AUDIOBOOK_ID
+
+
+async def test_mark_unplayed_clears_the_provider_identity_of_a_library_backed_audiobook(
+    mass: MusicAssistant,
+) -> None:
+    """An existing row under the provider identity is the one removed again."""
+    user = await mass.webserver.auth.create_user("markunplayedaudiobook")
+    await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id=AUDIOBOOK_ID,
+            provider=AUDIOBOOK_PROVIDER,
+            name="A Library Audiobook",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIOBOOK_ID,
+                    provider_domain="filesystem_local",
+                    provider_instance=AUDIOBOOK_PROVIDER,
+                )
+            },
+        )
+    )
+    # the row an 'In progress' tile is built from, written under the provider identity
+    await mass.music.database.insert(
+        DB_TABLE_PLAYLOG,
+        {
+            "item_id": AUDIOBOOK_ID,
+            "provider": AUDIOBOOK_PROVIDER,
+            "media_type": MediaType.AUDIOBOOK.value,
+            "name": "A Library Audiobook",
+            "userid": user.user_id,
+            "seconds_played": 120,
+            "fully_played": False,
+            "timestamp": 1000,
+        },
+        allow_replace=True,
+    )
+
+    await mass.music.mark_item_unplayed(
+        ItemMapping(
+            item_id=AUDIOBOOK_ID,
+            provider=AUDIOBOOK_PROVIDER,
+            name="A Library Audiobook",
+            media_type=MediaType.AUDIOBOOK,
+        ),
+        userid=user.user_id,
+    )
+
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_PLAYLOG, {"media_type": MediaType.AUDIOBOOK.value}
+    )
