@@ -382,8 +382,8 @@ def test_weather_strings_are_rounded_to_whole_numbers() -> None:
     assert daily == "2026-08-10: 11-21C, rain 31%"
 
 
-def test_weather_strings_hourly_window_starts_at_the_current_hour_off_grid() -> None:
-    """current.time sits on a 15-minute grid; the hourly window must still start now, not at midnight."""
+def test_weather_strings_hourly_window_starts_at_the_first_upcoming_hour() -> None:
+    """current.time sits on a 15-minute grid; the hourly window starts at the first non-past hour."""
     runtime = DummyRuntime()
     hours = [f"2026-08-19T{hour:02d}:00" for hour in range(24)]
     payload = {
@@ -407,7 +407,8 @@ def test_weather_strings_hourly_window_starts_at_the_current_hour_off_grid() -> 
 
     hourly, _daily = runtime._format_weather_strings(payload)
 
-    assert "2026-08-19 15:00" in hourly
+    assert hourly.split("; ")[1].startswith("2026-08-19 16:00")
+    assert "2026-08-19 15:00" not in hourly
     assert "2026-08-19 00:00" not in hourly
 
 

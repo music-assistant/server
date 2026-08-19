@@ -1118,13 +1118,13 @@ class AIRadioRuntimeMixin:
 
         current_time = str(current.get("time") or "").strip()
         start_index = 0
-        if current_time and current_time in hourly_times:
-            start_index = int(hourly_times.index(current_time))
-        elif len(current_time) >= 13:
-            # current.time sits on a 15-minute grid while hourly.time is on whole hours
-            hour_time = f"{current_time[:13]}:00"
-            if hour_time in hourly_times:
-                start_index = int(hourly_times.index(hour_time))
+        if current_time:
+            # current.time sits on a 15-minute grid while hourly.time is on whole hours;
+            # the summary starts at the first hour that is not in the past
+            for index, hour_time in enumerate(hourly_times):
+                if str(hour_time) >= current_time:
+                    start_index = index
+                    break
 
         max_items = min(len(hourly_times), len(hourly_temp), len(hourly_prec))
         hourly_parts: list[str] = []
