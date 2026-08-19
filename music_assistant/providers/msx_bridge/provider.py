@@ -607,6 +607,17 @@ class MSXBridgeProvider(PlayerProvider):
         """
         return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
 
+    def get_stream_token(self, player_id: str) -> str:
+        """
+        Return the token that authorizes the audio routes for the given player.
+
+        Empty for an unknown player, which yields a URL the audio routes reject.
+
+        :param player_id: The player to build an audio URL for.
+        """
+        player = self.mass.players.get_player(player_id, raise_unavailable=False)
+        return player.stream_token if isinstance(player, MSXPlayer) else ""
+
     def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
         """
         Get group ID if player is in a group (as leader or member).
