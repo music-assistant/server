@@ -155,7 +155,12 @@ class AudioBuffer:
 
     @property
     def eof(self) -> bool:
-        """Return whether the source delivered all of its audio."""
+        """
+        Return whether the source stopped producing.
+
+        A source that failed after delivering audio also ends here, so pair this with
+        ``has_error`` when a clean finish is what matters.
+        """
         return self._eof_received
 
     @property
