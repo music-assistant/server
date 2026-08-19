@@ -55,6 +55,7 @@ from .constants import (
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
+    FAHRENHEIT_COUNTRY_CODES,
     SHOW_START_TIMEOUT_SECONDS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
@@ -1011,6 +1012,7 @@ class AIRadioRuntimeMixin:
         timeout_seconds: int,
     ) -> tuple[str, str]:
         """Fetch weather strings from Open-Meteo for weather placeholders."""
+        use_fahrenheit = country.upper() in FAHRENHEIT_COUNTRY_CODES
         geocode_params: dict[str, str | int] = {
             "name": city,
             "count": 10,
@@ -1070,23 +1072,25 @@ class AIRadioRuntimeMixin:
                 f"Geocoding result for {city}, {country} has invalid coordinates"
             ) from err
         timezone_name = str(selected.get("timezone") or "UTC")
+        forecast_params: dict[str, str | int | float] = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,apparent_temperature,weather_code",
+            "hourly": "temperature_2m,precipitation_probability,weather_code",
+            "daily": (
+                "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"
+            ),
+            "forecast_days": 3,
+            "timezone": timezone_name,
+        }
+        if use_fahrenheit:
+            forecast_params["temperature_unit"] = "fahrenheit"
         forecast = await self._open_meteo_get_json(
             "https://api.open-meteo.com/v1/forecast",
-            {
-                "latitude": lat,
-                "longitude": lon,
-                "current": "temperature_2m,apparent_temperature,weather_code",
-                "hourly": "temperature_2m,precipitation_probability,weather_code",
-                "daily": (
-                    "temperature_2m_max,temperature_2m_min,"
-                    "precipitation_probability_max,weather_code"
-                ),
-                "forecast_days": 3,
-                "timezone": timezone_name,
-            },
+            forecast_params,
             timeout_seconds,
         )
-        return self._format_weather_strings(forecast)
+        return self._format_weather_strings(forecast, unit_suffix="F" if use_fahrenheit else "C")
 
     async def _open_meteo_get_json(
         self,
@@ -1111,7 +1115,9 @@ class AIRadioRuntimeMixin:
             raise MusicAssistantError("Open-Meteo response is not a JSON object")
         return data
 
-    def _format_weather_strings(self, payload: dict[str, Any]) -> tuple[str, str]:
+    def _format_weather_strings(
+        self, payload: dict[str, Any], unit_suffix: str = "C"
+    ) -> tuple[str, str]:
         """Format Open-Meteo payload into weather placeholder strings."""
         hourly = payload.get("hourly", {})
         daily = payload.get("daily", {})
@@ -1148,14 +1154,14 @@ class AIRadioRuntimeMixin:
         for index in range(start_index, min(start_index + 6, max_items)):
             ts = str(hourly_times[index]).replace("T", " ")
             hourly_parts.append(
-                f"{ts}: {self._format_number(hourly_temp[index])}C, "
+                f"{ts}: {self._format_number(hourly_temp[index])}{unit_suffix}, "
                 f"rain {self._format_number(hourly_prec[index])}%"
             )
         current_text = ""
         if current:
             current_text = (
-                f"now {self._format_number(current.get('temperature_2m'))}C "
-                f"(feels {self._format_number(current.get('apparent_temperature'))}C)"
+                f"now {self._format_number(current.get('temperature_2m'))}{unit_suffix} "
+                f"(feels {self._format_number(current.get('apparent_temperature'))}{unit_suffix})"
             )
         weather_hourly = "; ".join(([current_text] if current_text else []) + hourly_parts)
 
@@ -1175,8 +1181,8 @@ class AIRadioRuntimeMixin:
         for index in range(min(len(daily_times), len(max_t), len(min_t), len(max_prec))):
             daily_parts.append(
                 f"{daily_times[index]}: "
-                f"{self._format_number(min_t[index])}-{self._format_number(max_t[index])}C, "
-                f"rain {self._format_number(max_prec[index])}%"
+                f"{self._format_number(min_t[index])}-{self._format_number(max_t[index])}"
+                f"{unit_suffix}, rain {self._format_number(max_prec[index])}%"
             )
         weather_daily = "; ".join(daily_parts)
         return weather_hourly, weather_daily
