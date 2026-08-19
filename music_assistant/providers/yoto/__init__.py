@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     InvalidProviderID,
     LoginFailed,
     MediaNotFoundError,
+    ProviderPermissionDenied,
     RateLimited,
     ResourceTemporarilyUnavailable,
 )
@@ -218,7 +219,7 @@ class YotoProvider(MusicProvider):
             if err.status_code is not None:
                 match err.status_code:
                     case 403:
-                        raise ResourceTemporarilyUnavailable(
+                        raise ProviderPermissionDenied(
                             "Error returned from Yoto API: Forbidden (403)"
                         ) from err
                     case 404:
