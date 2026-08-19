@@ -41,7 +41,7 @@
     },
     "loudness_normalization": {
       "label": "Loudness normalization",
-      "description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio exactly as mastered."
+      "description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio without Spotify's loudness adjustment."
     }
   },
   "setup_flow": {

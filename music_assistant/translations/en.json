@@ -2321,7 +2321,7 @@
   "provider.spotify_connect.config_entries.backend.options.soloist": "Spotify Soloist (official, recommended)",
   "provider.spotify_connect.config_entries.crossfade_duration.description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, so exactly which track transitions fade is up to Spotify (album tracks that run into each other typically keep playing gapless).",
   "provider.spotify_connect.config_entries.crossfade_duration.label": "Crossfade duration (seconds)",
-  "provider.spotify_connect.config_entries.loudness_normalization.description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio exactly as mastered.",
+  "provider.spotify_connect.config_entries.loudness_normalization.description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio without Spotify's loudness adjustment.",
   "provider.spotify_connect.config_entries.loudness_normalization.label": "Loudness normalization",
   "provider.spotify_connect.config_entries.mass_player_id.description": "The Music Assistant player connected to this Spotify Connect plugin. When you start playback in the Spotify app to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",
   "provider.spotify_connect.config_entries.publish_name.description": "How should this Spotify Connect device be named in the Spotify app?",
