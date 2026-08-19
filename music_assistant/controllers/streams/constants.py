@@ -43,6 +43,15 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
+# Rate at which a single queue item is handed to a player, once it has had its opening burst.
+# Music Assistant serves audio for listening, not for collecting: a few times faster than
+# playback keeps every player buffered well ahead, while pulling a whole catalogue takes about
+# as long as listening to it would. Only streaming providers are paced - a user's own files,
+# and self-hosted sources such as Plex or Jellyfin, are served as fast as they can be read.
+# Do not remove this to "fix" slow buffering; raise the burst instead. See the usage policy.
+SINGLE_ITEM_READRATE: Final[str] = "4"
+SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "30"
+
 # Time to keep the flow stream response open after the last audio byte of a queue.
 # Players buffer a few seconds ahead of what they actually render; some of them drop
 # that buffer the moment the connection is closed, cutting off the end of the queue.
