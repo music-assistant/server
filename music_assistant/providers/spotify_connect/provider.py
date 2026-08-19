@@ -233,9 +233,9 @@ class SpotifyConnectProvider(PluginProvider):
         streamdetails without claiming the source and blocking a cross-queue
         handoff.
 
-        Raises AudioError when MA is not the active Spotify Connect device, since
-        playback can only be acquired while a Spotify session is connected to us
-        (entry must come from the Spotify app — see can_initiate below).
+        Raises AudioError when MA is not the active Spotify Connect device and
+        no previous playback context is known to resume — the user then has to
+        start playback from the Spotify app once.
         """
         if item_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
@@ -519,9 +519,10 @@ class SpotifyConnectProvider(PluginProvider):
             can_next_previous=True,
             exclusive=True,
             allow_external_trigger=True,
-            # Cold-start from MA is unreliable (Spotify needs an existing
-            # playback context), so only allow external entry via the Spotify app.
-            can_initiate=False,
+            # Browsable/startable from MA: playback resumes the last known
+            # Spotify context (claiming active device status). Without any
+            # prior context a localized error points the user to the app.
+            can_initiate=True,
         )
 
     def _get_target_player_id(self) -> str | None:
@@ -736,8 +737,13 @@ class SpotifyConnectProvider(PluginProvider):
             # Externally triggered playback: kick a play_media on the target MA
             # player so the audio reaches a speaker. Deferred so a rapid
             # playing/active burst from a reconnecting session can cancel it.
-            if not self._in_use_by_queue and (
-                self._pending_play_media_task is None or self._pending_play_media_task.done()
+            # Only while the session is active: a daemon playing without being
+            # the active Connect device (e.g. right after a deactivate) must
+            # not grab MA players in a loop.
+            if (
+                not self._in_use_by_queue
+                and self._spotify_session_active
+                and (self._pending_play_media_task is None or self._pending_play_media_task.done())
             ):
                 self._pending_play_media_task = self.mass.create_task(
                     self._deferred_play_media_fire()

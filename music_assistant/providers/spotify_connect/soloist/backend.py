@@ -323,6 +323,10 @@ class SoloistBackend(SpotifyConnectBackend):
     async def resume(self) -> None:
         """Resume playback on the active session."""
         assert self._client is not None
+        # re-claim active device status first (idempotent when already active):
+        # a resume after a deactivate would otherwise start local playback
+        # without a Connect transfer, leaving the Spotify apps unaware
+        await self._client.activate(await_result=True)
         await self._client.resume()
 
     async def pause(self) -> None:

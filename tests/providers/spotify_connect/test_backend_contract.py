@@ -209,7 +209,7 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     """An external 'playing' event starts play_media on the target player after the debounce."""
     monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
     backend = FakeBackend()
-    provider, mass = _make_provider(backend, active_player_id="player1")
+    provider, mass = _make_provider(backend, session_active=True, active_player_id="player1")
     mass.players.get_player.return_value = MagicMock()
 
     await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
@@ -221,11 +221,22 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
 
 
+async def test_playing_without_active_session_fires_no_play_media() -> None:
+    """A 'playing' from a daemon that is not the active Connect device grabs no player."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend, active_player_id="player1")
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+
+    assert provider._playing is True
+    assert provider._pending_play_media_task is None
+
+
 async def test_paused_within_debounce_cancels_play_media(monkeypatch: pytest.MonkeyPatch) -> None:
     """A 'paused' during the debounce window cancels the deferred play_media."""
     monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 5.0)
     backend = FakeBackend()
-    provider, mass = _make_provider(backend, active_player_id="player1")
+    provider, mass = _make_provider(backend, session_active=True, active_player_id="player1")
     mass.players.get_player.return_value = MagicMock()
 
     await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))

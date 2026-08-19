@@ -1096,7 +1096,10 @@ async def test_transport_commands_map_to_client() -> None:
     call_names = [name for name, _args, _kwargs in client.mock_calls]
     assert call_names.index("activate") < call_names.index("play")
 
+    # resume also re-claims active device status first
+    client.reset_mock()
     await backend.resume()
+    client.activate.assert_awaited_once_with(await_result=True)
     client.resume.assert_awaited_once_with()
     await backend.pause()
     client.pause.assert_awaited_once_with()

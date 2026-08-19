@@ -45,7 +45,8 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 ### Shared provider behaviors (backend-independent)
 
 - **AudioSource item**: one live item under the global "Live Inputs" node, played through
-  the standard `play_media` flow. `exclusive=True`, `allow_external_trigger=True`.
+  the standard `play_media` flow (`exclusive`, `allow_external_trigger`, `can_initiate`).
+  Starting it from MA resumes the last known Spotify context on this device.
 - **Externally triggered playback**: a `PLAYING` event fires a debounced `play_media` on
   the target player (configured, or auto: a currently playing player, else the first
   available one).

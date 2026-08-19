@@ -86,9 +86,8 @@ entries (planned, together with the Soloist equivalents).
 
 ## Known limitations
 
-1. **Cold start**: browse-and-play from a cold start is not offered (`can_initiate` is
-   False); entry comes from the Spotify app, or by taking playback back during an
-   existing session.
+1. **Cold start**: starting from MA resumes the last known Spotify context; without any
+   prior context (fresh install) a localized error points the user to the Spotify app.
 2. **Sync-group elapsed time** can drift: the position comes from the daemon's decode
    point, which leads a sync group's buffered output. Single players are unaffected.
 
