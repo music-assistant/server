@@ -187,6 +187,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         sink = await PipeSink.create(server, self._sink_prefix)
         proc: AsyncProcess | None = None
         events_task: asyncio.Task[None] | None = None
+        transport: asyncio.ReadTransport | None = None
         try:
             # unity gain so the FIFO carries the daemon's PCM unaltered; the
             # sink stays suspended until the (seeked) item is ready so no
@@ -208,16 +209,21 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             await self._await_item_ready(state, proc)
             if seek_position:
                 await self._cold_seek(client, state, seek_position * 1000)
+            # the reader must be attached before the sink starts producing, or
+            # the sink's first writes go to a reader-less FIFO and are dropped
+            reader, transport = await _open_fifo_reader(sink.fifo_path)
             await sink.resume()
             state.demand_started = True
-            async for chunk in self._read_pcm(state, sink, proc, seek_position):
+            async for chunk in self._read_pcm(state, reader, proc, seek_position):
                 yield chunk
-            await self._evaluate_result(state, proc, seek_position)
+            await self._evaluate_result(state, proc)
         finally:
             if events_task is not None:
                 events_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await events_task
+            if transport is not None:
+                transport.close()
             if proc is not None:
                 await proc.close()
             with suppress(Exception):
@@ -283,6 +289,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
 
     def _prepare_data_dir(self) -> None:
         """Prepare the data dir for a fresh single-track spawn (blocking)."""
+        self._data_dir.mkdir(parents=True, exist_ok=True)
         self._data_dir.chmod(0o700)
         # endpoint files from a previous run would point the client at a dead port
         for endpoint_file in (WS_ADDR_FILE, WS_PORT_FILE):
@@ -422,9 +429,7 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
                 exit_task = asyncio.ensure_future(proc.wait())
                 item_task = asyncio.ensure_future(state.item_seen.wait())
                 try:
-                    await asyncio.wait(
-                        {exit_task, item_task}, return_when=asyncio.FIRST_COMPLETED
-                    )
+                    await asyncio.wait({exit_task, item_task}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
                     exit_task.cancel()
                     item_task.cancel()
@@ -467,12 +472,14 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
             async with asyncio.timeout(_SEEK_CONFIRM_TIMEOUT_S):
                 await state.seek_confirmed.wait()
         except TimeoutError:
-            raise AudioError(
-                f"Spotify Soloist did not confirm seeking to {target_ms}ms"
-            ) from None
+            raise AudioError(f"Spotify Soloist did not confirm seeking to {target_ms}ms") from None
 
     async def _read_pcm(
-        self, state: _TrackState, sink: PipeSink, proc: AsyncProcess, seek_position: int
+        self,
+        state: _TrackState,
+        reader: asyncio.StreamReader,
+        proc: AsyncProcess,
+        seek_position: int,
     ) -> AsyncGenerator[bytes]:
         """
         Read the sink's FIFO at realtime pace and yield the item's PCM.
@@ -483,68 +490,62 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         rendering silence), so WebSocket state and the process delimit the item.
         """
         loop = asyncio.get_running_loop()
-        reader, transport = await _open_fifo_reader(sink.fifo_path)
         lead_skipped = 0
         bytes_out = 0
         # doubles as the "first audio byte seen" marker
         pace_start: float | None = None
         stalled_for = 0.0
         drain_deadline: float | None = None
-        try:
-            while True:
-                if state.error:
-                    raise AudioError(f"Spotify Soloist: {state.error}")
-                if state.ended.is_set():
+        while True:
+            if state.error:
+                raise AudioError(f"Spotify Soloist: {state.error}")
+            if state.ended.is_set():
+                break
+            # the duration may only arrive with a later playback_state event
+            expected_bytes = state.expected_bytes(seek_position)
+            if proc.returncode is not None:
+                # the FIFO keeps delivering (silence) after the process
+                # exits; drain briefly toward the duration cap, then stop
+                if drain_deadline is None:
+                    drain_deadline = loop.time() + _DRAIN_TIMEOUT_S
+                if expected_bytes is None or loop.time() >= drain_deadline:
                     break
-                # the duration may only arrive with a later playback_state event
-                expected_bytes = state.expected_bytes(seek_position)
-                if proc.returncode is not None:
-                    # the FIFO keeps delivering (silence) after the process
-                    # exits; drain briefly toward the duration cap, then stop
-                    if drain_deadline is None:
-                        drain_deadline = loop.time() + _DRAIN_TIMEOUT_S
-                    if expected_bytes is None or loop.time() >= drain_deadline:
-                        break
-                try:
-                    chunk = await asyncio.wait_for(reader.read(_READ_CHUNK_SIZE), _READ_SLICE_S)
-                except TimeoutError:
-                    # no data: the sink is suspended (rebuffering) or the
-                    # process is gone; bounded so a dead stream cannot hang
-                    stalled_for += _READ_SLICE_S
-                    if stalled_for >= _STALL_TIMEOUT_S:
-                        raise AudioError(
-                            f"Spotify Soloist audio stalled for {state.requested_uri}"
-                        ) from None
-                    continue
-                stalled_for = 0.0
+            try:
+                chunk = await asyncio.wait_for(reader.read(_READ_CHUNK_SIZE), _READ_SLICE_S)
+            except TimeoutError:
+                # no data: the sink is suspended (rebuffering) or the
+                # process is gone; bounded so a dead stream cannot hang
+                stalled_for += _READ_SLICE_S
+                if stalled_for >= _STALL_TIMEOUT_S:
+                    raise AudioError(
+                        f"Spotify Soloist audio stalled for {state.requested_uri}"
+                    ) from None
+                continue
+            stalled_for = 0.0
+            if not chunk:
+                # writer end closed: the capture sink is gone (pulse restart)
+                raise AudioError("Spotify Soloist capture sink was lost mid-stream")
+            if pace_start is None:
+                chunk, skipped = _trim_lead_silence(chunk, lead_skipped)
+                lead_skipped += skipped
                 if not chunk:
-                    # writer end closed: the capture sink is gone (pulse restart)
-                    raise AudioError("Spotify Soloist capture sink was lost mid-stream")
-                if pace_start is None:
-                    chunk, skipped = _trim_lead_silence(chunk, lead_skipped)
-                    lead_skipped += skipped
-                    if not chunk:
-                        continue
-                    pace_start = loop.time()
-                if expected_bytes is not None and bytes_out + len(chunk) > expected_bytes:
-                    chunk = chunk[: expected_bytes - bytes_out]
-                bytes_out += len(chunk)
-                yield chunk
-                if expected_bytes is not None and bytes_out >= expected_bytes:
-                    break
-                # realtime pacing: the reader clocks the pipe sink, and thus how
-                # fast Spotify must deliver — never run ahead of realtime beyond
-                # the initial burst (no pacing needed once the process exited)
-                if pace_start is not None and proc.returncode is None:
-                    resume_at = pace_start + (bytes_out / _BYTES_PER_SECOND) - _PACE_BURST_S
-                    if (delay := resume_at - loop.time()) > 0:
-                        await asyncio.sleep(delay)
-        finally:
-            transport.close()
+                    continue
+                pace_start = loop.time()
+            if expected_bytes is not None and bytes_out + len(chunk) > expected_bytes:
+                chunk = chunk[: expected_bytes - bytes_out]
+            bytes_out += len(chunk)
+            yield chunk
+            if expected_bytes is not None and bytes_out >= expected_bytes:
+                break
+            # realtime pacing: the reader clocks the pipe sink, and thus how
+            # fast Spotify must deliver — never run ahead of realtime beyond
+            # the initial burst (no pacing needed once the process exited)
+            if pace_start is not None and proc.returncode is None:
+                resume_at = pace_start + (bytes_out / _BYTES_PER_SECOND) - _PACE_BURST_S
+                if (delay := resume_at - loop.time()) > 0:
+                    await asyncio.sleep(delay)
 
-    async def _evaluate_result(
-        self, state: _TrackState, proc: AsyncProcess, seek_position: int
-    ) -> None:
+    async def _evaluate_result(self, state: _TrackState, proc: AsyncProcess) -> None:
         """
         Validate that the delivered PCM covers the requested item.
 
@@ -601,7 +602,6 @@ class _TrackState:
         self.playing_seen = False
         self.logged_out = False
         self.demand_started = False
-        self.bytes_delivered = 0
         self.error: str | None = None
 
     def fail(self, message: str) -> None:
