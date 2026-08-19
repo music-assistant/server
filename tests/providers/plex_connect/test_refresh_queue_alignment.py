@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+from music_assistant_models.enums import PlaybackState
+
 from music_assistant.providers.plex_connect.queue_commands import QueueCommandsMixin
 from music_assistant.providers.plex_connect.queue_sync import QueueSyncMixin
 
@@ -23,6 +25,10 @@ class _QueueHandler(QueueSyncMixin, QueueCommandsMixin):
         provider = Mock()
         provider.get_track = AsyncMock(side_effect=_fake_track)
         provider.mass.player_queues.play_media = self.play_media
+        self.queue = SimpleNamespace(
+            state=PlaybackState.PLAYING, current_index=0, index_in_buffer=0
+        )
+        provider.mass.player_queues.get = Mock(return_value=self.queue)
         self.provider = provider
         self._ma_player_id = "player1"
         self._updating_from_plex = False
@@ -105,3 +111,33 @@ async def test_refresh_falls_back_to_the_plex_selected_item() -> None:
     await handler._replace_remaining_queue("player1", playqueue, 0)
 
     assert "/library/metadata/3" not in handler.queued_keys()
+
+
+async def test_refresh_does_not_requeue_the_buffered_track() -> None:
+    """
+    REPLACE_NEXT keeps the buffered item as well, so it must not be re-queued.
+
+    The player has already been handed MA index 1, so REPLACE_NEXT inserts after it.
+    Slicing from the playing index hands that same track over a second time.
+    """
+    handler = _QueueHandler()
+    playqueue = _make_playqueue(12, selected_index=1)
+    handler.play_queue_item_ids = {0: 1001, 1: 1002}
+    handler.queue.index_in_buffer = 1
+
+    await handler._replace_remaining_queue("player1", playqueue, 0)
+
+    assert "/library/metadata/2" not in handler.queued_keys()
+
+
+async def test_refresh_replaces_only_what_follows_the_buffered_item() -> None:
+    """The buffered item is kept, so the replacement starts one track later."""
+    handler = _QueueHandler()
+    playqueue = _make_playqueue(12, selected_index=1)
+    handler.play_queue_item_ids = {0: 1001, 1: 1002}
+    handler.queue.index_in_buffer = 1
+
+    await handler._replace_remaining_queue("player1", playqueue, 0)
+
+    expected = [f"/library/metadata/{n}" for n in [*range(3, 12), 0]]
+    assert handler.queued_keys() == expected
