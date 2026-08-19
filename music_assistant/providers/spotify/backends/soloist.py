@@ -80,9 +80,11 @@ _CACHE_SIZE_MB: Final[int] = 512
 
 # The FIFO is read at realtime pace: classic PulseAudio's pipe sink is
 # reader-clocked, and measurements show Spotify's delivery cannot sustain
-# accelerated reads across network/cache conditions. A small initial burst
-# gives the downstream buffer some jitter headroom.
-_PACE_BURST_S: Final[float] = 1.0
+# accelerated reads across network/cache conditions. The initial burst fills
+# the downstream buffers after a track change or cold seek; 3s amortizes to
+# ~1.02x over a typical track, well inside the measured 1.1x cold-cache
+# envelope, and a stall is caught by the buffering suspend.
+_PACE_BURST_S: Final[float] = 3.0
 
 _READ_CHUNK_SIZE: Final[int] = 32768
 # one wait slice on the FIFO read; state (process exit, errors) is checked between slices
