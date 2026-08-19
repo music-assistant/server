@@ -1,7 +1,7 @@
 # go-librespot backend
 
 Wraps **[go-librespot](https://github.com/devgianlu/go-librespot)**, a community-built,
-reverse-engineered Spotify Connect client, as the legacy Spotify Connect engine. It needs
+reverse-engineered Spotify Connect client, as the community Spotify Connect engine. It needs
 no API key or managed download, but only works with Premium-family accounts created before
 December 2024 and may break whenever Spotify changes the protocol.
 

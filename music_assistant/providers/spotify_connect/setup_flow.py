@@ -3,7 +3,7 @@ Setup flow for the Spotify Connect plugin.
 
 The flow starts with an explicit backend choice: Spotify Soloist (Spotify's
 official headless client, guarded by a ToS warning/consent step and a personal
-API key) or the legacy go-librespot daemon. Both branches end with the shared
+API key) or the community go-librespot daemon. Both branches end with the shared
 target-player / device-name step. Reconfigure preselects the stored backend and
 re-runs the branch steps; switching away from soloist clears the soloist
 secrets, but only once the new setup finishes successfully.

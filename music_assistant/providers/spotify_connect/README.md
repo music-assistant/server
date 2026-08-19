@@ -13,7 +13,7 @@ subdirectory with its own README covering the internals:
   headless Linux client (recommended).
 - **[`go_librespot/`](go_librespot/README.md)** — wraps
   **[go-librespot](https://github.com/devgianlu/go-librespot)**, a community-built,
-  reverse-engineered client (legacy).
+  reverse-engineered client.
 
 ## Module layout
 
@@ -25,7 +25,7 @@ spotify_connect/
 ├── setup_flow.py    Multi-step setup: engine choice, Soloist terms/API key, player/name
 ├── helpers.py       Small shared utilities (device id, interface lookup)
 ├── soloist/         Official Spotify Soloist engine (backend + runtime + README)
-└── go_librespot/    Legacy go-librespot engine (backend + client + README)
+└── go_librespot/    Community go-librespot engine (backend + client + README)
 ```
 
 ## The provider / backend split
