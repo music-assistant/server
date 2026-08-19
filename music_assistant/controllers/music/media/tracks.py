@@ -848,7 +848,19 @@ class TracksController(MediaControllerBase[Track]):
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
     ) -> None:
-        """Store Track Artists."""
+        """
+        Store Track Artists.
+
+        An empty set of artists never clears the stored rows: a track without any
+        artist can not be played or resolved.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning("Ignoring request to clear all artists of track id %s", db_id)
+            return
         if overwrite:
             # on overwrite, clear the track_artists table first
             await self.mass.music.database.delete(
@@ -857,10 +869,8 @@ class TracksController(MediaControllerBase[Track]):
                     "track_id": db_id,
                 },
             )
-        artist_mappings: UniqueList[ItemMapping] = UniqueList()
-        for artist in artists:
-            mapping = await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
-            artist_mappings.append(mapping)
+        for artist in all_artists:
+            await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
 
     async def _set_track_artist(
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
