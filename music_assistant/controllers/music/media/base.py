@@ -97,6 +97,16 @@ JSON_KEYS = (
     "audiobook_artists",
 )
 
+# The columns that make up a relation row, so a merge can copy it onto the target
+# without relying on SELECT *: album_tracks carries a surrogate autoincrement id that
+# must not be copied along.
+RELATION_TABLE_COLUMNS = {
+    DB_TABLE_ALBUM_ARTISTS: ("album_id", "artist_id"),
+    DB_TABLE_ALBUM_TRACKS: ("track_id", "album_id", "disc_number", "track_number"),
+    DB_TABLE_AUDIOBOOK_ARTISTS: ("audiobook_id", "artist_id"),
+    DB_TABLE_TRACK_ARTISTS: ("track_id", "artist_id"),
+}
+
 # When set (task-local), per-item MEDIA_ITEM_ADDED/UPDATED events and the on_item_updated
 # provider write-back are suppressed, so bulk operations (provider sync, provider cleanup)
 # don't flood subscribers with one event per touched item.
@@ -2495,7 +2505,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             await self._merge_genre_mappings(target_id, source_id)
             await self._merge_library_item_references(target_id, source_id)
             await self._merge_library_playlog(target_id, source_id)
-            await self._merge_library_item_relations(target_id, source_id)
+            # the transfer commits in steps (see `deferred_commit`), so it is ordered to
+            # leave the source repairable wherever it is cut short: relations are copied
+            # rather than moved, and only dropped once the target holds them and the
+            # provider mappings. A source that kept its relations stays a duplicate the
+            # reconciliation pass can finish; one that lost its mappings is cleaned up.
+            await self._copy_library_item_relations(target_id, source_id)
             await self.mass.music.database.execute_write(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET item_id = :target_id "
                 "WHERE media_type = :media_type AND item_id = :source_id",
@@ -2505,6 +2520,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "media_type": self.media_type.value,
                 },
             )
+            await self._drop_library_item_relations(source_id)
             await MediaControllerBase.remove_item_from_library(self, source_id, recursive=False)
             merged_item = await self.get_library_item(target_id)
         finally:
@@ -2531,28 +2547,45 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Merge model state into an existing library item."""
         await self._update_library_item(item_id, update)
 
-    async def _merge_library_item_relations(self, target_id: int, source_id: int) -> None:
-        """Transfer relations that reference the merged media item."""
+    async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
+        """Copy the relations that reference the merged media item onto the target."""
+        for table, item_column in self._library_item_relations():
+            columns = RELATION_TABLE_COLUMNS[table]
+            selected = ", ".join(
+                ":target_id" if column == item_column else column for column in columns
+            )
+            await self.mass.music.database.execute_write(
+                f"INSERT OR IGNORE INTO {table}({', '.join(columns)}) "
+                f"SELECT {selected} FROM {table} WHERE {item_column} = :source_id",
+                {"target_id": target_id, "source_id": source_id},
+            )
+
+    async def _drop_library_item_relations(self, source_id: int) -> None:
+        """Drop the relations of a merged media item once the target holds them."""
+        for table, item_column in self._library_item_relations():
+            await self.mass.music.database.delete(table, {item_column: source_id})
+
+    def _library_item_relations(self) -> tuple[tuple[str, str], ...]:
+        """Return the (table, column) pairs holding relations to this controller's items."""
         if self.media_type == MediaType.ALBUM:
-            await self._move_relation_rows(DB_TABLE_ALBUM_ARTISTS, "album_id", target_id, source_id)
-            await self._move_relation_rows(DB_TABLE_ALBUM_TRACKS, "album_id", target_id, source_id)
-        elif self.media_type == MediaType.ARTIST:
-            await self._move_relation_rows(
-                DB_TABLE_ALBUM_ARTISTS, "artist_id", target_id, source_id
+            return (
+                (DB_TABLE_ALBUM_ARTISTS, "album_id"),
+                (DB_TABLE_ALBUM_TRACKS, "album_id"),
             )
-            await self._move_relation_rows(
-                DB_TABLE_AUDIOBOOK_ARTISTS, "artist_id", target_id, source_id
+        if self.media_type == MediaType.ARTIST:
+            return (
+                (DB_TABLE_ALBUM_ARTISTS, "artist_id"),
+                (DB_TABLE_AUDIOBOOK_ARTISTS, "artist_id"),
+                (DB_TABLE_TRACK_ARTISTS, "artist_id"),
             )
-            await self._move_relation_rows(
-                DB_TABLE_TRACK_ARTISTS, "artist_id", target_id, source_id
+        if self.media_type == MediaType.AUDIOBOOK:
+            return ((DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id"),)
+        if self.media_type == MediaType.TRACK:
+            return (
+                (DB_TABLE_ALBUM_TRACKS, "track_id"),
+                (DB_TABLE_TRACK_ARTISTS, "track_id"),
             )
-        elif self.media_type == MediaType.AUDIOBOOK:
-            await self._move_relation_rows(
-                DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id", target_id, source_id
-            )
-        elif self.media_type == MediaType.TRACK:
-            await self._move_relation_rows(DB_TABLE_ALBUM_TRACKS, "track_id", target_id, source_id)
-            await self._move_relation_rows(DB_TABLE_TRACK_ARTISTS, "track_id", target_id, source_id)
+        return ()
 
     async def _merge_library_item_references(self, target_id: int, source_id: int) -> None:
         """Transfer references to the source item owned by specialized controllers."""
@@ -2693,15 +2726,3 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "media_type": self.media_type.value,
             },
         )
-
-    async def _move_relation_rows(
-        self, table: str, item_column: str, target_id: int, source_id: int
-    ) -> None:
-        """Move a relation column to the target item, retaining target duplicates."""
-        values = {"target_id": target_id, "source_id": source_id}
-        await self.mass.music.database.execute_write(
-            f"UPDATE OR IGNORE {table} SET {item_column} = :target_id "
-            f"WHERE {item_column} = :source_id",
-            values,
-        )
-        await self.mass.music.database.delete(table, {item_column: source_id})
