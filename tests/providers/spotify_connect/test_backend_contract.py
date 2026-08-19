@@ -107,6 +107,10 @@ class FakeBackend(SpotifyConnectBackend):
         """Record a pause command."""
         self.calls.append(("pause", None))
 
+    async def deactivate(self) -> None:
+        """Record a deactivate command."""
+        self.calls.append(("deactivate", None))
+
     async def next(self) -> None:
         """Record a next command."""
         self.calls.append(("next", None))
@@ -352,8 +356,8 @@ async def test_session_inactive_stops_active_player() -> None:
     mass.players.cmd_stop.assert_called_once_with("player1")
 
 
-async def test_stream_teardown_while_playing_pauses_spotify() -> None:
-    """An MA-side stop/queue-clear pauses the Spotify session so the app reflects it."""
+async def test_stream_teardown_while_playing_releases_spotify() -> None:
+    """An MA-side stop/queue-clear releases the Spotify session so the app drops the device."""
     backend = FakeBackend()
     provider, _mass = _make_provider(
         backend,
@@ -367,7 +371,7 @@ async def test_stream_teardown_while_playing_pauses_spotify() -> None:
 
     assert provider._in_use_by_queue is None
     assert provider._active_session_id is None
-    assert backend.calls == [("pause", None)]
+    assert backend.calls == [("deactivate", None)]
 
 
 async def test_stream_teardown_after_spotify_pause_does_not_pause_again() -> None:

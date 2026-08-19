@@ -398,15 +398,16 @@ class SpotifyConnectProvider(PluginProvider):
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
         if self._playing:
-            # MA-side stop/queue-clear: pause the Spotify session so the app
-            # reflects it — the daemon would otherwise keep playing into a
-            # pipe nobody consumes. (Teardowns caused by a Spotify-side pause,
-            # deselect or a player handoff never reach here: those cleared
-            # _playing or replaced the session id first.)
+            # MA-side stop/queue-clear: release the Spotify session so the app
+            # drops the device as its playback target — the daemon would
+            # otherwise keep playing into a pipe nobody consumes and the app
+            # would stay tethered to the device. (Teardowns caused by a
+            # Spotify-side pause, deselect or a player handoff never reach
+            # here: those cleared _playing or replaced the session id first.)
             try:
-                await self._backend.pause()
+                await self._backend.deactivate()
             except Exception as err:
-                self.logger.debug("Failed to pause Spotify session on stream teardown: %s", err)
+                self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
     async def on_source_control(
         self,

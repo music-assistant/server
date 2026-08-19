@@ -93,6 +93,15 @@ class SpotifyConnectBackend(ABC):
         """Pause playback on the active session."""
 
     @abstractmethod
+    async def deactivate(self) -> None:
+        """
+        Release this device as the active Spotify Connect device.
+
+        Ends the current session so the Spotify apps drop the device as their
+        playback target; the device stays available for reselection.
+        """
+
+    @abstractmethod
     async def next(self) -> None:
         """Skip to the next track."""
 

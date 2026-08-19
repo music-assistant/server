@@ -1107,6 +1107,14 @@ async def test_transport_commands_map_to_client() -> None:
     await backend.seek(30000)
     client.seek.assert_awaited_once_with(30000)
 
+    # deactivate pauses first (position preserved), then gives up the device
+    client.reset_mock()
+    await backend.deactivate()
+    client.pause.assert_awaited_once_with(await_result=True)
+    client.deactivate.assert_awaited_once_with()
+    call_names = [name for name, _args, _kwargs in client.mock_calls]
+    assert call_names.index("pause") < call_names.index("deactivate")
+
 
 async def test_player_only_pins_spotify_volume_and_suppresses_events() -> None:
     """player_only: off-100 volume events reset the daemon to 100 and are suppressed."""

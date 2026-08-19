@@ -330,6 +330,15 @@ class SoloistBackend(SpotifyConnectBackend):
         assert self._client is not None
         await self._client.pause()
 
+    async def deactivate(self) -> None:
+        """Release this device as the active Spotify Connect device."""
+        assert self._client is not None
+        # pause first so the session's resume position is preserved; tolerate
+        # a rejected pause (e.g. already paused) and still give up the device
+        with suppress(SoloistError):
+            await self._client.pause(await_result=True)
+        await self._client.deactivate()
+
     async def next(self) -> None:
         """Skip to the next track."""
         assert self._client is not None

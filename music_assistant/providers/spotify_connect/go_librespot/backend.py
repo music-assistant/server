@@ -200,6 +200,11 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         assert self._client is not None
         await self._client.pause()
 
+    async def deactivate(self) -> None:
+        """Release this device as the active Spotify Connect device."""
+        assert self._client is not None
+        await self._client.stop()
+
     async def next(self) -> None:
         """Skip to the next track."""
         assert self._client is not None
