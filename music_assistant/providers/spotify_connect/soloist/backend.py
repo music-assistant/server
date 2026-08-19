@@ -506,7 +506,7 @@ class SoloistBackend(SpotifyConnectBackend):
         first session until the next daemon (re)spawn refreshes both.
 
         Best-effort: a write failure must never block playback, so errors are
-        logged and the daemon spawns with the engine's previous settings.
+        logged per store and the daemon spawns with the engine's previous settings.
         """
         settings_dir = self._data_dir / "settings"
         prefs_files = [settings_dir / "prefs"]
@@ -522,7 +522,10 @@ class SoloistBackend(SpotifyConnectBackend):
                 prefs_files += [
                     user_dir / "prefs" for user_dir in users_dir.iterdir() if user_dir.is_dir()
                 ]
-            for prefs_file in prefs_files:
+        except OSError as err:
+            self.logger.warning("Failed to list the Spotify per-user settings: %s", err)
+        for prefs_file in prefs_files:
+            try:
                 lines = []
                 if prefs_file.is_file():
                     lines = [
@@ -531,9 +534,15 @@ class SoloistBackend(SpotifyConnectBackend):
                         if line.split("=", 1)[0] not in _MANAGED_PREFS
                     ]
                 prefs_file.parent.mkdir(parents=True, exist_ok=True)
-                prefs_file.write_text("\n".join([*lines, *managed_lines]) + "\n", encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as err:
-            self.logger.warning("Failed to write the Spotify audio settings: %s", err)
+                # the stores also carry engine-owned keys, so replace atomically
+                # (a truncated in-place write would lose those too)
+                tmp_file = prefs_file.with_suffix(".tmp")
+                tmp_file.write_text("\n".join([*lines, *managed_lines]) + "\n", encoding="utf-8")
+                tmp_file.replace(prefs_file)
+            except (OSError, UnicodeDecodeError) as err:
+                self.logger.warning(
+                    "Failed to write the Spotify audio settings to %s: %s", prefs_file, err
+                )
 
     async def _daemon_runner(self) -> None:
         """Run and supervise the soloist daemon, restarting (and refreshing) as needed."""

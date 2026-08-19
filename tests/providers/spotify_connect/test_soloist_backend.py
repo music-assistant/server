@@ -1368,11 +1368,21 @@ def test_audio_prefs_write_failure_is_non_fatal(tmp_path: Path) -> None:
     backend._write_audio_prefs()  # must not raise
 
 
-def test_audio_prefs_corrupt_file_is_non_fatal(tmp_path: Path) -> None:
-    """A prefs file with invalid UTF-8 (truncated write) does not block the spawn."""
+def test_audio_prefs_corrupt_file_skips_only_that_store(tmp_path: Path) -> None:
+    """
+    A prefs file with invalid UTF-8 (truncated write) does not block the spawn.
+
+    Only the corrupt store is skipped; the remaining stores are still updated.
+    """
     backend = _prefs_backend(tmp_path, crossfade_ms=8000, normalization=True)
     settings = backend._data_dir / "settings"
-    settings.mkdir(parents=True)
-    (settings / "prefs").write_bytes(b"core.clock_delta=0\naudio.play_bitrate\xc3")
+    (settings / "Users" / "alice-user").mkdir(parents=True)
+    corrupt = b"core.clock_delta=0\naudio.play_bitrate\xc3"
+    (settings / "prefs").write_bytes(corrupt)
 
     backend._write_audio_prefs()  # must not raise
+
+    # the corrupt global store is left untouched, the per-user store is written
+    assert (settings / "prefs").read_bytes() == corrupt
+    user_prefs = (settings / "Users" / "alice-user" / "prefs").read_text()
+    assert "audio.crossfade.time_v2=8000" in user_prefs
