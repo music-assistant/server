@@ -382,6 +382,35 @@ def test_weather_strings_are_rounded_to_whole_numbers() -> None:
     assert daily == "2026-08-10: 11-21C, rain 31%"
 
 
+def test_weather_strings_hourly_window_starts_at_the_current_hour_off_grid() -> None:
+    """current.time sits on a 15-minute grid; the hourly window must still start now, not at midnight."""
+    runtime = DummyRuntime()
+    hours = [f"2026-08-19T{hour:02d}:00" for hour in range(24)]
+    payload = {
+        "current": {
+            "time": "2026-08-19T15:45",
+            "temperature_2m": 20.0,
+            "apparent_temperature": 19.0,
+        },
+        "hourly": {
+            "time": hours,
+            "temperature_2m": [15.0] * 24,
+            "precipitation_probability": [0] * 24,
+        },
+        "daily": {
+            "time": [],
+            "temperature_2m_min": [],
+            "temperature_2m_max": [],
+            "precipitation_probability_max": [],
+        },
+    }
+
+    hourly, _daily = runtime._format_weather_strings(payload)
+
+    assert "2026-08-19 15:00" in hourly
+    assert "2026-08-19 00:00" not in hourly
+
+
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
     """Skip weather preparation when the configured location is incomplete."""
     runtime = DummyRuntime()
@@ -425,7 +454,7 @@ def _stub_open_meteo_get_json(
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Stub _open_meteo_get_json, recording every call and answering the geocoding request."""
 
-    async def _fake(base_url: str, params: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    async def _fake(base_url: str, params: dict[str, Any], _timeout_seconds: int) -> dict[str, Any]:
         calls.append((base_url, dict(params)))
         if "geocoding-api" in base_url:
             return {"results": geocode_results}
@@ -438,7 +467,7 @@ async def test_fetch_open_meteo_weather_sends_country_code_not_country() -> None
     """The geocoding request filters by countryCode, the API's real parameter name."""
     runtime = DummyRuntime()
     calls: list[tuple[str, dict[str, Any]]] = []
-    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign]
+    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign, assignment]
         calls,
         [
             {
@@ -453,7 +482,7 @@ async def test_fetch_open_meteo_weather_sends_country_code_not_country() -> None
 
     await runtime._fetch_open_meteo_weather(city="Amsterdam", country="NL", timeout_seconds=10)
 
-    geocode_url, geocode_params = next(call for call in calls if "geocoding-api" in call[0])
+    _geocode_url, geocode_params = next(call for call in calls if "geocoding-api" in call[0])
     assert geocode_params["countryCode"] == "NL"
     assert "country" not in geocode_params
 
@@ -463,7 +492,7 @@ async def test_fetch_open_meteo_weather_raises_when_no_result_matches_the_countr
     runtime = DummyRuntime()
     calls: list[tuple[str, dict[str, Any]]] = []
     # every candidate is a Cambridge, but none of them is in New Zealand
-    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign]
+    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign, assignment]
         calls,
         [
             {

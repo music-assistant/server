@@ -753,8 +753,7 @@ class AIRadioRuntimeMixin:
         total_max_chars = 0
         max_web_mode = "disabled"
         merged_names: list[str] = []
-        # a merged clip only depends on weather when none of its drafts can stand on their
-        # own without it, so e.g. a weather+news merge must still air the news half
+        # a weather+news merge must still air the news half, so only all-weather merges require it
         all_weather_required = True
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
@@ -1122,6 +1121,11 @@ class AIRadioRuntimeMixin:
         start_index = 0
         if current_time and current_time in hourly_times:
             start_index = int(hourly_times.index(current_time))
+        elif len(current_time) >= 13:
+            # current.time sits on a 15-minute grid while hourly.time is on whole hours
+            hour_time = f"{current_time[:13]}:00"
+            if hour_time in hourly_times:
+                start_index = int(hourly_times.index(hour_time))
 
         max_items = min(len(hourly_times), len(hourly_temp), len(hourly_prec))
         hourly_parts: list[str] = []

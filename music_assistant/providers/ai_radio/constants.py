@@ -124,8 +124,7 @@ DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_
 # the deferred placeholders that need a successful weather fetch to say anything at all
 WEATHER_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<weather_daily>")
 
-# handed to the LLM in place of a weather token that failed to resolve, so a non-required
-# clip still airs without inventing a forecast
+# substituted for an unresolved weather token in clips that still air
 NO_WEATHER_DATA_INSTRUCTION = (
     "(no weather data available - leave out all weather talk, do not invent a forecast)"
 )

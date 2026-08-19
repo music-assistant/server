@@ -12,11 +12,11 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.ai_radio.constants import DEFAULT_LLM_INSTRUCTIONS
 from music_assistant.providers.ai_radio.hosts import (
-    AIRadioHostsMixin,
     GUARD_PLACEHOLDER_TOKENS,
+    AIRadioHostsMixin,
+    _optional_flow_item,
     _Plays,
     _PresetSegment,
-    _optional_flow_item,
 )
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 

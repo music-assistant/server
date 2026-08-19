@@ -311,8 +311,7 @@ class AIRadioRenderMixin:
                 )
                 self._record_skip(queue_item, error)
                 raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
-            # weather is optional here, so the LLM is told to leave it out rather than
-            # being handed an empty token and inventing a forecast for it
+            # weather is optional in this clip, so the LLM must skip it rather than invent it
             for token in empty_weather_tokens:
                 deferred[token] = NO_WEATHER_DATA_INSTRUCTION
         resolved = prompt

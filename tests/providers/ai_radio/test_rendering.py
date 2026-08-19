@@ -511,7 +511,8 @@ async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() ->
     renderer = NoWeatherRenderer()
     session = SessionState(session_id="sess", station_id="st")
     renderer._sessions = {"sess": session}
-    item = _clip_item("sess_001", **{ATTR_WEATHER_REQUIRED: True})
+    item = _clip_item("sess_001")
+    item.extra_attributes[ATTR_WEATHER_REQUIRED] = True
     _attach_queue(renderer, [item])
 
     with pytest.raises(MediaNotFoundError):
@@ -525,7 +526,8 @@ async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() ->
 async def test_non_weather_required_clip_renders_with_no_data_instruction() -> None:
     """A non-weather-required clip still airs, told to leave the forecast out rather than guess."""
     renderer = NoWeatherRenderer()
-    item = _clip_item("sess_001", **{ATTR_WEATHER_REQUIRED: False})
+    item = _clip_item("sess_001")
+    item.extra_attributes[ATTR_WEATHER_REQUIRED] = False
     _attach_queue(renderer, [item])
 
     await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
