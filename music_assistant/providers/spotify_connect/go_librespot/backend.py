@@ -73,6 +73,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         name: str,
         logger: logging.Logger,
         event_callback: BackendEventCallback,
+        crossfade_ms: int = 0,
+        loudness_normalization: bool = True,
     ) -> None:
         """
         Initialize the backend (cheap; the daemon is launched in ``start``).
@@ -85,6 +87,10 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         :param logger: Logger to use for diagnostics.
         :param event_callback: Awaited with a normalized BackendEvent for every
             state change the daemon reports.
+        :param crossfade_ms: Crossfade duration between tracks in milliseconds
+            (0 disables crossfade).
+        :param loudness_normalization: Whether Spotify's loudness normalization
+            should be applied to the audio.
         """
         self.mass = mass
         self.logger = logger
@@ -92,6 +98,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self._instance_id = instance_id
         self._publish_name = publish_name
         self._event_callback = event_callback
+        self._crossfade_ms = crossfade_ms
+        self._loudness_normalization = loudness_normalization
         self.cache_dir = os.path.join(self.mass.cache_path, instance_id)
         self._binary: str | None = None
         self._api_port: int = 0
@@ -266,6 +274,11 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             # the provider pushes the player's volume instead.
             "external_volume": True,
             "volume_steps": VOLUME_STEPS,
+            # normalisation is applied by go-librespot itself (-14 LUFS target);
+            # crossfade_duration is in milliseconds, 0 disables it. The crossfade
+            # key needs go-librespot >= 0.8.0; older daemons ignore unknown keys.
+            "normalisation_disabled": not self._loudness_normalization,
+            "crossfade_duration": self._crossfade_ms,
             "zeroconf_enabled": True,
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},

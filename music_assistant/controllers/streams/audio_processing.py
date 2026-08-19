@@ -506,8 +506,7 @@ def get_media_session_id(media: PlayerMedia) -> str | None:
 
     :param media: Player media that started the stream.
     """
-    value = (media.custom_data or {}).get("session_id")
-    return value if isinstance(value, str) else None
+    return media.queue_session_id
 
 
 def get_normalization_details(
