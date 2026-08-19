@@ -36,8 +36,9 @@ USER_AGENT = (
     "TIDAL/2.39.5 Chrome/140.0.7339.249 Electron/38.5.0 Safari/537.36"
 )
 # Drop a registered stream that never got a terminal on_played callback after this long,
-# so abandoned entries (e.g. a playback error) don't accumulate.
-PENDING_TTL_SECONDS = 600
+# so abandoned entries (e.g. a playback error) don't accumulate. Generous on purpose: a
+# paused-then-resumed track shouldn't lose its pending entry before it finishes.
+PENDING_TTL_SECONDS = 24 * 60 * 60
 
 
 class TidalPlayReportingManager:
