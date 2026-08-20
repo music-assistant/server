@@ -215,10 +215,6 @@ class QueueSyncMixin:
         """
         Return where the MA queue item at ``ma_index`` sits in the fetched Plex queue.
 
-        Matched on playQueueItemID rather than by position: the MA queue is a rotation of
-        the Plex queue, and the server may return only a window of it, so the two index
-        spaces are not interchangeable.
-
         :param playqueue: The Plex play queue.
         :param ma_index: An index into the Music Assistant queue.
         :return: The index within ``playqueue.items``, or None if that item is absent.
@@ -235,11 +231,6 @@ class QueueSyncMixin:
         """
         Return the Plex index at which the MA queue wraps back to its own start.
 
-        Normally that is the track playback began on. If Plex no longer lists that track
-        it was removed from the queue, so the boundary moves up to the earliest item MA
-        still holds that Plex does list. A truncated response cannot tell a removal from
-        an item simply falling outside it, so it yields no boundary at all.
-
         :param playqueue: The Plex play queue.
         :param base_index: The last MA queue index that survives the replace.
         :return: The index within ``playqueue.items``, or None if it cannot be determined.
@@ -247,6 +238,10 @@ class QueueSyncMixin:
         if (origin := self._plex_index_of(playqueue, 0)) is not None:
             return origin
 
+        # A truncated response cannot tell a removed track from one that merely fell
+        # outside it, so leave the boundary unknown. Otherwise the track playback began
+        # on is gone from the queue and the boundary moves up to the earliest item MA
+        # still holds that Plex does list.
         total = getattr(playqueue, "playQueueTotalCount", None)
         if total is not None and len(playqueue.items) < total:
             return None
@@ -260,15 +255,12 @@ class QueueSyncMixin:
         """
         Return the last MA queue index that a REPLACE_NEXT will keep.
 
-        REPLACE_NEXT inserts after the buffered index rather than the playing one, so a
-        player that has already been handed the next track keeps one item more than
-        ``current_index``. Replacing from the playing index would hand that same track
-        over again and duplicate it.
-
         :param player_id: The Music Assistant player ID.
         :param current_index: The current track index in the MA queue.
         :return: The index of the last item that survives the replace.
         """
+        # REPLACE_NEXT inserts after the buffered index rather than the playing one, so a
+        # player already handed the next track keeps one item more than current_index.
         queue = self.provider.mass.player_queues.get(player_id)
         if (
             queue is not None
@@ -290,9 +282,9 @@ class QueueSyncMixin:
         """
         base_index = self._replace_next_base_index(player_id, current_index)
 
-        # Walk forward from the item MA keeps last, wrapping at the track playback began
-        # on. MA positions are not Plex positions -- the MA queue is a rotation of the
-        # Plex one, and the server may return only a window of it.
+        # MA positions are not Plex positions: the MA queue is a rotation of the Plex one
+        # and the server may return only a window of it. So walk forward from the item MA
+        # keeps last, stopping where the queue wraps.
         anchor = self._plex_index_of(playqueue, base_index)
         if anchor is None:
             anchor = self._selected_item_index(playqueue)
@@ -300,8 +292,6 @@ class QueueSyncMixin:
 
         items = playqueue.items
         if origin is None:
-            # No trustworthy wrap boundary, so take everything Plex still lists after
-            # the current track.
             remaining_items = items[anchor + 1 :]
         else:
             count = (origin - anchor - 1) % len(items)
