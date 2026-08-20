@@ -101,7 +101,6 @@ from music_assistant.helpers.audio import (
     get_mime_type,
     store_content_length_in_cache,
 )
-from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import (
     CACHE_ATTR_FFMPEG_VERSION,
     CACHE_ATTR_LIBSOXR_PRESENT,
@@ -838,7 +837,6 @@ class StreamsController(CoreController):
                 queue=queue,
                 queue_item=queue_item,
                 pcm_format=pcm_format,
-                crossfade_mode=crossfade_mode,
                 overlay_enabled=(
                     queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                 ),
@@ -1100,7 +1098,6 @@ class StreamsController(CoreController):
             queue=queue,
             queue_item=start_queue_item,
             pcm_format=flow_pcm_format,
-            crossfade_mode=crossfade_mode,
             overlay_enabled=overlay_active(queue),
             session_id=session_id,
         )
@@ -1315,7 +1312,6 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
-        use_flow_stream_buffering: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -1329,9 +1325,6 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
-        :param use_flow_stream_buffering: Buffer the flow stream to provide headroom
-            during smart fades transitions. Use for consumers that read directly
-            (e.g. AirPlay, Snapcast) and can't tolerate stalls.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -1388,16 +1381,10 @@ class StreamsController(CoreController):
                     media.source_id, media.queue_item_id
                 )
                 assert start_queue_item
-                crossfade_mode = (
-                    self.get_crossfade_mode(queue)
-                    if start_queue_item.media_type == MediaType.TRACK
-                    else CrossfadeMode.DISABLED
-                )
                 self._update_audio_processing_context(
                     queue=queue,
                     queue_item=start_queue_item,
                     pcm_format=pcm_format,
-                    crossfade_mode=crossfade_mode,
                     overlay_enabled=overlay_active(queue),
                     session_id=queue_session_id,
                 )
@@ -1412,8 +1399,6 @@ class StreamsController(CoreController):
                     flow_stream = self.audio.get_overlay_mixed_stream(
                         queue, flow_stream, pcm_format
                     )
-                if use_flow_stream_buffering:
-                    return buffered(flow_stream, buffer_size=30, min_buffer_before_yield=1)
                 return flow_stream
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
@@ -1423,13 +1408,6 @@ class StreamsController(CoreController):
                     queue=queue,
                     queue_item=queue_item,
                     pcm_format=pcm_format,
-                    crossfade_mode=(
-                        self.get_crossfade_mode(queue)
-                        # a realtime source is never faded, in either direction
-                        if queue_item.media_type == MediaType.TRACK
-                        and not (queue_item.streamdetails and queue_item.streamdetails.is_realtime)
-                        else CrossfadeMode.DISABLED
-                    ),
                     overlay_enabled=(
                         queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                     ),
@@ -1622,17 +1600,18 @@ class StreamsController(CoreController):
         queue: PlayerQueue,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
-        crossfade_mode: CrossfadeMode,
         overlay_enabled: bool,
         session_id: str | None = None,
     ) -> None:
         """
         Store the shared processing context selected for a queue item.
 
+        The crossfade is left out on purpose: only the audio layer knows whether one
+        really happens, and it reports that itself once the boundary has decided.
+
         :param queue: Active player queue.
         :param queue_item: Queue item being prepared.
         :param pcm_format: Shared PCM format leaving queue processing.
-        :param crossfade_mode: Effective crossfade mode for the item.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         :param session_id: Queue session that owns processing-detail updates.
         """
@@ -1656,7 +1635,6 @@ class StreamsController(CoreController):
                     "float",
                     queue_item.extra_attributes.get("playback_speed", 1.0),
                 ),
-                crossfade_mode=crossfade_mode,
                 overlay_active=overlay_enabled,
             ),
             alters_audio=queue_item.streamdetails.fade_in,

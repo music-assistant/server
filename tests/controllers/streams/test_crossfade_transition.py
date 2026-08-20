@@ -1,0 +1,288 @@
+"""Tests for the flow stream's transition: incoming prefetch and crossfade reporting."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncGenerator
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
+from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType
+from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.media_items import AudioFormat
+
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+
+if TYPE_CHECKING:
+    import pytest
+
+TEST_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE,
+    sample_rate=8000,
+    bit_depth=16,
+    channels=2,
+)
+# deliberately not a whole second and not frame-aligned, so any assumption about
+# chunk boundaries in the transition path shows up as wrong audio
+CHUNK_SIZE = TEST_PCM_FORMAT.pcm_sample_size // 3 + 2
+STANDARD_CROSSFADE_DURATION = 8
+
+
+def _buffer(*, duration_available: float = 45.0, eof: bool = True) -> AudioBuffer:
+    """Build a valid, fully resident buffer."""
+    audio_buffer = MagicMock(spec=AudioBuffer)
+    audio_buffer.has_error = False
+    audio_buffer.cancelled = False
+    audio_buffer.eof = eof
+    audio_buffer.max_size_seconds = 300
+    audio_buffer.is_valid.return_value = True
+    audio_buffer.duration_available = duration_available
+    audio_buffer.ready = MagicMock()
+    audio_buffer.ready.is_set.return_value = True
+    return audio_buffer
+
+
+def _queue_item(item_id: str, name: str) -> SimpleNamespace:
+    """Build a flow-streamable track with a prepared buffer."""
+    streamdetails = SimpleNamespace(
+        audio_format=TEST_PCM_FORMAT,
+        buffer=_buffer(),
+        fade_in=False,
+        stream_error=False,
+        uri=f"test://{item_id}",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=300,
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    return SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id=item_id,
+        name=name,
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=streamdetails,
+        duration=300,
+        extra_attributes={},
+    )
+
+
+def _flow_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    next_item: SimpleNamespace | None,
+    load_next: list[Any],
+    crossfade_mode: CrossfadeMode = CrossfadeMode.STANDARD_CROSSFADE,
+    crossfade_allowed: bool = True,
+) -> tuple[StreamsAudio, SimpleNamespace, MagicMock]:
+    """Build a StreamsAudio wired for a two-track flow stream."""
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=load_next)
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.get_next_item.return_value = next_item
+    mass.streams.get_crossfade_mode.return_value = crossfade_mode
+    mass.config.get_raw_core_config_value.return_value = STANDARD_CROSSFADE_DURATION
+    mass.streams.audio_processing.update_item_context = MagicMock()
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.crossfade_allowed = MagicMock(return_value=crossfade_allowed)  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        audio.smart_fades_mixer,
+        "build",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                timing_info=SimpleNamespace(
+                    fadein_trimmed_duration=0.0,
+                    crossfade_duration=float(STANDARD_CROSSFADE_DURATION),
+                    pre_crossfade_duration=0.0,
+                )
+            )
+        ),
+    )
+
+    async def _concat_mix(
+        _smart_fade: object,
+        *,
+        fade_in_part: bytes,
+        fade_out_part: bytes,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        # a lossless stand-in for the mixer, so the emitted total stays checkable
+        yield fade_out_part
+        yield fade_in_part
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
+    return audio, queue, mass
+
+
+def _install_item_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    seconds_per_item: dict[str, int],
+) -> tuple[list[str], dict[str, int], dict[str, dict[str, int]]]:
+    """
+    Serve each queue item unaligned chunks.
+
+    Returns the order in which streams were opened, how much of each item was read, and
+    a snapshot of that reading taken the moment each item's stream ran out.
+    """
+    opened: list[str] = []
+    consumed: dict[str, int] = dict.fromkeys(seconds_per_item, 0)
+    exhausted_at: dict[str, dict[str, int]] = {}
+
+    async def _item_stream(
+        queue_item: SimpleNamespace, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        item_id = queue_item.queue_item_id
+        opened.append(item_id)
+        total = TEST_PCM_FORMAT.pcm_sample_size * seconds_per_item[item_id]
+        sent = 0
+        while sent < total:
+            size = min(CHUNK_SIZE, total - sent)
+            sent += size
+            consumed[item_id] += size
+            yield bytes(size)
+            await asyncio.sleep(0)
+        exhausted_at[item_id] = dict(consumed)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    return opened, consumed, exhausted_at
+
+
+def _reported(mass: MagicMock) -> list[tuple[str, CrossfadeMode]]:
+    """Return the crossfade modes published for each queue item, in order."""
+    return [
+        (call.kwargs["queue_item_id"], call.kwargs["queue_processing"].crossfade_mode)
+        for call in mass.streams.audio_processing.update_item_context.call_args_list
+    ]
+
+
+async def _drain(stream: AsyncGenerator[bytes]) -> int:
+    """Consume a flow stream, yielding to the loop like a real consumer does."""
+    total = 0
+    async for chunk in stream:
+        total += len(chunk)
+        await asyncio.sleep(0)
+    return total
+
+
+async def test_flow_prefetches_the_incoming_fade_in_during_the_holdback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The incoming overlap is gathered while the outgoing tail is still being held back."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, _mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    opened, _consumed, exhausted_at = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 20}
+    )
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    emitted = await _drain(stream)
+
+    # the whole overlap was already in hand when the outgoing track ran out
+    overlap_size = TEST_PCM_FORMAT.pcm_sample_size * STANDARD_CROSSFADE_DURATION
+    assert exhausted_at["item-1"]["item-2"] >= overlap_size
+    # the prefetched stream is adopted, so the incoming track is only ever opened once
+    assert opened == ["item-1", "item-2"]
+    assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 60
+
+
+async def test_flow_falls_back_when_the_next_item_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prefetch for another item is dropped and the real next item is streamed."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    other_item = _queue_item("item-3", "Other")
+    audio, queue, _mass = _flow_audio(
+        monkeypatch, next_item=other_item, load_next=[second_item, QueueEmpty]
+    )
+    opened, consumed, _exhausted_at = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 20, "item-3": 20}
+    )
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    emitted = await _drain(stream)
+
+    # the stale prefetch is dropped and the real next item is opened once
+    assert opened[:3] == ["item-1", "item-3", "item-2"]
+    assert opened.count("item-2") == 1
+    # the discarded prefetch never reaches the listener
+    assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 60
+    assert consumed["item-2"] == TEST_PCM_FORMAT.pcm_sample_size * 20
+
+
+async def test_flow_reports_the_crossfade_that_actually_happens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fade is reported on both of its sides, once the boundary has decided."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    _install_item_streams(monkeypatch, audio, {"item-1": 40, "item-2": 20})
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    assert _reported(mass) == [
+        # nothing faded into the first track
+        ("item-1", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.STANDARD_CROSSFADE),
+        # the first track is only credited with a fade once its tail is really blended
+        ("item-1", CrossfadeMode.STANDARD_CROSSFADE),
+    ]
+
+
+async def test_flow_reports_no_crossfade_when_the_transition_is_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transition that never happens is not reported as a crossfade."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, mass = _flow_audio(
+        monkeypatch,
+        next_item=second_item,
+        load_next=[second_item, QueueEmpty],
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        crossfade_allowed=False,
+    )
+    _install_item_streams(monkeypatch, audio, {"item-1": 40, "item-2": 20})
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    assert _reported(mass) == [
+        ("item-1", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.DISABLED),
+    ]

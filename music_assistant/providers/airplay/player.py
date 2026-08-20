@@ -559,7 +559,7 @@ class AirPlayPlayer(Player):
             ):
                 self._transitioning = True
                 audio_source = self.mass.streams.get_stream(
-                    media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
+                    media, session_pcm_format, self.player_id
                 )
                 if await self.stream.session.replace(audio_source, media):
                     self._transitioning = False
@@ -584,9 +584,7 @@ class AirPlayPlayer(Player):
                 self.stream = None
 
             # select audio source
-            audio_source = self.mass.streams.get_stream(
-                media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
-            )
+            audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)
 
             # setup StreamSession for player (and its sync childs if any)
             provider = cast("AirPlayProvider", self.provider)
