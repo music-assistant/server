@@ -1453,11 +1453,22 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for idx in range(0, len(track_ids), chunk_size):
             chunk_ids = track_ids[idx : idx + chunk_size]
             songs = await self._get_song_detail(",".join(chunk_ids))
+            fetched_ids: set[str] = set()
             for song_obj in songs:
+                fetched_ids.add(str(song_obj.get("id") or song_obj.get("songId") or "").strip())
                 try:
                     yield self._parse_track(song_obj)
                 except InvalidDataError as err:
                     self.report_skipped_sync_item(MediaType.TRACK, None, err)
+            # the liked list is authoritative, so a track the detail call left out is still
+            # in the library and must not be read as removed
+            for missing_id in chunk_ids:
+                if missing_id not in fetched_ids:
+                    self.report_skipped_sync_item(
+                        MediaType.TRACK,
+                        missing_id,
+                        MediaNotFoundError(f"NCM did not return track {missing_id}"),
+                    )
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from NCM."""

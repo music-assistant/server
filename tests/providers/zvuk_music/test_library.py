@@ -86,7 +86,7 @@ class TestGetLibraryArtists:
         collection.artists = [_make_item(1), _make_item(2)]
         provider.client.get_collection = AsyncMock(return_value=collection)
 
-        raw_1, raw_2 = Mock(), Mock()
+        raw_1, raw_2 = _make_item(1), _make_item(2)
         provider.client.get_artists = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_1, parsed_2 = Mock(), Mock()
@@ -104,7 +104,7 @@ class TestGetLibraryArtists:
         collection.artists = [_make_item(1), _make_item(2)]
         provider.client.get_collection = AsyncMock(return_value=collection)
 
-        raw_1, raw_2 = Mock(), Mock()
+        raw_1, raw_2 = _make_item(1), _make_item(2)
         provider.client.get_artists = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_2 = Mock()
@@ -168,7 +168,7 @@ class TestGetLibraryAlbums:
         collection.releases = [_make_item(10), _make_item(20)]
         provider.client.get_collection = AsyncMock(return_value=collection)
 
-        raw_1, raw_2 = Mock(), Mock()
+        raw_1, raw_2 = _make_item(10), _make_item(20)
         provider.client.get_releases = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_1, parsed_2 = Mock(), Mock()
@@ -185,7 +185,7 @@ class TestGetLibraryAlbums:
         collection = Mock()
         collection.releases = [_make_item(10)]
         provider.client.get_collection = AsyncMock(return_value=collection)
-        raw = Mock()
+        raw = _make_item(10)
         provider.client.get_releases = AsyncMock(return_value=[raw])
 
         err = InvalidDataError("bad release")
@@ -222,7 +222,7 @@ class TestGetLibraryTracks:
         collection.tracks = [_make_item(100), _make_item(200)]
         provider.client.get_collection = AsyncMock(return_value=collection)
 
-        raw_1, raw_2 = Mock(), Mock()
+        raw_1, raw_2 = _make_item(100), _make_item(200)
         provider.client.get_tracks = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_1, parsed_2 = Mock(), Mock()
@@ -279,7 +279,7 @@ class TestGetLibraryPlaylists:
         """User playlists are fetched in batch and parsed."""
         provider = _make_provider()
         provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1), _make_item(2)])
-        raw_1, raw_2 = Mock(), Mock()
+        raw_1, raw_2 = _make_item(1), _make_item(2)
         provider.client.get_playlists = AsyncMock(return_value=[raw_1, raw_2])
         provider.client.get_short_playlists = AsyncMock(return_value=[])
 
@@ -314,7 +314,7 @@ class TestGetLibraryPlaylists:
         provider = _make_provider()
         # Need at least one user playlist so the method doesn't return early
         provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1)])
-        provider.client.get_playlists = AsyncMock(return_value=[Mock()])
+        provider.client.get_playlists = AsyncMock(return_value=[_make_item(1)])
         raw_synth = Mock()
         provider.client.get_short_playlists = AsyncMock(return_value=[raw_synth])
 
@@ -338,7 +338,7 @@ class TestGetLibraryPlaylists:
         """InvalidDataError from parse_playlist on a user playlist is skipped."""
         provider = _make_provider()
         provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1), _make_item(2)])
-        raw_1, raw_2 = Mock(), Mock()
+        raw_1, raw_2 = _make_item(1), _make_item(2)
         provider.client.get_playlists = AsyncMock(return_value=[raw_1, raw_2])
         provider.client.get_short_playlists = AsyncMock(return_value=[])
 
@@ -351,3 +351,44 @@ class TestGetLibraryPlaylists:
             results = [p async for p in provider.get_library_playlists()]
 
         assert results == [good_parsed]
+
+
+class TestBatchFetchGaps:
+    """Tests for id's a batch fetch does not return."""
+
+    @pytest.mark.asyncio
+    async def test_id_the_fetch_left_out_is_reported(self) -> None:
+        """
+        An id the batch fetch did not return is reported instead of looking removed.
+
+        The fetch returns an empty list for a batch it cannot find, which would otherwise
+        drop every item in that batch out of the library.
+        """
+        provider = _make_provider()
+        collection = Mock()
+        collection.artists = [_make_item(1), _make_item(2)]
+        provider.client.get_collection = AsyncMock(return_value=collection)
+        provider.client.get_artists = AsyncMock(return_value=[])
+
+        with patch(f"{_PROVIDER_MODULE}.parse_artist"):
+            results = [a async for a in provider.get_library_artists()]
+
+        assert results == []
+        reported = {call.args[1] for call in provider.report_skipped_sync_item.call_args_list}
+        assert reported == {"1", "2"}
+
+    @pytest.mark.asyncio
+    async def test_id_the_fetch_returned_is_not_reported(self) -> None:
+        """An item that came back fine is not reported as missing."""
+        provider = _make_provider()
+        collection = Mock()
+        collection.artists = [_make_item(1), _make_item(2)]
+        provider.client.get_collection = AsyncMock(return_value=collection)
+        provider.client.get_artists = AsyncMock(return_value=[_make_item(1)])
+
+        with patch(f"{_PROVIDER_MODULE}.parse_artist"):
+            results = [a async for a in provider.get_library_artists()]
+
+        assert len(results) == 1
+        reported = {call.args[1] for call in provider.report_skipped_sync_item.call_args_list}
+        assert reported == {"2"}

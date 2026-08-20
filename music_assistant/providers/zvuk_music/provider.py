@@ -802,11 +802,22 @@ class ZvukMusicProvider(MusicProvider):
         for i in range(0, len(ids), DEFAULT_LIMIT):
             batch = ids[i : i + DEFAULT_LIMIT]
             items = await fetcher(batch)
+            fetched_ids: set[str] = set()
             for item in items:
+                fetched_ids.add(str(item.id))
                 try:
                     yield parser(self, item)
                 except InvalidDataError as err:
                     self.report_skipped_sync_item(media_type, str(item.id), err)
+            # the id's come from the user's own collection, so anything the fetch left out
+            # (a whole batch is dropped when it raises NotFound) is still in the library
+            for missing_id in batch:
+                if missing_id not in fetched_ids:
+                    self.report_skipped_sync_item(
+                        media_type,
+                        missing_id,
+                        MediaNotFoundError(f"Zvuk did not return {media_type.value} {missing_id}"),
+                    )
 
     async def _get_for_you_playlists(self) -> list[Playlist]:
         """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
