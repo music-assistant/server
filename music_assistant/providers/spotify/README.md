@@ -36,9 +36,12 @@ wire models) is shared infrastructure owned by the Spotify Connect provider
   generic provider-capacity handling (`max_concurrent_streams`) enforces this and
   selects a free instance where possible.
 - **Pacing**: the capture FIFO is reader-clocked and Spotify's delivery cannot sustain
-  accelerated reads (measured), so the FIFO is read at 1.0x realtime with a small
-  initial burst. On a `buffering` status the sink is suspended so stall silence never
-  enters the delivered PCM.
+  accelerated reads (measured: 1.1x sustained is the cold-cache ceiling), so the FIFO is
+  read at 1.1x with a small (1s) initial burst — the surplus banks the cushion that keeps
+  track boundaries clean. On a `buffering` status the sink is suspended so stall silence
+  never enters the delivered PCM. The StreamDetails carry `is_realtime=True`, which makes
+  the streams core adapt its buffer thresholds, seek handling and (flow) crossfade to a
+  source that cannot read ahead.
 - **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence);
   WebSocket state and process exit delimit the item. Exit code 0 is not proof of
   complete PCM — the last observed playback position is validated against the item's

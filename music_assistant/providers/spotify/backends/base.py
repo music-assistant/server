@@ -44,6 +44,11 @@ class SpotifyPlaybackBackend(ABC):
     def max_concurrent_streams(self) -> int:
         """Return how many items this backend can fetch concurrently."""
 
+    @property
+    def is_realtime(self) -> bool:
+        """Return whether this backend delivers audio at playback pace (no read-ahead)."""
+        return False
+
     @abstractmethod
     async def setup(self) -> None:
         """

@@ -45,7 +45,7 @@
     "playback_backend": {
       "label": "How should Music Assistant play Spotify audio?",
       "options": {
-        "soloist": "Spotify Soloist (official, recommended for newer accounts)",
+        "soloist": "Spotify Soloist (official)",
         "librespot": "librespot (community)"
       }
     },
@@ -97,7 +97,7 @@
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
-      "description": "Music Assistant can fetch Spotify audio in two ways:\n\n**Spotify Soloist (official, recommended for newer accounts)** — Spotify's official playback engine. Works with every account, including accounts created since December 2024, but needs a personal API key (created with a Spotify **Premium** account) and a few extra setup steps.\n\n**librespot (community)** — a community-built player. Simpler to set up, but it relies on reverse-engineered Spotify internals: it primarily works for accounts created before December 2024 and may stop working when Spotify changes something."
+      "description": "Music Assistant can fetch Spotify audio in two ways:\n\n**Spotify Soloist (official)** — Spotify's official playback engine. Works with every account, including accounts created since December 2024, but needs a personal API key (created with a Spotify **Premium** account) and a few extra setup steps. Because Spotify delivers the audio at playback speed, starting and seeking take a few seconds and crossfade between songs is not available.\n\n**librespot (community)** — a community-built player. Simpler to set up and more responsive, but it relies on reverse-engineered Spotify internals: it primarily works for accounts created before December 2024 and may stop working when Spotify changes something.\n\nGood to know: this choice covers playback through Music Assistant's own queue. For the smoothest Spotify experience (instant playback, Spotify's own transitions), the separate **Spotify Connect** provider is recommended — both can be used side by side."
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",

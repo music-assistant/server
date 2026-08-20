@@ -855,6 +855,7 @@ class SpotifyProvider(MusicProvider):
                 media_type=MediaType.AUDIOBOOK,
                 audio_format=self.backend.audio_format,
                 stream_type=StreamType.CUSTOM,
+                is_realtime=self.backend.is_realtime,
                 allow_seek=True,
                 can_seek=True,
                 duration=duration_seconds,
@@ -868,6 +869,7 @@ class SpotifyProvider(MusicProvider):
             media_type=media_type,
             audio_format=self.backend.audio_format,
             stream_type=StreamType.CUSTOM,
+            is_realtime=self.backend.is_realtime,
             allow_seek=True,
             can_seek=True,
         )

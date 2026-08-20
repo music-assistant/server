@@ -144,6 +144,11 @@ class SoloistSingleTrackBackend(SpotifyPlaybackBackend):
         """One: a Spotify account supports a single active Soloist session."""
         return 1
 
+    @property
+    def is_realtime(self) -> bool:
+        """Soloist delivers at playback pace (~1.1x ceiling): no read-ahead."""
+        return True
+
     async def setup(self) -> None:
         """
         Validate the binary and paired session, and start the capture server.

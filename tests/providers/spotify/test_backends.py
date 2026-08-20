@@ -29,6 +29,14 @@ if TYPE_CHECKING:
     import pytest
 
 
+def test_realtime_declaration_follows_the_backend() -> None:
+    """Soloist declares realtime delivery; librespot can read ahead."""
+    librespot = LibrespotBackend(_make_provider({}))
+    soloist = SoloistSingleTrackBackend(_make_provider({CONF_PLAYBACK_BACKEND: "soloist"}))
+    assert librespot.is_realtime is False
+    assert soloist.is_realtime is True
+
+
 def test_backend_defaults_to_librespot() -> None:
     """A config without a stored backend choice (pre-split install) stays on librespot."""
     prov = _make_provider({})
