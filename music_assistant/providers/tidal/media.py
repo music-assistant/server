@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
@@ -77,23 +78,27 @@ class TidalMediaManager:
         # Slice the resources before parsing so we only parse up to `limit` items.
         if MediaType.TRACK in wanted:
             results.tracks = [
-                parse_track_v2(self.provider, doc, res)
+                track
                 for res in doc.related(data, "tracks")[:limit]
+                if (track := self._parse_or_skip(parse_track_v2, doc, res)) is not None
             ]
         if MediaType.ALBUM in wanted:
             results.albums = [
-                parse_album_v2(self.provider, doc, res)
+                album
                 for res in doc.related(data, "albums")[:limit]
+                if (album := self._parse_or_skip(parse_album_v2, doc, res)) is not None
             ]
         if MediaType.ARTIST in wanted:
             results.artists = [
-                parse_artist_v2(self.provider, doc, res)
+                artist
                 for res in doc.related(data, "artists")[:limit]
+                if (artist := self._parse_or_skip(parse_artist_v2, doc, res)) is not None
             ]
         if MediaType.PLAYLIST in wanted:
             results.playlists = [
-                parse_playlist_v2(self.provider, doc, res)
+                playlist
                 for res in doc.related(data, "playlists")[:limit]
+                if (playlist := self._parse_or_skip(parse_playlist_v2, doc, res)) is not None
             ]
         return results
 
@@ -275,13 +280,15 @@ class TidalMediaManager:
             replace_media="items",
         ):
             for item in doc.data_list:
-                if resource := doc.resolve(item):
-                    track = parse_track_v2(self.provider, doc, resource)
-                    track.position = len(tracks) + 1
-                    tracks.append(track)
-                    # Feed the stale->live pairs Tidal computed for this read into
-                    # the churn cache, as the library walk already does.
-                    self.provider.note_replaced_track(item)
+                if not (resource := doc.resolve(item)):
+                    continue
+                if (track := self._parse_or_skip(parse_track_v2, doc, resource)) is None:
+                    continue
+                track.position = len(tracks) + 1
+                tracks.append(track)
+                # Feed the stale->live pairs Tidal computed for this read into
+                # the churn cache, as the library walk already does.
+                self.provider.note_replaced_track(item)
         return tracks
 
     async def _get_mix_tracks(self, mix_id: str, limit: int, offset: int) -> list[Track]:
@@ -316,6 +323,9 @@ class TidalMediaManager:
         """
         Parse the document's primary collection, leaving out the items that cannot be parsed.
 
+        Only for a collection of a single resource type: every resource is handed to the
+        same parser, so a mixed-type relationship has to be filtered by the caller.
+
         :param parser: The parser to apply to each resolved resource.
         :param doc: The JSON:API document holding the collection.
         """
@@ -342,13 +352,16 @@ class TidalMediaManager:
         """
         try:
             return parser(self.provider, doc, resource)
-        except (KeyError, TypeError, ValueError) as err:
-            # a single unusable item must not discard the rest of the collection
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            # Tidal sending one item in a shape its parser can not read must not discard
+            # the rest of the collection. Log the traceback (on debug) as well, so a
+            # parser bug caught here is still traceable to its origin.
             self.logger.warning(
                 "Skipping Tidal %s %s: %s",
                 resource.get("type", "item"),
                 resource.get("id", "[no id]"),
                 err,
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             return None
 

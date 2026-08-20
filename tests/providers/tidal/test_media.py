@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import RetriesExhausted
+from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import Playlist
 
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
@@ -31,7 +31,9 @@ def _break_resource(raw: dict[str, Any], resource_id: str) -> dict[str, Any]:
     """Blank the title of one included resource, which its parser cannot handle."""
     for resource in raw["included"]:
         if resource["id"] == resource_id:
-            resource["attributes"]["title"] = None
+            attributes = resource["attributes"]
+            # artists carry a name where tracks and albums carry a title
+            attributes["name" if "name" in attributes else "title"] = None
             return raw
     raise AssertionError(f"resource {resource_id} not in fixture")
 
@@ -280,6 +282,22 @@ async def test_get_album_tracks_fetch_failure_propagates(
         await media_manager.get_album_tracks("58756127")
 
 
+async def test_get_album_tracks_missing_album_still_not_found(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test an album that is gone is still reported as not found."""
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        for _ in ():  # never yields: the api client raises while fetching the first page
+            yield
+        raise MediaNotFoundError("Item not found: albums/1/relationships/items")
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    with pytest.raises(MediaNotFoundError):
+        await media_manager.get_album_tracks("1")
+
+
 async def test_get_artist_albums(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
     """Test artist albums read from the official relationship endpoint."""
     doc = _load_doc("artist_albums.json")
@@ -362,6 +380,21 @@ async def test_get_similar_tracks_respects_limit(
     assert len(tracks) == 5
 
 
+async def test_get_similar_tracks_fills_the_limit_around_an_unparsable_track(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test the limit is still filled when one of the similar tracks cannot be parsed."""
+    raw = _load_raw("similar_tracks.json")
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        _break_resource(raw, raw["data"][0]["id"])
+    )
+
+    tracks = await media_manager.get_similar_tracks("58756128", limit=5)
+
+    assert len(tracks) == 5
+    assert all(track.item_id != raw["data"][0]["id"] for track in tracks)
+
+
 async def test_get_similar_artists(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
     """Test similar artists read from the official relationship endpoint."""
     provider_mock.api.get_jsonapi.return_value = _load_doc("similar_artists.json")
@@ -373,6 +406,67 @@ async def test_get_similar_artists(media_manager: TidalMediaManager, provider_mo
         "artists/4184211/relationships/similarArtists",
         include=["similarArtists.profileArt"],
     )
+
+
+async def test_get_similar_artists_skips_unparsable_artist(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test one unusable artist does not empty the similar artists."""
+    raw = _load_raw("similar_artists.json")
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        _break_resource(raw, raw["data"][0]["id"])
+    )
+
+    artists = await media_manager.get_similar_artists("4184211")
+
+    assert len(artists) == 19
+    assert all(artist.item_id != raw["data"][0]["id"] for artist in artists)
+
+
+async def test_search_skips_unparsable_track(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test one unusable track does not drop the whole search result."""
+    raw = _load_raw("search.json")
+    broken_id = raw["data"][0]["relationships"]["tracks"]["data"][0]["id"]
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(_break_resource(raw, broken_id))
+
+    results = await media_manager.search("lukas graham", [MediaType.TRACK], limit=5)
+
+    assert len(results.tracks) == 4
+    assert all(track.item_id != broken_id for track in results.tracks)
+
+
+@patch("music_assistant.providers.tidal.media.parse_track_v2")
+async def test_favorite_tracks_skips_unparsable_track(
+    mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test one unusable favourite does not fail the whole favourites playlist."""
+    doc = JsonApiDocument(
+        {
+            "data": [
+                {"type": "tracks", "id": "1"},
+                {"type": "tracks", "id": "2"},
+                {"type": "tracks", "id": "3"},
+            ],
+            "included": [
+                {"type": "tracks", "id": "1", "attributes": {}},
+                {"type": "tracks", "id": "2", "attributes": {}},
+                {"type": "tracks", "id": "3", "attributes": {}},
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+    mock_parse_track.side_effect = [Mock(item_id="1"), KeyError("id"), Mock(item_id="3")]
+
+    tracks = await media_manager.get_playlist_tracks("favorite_tracks", page=0)
+
+    assert [track.item_id for track in tracks] == ["1", "3"]
+    assert [track.position for track in tracks] == [1, 2]
 
 
 @patch("music_assistant.providers.tidal.media.parse_playlist")
