@@ -231,6 +231,31 @@ class QueueSyncMixin:
                 return index
         return None
 
+    def _wrap_boundary_index(self, playqueue: PlayQueue, base_index: int) -> int | None:
+        """
+        Return the Plex index at which the MA queue wraps back to its own start.
+
+        Normally that is the track playback began on. If Plex no longer lists that track
+        it was removed from the queue, so the boundary moves up to the earliest item MA
+        still holds that Plex does list. A truncated response cannot tell a removal from
+        an item simply falling outside it, so it yields no boundary at all.
+
+        :param playqueue: The Plex play queue.
+        :param base_index: The last MA queue index that survives the replace.
+        :return: The index within ``playqueue.items``, or None if it cannot be determined.
+        """
+        if (origin := self._plex_index_of(playqueue, 0)) is not None:
+            return origin
+
+        total = getattr(playqueue, "playQueueTotalCount", None)
+        if total is not None and len(playqueue.items) < total:
+            return None
+
+        for ma_index in range(1, base_index + 1):
+            if (index := self._plex_index_of(playqueue, ma_index)) is not None:
+                return index
+        return None
+
     def _replace_next_base_index(self, player_id: str, current_index: int) -> int:
         """
         Return the last MA queue index that a REPLACE_NEXT will keep.
@@ -271,12 +296,12 @@ class QueueSyncMixin:
         anchor = self._plex_index_of(playqueue, base_index)
         if anchor is None:
             anchor = self._selected_item_index(playqueue)
-        origin = self._plex_index_of(playqueue, 0)
+        origin = self._wrap_boundary_index(playqueue, base_index)
 
         items = playqueue.items
         if origin is None:
-            # Without the rotation origin in this window there is no wrap we can trust,
-            # so take everything Plex still lists after the current track.
+            # No trustworthy wrap boundary, so take everything Plex still lists after
+            # the current track.
             remaining_items = items[anchor + 1 :]
         else:
             count = (origin - anchor - 1) % len(items)

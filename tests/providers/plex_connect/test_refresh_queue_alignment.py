@@ -157,6 +157,7 @@ async def test_refresh_on_a_windowed_queue_resumes_after_the_current_item() -> N
     ]
     playqueue = SimpleNamespace(
         items=items,
+        playQueueTotalCount=200,
         playQueueSelectedItemID=1060,
         playQueueSelectedItemOffset=60,
     )
@@ -182,3 +183,30 @@ async def test_refresh_after_playback_wrapped_past_the_origin() -> None:
     await handler._replace_remaining_queue("player1", playqueue, 9)
 
     assert handler.queued_keys() == ["/library/metadata/2", "/library/metadata/3"]
+
+
+async def test_refresh_when_the_origin_track_was_removed_from_plex() -> None:
+    """
+    A removed origin still leaves a wrap: the boundary moves to the next MA item.
+
+    An absent origin in a complete response means the track was deleted from the queue,
+    which is not the same as it falling outside a truncated one.
+    """
+    handler = _QueueHandler()
+    # MA holds [1, 2, 3, 0] and is playing item 1; Plex no longer lists item 1.
+    items = [
+        SimpleNamespace(key=f"/library/metadata/{n}", playQueueItemID=1000 + n) for n in (0, 2, 3)
+    ]
+    playqueue = SimpleNamespace(
+        items=items,
+        playQueueTotalCount=3,
+        playQueueSelectedItemID=1002,
+        playQueueSelectedItemOffset=1,
+    )
+    handler.play_queue_item_ids = {0: 1001, 1: 1002, 2: 1003, 3: 1000}
+    handler.queue.current_index = 1
+    handler.queue.index_in_buffer = 1
+
+    await handler._replace_remaining_queue("player1", playqueue, 1)
+
+    assert handler.queued_keys() == ["/library/metadata/3", "/library/metadata/0"]
