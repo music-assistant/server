@@ -5,6 +5,8 @@ import pathlib
 from typing import Any
 from unittest.mock import Mock, patch
 
+import pytest
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import Playlist
@@ -23,6 +25,15 @@ def _load_raw(name: str) -> dict[str, Any]:
 
 def _load_doc(name: str) -> JsonApiDocument:
     return JsonApiDocument(_load_raw(name))
+
+
+def _break_resource(raw: dict[str, Any], resource_id: str) -> dict[str, Any]:
+    """Blank the title of one included resource, which its parser cannot handle."""
+    for resource in raw["included"]:
+        if resource["id"] == resource_id:
+            resource["attributes"]["title"] = None
+            return raw
+    raise AssertionError(f"resource {resource_id} not in fixture")
 
 
 async def test_search(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
@@ -200,6 +211,75 @@ async def test_get_album_tracks_skips_videos(
     assert all(track.item_id != "99999" for track in tracks)
 
 
+async def test_get_album_tracks_skips_unparsable_track(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test one unusable track does not take the rest of the album down with it."""
+    doc = JsonApiDocument(_break_resource(_load_raw("album_items.json"), "58756128"))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("58756127")
+
+    assert len(tracks) == 10
+    assert all(track.item_id != "58756128" for track in tracks)
+    provider_mock.logger.warning.assert_called_once()
+
+
+async def test_get_album_tracks_keeps_tracks_from_earlier_pages(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test an unusable track on a later page does not discard the earlier pages."""
+    first_page = _load_doc("album_items.json")
+    second_page = JsonApiDocument(
+        {
+            "data": [
+                {"id": "998", "type": "tracks", "meta": {"volumeNumber": 1, "trackNumber": 12}},
+                {"id": "999", "type": "tracks", "meta": {"volumeNumber": 1, "trackNumber": 13}},
+            ],
+            "included": [
+                {"id": "998", "type": "tracks", "attributes": {"title": None}},
+                {
+                    "id": "999",
+                    "type": "tracks",
+                    "attributes": {"title": "Hidden Track", "duration": "PT3M0S"},
+                },
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield first_page
+        yield second_page
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("58756127")
+
+    assert len(tracks) == 12
+    assert tracks[0].name == "7 Years"
+    assert tracks[-1].name == "Hidden Track"
+    assert tracks[-1].track_number == 13
+
+
+async def test_get_album_tracks_fetch_failure_propagates(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a failure to read a page is raised instead of returning a partial album."""
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield _load_doc("album_items.json")
+        raise ClientError("connection lost")
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    with pytest.raises(ClientError):
+        await media_manager.get_album_tracks("58756127")
+
+
 async def test_get_artist_albums(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
     """Test artist albums read from the official relationship endpoint."""
     doc = _load_doc("artist_albums.json")
@@ -228,6 +308,47 @@ async def test_get_artist_toptracks(media_manager: TidalMediaManager, provider_m
         include=["tracks.artists", "tracks.albums.coverArt"],
         replace_media="tracks",
     )
+
+
+async def test_get_artist_albums_skips_unparsable_album(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test one unusable album does not empty the artist's discography."""
+    doc = JsonApiDocument(_break_resource(_load_raw("artist_albums.json"), "541774424"))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    albums = await media_manager.get_artist_albums("4184211")
+
+    assert len(albums) == 19
+    assert all(album.item_id != "541774424" for album in albums)
+
+
+async def test_get_artist_toptracks_skips_unparsable_track(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test one unusable track does not empty the artist's top tracks."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        _break_resource(_load_raw("artist_toptracks.json"), "58503071")
+    )
+
+    tracks = await media_manager.get_artist_toptracks("4184211")
+
+    assert len(tracks) == 19
+    assert all(track.item_id != "58503071" for track in tracks)
+
+
+async def test_get_artist_toptracks_fetch_failure_propagates(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a failure to read the top tracks is raised instead of reported as empty."""
+    provider_mock.api.get_jsonapi.side_effect = ClientError("connection lost")
+
+    with pytest.raises(ClientError):
+        await media_manager.get_artist_toptracks("4184211")
 
 
 async def test_get_similar_tracks_respects_limit(
