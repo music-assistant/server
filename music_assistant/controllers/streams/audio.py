@@ -3404,9 +3404,11 @@ class StreamsAudio:
         # be treated as raw PCM downstream. Only applies to WAV/AIFF -
         # other containers don't have this ambiguity.
         if streamdetails.path.lower().rsplit(".", 1)[-1] in ("wav", "aiff", "aif"):
-            # 256 KB probesize / 0.5s duration is enough to detect embedded
-            # DTS-in-WAV while keeping I/O overhead and latency virtually zero.
-            extra_input_args += ["-probesize", "256000", "-analyzeduration", "500000"]
+            # 256 KB probesize is enough to detect embedded DTS-in-WAV while
+            # keeping I/O overhead and latency virtually zero. Note: -analyzeduration
+            # was tested and found to be a noop here — ffmpeg's demuxer exhausts the
+            # probesize byte limit long before the time-based limit could apply.
+            extra_input_args += ["-probesize", "256000"]
         return streamdetails.path, seek_position, extra_input_args
 
     async def _iter_audio_source_pcm(
