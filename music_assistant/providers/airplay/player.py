@@ -208,6 +208,8 @@ class AirPlayPlayer(Player):
         return (
             bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
             and self.protocol == StreamingProtocol.AIRPLAY2
+            # the compat lane is 16-bit only, so hi-res stands down while the pin is active
+            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
         )
 
     @property

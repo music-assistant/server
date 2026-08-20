@@ -760,6 +760,10 @@ class StreamsController(CoreController):
             )
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
+            elif queue_item.streamdetails.is_realtime:
+                # a realtime source delivers at playback pace, so it has no audio to
+                # spare for an overlap in either direction
+                crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
@@ -1421,7 +1425,9 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     crossfade_mode=(
                         self.get_crossfade_mode(queue)
+                        # a realtime source is never faded, in either direction
                         if queue_item.media_type == MediaType.TRACK
+                        and not (queue_item.streamdetails and queue_item.streamdetails.is_realtime)
                         else CrossfadeMode.DISABLED
                     ),
                     overlay_enabled=(
@@ -1603,13 +1609,12 @@ class StreamsController(CoreController):
         finally:
             try:
                 await prov.on_source_unselected(source_id, queue_id, stream_session_id)
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "on_source_unselected raised for provider %s source %s queue %s: %s",
+                    "on_source_unselected raised for provider %s source %s queue %s",
                     prov.instance_id,
                     source_id,
                     queue_id,
-                    err,
                 )
 
     def _update_audio_processing_context(
