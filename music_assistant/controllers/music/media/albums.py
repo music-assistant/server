@@ -637,8 +637,12 @@ class AlbumsController(MediaControllerBase[Album]):
             {
                 "name": name,
                 "sort_name": sort_name,
-                "version": update.version if overwrite else cur_item.version or update.version,
-                "year": update.year or cur_item.year,
+                "version": (update.version or cur_item.version)
+                if overwrite
+                else (cur_item.version or update.version),
+                "year": (update.year or cur_item.year)
+                if overwrite
+                else (cur_item.year or update.year),
                 "album_type": album_type.value,
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),

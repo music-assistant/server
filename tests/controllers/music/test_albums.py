@@ -161,3 +161,60 @@ async def test_overwrite_update_replaces_only_its_own_provider_mapping(
     assert {
         (mapping.provider_instance, mapping.item_id) for mapping in refreshed.provider_mappings
     } == {("spotify_1", "album2"), ("tidal_1", "tidal_album1")}
+
+
+async def test_track_overwrite_keeps_album_details_with_an_empty_image_list(
+    mass: MusicAssistant,
+) -> None:
+    """An empty image list is not metadata, so it must not replace the stored details."""
+    full = _detailed_album()
+    full.metadata.description = "About this album"
+    db_album = await mass.music.albums.add_item_to_library(full)
+    track = create_track("spotify_1", "track1")
+    track.album = create_album("spotify_1", "album1")
+    db_track = await mass.music.tracks.add_item_to_library(track)
+
+    # a provider that always assigns an image list, empty or not (as spotify does)
+    update = create_track("spotify_1", "track1")
+    stub = create_album("spotify_1", "album1")
+    stub.metadata.images = UniqueList([])
+    update.album = stub
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.albums.get_library_item(db_album.item_id)
+    assert refreshed.metadata.genres == {"rock"}
+    assert refreshed.metadata.description == "About this album"
+    assert [image.path for image in refreshed.metadata.images or []] == [ALBUM_IMAGE]
+
+
+async def test_track_overwrite_keeps_album_version(mass: MusicAssistant) -> None:
+    """A track update carrying a version-less album must not blank the stored edition."""
+    full = create_album("spotify_1", "album1")
+    full.version = "Deluxe Edition"
+    db_album = await mass.music.albums.add_item_to_library(full)
+    track = create_track("spotify_1", "track1")
+    track.album = create_album("spotify_1", "album1")
+    db_track = await mass.music.tracks.add_item_to_library(track)
+
+    update = create_track("spotify_1", "track1")
+    update.album = create_album("spotify_1", "album1")
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.albums.get_library_item(db_album.item_id)
+    assert refreshed.version == "Deluxe Edition"
+
+
+async def test_merge_update_keeps_the_stored_year_and_version(mass: MusicAssistant) -> None:
+    """A second provider matching an existing album does not restate its release."""
+    full = _detailed_album()
+    full.version = "Deluxe Edition"
+    db_album = await mass.music.albums.add_item_to_library(full)
+
+    # the same album on another provider, carrying a reissue year and no edition
+    update = create_album("tidal_1", "tidal_album1")
+    update.year = 2011
+    await mass.music.albums.update_item_in_library(db_album.item_id, update)
+
+    refreshed = await mass.music.albums.get_library_item(db_album.item_id)
+    assert refreshed.year == 1999
+    assert refreshed.version == "Deluxe Edition"

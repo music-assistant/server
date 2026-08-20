@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.helpers import create_safe_string
@@ -135,7 +136,7 @@ def metadata_for_update(
     :param update: Metadata of the item as delivered by the provider.
     :param overwrite: Whether the given item replaces the stored one.
     """
-    if overwrite and update != MediaItemMetadata():
+    if overwrite and any(getattr(update, field.name) for field in fields(update)):
         return update
     return stored.update(update)
 
