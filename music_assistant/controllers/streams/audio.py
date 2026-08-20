@@ -1954,7 +1954,13 @@ class StreamsAudio:
             )
             return
         queue.flow_mode = True
-        pq_data.flow_mode_stream_log = []
+        # A session can also be handed a second producer, which the session check does not
+        # catch: players such as DLNA renderers sometimes open the same flow url twice to
+        # probe the audio. Append to the list published here rather than to whatever the
+        # queue currently holds, so the entries of a producer that has since been replaced
+        # end up in a list nobody reads instead of interleaving with the live one's.
+        flow_log: list[PlayLogEntry] = []
+        pq_data.flow_mode_stream_log = flow_log
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
@@ -2137,7 +2143,7 @@ class StreamsAudio:
                     )
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
-            pq_data.flow_mode_stream_log.append(play_log_entry)
+            flow_log.append(play_log_entry)
 
             bytes_written = 0
             crossfade_buffer = bytearray()
