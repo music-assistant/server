@@ -2128,6 +2128,8 @@ class StreamsAudio:
             # Build eagerly so seek_position is set before PlayLogEntry is appended —
             # consumer-paced mix() would otherwise let the queue briefly report 0.
             crossfade_smart_fade: SmartFade | None = None
+            collect_started = 0.0
+            collect_resident = 0.0
             incoming_crossfade_size = crossfade_buffer_size
             incoming_audio_buffer: AudioBuffer | None = None
             if last_fadeout_part and last_streamdetails:
@@ -2153,6 +2155,10 @@ class StreamsAudio:
                     incoming_audio_buffer = cast("AudioBuffer", queue_track.streamdetails.buffer)
                     incoming_crossfade_size = int(pcm_format.pcm_sample_size * incoming_duration)
                     incoming_crossfade_size = (incoming_crossfade_size // frame_size) * frame_size
+                    # no audio is emitted while the incoming overlap is collected, so a
+                    # slow collection here is heard as a gap at the transition
+                    collect_started = asyncio.get_event_loop().time()
+                    collect_resident = incoming_audio_buffer.duration_available
                     crossfade_smart_fade = await self.smart_fades_mixer.build(
                         fade_in_streamdetails=queue_track.streamdetails,
                         fade_out_streamdetails=last_streamdetails,
@@ -2254,6 +2260,14 @@ class StreamsAudio:
                     and crossfade_smart_fade is not None
                     and last_play_log_entry is not None
                 ):
+                    self.logger.debug(
+                        "Collected %.1fs of incoming audio for the transition into %s in %.1fs"
+                        " (%.1fs was resident when it started)",
+                        len(crossfade_buffer) / pcm_sample_size,
+                        queue_track.name,
+                        asyncio.get_event_loop().time() - collect_started,
+                        collect_resident,
+                    )
                     fadein_part = bytes(crossfade_buffer[:incoming_crossfade_size])
                     remaining_bytes = bytes(crossfade_buffer[incoming_crossfade_size:])
                     try:
