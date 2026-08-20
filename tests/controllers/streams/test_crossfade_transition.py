@@ -14,6 +14,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 
 if TYPE_CHECKING:
     import pytest
@@ -74,9 +75,10 @@ def _flow_audio(
     monkeypatch: pytest.MonkeyPatch,
     *,
     next_item: SimpleNamespace | None,
-    load_next: list[Any],
+    load_next: Any,
     crossfade_mode: CrossfadeMode = CrossfadeMode.STANDARD_CROSSFADE,
     crossfade_allowed: bool = True,
+    build_result: object | None = None,
 ) -> tuple[StreamsAudio, SimpleNamespace, MagicMock]:
     """Build a StreamsAudio wired for a two-track flow stream."""
     queue = SimpleNamespace(
@@ -108,7 +110,8 @@ def _flow_audio(
         audio.smart_fades_mixer,
         "build",
         AsyncMock(
-            return_value=SimpleNamespace(
+            return_value=build_result
+            or SimpleNamespace(
                 timing_info=SimpleNamespace(
                     fadein_trimmed_duration=0.0,
                     crossfade_duration=float(STANDARD_CROSSFADE_DURATION),
@@ -254,10 +257,11 @@ async def test_flow_reports_the_crossfade_that_actually_happens(
     await _drain(stream)
 
     assert _reported(mass) == [
-        # nothing faded into the first track
+        # each track starts out crediting no fade
         ("item-1", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.DISABLED),
+        # both sides are only credited once the blend has really been rendered
         ("item-2", CrossfadeMode.STANDARD_CROSSFADE),
-        # the first track is only credited with a fade once its tail is really blended
         ("item-1", CrossfadeMode.STANDARD_CROSSFADE),
     ]
 
@@ -286,3 +290,106 @@ async def test_flow_reports_no_crossfade_when_the_transition_is_denied(
         ("item-1", CrossfadeMode.DISABLED),
         ("item-2", CrossfadeMode.DISABLED),
     ]
+
+
+async def test_flow_reports_a_smart_fade_that_degraded_to_standard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A smart fade the mixer could not plan is reported as the standard one it became."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    degraded = StandardCrossFade(logger=MagicMock(), crossfade_duration=STANDARD_CROSSFADE_DURATION)
+    overlap_size = TEST_PCM_FORMAT.pcm_sample_size * STANDARD_CROSSFADE_DURATION
+    degraded.build(overlap_size, overlap_size, TEST_PCM_FORMAT)
+    audio, queue, mass = _flow_audio(
+        monkeypatch,
+        next_item=second_item,
+        load_next=[second_item, QueueEmpty],
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        build_result=degraded,
+    )
+    _install_item_streams(monkeypatch, audio, {"item-1": 60, "item-2": 60})
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    assert _reported(mass) == [
+        ("item-1", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.STANDARD_CROSSFADE),
+        ("item-1", CrossfadeMode.STANDARD_CROSSFADE),
+    ]
+
+
+async def test_flow_reopens_the_incoming_track_when_the_prefetch_broke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prefetch whose source failed is dropped so the track gets a fresh attempt."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, _mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    opened: list[str] = []
+
+    async def _item_stream(
+        queue_item: SimpleNamespace, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        queue_item.streamdetails.stream_error = False
+        opened.append(queue_item.queue_item_id)
+        if queue_item is second_item and opened.count("item-2") == 1:
+            # the source dies before handing over any audio
+            queue_item.streamdetails.stream_error = True
+            return
+        total = TEST_PCM_FORMAT.pcm_sample_size * 40
+        sent = 0
+        while sent < total:
+            size = min(CHUNK_SIZE, total - sent)
+            sent += size
+            yield bytes(size)
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    emitted = await _drain(stream)
+
+    assert opened == ["item-1", "item-2", "item-2"]
+    # the retry serves the whole track, so nothing is lost to the failed prefetch
+    assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 80
+
+
+async def test_flow_drops_a_prefetch_opened_at_another_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prefetch started at a stale seek position is not adopted."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    # a leftover from an earlier crossfade into this track
+    second_item.streamdetails.seek_position = 8
+
+    loads = {"count": 0}
+
+    async def _load_next(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        loads["count"] += 1
+        if loads["count"] > 1:
+            raise QueueEmpty
+        # loading the item resolves its stream details again, back to the track start
+        second_item.streamdetails.seek_position = 0
+        return second_item
+
+    audio, queue, _mass = _flow_audio(monkeypatch, next_item=second_item, load_next=_load_next)
+    opened, _consumed, _exhausted_at = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 20}
+    )
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    emitted = await _drain(stream)
+
+    assert opened == ["item-1", "item-2", "item-2"]
+    assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 60
