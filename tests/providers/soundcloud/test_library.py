@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from music_assistant_models.enums import MediaType
+
+from music_assistant.models.music_provider import SyncRunState
 from music_assistant.providers.soundcloud import SoundcloudMusicProvider
 
 
@@ -24,7 +27,9 @@ def _track_obj(track_id: int, title: str = "Some Track") -> dict[str, Any]:
     }
 
 
-async def test_library_artists_skip_unparsable(provider: SoundcloudMusicProvider) -> None:
+async def test_library_artists_skip_unparsable(
+    provider: SoundcloudMusicProvider, sync_run: SyncRunState
+) -> None:
     """An artist without a valid id is skipped, the rest is returned."""
     provider._soundcloud.get_following.return_value = {
         "collection": [_artist_obj(None), _artist_obj(7, "Real Artist")]
@@ -35,9 +40,32 @@ async def test_library_artists_skip_unparsable(provider: SoundcloudMusicProvider
     provider._soundcloud.get_following.assert_awaited_once_with("1")
     assert [artist.item_id for artist in artists] == ["7"]
     assert artists[0].name == "Real Artist"
+    # the skipped artist has no id to report, so the run can not be a basis for deletions
+    assert sync_run.skipped_item_ids == {}
+    assert sync_run.incomplete is True
 
 
-async def test_library_playlists(provider: SoundcloudMusicProvider) -> None:
+async def test_skipped_artist_is_reported_with_its_item_id(
+    provider: SoundcloudMusicProvider, sync_run: SyncRunState
+) -> None:
+    """
+    A skipped artist is reported under the id its provider mapping carries.
+
+    That id is what the deletion pass resolves the item by, so an artist Soundcloud still
+    follows is left alone instead of being removed from the library.
+    """
+    # an artist that carries an id, but no username to build the item from
+    provider._soundcloud.get_following.return_value = {
+        "collection": [{"id": 7, "permalink": "some-artist"}]
+    }
+
+    assert [artist async for artist in provider.get_library_artists()] == []
+
+    assert sync_run.skipped_item_ids == {MediaType.ARTIST: {"7"}}
+    assert sync_run.incomplete is False
+
+
+async def test_library_playlists(provider: SoundcloudMusicProvider, sync_run: SyncRunState) -> None:
     """Playlists are resolved to their full object before being parsed."""
 
     async def _account_playlists() -> AsyncGenerator[dict[str, Any]]:
@@ -51,10 +79,14 @@ async def test_library_playlists(provider: SoundcloudMusicProvider) -> None:
 
     assert [playlist.item_id for playlist in playlists] == ["10"]
     assert playlists[0].name == "Summer Mix"
+    # the unexpected entry holds no id at all, so the deletion pass is held back
+    assert sync_run.incomplete is True
 
 
-async def test_library_playlists_skip_failing_details(provider: SoundcloudMusicProvider) -> None:
-    """A playlist whose details cannot be parsed is skipped."""
+async def test_library_playlists_skip_failing_details(
+    provider: SoundcloudMusicProvider, sync_run: SyncRunState
+) -> None:
+    """A playlist whose details cannot be parsed is skipped and reported under its id."""
 
     async def _account_playlists() -> AsyncGenerator[dict[str, Any]]:
         yield {"playlist": {"id": 10}}
@@ -65,9 +97,13 @@ async def test_library_playlists_skip_failing_details(provider: SoundcloudMusicP
     playlists = [playlist async for playlist in provider.get_library_playlists()]
 
     assert playlists == []
+    assert sync_run.skipped_item_ids == {MediaType.PLAYLIST: {"10"}}
+    assert sync_run.incomplete is False
 
 
-async def test_library_tracks_skip_unparsable(provider: SoundcloudMusicProvider) -> None:
+async def test_library_tracks_skip_unparsable(
+    provider: SoundcloudMusicProvider, sync_run: SyncRunState
+) -> None:
     """A track that cannot be parsed is skipped without failing the sync."""
 
     async def _liked_tracks(_user_id: str) -> AsyncGenerator[dict[str, Any]]:
@@ -79,6 +115,8 @@ async def test_library_tracks_skip_unparsable(provider: SoundcloudMusicProvider)
     tracks = [track async for track in provider.get_library_tracks()]
 
     assert [track.item_id for track in tracks] == ["2"]
+    assert sync_run.skipped_item_ids == {MediaType.TRACK: {"1"}}
+    assert sync_run.incomplete is False
 
 
 async def test_recommendation_payload(provider: SoundcloudMusicProvider) -> None:
