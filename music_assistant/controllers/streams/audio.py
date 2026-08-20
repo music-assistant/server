@@ -274,6 +274,7 @@ class _IncomingFadePrefetcher:
         self._chunks: deque[bytes] = deque()
         self._target = 0
         self._failed = False
+        self._collected_at_handover = 0
         self._task: asyncio.Task[None] | None = None
 
     def ensure_started(
@@ -371,8 +372,14 @@ class _IncomingFadePrefetcher:
             return None
         chunks, stream = self._chunks, self._stream
         assert stream is not None
+        self._collected_at_handover = sum(len(chunk) for chunk in chunks)
         self._reset()
         return self._replay(chunks, stream)
+
+    @property
+    def collected_at_handover(self) -> int:
+        """Return how many bytes the last handover already had in hand."""
+        return self._collected_at_handover
 
     async def close(self) -> None:
         """Abandon a pending prefetch and release the incoming track's stream."""
@@ -2333,6 +2340,7 @@ class StreamsAudio:
                 collect_resident = 0.0
                 incoming_crossfade_size = crossfade_buffer_size
                 incoming_audio_buffer: AudioBuffer | None = None
+                build_seconds = 0.0
                 transition_mode = CrossfadeMode.DISABLED
                 applied_mode = CrossfadeMode.DISABLED
                 outgoing_queue_track = last_queue_track
@@ -2370,6 +2378,7 @@ class StreamsAudio:
                         collect_started = asyncio.get_event_loop().time()
                         collect_resident = incoming_audio_buffer.duration_available
                         applied_mode = transition_mode
+                        build_started = asyncio.get_event_loop().time()
                         crossfade_smart_fade = await self.smart_fades_mixer.build(
                             fade_in_streamdetails=queue_track.streamdetails,
                             fade_out_streamdetails=last_streamdetails,
@@ -2379,6 +2388,7 @@ class StreamsAudio:
                             fade_out_data=last_fadeout_part,
                             fade_in_bytes_len=incoming_crossfade_size,
                         )
+                        build_seconds = asyncio.get_event_loop().time() - build_started
                         timing_info = crossfade_smart_fade.timing_info
                         if isinstance(crossfade_smart_fade, StandardCrossFade):
                             # the mixer degrades to a standard fade when the smart one
@@ -2422,6 +2432,7 @@ class StreamsAudio:
                 holdback_armed = False
 
                 item_stream = await incoming_prefetcher.take(queue_track, int(raw_seek_position))
+                prefetched_size = incoming_prefetcher.collected_at_handover if item_stream else 0
                 if item_stream is None:
                     item_stream = self.get_queue_item_stream(
                         queue_track,
@@ -2515,11 +2526,14 @@ class StreamsAudio:
                             and last_play_log_entry is not None
                         ):
                             self.logger.debug(
-                                "Collected %.1fs of incoming audio for the transition into %s in %.1fs"
-                                " (%.1fs was resident when it started)",
+                                "Collected %.1fs of incoming audio for the transition into %s"
+                                " in %.1fs (%.1fs prefetched, %.1fs build,"
+                                " %.1fs was resident when it started)",
                                 len(crossfade_buffer) / pcm_sample_size,
                                 queue_track.name,
                                 asyncio.get_event_loop().time() - collect_started,
+                                prefetched_size / pcm_sample_size,
+                                build_seconds,
                                 collect_resident,
                             )
                             fadein_part = bytes(crossfade_buffer[:incoming_crossfade_size])
