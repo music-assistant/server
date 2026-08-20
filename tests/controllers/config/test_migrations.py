@@ -16,6 +16,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.config.controller import ConfigController
 from music_assistant.controllers.config.migrations import (
+    PROVIDER_SETUP_FLOW_DEFAULTS,
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
@@ -366,6 +367,81 @@ def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.Monk
     assert cfg["setup_data"]["username"] == ENCRYPT_SUFFIX + "bob"
     assert cfg["setup_data"]["password"] == ENCRYPT_SUFFIX + "sekret"
     assert cfg["setup_data"]["port"] == 8096
+
+
+def test_setup_flow_defaults_are_owned_keys() -> None:
+    """Every key with a fallback default is also a key the migration owns."""
+    for domain, defaults in PROVIDER_SETUP_FLOW_DEFAULTS.items():
+        owned = PROVIDER_SETUP_FLOW_KEYS[domain]
+        assert set(defaults).issubset(owned), f"{domain}: {set(defaults) - set(owned)}"
+
+
+def test_migrate_provider_setup_data_restores_dropped_defaults() -> None:
+    """
+    A plex instance left on the default port gets that port back.
+
+    Regression: a config value that matches its entry default is not persisted, so an
+    instance on port 32400 had nothing in values to migrate and its server URL became
+    'https://<host>:None'.
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "plex--abc": {
+                "domain": "plex",
+                "values": {"local_server_ip": "local.abc.plex.direct", "local_server_ssl": True},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    setup_data = data["providers"]["plex--abc"]["setup_data"]
+    assert setup_data["local_server_port"] == 32400
+    assert setup_data["local_server_verify_cert"] is True
+    # the user's own value is migrated, not replaced by the default
+    assert setup_data["local_server_ssl"] is True
+
+
+def test_migrate_provider_setup_data_restores_defaults_after_earlier_run() -> None:
+    """An install whose values were already moved by an earlier run is still repaired."""
+    data: dict[str, Any] = {
+        "providers": {
+            "plex--abc": {
+                "domain": "plex",
+                "values": {},
+                "setup_data": {
+                    "local_server_ip": ENCRYPT_SUFFIX + "local.abc.plex.direct",
+                    "local_server_ssl": True,
+                },
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["plex--abc"]["setup_data"]["local_server_port"] == 32400
+
+
+def test_migrate_provider_setup_data_keeps_explicit_values() -> None:
+    """A stored choice is never overwritten by a fallback default."""
+    data: dict[str, Any] = {
+        "providers": {
+            "jellyfin": {
+                "domain": "jellyfin",
+                "values": {},
+                "setup_data": {"verify_ssl": False},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False
+    assert data["providers"]["jellyfin"]["setup_data"]["verify_ssl"] is False
+
+
+def test_migrate_provider_setup_data_encrypts_restored_strings() -> None:
+    """A restored string default is encrypted at rest like a migrated one."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_local": {"domain": "filesystem_local", "values": {}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["filesystem_local"]["setup_data"]["path"] == ENCRYPT_SUFFIX + "/media"
 
 
 def test_migrate_receiver_and_connect_setup_values() -> None:
