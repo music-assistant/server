@@ -32,6 +32,7 @@ from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferSize
 from music_assistant.controllers.streams.controller import StreamsController
+from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
@@ -987,6 +988,119 @@ async def test_flow_reports_no_crossfade_for_a_realtime_item(
     update_item_context.assert_called()
     reported = update_item_context.call_args.kwargs["queue_processing"]
     assert reported.crossfade_mode == CrossfadeMode.DISABLED
+
+
+async def test_flow_standard_fade_only_holds_back_its_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A standard transition waits for its overlap, not for the whole requested window."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=8000,
+        bit_depth=16,
+        channels=2,
+    )
+    first_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        fade_in=False,
+        stream_error=False,
+        uri="test://first",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=300,
+        is_realtime=False,
+    )
+    second_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
+        fade_in=False,
+        stream_error=False,
+        uri="test://second",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=300,
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    first_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="First",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=first_details,
+        duration=300,
+        extra_attributes={},
+    )
+    second_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-2",
+        name="Second",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=second_details,
+        duration=300,
+        extra_attributes={},
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[second_item, QueueEmpty])
+    mass.player_queues.get.return_value = queue
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.SMART_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    # the incoming analysis is not ready, so the mixer degrades to a standard fade
+    standard = StandardCrossFade(logger=MagicMock(), crossfade_duration=8)
+    standard.build(
+        pcm_format.pcm_sample_size * SMART_CROSSFADE_DURATION,
+        pcm_format.pcm_sample_size * SMART_CROSSFADE_DURATION,
+        pcm_format,
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", AsyncMock(return_value=standard))
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _empty_mix)
+
+    consumed: dict[str, int] = {"second": 0}
+
+    async def _item_stream(
+        queue_item: SimpleNamespace, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        if queue_item is first_item:
+            for _ in range(60):
+                yield bytes(pcm_format.pcm_sample_size)
+            return
+        for _ in range(SMART_CROSSFADE_DURATION + 20):
+            consumed["second"] += 1
+            yield bytes(pcm_format.pcm_sample_size)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    seconds_before_transition: int | None = None
+    async for _chunk in stream:
+        if seconds_before_transition is None and consumed["second"]:
+            seconds_before_transition = consumed["second"]
+
+    # the overlap is 8s, so the transition must not wait for the full 45s window
+    assert seconds_before_transition is not None
+    assert seconds_before_transition <= SMART_CROSSFADE_DURATION / 2
 
 
 # -- StreamsController.serve_queue_item_stream steering --

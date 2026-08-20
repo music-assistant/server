@@ -109,7 +109,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
-from music_assistant.controllers.streams.smart_fades.fades import SmartFade
+from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
     SMART_CROSSFADE_DURATION,
@@ -2169,6 +2169,20 @@ class StreamsAudio:
                         fade_in_bytes_len=incoming_crossfade_size,
                     )
                     timing_info = crossfade_smart_fade.timing_info
+                    if isinstance(crossfade_smart_fade, StandardCrossFade):
+                        # A standard fade blends its overlap and passes everything after it
+                        # through untouched, so only the overlap has to be in hand before
+                        # the transition can start. Holding back the rest buys nothing and
+                        # keeps the player waiting - a smart fade does need its full window,
+                        # which is only chosen when the analysis it needs is already there.
+                        blended_seconds = (
+                            timing_info.fadein_trimmed_duration + timing_info.crossfade_duration
+                        )
+                        blended_size = int(pcm_format.pcm_sample_size * blended_seconds)
+                        incoming_crossfade_size = min(
+                            incoming_crossfade_size,
+                            (blended_size // frame_size) * frame_size,
+                        )
                     queue_track.streamdetails.seek_position = (
                         raw_seek_position
                         + (timing_info.fadein_trimmed_duration + timing_info.crossfade_duration)
