@@ -241,6 +241,26 @@ class PluginProvider(Provider):
             not match the currently stored active session id.
         """
 
+    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
+        """
+        React to a queue dropping this AudioSource from its items.
+
+        Fired when the queue holding this source as its current item is
+        cleared. Unlike ``on_source_unselected`` this is not tied to a stream,
+        so it also fires when the stream was already torn down earlier (a
+        paused source, for example) — the one moment where nothing else tells
+        the plugin that MA is done with the source. Override to release state
+        that must not outlive the queue, such as an upstream session still
+        pointing at MA.
+
+        May fire while a stream for this source is still being torn down, so
+        implementations must guard on their own claim state to avoid releasing
+        twice.
+
+        :param source_id: The AudioSource.item_id that was removed.
+        :param queue_id: The queue that dropped the source.
+        """
+
     async def on_volume_change(self, source_id: str, volume: int) -> None:
         """
         React to a volume change on the player streaming this AudioSource.

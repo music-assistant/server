@@ -426,6 +426,23 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
+    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
+        """Release the Spotify session when the queue drops this source."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != queue_id:
+            return
+        if self._in_use_by_queue or not self._spotify_session_active:
+            # a live stream still holds the claim (its teardown does the release),
+            # or we are not the active Spotify device to begin with
+            return
+        # Nothing is streaming us anymore (e.g. the source was paused, which
+        # already tore the stream down), so no teardown will follow to release
+        # the session — the Spotify app would stay tethered to a device that no
+        # longer has a queue.
+        try:
+            await self._backend.deactivate()
+        except Exception as err:
+            self.logger.debug("Failed to release Spotify session on queue clear: %s", err)
+
     async def on_source_control(
         self,
         source_id: str,

@@ -81,6 +81,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.api import api_command
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -588,6 +589,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue, switching shuffle off with them."""
+        self._notify_audio_source_removed(queue_id)
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
         # the discarded content must not carry over into whatever is played next
@@ -1821,6 +1823,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.index_in_buffer = None
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
+
+    def _notify_audio_source_removed(self, queue_id: str) -> None:
+        """Tell the owning plugin that its AudioSource is dropped as this queue's current item."""
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        current_item = queue_data.queue.current_item
+        if current_item is None or (media_item := current_item.media_item) is None:
+            return
+        if media_item.media_type != MediaType.AUDIO_SOURCE:
+            return
+        if not isinstance(prov := self.mass.get_provider(media_item.provider), PluginProvider):
+            return
+        self.mass.create_task(prov.on_source_removed(media_item.item_id, queue_id))
 
     def _reset_shuffle(self, queue_id: str) -> None:
         """Switch shuffle off."""

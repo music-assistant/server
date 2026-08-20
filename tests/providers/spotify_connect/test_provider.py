@@ -24,7 +24,10 @@ from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
 from music_assistant.providers.spotify_connect.go_librespot.client import GoLibrespotClient
-from music_assistant.providers.spotify_connect.provider import CONF_LOUDNESS_NORMALIZATION
+from music_assistant.providers.spotify_connect.provider import (
+    AUDIO_SOURCE_ID,
+    CONF_LOUDNESS_NORMALIZATION,
+)
 from music_assistant.providers.spotify_connect.soloist.backend import (
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
@@ -159,6 +162,69 @@ async def test_sync_player_volume_restores_cache_on_failure() -> None:
     await provider._sync_player_volume_to_spotify("player1")
 
     assert provider._last_volume_sent is None
+
+
+def _tethered_provider() -> tuple[SpotifyConnectProvider, AsyncMock]:
+    """Build a provider tethered to queue 'player1' with an active (paused) Spotify session."""
+    provider = object.__new__(SpotifyConnectProvider)
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    backend = MagicMock()
+    deactivate = AsyncMock()
+    backend.deactivate = deactivate
+    provider._backend = backend
+    provider._active_player_id = "player1"
+    provider._in_use_by_queue = None
+    provider._spotify_session_active = True
+    return provider, deactivate
+
+
+async def test_queue_clear_releases_a_paused_spotify_session() -> None:
+    """Clearing the queue releases the session the paused stream's teardown left behind."""
+    provider, deactivate = _tethered_provider()
+
+    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_awaited_once()
+
+
+async def test_queue_clear_leaves_the_release_to_a_live_stream() -> None:
+    """A stream still holding the claim releases the session in its own teardown."""
+    provider, deactivate = _tethered_provider()
+    provider._in_use_by_queue = "player1"
+
+    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_not_awaited()
+
+
+async def test_clearing_another_queue_leaves_the_session_alone() -> None:
+    """Only the queue the source is tethered to may release it."""
+    provider, deactivate = _tethered_provider()
+
+    await provider.on_source_removed(AUDIO_SOURCE_ID, "player2")
+
+    deactivate.assert_not_awaited()
+
+
+async def test_queue_clear_without_an_active_session_does_nothing() -> None:
+    """There is nothing to release when MA is not the active Spotify device."""
+    provider, deactivate = _tethered_provider()
+    provider._spotify_session_active = False
+
+    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_not_awaited()
+
+
+async def test_queue_clear_survives_a_failing_release() -> None:
+    """A backend that cannot be reached must not break clearing the queue."""
+    provider, deactivate = _tethered_provider()
+    deactivate.side_effect = OSError("daemon gone")
+
+    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_awaited_once()
 
 
 def _provider_with_stored_config(
