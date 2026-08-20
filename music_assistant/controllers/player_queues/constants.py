@@ -83,16 +83,18 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
-# Media types whose own running order is part of the content: an album is sequenced by its artist,
-# and a podcast or audiobook only makes sense front to back. Starting one of these plays it in its
-# own order, switching the queue's shuffle off with it, unless the caller asks for shuffle
-# explicitly. Every other type (playlist, artist, genre, ...) keeps whatever the queue is set to.
+# Media types that are not a pool of tracks to shuffle: an album is sequenced by its artist, a
+# podcast or audiobook only makes sense front to back, and a live source is a single endless
+# stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
+# unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
+# keeps whatever the queue is set to.
 ORDERED_MEDIA_TYPES = (
     MediaType.ALBUM,
     MediaType.AUDIOBOOK,
     MediaType.PODCAST,
     MediaType.PODCAST_EPISODE,
     MediaType.AUDIO_SOURCE,
+    MediaType.RADIO,
 )
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0

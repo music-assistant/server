@@ -208,6 +208,11 @@ class QueueSyncMixin:
                 queue_id=player_id,
                 media=all_tracks,  # type: ignore[arg-type]
                 option=QueueOption.REPLACE,
+                # the tracks are already in the order Plex wants them played (a shuffled play
+                # queue arrives shuffled), and play_queue_item_ids above is keyed on that order,
+                # so the queue's own shuffle must not reorder them. refreshPlayQueue mirrors
+                # Plex's shuffle flag onto the queue once the items have landed.
+                shuffle=False,
             )
             LOGGER.info(f"Replaced queue with {len(all_tracks)} tracks")
 

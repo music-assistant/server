@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
@@ -102,6 +103,7 @@ def _ordered_item(media_type: MediaType) -> Any:
         MediaType.PODCAST: Podcast,
         MediaType.PODCAST_EPISODE: PodcastEpisode,
         MediaType.AUDIO_SOURCE: AudioSource,
+        MediaType.RADIO: Radio,
     }[media_type]
     kwargs: dict[str, Any] = {
         "item_id": "o1",
