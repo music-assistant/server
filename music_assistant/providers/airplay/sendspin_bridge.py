@@ -1170,6 +1170,8 @@ class SendspinAirPlayBridge:
         """
         Clean up captured resources from a previous stream.
 
+        Leaves the player idle at position 0 unless a newer stream owns it.
+
         Unlike _stop_streaming(), this operates on explicitly captured references
         rather than instance variables. This prevents a race condition where the
         async cleanup runs after a new stream has already reused the instance
