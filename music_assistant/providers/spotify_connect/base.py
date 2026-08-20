@@ -161,18 +161,24 @@ class SpotifyConnectBackend(ABC):
         """
         Set the repeat mode on the active session.
 
-        Only available on backends with ``supports_queue_control``.
+        Only available on backends with ``supports_queue_control``. May await
+        the engine's acknowledgement, so the call can block and raise — never
+        call it from the backend event callback (the acknowledgement arrives
+        on the same loop and the wait could only time out).
 
         :param repeat: OFF for no repeat, ONE for the current track, ALL for
             the playing context.
         """
         raise NotImplementedError
 
-    async def request_queue(self) -> None:
+    async def request_queue(self, limit: int = 10) -> None:
         """
         Ask the session to (re)emit its queue view.
 
         Only available on backends with ``supports_queue_control``. There is
         no return value: the snapshot arrives as a QUEUE_CHANGED event.
+
+        :param limit: Maximum number of upcoming entries the snapshot should
+            include.
         """
         raise NotImplementedError
