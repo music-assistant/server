@@ -2577,7 +2577,7 @@ class StreamsAudio:
                     try:
                         key, value = line.decode("latin-1", errors="ignore").split(":", 1)
                         headers[key.strip().lower()] = value.strip()
-                    except (UnicodeDecodeError, ValueError):
+                    except UnicodeDecodeError, ValueError:
                         continue
 
             # Get metadata interval
@@ -3646,7 +3646,7 @@ class StreamsAudio:
         except TimeoutError:
             self.logger.debug("Timeout during Shoutcast validation for %s", url)
             return False
-        except (OSError, ConnectionError):
+        except OSError, ConnectionError:
             self.logger.debug("Connection failed during Shoutcast validation for %s", url)
             return False
         except UnicodeDecodeError:
