@@ -1198,8 +1198,7 @@ class SendspinAirPlayBridge:
         if stream:
             with suppress(Exception):
                 await stream.stop(force=True)
-            # The stop's own IDLE reset is dropped because the stream was
-            # detached first; restore it unless a newer stream owns the player.
+            # Restore the IDLE reset that stop() dropped because the stream was detached first
             if self.airplay_player.stream is None:
                 self.airplay_player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
