@@ -13,6 +13,7 @@ from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
     MediaType,
+    PlayerFeature,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -30,6 +31,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferSize
+from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
@@ -985,6 +987,92 @@ async def test_flow_reports_no_crossfade_for_a_realtime_item(
     update_item_context.assert_called()
     reported = update_item_context.call_args.kwargs["queue_processing"]
     assert reported.crossfade_mode == CrossfadeMode.DISABLED
+
+
+# -- StreamsController.serve_queue_item_stream steering --
+
+
+class _PcmFormatRequested(Exception):
+    """Raised to stop the handler once it has decided on crossfading."""
+
+
+def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str, Any]]:
+    """Return a single-item stream handler that stops once the PCM format is picked."""
+    streamdetails = _make_stream_details(MediaType.TRACK, is_realtime=is_realtime)
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="Track",
+        duration=180,
+        streamdetails=streamdetails,
+        media_item=None,
+        media_type=MediaType.TRACK,
+        extra_attributes={},
+        image=None,
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        current_item=queue_item,
+        crossfade_enabled=True,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    mass = MagicMock()
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.queue_data.return_value = SimpleNamespace(session_id="session-1")
+    mass.player_queues.get_item.return_value = queue_item
+    mass.config.get_raw_core_config_value.return_value = 8
+    player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.state.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
+    player.state.name = "Player"
+    mass.players.get_player.return_value = player
+
+    seen: dict[str, Any] = {}
+
+    async def _select_pcm_format(**kwargs: Any) -> None:
+        seen["crossfade_enabled"] = kwargs["crossfade_enabled"]
+        raise _PcmFormatRequested
+
+    audio = MagicMock()
+    audio.select_pcm_format = _select_pcm_format
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = mass
+    controller.audio = audio
+    controller.logger = MagicMock()
+    controller._log_request = MagicMock()
+    controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)
+    request = MagicMock()
+    request.method = "GET"
+    request.match_info = {
+        "queue_id": "queue-1",
+        "player_id": "player-1",
+        "session_id": "session-1",
+        "queue_item_id": "item-1",
+    }
+    return controller, request, seen
+
+
+async def test_single_item_handler_skips_crossfade_for_a_realtime_item() -> None:
+    """A realtime item is never steered into the crossfaded single-item stream."""
+    controller, request, seen = _single_item_handler(is_realtime=True)
+
+    with pytest.raises(_PcmFormatRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert seen["crossfade_enabled"] is False
+    controller.get_crossfade_mode.assert_not_called()
+
+
+async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None:
+    """A buffered item still gets the queue's configured crossfade."""
+    controller, request, seen = _single_item_handler(is_realtime=False)
+
+    with pytest.raises(_PcmFormatRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert seen["crossfade_enabled"] is True
+    controller.get_crossfade_mode.assert_called_once()
 
 
 # -- StreamsAudio.get_stream_details --

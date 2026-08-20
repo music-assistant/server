@@ -2059,6 +2059,11 @@ class StreamsAudio:
                     queue.display_name,
                 )
                 continue
+            # a realtime source delivers at playback pace, so it has no audio to spare
+            # for an overlap in either direction
+            item_crossfade_mode = (
+                CrossfadeMode.DISABLED if queue_track.streamdetails.is_realtime else crossfade_mode
+            )
             if flow_session_id is not None:
                 self.mass.streams.audio_processing.update_item_context(
                     queue_id=queue.queue_id,
@@ -2070,12 +2075,7 @@ class StreamsAudio:
                             "float",
                             queue_track.extra_attributes.get("playback_speed", 1.0),
                         ),
-                        # a realtime source is never faded, in either direction
-                        crossfade_mode=(
-                            CrossfadeMode.DISABLED
-                            if queue_track.streamdetails.is_realtime
-                            else crossfade_mode
-                        ),
+                        crossfade_mode=item_crossfade_mode,
                         overlay_active=overlay_active(queue),
                     ),
                     alters_audio=queue_track.streamdetails.fade_in,
@@ -2101,7 +2101,7 @@ class StreamsAudio:
             # calculate crossfade buffer size
             crossfade_buffer_duration = (
                 SMART_CROSSFADE_DURATION
-                if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
                 else standard_crossfade_duration
             )
             crossfade_buffer_duration = min(
@@ -2133,10 +2133,10 @@ class StreamsAudio:
             if last_fadeout_part and last_streamdetails:
                 transition_mode = CrossfadeMode.DISABLED
                 incoming_duration = 0.0
-                if crossfade_buffer_size > 0 and crossfade_mode != CrossfadeMode.DISABLED:
+                if crossfade_buffer_size > 0 and item_crossfade_mode != CrossfadeMode.DISABLED:
                     transition_mode, incoming_duration = self._select_buffered_crossfade(
                         queue_track.streamdetails,
-                        crossfade_mode,
+                        item_crossfade_mode,
                         standard_crossfade_duration,
                         track_playback_speed,
                     )
@@ -2207,7 +2207,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
 
-                if crossfade_mode == CrossfadeMode.DISABLED:
+                if item_crossfade_mode == CrossfadeMode.DISABLED:
                     # no cross/smart fade: yield chunks directly without intermediate buffer
                     yield chunk
                     bytes_written += len(chunk)
@@ -2365,7 +2365,7 @@ class StreamsAudio:
             min_fade_out_size = int(pcm_sample_size * MIN_CROSSFADE_FALLBACK_DURATION)
             if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                 queue_track,
-                crossfade_mode=crossfade_mode,
+                crossfade_mode=item_crossfade_mode,
                 player_id=queue.queue_id,
                 flow_mode=True,
             ):
@@ -2379,7 +2379,7 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            elif crossfade_mode != CrossfadeMode.DISABLED and crossfade_buffer:
+            elif item_crossfade_mode != CrossfadeMode.DISABLED and crossfade_buffer:
                 bytes_written += len(crossfade_buffer)
                 for pcm_slice in iter_pcm_slices(bytes(crossfade_buffer), pcm_format, 1000):
                     yield pcm_slice
