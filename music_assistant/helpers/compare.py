@@ -66,7 +66,9 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "session",
 }
 
-# retail suffixes a provider (notably Apple Music) appends to an EP/single title
+# retail suffixes a provider (notably Apple Music) appends to an EP/single title.
+# Entries must be a single ASCII alphanumeric word: album_retail_suffix_sql_match matches
+# on the normalized key, so anything else stops covering what the pattern below matches.
 _ALBUM_RETAIL_SUFFIXES: Final = ("EP", "Single")
 # escaped, so an entry that happens to contain regex syntax stays a literal alternative
 _ALBUM_SUFFIX_ALTERNATION: Final = "|".join(re.escape(suffix) for suffix in _ALBUM_RETAIL_SUFFIXES)
@@ -83,8 +85,8 @@ _ALBUM_SUFFIX_PATTERN = re.compile(
 # normalizing a title drops the separator, so the suffix survives as a plain trailing
 # fragment of the name key ("Foo - EP" -> "fooep"): appending one of these to a key
 # yields the key the same album is stored under when a provider spells out the suffix.
-# It also reduces each key to alphanumerics, which is what lets the query builders
-# interpolate them into SQL directly.
+# create_safe_string reduces each key to lowercase ASCII alphanumerics, which is what
+# lets the query builders interpolate them into SQL directly.
 ALBUM_RETAIL_SUFFIX_KEYS: Final = tuple(
     create_safe_string(suffix, True, True) for suffix in _ALBUM_RETAIL_SUFFIXES
 )
