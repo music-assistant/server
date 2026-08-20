@@ -28,6 +28,10 @@ class BackendEventType(StrEnum):
     POSITION = "position"
     # Spotify-side volume change (normalized to a 0-100 percentage)
     VOLUME = "volume"
+    # queue listing / playback options reported by the session (only emitted
+    # by backends with ``supports_queue_control``)
+    QUEUE_CHANGED = "queue_changed"
+    OPTIONS_CHANGED = "options_changed"
     # the backend lost its Spotify connection (e.g. daemon exit) and will recover
     # on its own; any session/playback state is gone until a new SESSION_ACTIVE
     CONNECTION_LOST = "connection_lost"
@@ -75,6 +79,37 @@ class BackendTrackMetadata:
 
 
 @dataclass(slots=True)
+class BackendQueueEntry:
+    """
+    One entry in the session's queue listing.
+
+    ``source`` tells where the entry comes from: "context" (the playing
+    context), "queue" (explicitly queued) or "autoplay". ``name`` is the
+    display title when the backend reported one.
+    """
+
+    uri: str
+    source: str
+    name: str | None = None
+
+
+@dataclass(slots=True)
+class BackendQueueState:
+    """The session's queue view: recently played and upcoming entries, in play order."""
+
+    previous: list[BackendQueueEntry] = field(default_factory=list)
+    upcoming: list[BackendQueueEntry] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class BackendPlaybackOptions:
+    """Playback options of the session (``repeat`` is one of off/context/track)."""
+
+    shuffle: bool = False
+    repeat: str = "off"
+
+
+@dataclass(slots=True)
 class BackendEvent:
     """
     A single normalized event emitted by a backend to the provider.
@@ -83,8 +118,10 @@ class BackendEvent:
     the latest context/track seen by the backend so the provider can take
     playback back after the user moved the active device away. ``position`` is
     the elapsed time in seconds (POSITION events), ``volume`` a 0-100
-    percentage (VOLUME events) and ``error`` the failure description
-    (ERROR and FATAL_ERROR events).
+    percentage (VOLUME events), ``error`` the failure description (ERROR and
+    FATAL_ERROR events), ``queue`` the session's queue view (QUEUE_CHANGED
+    events) and ``options`` the session's playback options (OPTIONS_CHANGED
+    events, and state events whose payload carried them).
     """
 
     type: BackendEventType
@@ -94,6 +131,8 @@ class BackendEvent:
     position: int | None = None
     volume: int | None = None
     error: str | None = None
+    queue: BackendQueueState | None = None
+    options: BackendPlaybackOptions | None = None
 
 
 # Awaited by the backend for every normalized event, in emit order.

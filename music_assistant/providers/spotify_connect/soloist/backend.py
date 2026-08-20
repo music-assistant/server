@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import ClientError
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, RepeatMode, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
@@ -34,6 +34,9 @@ from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendPlaybackOptions,
+    BackendQueueEntry,
+    BackendQueueState,
     BackendStreamSource,
     BackendTrackMetadata,
 )
@@ -48,8 +51,10 @@ from .runtime import (
     SoloistDeviceChanged,
     SoloistError,
     SoloistErrorMessage,
+    SoloistOptionsChanged,
     SoloistPlaybackState,
     SoloistPositionSync,
+    SoloistQueueChanged,
     SoloistTrackChanged,
     SoloistVolumeChanged,
 )
@@ -64,7 +69,7 @@ if TYPE_CHECKING:
         BackendEventCallback,
     )
 
-    from .runtime import SoloistEntity, SoloistEvent
+    from .runtime import SoloistEntity, SoloistEvent, SoloistPlaybackOptions, SoloistQueueEntry
 
 # How Spotify-side volume changes are handled (see set_volume).
 VOLUME_MODE_PLAYER_ONLY: Final = "player_only"
@@ -231,6 +236,11 @@ class SoloistBackend(SpotifyConnectBackend):
     def stream_ends_on_pause(self) -> bool:
         """The pipe sink delivers silence on pause; the provider stops the player."""
         return False
+
+    @property
+    def supports_queue_control(self) -> bool:
+        """The soloist session implements the queue verbs and queue/options events."""
+        return True
 
     async def start(self) -> None:
         """Start the backend and its supervised soloist daemon."""
@@ -403,6 +413,47 @@ class SoloistBackend(SpotifyConnectBackend):
             if self._spotify_volume == 100:
                 return
             await self._client.set_volume(100)
+
+    async def add_to_queue(self, uri: str) -> None:
+        """
+        Add a track to the session's play queue.
+
+        :param uri: Spotify track URI to queue.
+        """
+        assert self._client is not None
+        await self._client.add_to_queue(uri)
+
+    async def set_shuffle(self, enabled: bool) -> None:
+        """
+        Enable or disable shuffle on the active session.
+
+        :param enabled: True to enable shuffle, False to disable it.
+        """
+        assert self._client is not None
+        await self._client.set_shuffle(enabled)
+
+    async def set_repeat(self, repeat: RepeatMode) -> None:
+        """
+        Set the repeat mode on the active session.
+
+        :param repeat: OFF for no repeat, ONE for the current track, ALL for
+            the playing context.
+        """
+        assert self._client is not None
+        # soloist models repeat as two independent booleans (track/context) with
+        # both-true undefined; await each ack so the pair cannot race and always
+        # disable one flag before enabling the other
+        if repeat == RepeatMode.ONE:
+            await self._client.set_repeat_context(False, await_result=True)
+            await self._client.set_repeat_track(True, await_result=True)
+            return
+        await self._client.set_repeat_track(False, await_result=True)
+        await self._client.set_repeat_context(repeat == RepeatMode.ALL, await_result=True)
+
+    async def request_queue(self) -> None:
+        """Ask the session to (re)emit its queue view (arrives as a QUEUE_CHANGED event)."""
+        assert self._client is not None
+        await self._client.get_queue()
 
     async def _ensure_fresh_sink(self) -> PipeSink:
         """
@@ -827,9 +878,14 @@ class SoloistBackend(SpotifyConnectBackend):
                 else BackendEventType.SESSION_INACTIVE
             )
         if isinstance(data, SoloistPlaybackState):
-            # covers both the playback_state snapshot and the playback_changed delta
+            # covers both the playback_state snapshot and the playback_changed
+            # delta; when the payload carries the playback options they ride
+            # along on the normalized event
             self._cache_uris(track=data.item, context=data.context)
-            return self._make_event(_STATUS_EVENTS.get(data.status, BackendEventType.OTHER))
+            options = _backend_options(data.options) if data.options is not None else None
+            return self._make_event(
+                _STATUS_EVENTS.get(data.status, BackendEventType.OTHER), options=options
+            )
         if isinstance(data, SoloistTrackChanged) and data.item is not None:
             self._cache_uris(track=data.item)
             return self._make_event(BackendEventType.METADATA, metadata=_entity_metadata(data.item))
@@ -839,9 +895,21 @@ class SoloistBackend(SpotifyConnectBackend):
             )
         if isinstance(data, SoloistErrorMessage):
             return self._make_event(BackendEventType.ERROR, error=data.message)
+        if isinstance(data, SoloistQueueChanged):
+            return self._make_event(
+                BackendEventType.QUEUE_CHANGED,
+                queue=BackendQueueState(
+                    previous=_queue_entries(data.previous),
+                    upcoming=_queue_entries(data.upcoming),
+                ),
+            )
+        if isinstance(data, SoloistOptionsChanged):
+            return self._make_event(
+                BackendEventType.OPTIONS_CHANGED, options=_backend_options(data.options)
+            )
         if isinstance(data, SoloistContextChanged):
             self._cache_uris(context=data.context)
-        # queue/options/context changes, command acks and unknown events
+        # context changes, command acks and unknown events
         return self._make_event(BackendEventType.OTHER)
 
     def _make_event(self, event_type: BackendEventType, **fields: Any) -> BackendEvent:
@@ -886,6 +954,30 @@ def _entity_metadata(item: SoloistEntity) -> BackendTrackMetadata:
         image_url=_cover_url(decorations),
         duration=int(duration_ms) // 1000 if isinstance(duration_ms, int | float) else None,
     )
+
+
+def _queue_entries(entries: list[SoloistQueueEntry]) -> list[BackendQueueEntry]:
+    """
+    Map soloist queue entries onto normalized queue entries.
+
+    Entries without a resolvable uri are skipped; the display name is taken
+    from the (extensible) decorations bag when present.
+
+    :param entries: The soloist queue entries (previous or upcoming listing).
+    """
+    result: list[BackendQueueEntry] = []
+    for entry in entries:
+        if entry.item is None or not entry.item.uri:
+            continue
+        decorations = entry.item.decorations or {}
+        name = _as_str(_as_dict(decorations.get("identity")).get("name"))
+        result.append(BackendQueueEntry(uri=entry.item.uri, source=entry.source, name=name))
+    return result
+
+
+def _backend_options(options: SoloistPlaybackOptions) -> BackendPlaybackOptions:
+    """Map soloist playback options onto the normalized model."""
+    return BackendPlaybackOptions(shuffle=options.shuffle, repeat=options.repeat)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
