@@ -338,7 +338,7 @@ async def test_skipped_track_is_reported_with_its_item_id() -> None:
 
     assert tracks == []
     assert state.skipped_item_ids == {MediaType.TRACK: {"/1"}}
-    assert state.incomplete is False
+    assert not state.incomplete_media_types
 
 
 async def test_unidentifiable_artist_holds_back_the_deletion_pass() -> None:
@@ -350,7 +350,7 @@ async def test_unidentifiable_artist_holds_back_the_deletion_pass() -> None:
         assert [artist async for artist in provider.get_library_artists()] == []
 
     assert state.skipped_item_ids == {}
-    assert state.incomplete is True
+    assert MediaType.ARTIST in state.incomplete_media_types
 
 
 async def test_skipped_collection_is_reported_as_a_prefixed_playlist() -> None:

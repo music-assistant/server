@@ -424,14 +424,19 @@ class SkippingAlbumProvider(FailingAlbumProvider):
 def _library_holds(mass: MagicMock, known: dict[str, int]) -> None:
     """Let the deletion pass resolve the given provider item id's to library db id's."""
 
-    async def get_library_item_by_prov_id(item_id: str, provider: str) -> Any:
-        del provider
-        if (db_id := known.get(item_id)) is None:
-            return None
-        return MagicMock(item_id=db_id)
+    async def get_library_items_by_prov_id(
+        provider_instance: str, provider_item_ids: list[str], limit: int
+    ) -> list[Any]:
+        del limit
+        # only this provider instance's own mappings may resolve, never a sibling instance
+        if provider_instance != "test--1":
+            return []
+        return [
+            MagicMock(item_id=known[item_id]) for item_id in provider_item_ids if item_id in known
+        ]
 
-    mass.music.get_controller.return_value.get_library_item_by_prov_id = AsyncMock(
-        side_effect=get_library_item_by_prov_id
+    mass.music.get_controller.return_value.get_library_items_by_prov_id = AsyncMock(
+        side_effect=get_library_items_by_prov_id
     )
 
 
@@ -479,6 +484,22 @@ async def test_skipped_item_we_do_not_hold_does_not_hold_back_deletions() -> Non
     mass.music.get_controller.return_value.get_library_item.assert_awaited_once_with(99)
 
 
+SKIPPED_TRACK_ID = "track_9"
+
+
+class TrackSkippingAlbumProvider(FailingAlbumProvider):
+    """Provider that drops tracks while listing the tracks of an album."""
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Any]:
+        """Report the tracks that could not be read instead of returning them."""
+        del prov_album_id
+        self.report_skipped_sync_item(
+            MediaType.TRACK, SKIPPED_TRACK_ID, InvalidDataError("no artist")
+        )
+        self.report_skipped_sync_item(MediaType.TRACK, None, InvalidDataError("no id"))
+        return []
+
+
 class UnidentifiedSkipProvider(SkippingAlbumProvider):
     """Provider that drops an album it cannot identify."""
 
@@ -496,15 +517,56 @@ async def test_unidentified_skip_holds_back_deletions() -> None:
     mass.music.get_controller.return_value.get_library_item.assert_not_called()
 
 
-async def test_skipped_items_are_not_resolved_when_deletions_are_disabled() -> None:
-    """With deletions off there is nothing to protect an item from, so nothing is looked up."""
+async def test_skipped_item_stays_in_the_snapshot_when_deletions_are_disabled() -> None:
+    """
+    A skipped item is recorded as seen even while deletions are off.
+
+    That snapshot is what a later run compares against, so dropping the item here would
+    leave it untracked once the user turns deletions back on.
+    """
     mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
     provider = _build_provider(mass, cls=SkippingAlbumProvider, sync_deletions=False)
     _library_holds(mass, {SKIPPED_ID: 2})
 
     await provider.sync_library(MediaType.ALBUM)
 
-    mass.music.get_controller.return_value.get_library_item_by_prov_id.assert_not_called()
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
+
+
+async def test_skipped_items_resolve_against_this_provider_instance_only() -> None:
+    """
+    A skipped id is resolved against the instance that skipped it, not the whole domain.
+
+    A second instance of the same provider holds its own mappings under the same item id's,
+    and protecting one instance's item would leave the other's exposed.
+    """
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
+    provider = _build_provider(mass, cls=SkippingAlbumProvider)
+    _library_holds(mass, {SKIPPED_ID: 2})
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    lookup = mass.music.get_controller.return_value.get_library_items_by_prov_id
+    assert lookup.await_args.kwargs["provider_instance"] == provider.instance_id
+
+
+async def test_a_skipped_track_does_not_reach_the_album_deletion_pass() -> None:
+    """
+    Skips are kept apart per media type.
+
+    Importing an album's tracks runs inside the album sync, so a track it had to skip must
+    not put a track db id into the album result set, nor hold back the album deletions.
+    """
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
+    provider = _build_provider(mass, cls=TrackSkippingAlbumProvider, sync_album_tracks=True)
+    _library_holds(mass, {SKIPPED_TRACK_ID: 77})
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    # 77 is a track db id, so it may not end up in the album snapshot
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
+    # and a track that could not be named does not stop the albums from being cleaned up
+    mass.music.get_controller.return_value.get_library_item.assert_awaited_once_with(99)
 
 
 class UnskippableSkipProvider(SkippingAlbumProvider):

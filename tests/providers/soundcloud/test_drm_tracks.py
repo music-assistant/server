@@ -126,7 +126,7 @@ async def test_library_drm_tracks_are_not_reported_as_sync_failures(
     assert [track.item_id for track in tracks] == ["2"]
     assert sync_run.skipped_item_ids == {}
     assert sync_run.failures == 0
-    assert sync_run.incomplete is False
+    assert not sync_run.incomplete_media_types
 
 
 async def test_playlist_tracks_skip_drm(provider: SoundcloudMusicProvider) -> None:

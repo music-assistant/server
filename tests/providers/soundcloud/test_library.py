@@ -42,7 +42,7 @@ async def test_library_artists_skip_unparsable(
     assert artists[0].name == "Real Artist"
     # the skipped artist has no id to report, so the run can not be a basis for deletions
     assert sync_run.skipped_item_ids == {}
-    assert sync_run.incomplete is True
+    assert MediaType.ARTIST in sync_run.incomplete_media_types
 
 
 async def test_skipped_artist_is_reported_with_its_item_id(
@@ -62,7 +62,7 @@ async def test_skipped_artist_is_reported_with_its_item_id(
     assert [artist async for artist in provider.get_library_artists()] == []
 
     assert sync_run.skipped_item_ids == {MediaType.ARTIST: {"7"}}
-    assert sync_run.incomplete is False
+    assert not sync_run.incomplete_media_types
 
 
 async def test_library_playlists(provider: SoundcloudMusicProvider, sync_run: SyncRunState) -> None:
@@ -80,7 +80,7 @@ async def test_library_playlists(provider: SoundcloudMusicProvider, sync_run: Sy
     assert [playlist.item_id for playlist in playlists] == ["10"]
     assert playlists[0].name == "Summer Mix"
     # the unexpected entry holds no id at all, so the deletion pass is held back
-    assert sync_run.incomplete is True
+    assert MediaType.PLAYLIST in sync_run.incomplete_media_types
 
 
 async def test_library_playlists_skip_failing_details(
@@ -98,7 +98,7 @@ async def test_library_playlists_skip_failing_details(
 
     assert playlists == []
     assert sync_run.skipped_item_ids == {MediaType.PLAYLIST: {"10"}}
-    assert sync_run.incomplete is False
+    assert not sync_run.incomplete_media_types
 
 
 async def test_library_tracks_skip_unparsable(
@@ -116,7 +116,7 @@ async def test_library_tracks_skip_unparsable(
 
     assert [track.item_id for track in tracks] == ["2"]
     assert sync_run.skipped_item_ids == {MediaType.TRACK: {"1"}}
-    assert sync_run.incomplete is False
+    assert not sync_run.incomplete_media_types
 
 
 async def test_recommendation_payload(provider: SoundcloudMusicProvider) -> None:
