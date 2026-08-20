@@ -419,3 +419,27 @@ async def test_flow_never_prefetches_a_short_track_to_its_end(
 
     # the requested 45s window is clamped to half the incoming track
     assert exhausted_at["item-1"]["item-2"] <= TEST_PCM_FORMAT.pcm_sample_size * 10 + CHUNK_SIZE
+
+
+async def test_flow_skips_the_prefetch_without_a_known_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track of unknown length is not prefetched, since its end cannot be avoided."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    second_item.streamdetails.duration = None
+    audio, queue, _mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    opened, _consumed, exhausted_at = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 20}
+    )
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    # opened once, at the transition, with nothing read while the tail was held back
+    assert opened == ["item-1", "item-2"]
+    assert exhausted_at["item-1"]["item-2"] == 0

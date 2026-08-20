@@ -306,6 +306,8 @@ class _IncomingFadePrefetcher:
             or next_item.media_type != MediaType.TRACK
             or (streamdetails := next_item.streamdetails) is None
             or streamdetails.is_realtime
+            # without a duration the read below cannot be kept clear of the track's end
+            or not streamdetails.duration
             or (audio_buffer := cast("AudioBuffer | None", streamdetails.buffer)) is None
             or audio_buffer.has_error
             or not audio_buffer.is_valid()
@@ -316,10 +318,10 @@ class _IncomingFadePrefetcher:
             if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
             else standard_crossfade_duration
         )
-        if streamdetails.duration:
-            # never read a track to its end in the background: that would report it to its
-            # provider as streamed before a single second of it has reached the player
-            overlap = min(overlap, streamdetails.duration / 2)
+        # never read a track to its end in the background: that would report it to its
+        # provider as streamed before a single second of it has reached the player.
+        # A track always plays at its own pace, so its duration is also its stream length.
+        overlap = min(overlap, streamdetails.duration / 2)
         if overlap <= 0:
             return
         self._target = int(self._pcm_format.pcm_sample_size * overlap)
