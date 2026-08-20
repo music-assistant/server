@@ -165,6 +165,7 @@ class TrackSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library track."""
 
     has_album: bool
+    has_artists: bool
 
 
 @dataclass(slots=True)
@@ -1375,23 +1376,31 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         item_id: str | int,
         external_ids: Iterable[tuple[ExternalID, str]],
     ) -> None:
-        """Update the external_id_lookup table rows for the media item."""
+        """
+        Update the external_id_lookup table rows for the media item.
+
+        An empty set never clears the stored rows: identifiers are the strongest
+        evidence available when matching an item across providers.
+        """
         db_id = int(item_id)  # ensure integer
+        if not (external_ids := normalize_external_ids(external_ids)):
+            return
         await self.mass.music.database.delete(
             DB_TABLE_EXTERNAL_ID_LOOKUP,
             {"media_type": self.media_type.value, "item_id": db_id},
         )
-        external_ids = normalize_external_ids(external_ids)
-        if lookup_rows := [
-            {
-                "media_type": self.media_type.value,
-                "external_id_type": external_id_type,
-                "external_id": external_id,
-                "item_id": db_id,
-            }
-            for external_id_type, external_id in external_ids
-        ]:
-            await self.mass.music.database.upsert_many(DB_TABLE_EXTERNAL_ID_LOOKUP, lookup_rows)
+        await self.mass.music.database.upsert_many(
+            DB_TABLE_EXTERNAL_ID_LOOKUP,
+            [
+                {
+                    "media_type": self.media_type.value,
+                    "external_id_type": external_id_type,
+                    "external_id": external_id,
+                    "item_id": db_id,
+                }
+                for external_id_type, external_id in external_ids
+            ],
+        )
 
     @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:

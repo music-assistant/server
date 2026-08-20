@@ -38,7 +38,10 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
-from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.helpers import (
+    provider_mappings_for_update,
+    search_name_match_clause,
+)
 from music_assistant.helpers.compare import (
     compare_artists,
     compare_media_item,
@@ -773,10 +776,8 @@ class TracksController(MediaControllerBase[Track]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
+        provider_mappings = provider_mappings_for_update(
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set track artist(s)
@@ -906,14 +907,19 @@ class TracksController(MediaControllerBase[Track]):
 
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the tracks sync-details query."""
-        # the sync loop needs to know if the track has a (valid) album link
-        # to be able to backfill a missing album on existing library tracks
+        # the sync loop needs to know if the track has (valid) album and artist links
+        # to be able to backfill missing ones on existing library tracks
         extra_columns = """
             , EXISTS (
                 SELECT 1 FROM album_tracks
                 JOIN albums ON albums.item_id = album_tracks.album_id
                 WHERE album_tracks.track_id = tracks.item_id
             ) AS has_album
+            , EXISTS (
+                SELECT 1 FROM track_artists
+                JOIN artists ON artists.item_id = track_artists.artist_id
+                WHERE track_artists.track_id = tracks.item_id
+            ) AS has_artists
         """
         return extra_columns, "", {}
 
@@ -925,6 +931,7 @@ class TracksController(MediaControllerBase[Track]):
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
             has_album=bool(db_row["has_album"]),
+            has_artists=bool(db_row["has_artists"]),
         )
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> TrackSummary:

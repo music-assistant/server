@@ -273,6 +273,25 @@ async def test_clear_no_match_search_result_skips_full_fetch() -> None:
     harness.get_provider_item.assert_not_awaited()
 
 
+async def test_search_string_combines_artist_and_album_name() -> None:
+    """The provider search is made on the album artist and the album name."""
+    with _harness(search_results=[], provider_items={}) as harness:
+        await harness.match(_library_album())
+
+    harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
+
+
+async def test_album_without_artists_searches_on_name_only() -> None:
+    """An album that has no artists is still searchable instead of raising."""
+    base = _library_album()
+    base.artists = UniqueList()
+    with _harness(search_results=[], provider_items={}) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.search.assert_awaited_once_with("( )", "spotify_1")
+
+
 async def test_insufficient_search_result_proceeds_to_one_full_fetch() -> None:
     """An ambiguous search result is confirmed against exactly one full provider album."""
     base = _library_album(external_ids={(ExternalID.MB_ALBUM, MB_ALBUM_ID)})
