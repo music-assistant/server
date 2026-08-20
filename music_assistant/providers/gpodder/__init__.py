@@ -213,8 +213,8 @@ class GPodder(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except MediaNotFoundError:
-                self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
+            except MediaNotFoundError as err:
+                self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                 continue
 
             # playlog

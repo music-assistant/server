@@ -9,6 +9,7 @@ waveform frames. One tap is shared by every viewer of the same target player.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import struct
 from collections import deque
@@ -16,18 +17,26 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from aiosendspin.models.color import SessionUpdateColor
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
+from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import ClientHelloVisualizerSupport
 from aiosendspin.server.roles.registry import register_role
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import MusicAssistantError
+from orjson import dumps
 
-from music_assistant.providers.sendspin.bridge_role import BridgeVisualizerRole
+from music_assistant.providers.sendspin.bridge_role import (
+    COLOR_BRIDGE_ROLE_ID,
+    BridgeColorRole,
+    BridgeVisualizerRole,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from aiosendspin.models.core import ServerStatePayload
     from aiosendspin.models.visualizer import BeatTiming
     from aiosendspin.server import SendspinClient
     from aiosendspin.server.roles import AudioChunk
@@ -40,6 +49,12 @@ if TYPE_CHECKING:
 
 MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
+CONF_COLOR_TINT = "color_tint"
+DEFAULT_COLOR_TINT = True
+# Derived from the model, so a field added upstream is forwarded automatically.
+_COLOR_FIELDS = tuple(
+    field.name for field in dataclasses.fields(SessionUpdateColor) if field.name != "timestamp"
+)
 # How long to wait for the Sendspin provider to register a player for a freshly
 # created tap client, before grouping it onto the player being visualized.
 TAP_PLAYER_WAIT_ATTEMPTS = 25
@@ -49,6 +64,21 @@ TAP_PLAYER_WAIT_INTERVAL = 0.2
 def get_sendspin_provider(mass: MusicAssistant) -> SendspinProvider | None:
     """Return the loaded Sendspin provider, if available."""
     return cast("SendspinProvider | None", mass.get_provider("sendspin"))
+
+
+def _extract_color_update(
+    payload: ServerStatePayload,
+) -> dict[str, tuple[int, int, int] | None]:
+    """Pick the color@v1 fields a server/state payload actually touched."""
+    if payload.color is None:
+        return {}
+    update: dict[str, tuple[int, int, int] | None] = {}
+    for name in _COLOR_FIELDS:
+        value = getattr(payload.color, name)
+        if isinstance(value, UndefinedField):
+            continue
+        update[name] = value
+    return update
 
 
 class MilkdropWaveRole(BridgeVisualizerRole):
@@ -183,11 +213,20 @@ class Tap:
         # stamped at the production cursor, which on long-lead players runs
         # tens of seconds ahead of what is audible.
         self.ring: deque[bytes] = deque(maxlen=4096)
+        # Latest color@v1 fields, replayed to viewers that attach mid-track.
+        self.last_color: dict[str, tuple[int, int, int] | None] = {}
 
     def fan_out(self, frame: bytes | str) -> None:
         """Deliver a packed frame to every attached viewer queue."""
         for queue in self.queues:
             queue.push(frame)
+
+    def apply_color(self, update: dict[str, tuple[int, int, int] | None]) -> None:
+        """Merge a color@v1 update into the cached palette and fan it out."""
+        if not update:
+            return
+        self.last_color.update(update)
+        self.fan_out(dumps({"type": "color", "payload": update}).decode())
 
 
 class TapManager:
@@ -200,6 +239,7 @@ class TapManager:
         :param provider: The loaded MilkDrop visualizer provider instance.
         """
         self.mass = provider.mass
+        self.provider = provider
         self.logger = provider.logger.getChild("tap")
         # One shared tap per target player id, refcounted by viewer queues.
         self._taps: dict[str, Tap] = {}
@@ -377,14 +417,22 @@ class TapManager:
         def on_stream_boundary(message: str) -> None:
             # Buffered frames and the beat schedule both belong to the audio
             # that just ended; drop them so viewers do not replay stale state.
+            # Color is not reset here: on_stream_clear also fires on a seek.
             tap.ring.clear()
             tap.beats.clear()
             tap.fan_out(message)
+
+        def on_color(payload: ServerStatePayload) -> None:
+            tap.apply_color(_extract_color_update(payload))
 
         sendspin = get_sendspin_provider(self.mass)
         if sendspin is None:
             msg = "Sendspin provider is not available"
             raise RuntimeError(msg)
+        color_tint_enabled = bool(self.provider.config.get_value(CONF_COLOR_TINT))
+        supported_roles = [MILKDROP_ROLE_ID]
+        if color_tint_enabled:
+            supported_roles.append(COLOR_BRIDGE_ROLE_ID)
         # A tap registers as an ordinary Sendspin client, so the player
         # controller can group it and hand the target's output over to
         # Sendspin. The resulting SendspinVisualizerPlayer keeps it out of the
@@ -394,7 +442,7 @@ class TapManager:
             client_id=tap.client_id,
             name="MilkDrop Visualizer",
             version=1,
-            supported_roles=[MILKDROP_ROLE_ID],
+            supported_roles=supported_roles,
             device_info=SendspinDeviceInfo(
                 manufacturer="Music Assistant", product_name="MilkDrop Visualizer"
             ),
@@ -416,6 +464,9 @@ class TapManager:
             on_stream_end=lambda: on_stream_boundary('{"type": "stream/end"}'),
         )
         role.setup_visualizer(support)
+        if color_tint_enabled and (color_roles := viz_client.roles_by_family("color")):
+            color_role = cast("BridgeColorRole", color_roles[0])
+            color_role.set_callbacks(on_color=on_color)
         viz_client.attach_preinitialized_roles()
         return viz_client
 

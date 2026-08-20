@@ -481,10 +481,8 @@ class SnapCastProvider(PlayerProvider):
                     "Could not register mdns record for %s as its already in use",
                     zeroconf_type,
                 )
-            except Exception as err:
-                self.logger.exception(
-                    "Could not register mdns record for %s: %s", zeroconf_type, str(err)
-                )
+            except Exception:
+                self.logger.exception("Could not register mdns record for %s", zeroconf_type)
 
         args = [
             "snapserver",

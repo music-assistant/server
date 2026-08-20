@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.soundcloud import SUPPORTED_FEATURES, SoundcloudMusicProvider
+
+
+@pytest.fixture
+def sync_run() -> Iterator[SyncRunState]:
+    """Run the library listings as part of a sync run, so their skips are recorded."""
+    state = SyncRunState()
+    token = SYNC_RUN_STATE.set(state)
+    yield state
+    SYNC_RUN_STATE.reset(token)
 
 
 @pytest.fixture

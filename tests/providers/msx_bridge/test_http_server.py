@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import pytest
 from aiohttp.test_utils import TestClient as AiohttpTestClient
@@ -125,6 +126,74 @@ async def test_stream_no_media(provider: MSXBridgeProvider, mass_mock: Mock) -> 
     """GET /stream/{id} should return 404 when player has no current media."""
     mock_player = Mock(spec=MSXPlayer)
     mock_player.current_media = None
+    token = provider.get_stream_token("msx_test")
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
+
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        resp = await client.get(f"/stream/msx_test?token={token}")
+        assert resp.status == 404
+        body = await resp.text()
+        assert "No active stream" in body
+    finally:
+        await client.close()
+
+
+async def test_stream_token_is_unguessable_and_per_player(
+    provider: MSXBridgeProvider,
+) -> None:
+    """Tokens must be random and distinct per player, not a shared constant."""
+    first = provider.get_stream_token("msx_a")
+    second = provider.get_stream_token("msx_b")
+    assert first
+    assert second
+    assert first != second
+    assert len(first) >= 16
+
+
+async def test_stream_token_survives_player_reregistration(
+    provider: MSXBridgeProvider,
+) -> None:
+    """
+    A token outlives the player object.
+
+    An idle TV is unregistered after the configured timeout; rotating there would
+    strand the URLs a long-running kiosk already cached.
+    """
+    token = provider.get_stream_token("msx_kiosk")
+    assert provider.get_stream_token("msx_kiosk") == token
+
+
+async def test_audio_routes_send_no_cors_header(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Audio must not be readable by a cross-origin fetch, unlike the MSX content pages."""
+    token = provider.get_stream_token("msx_test")
+    mock_player = Mock(spec=MSXPlayer)
+    mock_player.current_media = None
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
+
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        resp = await client.get(f"/stream/msx_test?token={token}")
+        assert resp.headers.get("Access-Control-Allow-Origin") is None
+        resp = await client.get("/msx/audio/msx_test")
+        assert resp.headers.get("Access-Control-Allow-Origin") is None
+        # the MSX content pages still need it — the MSX app loads them cross-origin
+        resp = await client.get("/msx/menu.json")
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    finally:
+        await client.close()
+
+
+async def test_stream_rejects_missing_token(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """GET /stream/{id} without the player's token should be refused."""
+    mock_player = Mock(spec=MSXPlayer)
+    mock_player.current_media = Mock()
     mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
 
     server = MSXHTTPServer(provider, 0)
@@ -132,9 +201,9 @@ async def test_stream_no_media(provider: MSXBridgeProvider, mass_mock: Mock) -> 
     await client.start_server()
     try:
         resp = await client.get("/stream/msx_test")
-        assert resp.status == 404
-        body = await resp.text()
-        assert "No active stream" in body
+        assert resp.status == 403
+        resp = await client.get("/stream/msx_test?token=wrong")
+        assert resp.status == 403
     finally:
         await client.close()
 
@@ -167,6 +236,7 @@ async def test_stream_success(provider: MSXBridgeProvider, mass_mock: Mock) -> N
     mock_media.queue_item_id = None
     mock_player.current_media = mock_media
     mock_player.output_format = "mp3"
+    token = provider.get_stream_token("msx_test")
     mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
 
     # Mock get_stream to return an async generator
@@ -182,7 +252,7 @@ async def test_stream_success(provider: MSXBridgeProvider, mass_mock: Mock) -> N
             "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
             return_value=_async_iter(chunks),
         ):
-            resp = await client.get("/stream/msx_test")
+            resp = await client.get(f"/stream/msx_test?token={token}")
             assert resp.status == 200
             assert resp.headers["Content-Type"] == "audio/mpeg"
             body = await resp.read()
@@ -690,6 +760,31 @@ async def test_msx_playlist_tracks(provider: MSXBridgeProvider, mass_mock: Mock)
         await client.close()
 
 
+async def test_broadcast_play_path_carries_token(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """The pushed stream path must carry the token the /stream route now requires."""
+    token = provider.get_stream_token("msx_test")
+
+    server = MSXHTTPServer(provider, 0)
+    ws = AsyncMock()
+    ws.closed = False
+    server._ws_clients["msx_test"] = {ws}
+    coros: list[Any] = []
+
+    def _capture_task(coro: Any) -> Mock:
+        coros.append(coro)
+        return Mock()
+
+    mass_mock.create_task = Mock(side_effect=_capture_task)
+
+    server.broadcast_play("msx_test", title="T")
+
+    await coros[0]
+    payload = json.loads(ws.send_str.call_args[0][0])
+    assert payload["path"] == f"/stream/msx_test?token={token}"
+
+
 # --- MSX audio endpoint ---
 
 
@@ -699,6 +794,99 @@ async def test_msx_audio_missing_uri(http_client: TestClient[Any, Any]) -> None:
     assert resp.status == 400
     body = await resp.text()
     assert "uri" in body.lower()  # "Missing uri" or "Invalid uri parameter"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://evil.example/payload.mp3",
+        "https://evil.example/x",
+        "rtsp://evil.example/x",
+        # the same destination wrapped in a builtin uri — parse_uri resolves both to
+        # ('builtin', 'http://evil.example/…'), so the guard must reject both
+        "builtin://track/http://evil.example/payload.mp3",
+        "builtin://radio/http://evil.example/x",
+        "builtin://unknown/https://evil.example/x",
+        "not-a-uri",
+    ],
+)
+async def test_msx_audio_rejects_raw_stream_url(
+    provider: MSXBridgeProvider, mass_mock: Mock, uri: str
+) -> None:
+    """A bare stream URL resolves to the builtin provider and must never be enqueued."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
+        resp = await client.get(f"/msx/audio/msx_test?uri={quote(uri, safe='')}&token={token}")
+        assert resp.status == 400
+        mass_mock.player_queues.play_media.assert_not_called()
+    finally:
+        await client.close()
+
+
+async def test_api_play_rejects_non_string_body_values(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A malformed body must be a 400, not a 500 from the uri guard."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        for body in (
+            {"track_uri": 123, "player_id": "msx_test"},
+            {"track_uri": True, "player_id": "msx_test"},
+            {"track_uri": "library://track/1", "player_id": 42},
+        ):
+            resp = await client.post("/api/play", json=body)
+            assert resp.status == 400
+        mass_mock.player_queues.play_media.assert_not_called()
+    finally:
+        await client.close()
+
+
+async def test_api_play_rejects_raw_stream_url(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """POST /api/play must apply the same guard as the MSX audio route."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        for track_uri in (
+            "http://evil.example/payload.mp3",
+            "builtin://track/http://evil.example/payload.mp3",
+        ):
+            resp = await client.post(
+                "/api/play",
+                json={"track_uri": track_uri, "player_id": "msx_test"},
+            )
+            assert resp.status == 400
+        mass_mock.player_queues.play_media.assert_not_called()
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_rejects_missing_token(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A caller that was never handed a URL cannot start playback."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        resp = await client.get("/msx/audio/msx_test?uri=library://track/1")
+        assert resp.status == 403
+        resp = await client.get("/msx/audio/msx_test?uri=library://track/1&token=wrong")
+        assert resp.status == 403
+        mass_mock.player_queues.play_media.assert_not_called()
+    finally:
+        await client.close()
 
 
 async def test_msx_audio_player_not_found(http_client: TestClient[Any, Any]) -> None:
@@ -731,6 +919,7 @@ async def test_msx_audio_per_track_mode(provider: MSXBridgeProvider, mass_mock: 
     await client.start_server()
     try:
         _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -740,13 +929,38 @@ async def test_msx_audio_per_track_mode(provider: MSXBridgeProvider, mass_mock: 
             "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
             return_value=_async_iter(chunks),
         ):
-            resp = await client.get("/msx/audio/msx_test?uri=library://track/1")
+            resp = await client.get(f"/msx/audio/msx_test?uri=library://track/1&token={token}")
             assert resp.status == 200
 
         mass_mock.streams.get_stream.assert_called_once()
         _args, _pos, kwargs = mass_mock.streams.get_stream.mock_calls[0]
         assert kwargs.get("force_flow_mode") is False
 
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_proxy_paces_output(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """The local proxy must carry the core streamserver's pacing ceiling."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
+        mass_mock.streams = Mock()
+        mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+
+        with patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_async_iter([b"encoded"]),
+        ) as ffmpeg_mock:
+            resp = await client.get(f"/msx/audio/msx_test?uri=library://track/1&token={token}")
+            assert resp.status == 200
+
+        extra_args = ffmpeg_mock.call_args.kwargs["extra_input_args"]
+        assert "-readrate" in extra_args
+        assert "-readrate_initial_burst" in extra_args
     finally:
         await client.close()
 
@@ -760,6 +974,7 @@ async def test_msx_audio_from_playlist_skips_ws(
     await client.start_server()
     try:
         player, _media = _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -777,7 +992,9 @@ async def test_msx_audio_from_playlist_skips_ws(
             "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
             return_value=_async_iter(chunks),
         ):
-            resp = await client.get("/msx/audio/msx_test?uri=library://track/1&from_playlist=1")
+            resp = await client.get(
+                f"/msx/audio/msx_test?uri=library://track/1&from_playlist=1&token={token}"
+            )
             assert resp.status == 200
 
         # _skip_ws_notify should have been True during play_media call
@@ -798,6 +1015,7 @@ async def test_msx_audio_arms_wait_before_enqueue(
     await client.start_server()
     try:
         player, _media = _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -814,7 +1032,7 @@ async def test_msx_audio_arms_wait_before_enqueue(
             "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
             return_value=_async_iter([b"encoded-chunk-1"]),
         ):
-            resp = await client.get("/msx/audio/msx_test?uri=library://track/1")
+            resp = await client.get(f"/msx/audio/msx_test?uri=library://track/1&token={token}")
             assert resp.status == 200
 
         assert call_order == ["arm", "enqueue"]
@@ -1180,12 +1398,16 @@ async def test_msx_audio_redirect_mode(provider: MSXBridgeProvider, mass_mock: M
     await client.start_server()
     try:
         _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
 
         stream_url = "http://ma:8097/single/s1/q1/i1/msx_test.mp3"
         mass_mock.streams = Mock()
         mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
 
-        resp = await client.get("/msx/audio/msx_test?uri=library://track/1", allow_redirects=False)
+        resp = await client.get(
+            f"/msx/audio/msx_test?uri=library://track/1&token={token}",
+            allow_redirects=False,
+        )
         assert resp.status == 302
         # the URL host is rewritten to the client-reachable one (see the
         # dedicated rewrite test); the streamserver path must be intact
@@ -1210,12 +1432,16 @@ async def test_msx_audio_redirect_rewrites_host_for_client(
     await client.start_server()
     try:
         _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
 
         stream_url = "http://172.18.0.2:8097/single/s1/q1/i1/msx_test.mp3?flow=1"
         mass_mock.streams = Mock()
         mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
 
-        resp = await client.get("/msx/audio/msx_test?uri=library://track/1", allow_redirects=False)
+        resp = await client.get(
+            f"/msx/audio/msx_test?uri=library://track/1&token={token}",
+            allow_redirects=False,
+        )
         assert resp.status == 302
         location = urlsplit(resp.headers["Location"])
         assert location.hostname == "127.0.0.1"  # host the TestClient connects to
@@ -1236,6 +1462,7 @@ async def test_msx_audio_redirect_mode_falls_back_to_proxy(
     await client.start_server()
     try:
         _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
 
         mass_mock.streams = Mock()
         mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("boom"))
@@ -1250,7 +1477,8 @@ async def test_msx_audio_redirect_mode_falls_back_to_proxy(
             return_value=_async_iter([b"encoded-chunk-1"]),
         ) as ffmpeg_stream:
             resp = await client.get(
-                "/msx/audio/msx_test?uri=library://track/1", allow_redirects=False
+                f"/msx/audio/msx_test?uri=library://track/1&token={token}",
+                allow_redirects=False,
             )
             assert resp.status == 200
             body = await resp.read()

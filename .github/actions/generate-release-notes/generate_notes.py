@@ -9,13 +9,15 @@ import os
 import re
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 from github import Github, GithubException
 
 
-def load_config():
+def load_config() -> dict[str, Any]:
     """Load the release-notes-config.yml configuration."""
     config_path = ".github/release-notes-config.yml"
     if not Path(config_path).exists():
@@ -26,7 +28,7 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def get_tag_date(repo, tag_name):
+def get_tag_date(repo, tag_name) -> datetime | None:
     """Get the creation date of a tag (supports both annotated and lightweight tags)."""
     try:
         ref = repo.get_git_ref(f"tags/{tag_name}")
@@ -41,7 +43,7 @@ def get_tag_date(repo, tag_name):
         return None
 
 
-def get_released_pr_numbers(repo, merge_base_sha, previous_tag):
+def get_released_pr_numbers(repo, merge_base_sha, previous_tag) -> set[int]:
     """Get PR numbers that already shipped on the previous tag's (diverged) branch."""
     merge_pattern = re.compile(r"Merge pull request #(\d+)")
     squash_pattern = re.compile(r"\(#(\d+)\)\s*$")
@@ -57,7 +59,7 @@ def get_released_pr_numbers(repo, merge_base_sha, previous_tag):
     return released
 
 
-def get_prs_between_tags(repo, previous_tag, head_sha):
+def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
     """Get all merged PRs between the previous tag and exact source commit."""
     pr_pattern = re.compile(r"#(\d+)")
     merge_pattern = re.compile(r"Merge pull request #(\d+)")
@@ -143,7 +145,7 @@ def get_prs_between_tags(repo, previous_tag, head_sha):
     return prs
 
 
-def categorize_prs(prs, config):
+def categorize_prs(prs, config) -> tuple[dict[str, list[Any]], list[Any]]:
     """Categorize PRs based on their labels using the config."""
     categories = defaultdict(list)
     uncategorized = []
@@ -187,7 +189,7 @@ def categorize_prs(prs, config):
     return categories, uncategorized
 
 
-def get_contributors(prs, config):
+def get_contributors(prs, config) -> list[str]:
     """Extract unique contributors from PRs."""
     excluded = set(config.get("exclude-contributors", []))
     contributors = set()
@@ -200,7 +202,7 @@ def get_contributors(prs, config):
     return sorted(contributors)
 
 
-def format_change_line(pr, config):
+def format_change_line(pr, config) -> str:
     """Format a single PR line using the change-template from config."""
     template = config.get("change-template", "- $TITLE (by @$AUTHOR in #$NUMBER)")
 
@@ -219,7 +221,7 @@ def format_change_line(pr, config):
     return result.replace("$URL", pr.html_url)
 
 
-def extract_frontend_changes(prs):
+def extract_frontend_changes(prs) -> tuple[list[str], set[str]]:
     """
     Extract frontend changes from frontend update PRs.
 
@@ -276,7 +278,7 @@ def generate_release_notes(  # noqa: PLR0915
     previous_tag,
     frontend_changes=None,
     important_notes=None,
-):
+) -> str:
     """Generate the formatted release notes."""
     lines = []
 
@@ -344,8 +346,7 @@ def generate_release_notes(  # noqa: PLR0915
     if frontend_changes and len(frontend_changes) > 0:
         lines.append("### 🎨 Frontend Changes")
         lines.append("")
-        for change in frontend_changes:
-            lines.append(change)
+        lines.extend(frontend_changes)
         lines.append("")
 
     # Add uncategorized PRs if any
@@ -397,7 +398,7 @@ def generate_release_notes(  # noqa: PLR0915
     return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     """Generate release notes for the target version."""
     # Get environment variables
     github_token = os.environ.get("GITHUB_TOKEN")

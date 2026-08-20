@@ -788,8 +788,8 @@ class WebserverController(CoreController):
             return None
         try:
             user = await get_authenticated_user(request)
-        except Exception as e:
-            self.logger.exception("Authentication error: %s", e)
+        except Exception:
+            self.logger.exception("Authentication error")
             return web.Response(
                 status=401,
                 text="Authentication failed",

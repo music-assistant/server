@@ -166,7 +166,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             try:
                 yield await self._parse_artist(artist)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
+                self._report_skipped_item(MediaType.ARTIST, artist, error)
                 continue
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -175,11 +175,9 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         async for item in self._soundcloud.get_account_playlists():
             try:
                 raw_playlist = item["playlist"]
-            except KeyError:
-                self.logger.debug(
-                    "Unexpected Soundcloud API response when parsing playlists: %s",
-                    item,
-                )
+            except KeyError as error:
+                # the entry holds no playlist payload at all, so there is no id to name
+                self.report_skipped_sync_item(MediaType.PLAYLIST, None, error)
                 continue
 
             try:
@@ -189,11 +187,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
                 yield await self._parse_playlist(playlist)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug(
-                    "Failed to obtain Soundcloud playlist details: %s",
-                    raw_playlist,
-                    exc_info=error,
-                )
+                self._report_skipped_item(MediaType.PLAYLIST, raw_playlist, error)
                 continue
 
         self.logger.debug(
@@ -209,16 +203,13 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             try:
                 yield await self._parse_track(track)
             except DrmProtectedTrackError:
+                # a permanent restriction on the track rather than a failure to read it, so
+                # it is counted and logged once below instead of reported as a sync failure
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 # somehow certain track id's don't exist (anymore)
-                self.logger.debug(
-                    "%s: Parse track with id %s failed: %s",
-                    type(error).__name__,
-                    track["id"],
-                    track,
-                )
+                self._report_skipped_item(MediaType.TRACK, track, error)
                 continue
 
         if drm_protected:
@@ -669,6 +660,19 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Patch artwork URL to a high quality thumbnail."""
         # This is undocumented in their API docs, but was previously
         return artwork_url.replace("large", "t500x500")
+
+    def _report_skipped_item(
+        self, media_type: MediaType, item_obj: dict[str, Any], err: Exception
+    ) -> None:
+        """
+        Report a library item that was dropped while listing the library.
+
+        :param media_type: Media type of the skipped item.
+        :param item_obj: Raw api object of the skipped item, whose id is its item id.
+        :param err: The error that made the item unusable.
+        """
+        item_id = item_obj.get("id")
+        self.report_skipped_sync_item(media_type, str(item_id) if item_id else None, err)
 
 
 def _is_drm_protected(track_obj: dict[str, Any]) -> bool:

@@ -1402,8 +1402,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
             for artist_obj in artists:
                 if not isinstance(artist_obj, dict):
                     continue
-                with suppress(InvalidDataError):
+                try:
                     yield self._parse_artist(artist_obj)
+                except InvalidDataError as err:
+                    self.report_skipped_sync_item(MediaType.ARTIST, None, err)
             has_more = bool(data.get("more") or data.get("hasMore"))
             offset += limit
             if not has_more and len(artists) < limit:
@@ -1426,8 +1428,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
             for album_obj in albums:
                 if not isinstance(album_obj, dict):
                     continue
-                with suppress(InvalidDataError):
+                try:
                     yield self._parse_album(album_obj)
+                except InvalidDataError as err:
+                    self.report_skipped_sync_item(MediaType.ALBUM, None, err)
             has_more = bool(data.get("more") or data.get("hasMore"))
             offset += limit
             if not has_more and len(albums) < limit:
@@ -1449,9 +1453,22 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for idx in range(0, len(track_ids), chunk_size):
             chunk_ids = track_ids[idx : idx + chunk_size]
             songs = await self._get_song_detail(",".join(chunk_ids))
+            fetched_ids: set[str] = set()
             for song_obj in songs:
-                with suppress(InvalidDataError):
+                fetched_ids.add(str(song_obj.get("id") or song_obj.get("songId") or "").strip())
+                try:
                     yield self._parse_track(song_obj)
+                except InvalidDataError as err:
+                    self.report_skipped_sync_item(MediaType.TRACK, None, err)
+            # the liked list is authoritative, so a track the detail call left out is still
+            # in the library and must not be read as removed
+            for missing_id in chunk_ids:
+                if missing_id not in fetched_ids:
+                    self.report_skipped_sync_item(
+                        MediaType.TRACK,
+                        missing_id,
+                        MediaNotFoundError(f"NCM did not return track {missing_id}"),
+                    )
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from NCM."""
@@ -1467,8 +1484,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for playlist_obj in playlists:
             if not isinstance(playlist_obj, dict):
                 continue
-            with suppress(InvalidDataError):
+            try:
                 yield self._parse_playlist(playlist_obj)
+            except InvalidDataError as err:
+                self.report_skipped_sync_item(MediaType.PLAYLIST, None, err)
 
     async def _get_recommend_payload_cached(
         self,

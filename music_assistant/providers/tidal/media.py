@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
@@ -24,8 +25,11 @@ from .parsers_v2 import parse_playlist as parse_playlist_v2
 from .parsers_v2 import parse_track as parse_track_v2
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
+    from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
 
 
@@ -74,23 +78,27 @@ class TidalMediaManager:
         # Slice the resources before parsing so we only parse up to `limit` items.
         if MediaType.TRACK in wanted:
             results.tracks = [
-                parse_track_v2(self.provider, doc, res)
+                track
                 for res in doc.related(data, "tracks")[:limit]
+                if (track := self._parse_or_skip(parse_track_v2, doc, res)) is not None
             ]
         if MediaType.ALBUM in wanted:
             results.albums = [
-                parse_album_v2(self.provider, doc, res)
+                album
                 for res in doc.related(data, "albums")[:limit]
+                if (album := self._parse_or_skip(parse_album_v2, doc, res)) is not None
             ]
         if MediaType.ARTIST in wanted:
             results.artists = [
-                parse_artist_v2(self.provider, doc, res)
+                artist
                 for res in doc.related(data, "artists")[:limit]
+                if (artist := self._parse_or_skip(parse_artist_v2, doc, res)) is not None
             ]
         if MediaType.PLAYLIST in wanted:
             results.playlists = [
-                parse_playlist_v2(self.provider, doc, res)
+                playlist
                 for res in doc.related(data, "playlists")[:limit]
+                if (playlist := self._parse_or_skip(parse_playlist_v2, doc, res)) is not None
             ]
         return results
 
@@ -156,97 +164,67 @@ class TidalMediaManager:
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks."""
         tracks: list[Track] = []
-        try:
-            async for doc in self.api.paginate_jsonapi(
-                f"albums/{prov_album_id}/relationships/items",
-                include=["items.artists", "items.albums.coverArt"],
-                replace_media="items",
-            ):
-                for item in doc.data_list:
-                    # The items relationship is mixed-type: an album's music
-                    # videos appear here too, and parsing one as a track would
-                    # yield an id that 404s on playback and shift trackNumber.
-                    if item.get("type") != "tracks":
-                        continue
-                    if not (resource := doc.resolve(item)):
-                        continue
-                    track = parse_track_v2(self.provider, doc, resource)
-                    item_meta = item.get("meta") or {}
-                    track.track_number = item_meta.get("trackNumber", 0) or 0
-                    track.disc_number = item_meta.get("volumeNumber", 0) or 0
-                    tracks.append(track)
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+        async for doc in self.api.paginate_jsonapi(
+            f"albums/{prov_album_id}/relationships/items",
+            include=["items.artists", "items.albums.coverArt"],
+            replace_media="items",
+        ):
+            for item in doc.data_list:
+                # The items relationship is mixed-type: an album's music
+                # videos appear here too, and parsing one as a track would
+                # yield an id that 404s on playback and shift trackNumber.
+                if item.get("type") != "tracks":
+                    continue
+                if not (resource := doc.resolve(item)):
+                    continue
+                if (track := self._parse_or_skip(parse_track_v2, doc, resource)) is None:
+                    continue
+                item_meta = item.get("meta") or {}
+                track.track_number = item_meta.get("trackNumber", 0) or 0
+                track.disc_number = item_meta.get("volumeNumber", 0) or 0
+                tracks.append(track)
         return tracks
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist albums."""
         albums: list[Album] = []
-        try:
-            async for doc in self.api.paginate_jsonapi(
-                f"artists/{prov_artist_id}/relationships/albums",
-                include=["albums.artists", "albums.coverArt"],
-                replace_media="albums",
-            ):
-                for item in doc.data_list:
-                    if resource := doc.resolve(item):
-                        albums.append(parse_album_v2(self.provider, doc, resource))
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+        async for doc in self.api.paginate_jsonapi(
+            f"artists/{prov_artist_id}/relationships/albums",
+            include=["albums.artists", "albums.coverArt"],
+            replace_media="albums",
+        ):
+            albums.extend(self._parse_items(parse_album_v2, doc))
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get artist top tracks."""
         # Top tracks are a bounded, ranked list: the first page is enough.
-        try:
-            doc = await self.api.get_jsonapi(
-                f"artists/{prov_artist_id}/relationships/tracks",
-                params={"collapseBy": "FINGERPRINT"},
-                include=["tracks.artists", "tracks.albums.coverArt"],
-                replace_media="tracks",
-            )
-            return [
-                parse_track_v2(self.provider, doc, resource)
-                for item in doc.data_list
-                if (resource := doc.resolve(item))
-            ]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+        doc = await self.api.get_jsonapi(
+            f"artists/{prov_artist_id}/relationships/tracks",
+            params={"collapseBy": "FINGERPRINT"},
+            include=["tracks.artists", "tracks.albums.coverArt"],
+            replace_media="tracks",
+        )
+        return self._parse_items(parse_track_v2, doc)
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks."""
         # Similar tracks are a bounded, ranked list: the first page is enough.
-        try:
-            doc = await self.api.get_jsonapi(
-                f"tracks/{prov_track_id}/relationships/similarTracks",
-                include=["similarTracks.artists", "similarTracks.albums.coverArt"],
-                replace_media="similarTracks",
-            )
-            tracks = [
-                parse_track_v2(self.provider, doc, resource)
-                for item in doc.data_list
-                if (resource := doc.resolve(item))
-            ]
-            return tracks[:limit]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+        doc = await self.api.get_jsonapi(
+            f"tracks/{prov_track_id}/relationships/similarTracks",
+            include=["similarTracks.artists", "similarTracks.albums.coverArt"],
+            replace_media="similarTracks",
+        )
+        return self._parse_items(parse_track_v2, doc)[:limit]
 
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Get similar artists."""
         # Similar artists are a bounded, ranked list: the first page is enough.
-        try:
-            doc = await self.api.get_jsonapi(
-                f"artists/{prov_artist_id}/relationships/similarArtists",
-                include=["similarArtists.profileArt"],
-            )
-            artists = [
-                parse_artist_v2(self.provider, doc, resource)
-                for item in doc.data_list
-                if (resource := doc.resolve(item))
-            ]
-            return artists[:limit]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+        doc = await self.api.get_jsonapi(
+            f"artists/{prov_artist_id}/relationships/similarArtists",
+            include=["similarArtists.profileArt"],
+        )
+        return self._parse_items(parse_artist_v2, doc)[:limit]
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
@@ -302,13 +280,15 @@ class TidalMediaManager:
             replace_media="items",
         ):
             for item in doc.data_list:
-                if resource := doc.resolve(item):
-                    track = parse_track_v2(self.provider, doc, resource)
-                    track.position = len(tracks) + 1
-                    tracks.append(track)
-                    # Feed the stale->live pairs Tidal computed for this read into
-                    # the churn cache, as the library walk already does.
-                    self.provider.note_replaced_track(item)
+                if not (resource := doc.resolve(item)):
+                    continue
+                if (track := self._parse_or_skip(parse_track_v2, doc, resource)) is None:
+                    continue
+                track.position = len(tracks) + 1
+                tracks.append(track)
+                # Feed the stale->live pairs Tidal computed for this read into
+                # the churn cache, as the library walk already does.
+                self.provider.note_replaced_track(item)
         return tracks
 
     async def _get_mix_tracks(self, mix_id: str, limit: int, offset: int) -> list[Track]:
@@ -333,6 +313,56 @@ class TidalMediaManager:
             return await self.api.get(f"tracks/{prov_track_id}/lyrics")
         except (ClientError, MusicAssistantError) as err:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", prov_track_id, err)
+            return None
+
+    def _parse_items[ItemT](
+        self,
+        parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
+        doc: JsonApiDocument,
+    ) -> list[ItemT]:
+        """
+        Parse the document's primary collection, leaving out the items that cannot be parsed.
+
+        Only for a collection of a single resource type: every resource is handed to the
+        same parser, so a mixed-type relationship has to be filtered by the caller.
+
+        :param parser: The parser to apply to each resolved resource.
+        :param doc: The JSON:API document holding the collection.
+        """
+        items: list[ItemT] = []
+        for identifier in doc.data_list:
+            if not (resource := doc.resolve(identifier)):
+                continue
+            if (item := self._parse_or_skip(parser, doc, resource)) is not None:
+                items.append(item)
+        return items
+
+    def _parse_or_skip[ItemT](
+        self,
+        parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
+        doc: JsonApiDocument,
+        resource: dict[str, Any],
+    ) -> ItemT | None:
+        """
+        Parse a resource into a media item, or return None if it cannot be parsed.
+
+        :param parser: The parser to apply to the resource.
+        :param doc: The JSON:API document holding the resource.
+        :param resource: The resource object to parse.
+        """
+        try:
+            return parser(self.provider, doc, resource)
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            # Tidal sending one item in a shape its parser can not read must not discard
+            # the rest of the collection. Log the traceback (on debug) as well, so a
+            # parser bug caught here is still traceable to its origin.
+            self.logger.warning(
+                "Skipping Tidal %s %s: %s",
+                resource.get("type", "item"),
+                resource.get("id", "[no id]"),
+                err,
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
             return None
 
     def _process_tracks(self, items: list[dict[str, Any]], offset: int) -> list[Track]:

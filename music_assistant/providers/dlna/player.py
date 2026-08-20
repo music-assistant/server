@@ -52,7 +52,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
         except UpnpError as err:
             self.force_poll = True
             if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-                self.logger.exception("Error during call %s: %r", func.__name__, err)
+                self.logger.exception("Error during call %s", func.__name__)
             else:
                 self.logger.error("Error during call %s: %r", func.__name__, str(err))
         return None

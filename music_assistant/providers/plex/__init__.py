@@ -440,7 +440,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         """Retrieve all library artists from Plex Music."""
         artists_obj = await self._run_async(self._plex_library.all)
         for artist in artists_obj:
-            parsed = await self._parse_or_skip(self._parse_artist, artist)
+            parsed = await self._parse_or_skip(self._parse_artist, artist, MediaType.ARTIST)
             if parsed is not None:
                 yield parsed
 
@@ -448,7 +448,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         """Retrieve all library albums from Plex Music."""
         albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
-            parsed = await self._parse_or_skip(self._parse_album, album)
+            parsed = await self._parse_or_skip(self._parse_album, album, MediaType.ALBUM)
             if parsed is not None:
                 yield parsed
 
@@ -456,7 +456,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         """Retrieve all library playlists from the provider."""
         playlists_obj = await self._run_async(self._plex_library.playlists)
         for playlist in playlists_obj:
-            parsed = await self._parse_or_skip(self._parse_playlist, playlist)
+            parsed = await self._parse_or_skip(self._parse_playlist, playlist, MediaType.PLAYLIST)
             if parsed is not None:
                 yield parsed
 
@@ -464,7 +464,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if self.config.get_value(CONF_IMPORT_COLLECTIONS):
             collections_obj = await self._run_async(self._plex_library.collections)
             for collection in collections_obj:
-                parsed = await self._parse_or_skip(self._parse_collection, collection)
+                parsed = await self._parse_or_skip(
+                    self._parse_collection, collection, MediaType.PLAYLIST, COLLECTION_ID_PREFIX
+                )
                 if parsed is not None:
                     yield parsed
 
@@ -489,7 +491,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             if not batch:
                 break
             for plex_track in batch:
-                parsed = await self._parse_or_skip(self._parse_track, plex_track)
+                parsed = await self._parse_or_skip(self._parse_track, plex_track, MediaType.TRACK)
                 if parsed is not None:
                     yield parsed
             offset += page_size
@@ -505,7 +507,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             self._plex_library.title,
         )
         for album in albums_obj:
-            parsed = await self._parse_or_skip(self._parse_audiobook, album)
+            parsed = await self._parse_or_skip(
+                self._parse_audiobook, album, MediaType.AUDIOBOOK, AUDIOBOOK_PREFIX
+            )
             if parsed is not None:
                 yield parsed
 
@@ -532,7 +536,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             return
         albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
-            parsed = await self._parse_or_skip(self._parse_podcast, album)
+            parsed = await self._parse_or_skip(
+                self._parse_podcast, album, MediaType.PODCAST, PODCAST_PREFIX
+            )
             if parsed is not None:
                 yield parsed
 
@@ -754,7 +760,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for plex_track in await self._run_async(plex_album.tracks):
-            if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
+            if (
+                track := await self._parse_or_skip(self._parse_track, plex_track, MediaType.TRACK)
+            ) is not None:
                 tracks.append(track)
         return tracks
 
@@ -829,7 +837,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             # Collections can contain tracks, albums, or artists - we only want tracks
             for item in collection_items:
                 if item.type == "track":
-                    if (track := await self._parse_or_skip(self._parse_track, item)) is not None:
+                    if (
+                        track := await self._parse_or_skip(self._parse_track, item, MediaType.TRACK)
+                    ) is not None:
                         track.position = len(result) + 1
                         result.append(track)
                 elif item.type == "album":
@@ -850,7 +860,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             plex_tracks = await self._run_async(self._plex_library.fetchItems, tracks_key)
             random.shuffle(plex_tracks)
             for plex_track in plex_tracks:
-                if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
+                if (
+                    track := await self._parse_or_skip(
+                        self._parse_track, plex_track, MediaType.TRACK
+                    )
+                ) is not None:
                     track.position = len(result) + 1
                     result.append(track)
             return result
@@ -859,7 +873,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
         for plex_track in playlist_items:
-            if (track := await self._parse_or_skip(self._parse_track, plex_track)) is not None:
+            if (
+                track := await self._parse_or_skip(self._parse_track, plex_track, MediaType.TRACK)
+            ) is not None:
                 track.position = len(result) + 1
                 result.append(track)
         return result
@@ -1202,12 +1218,17 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         self,
         parse_coro: Callable[[PlexObjectT], Coroutine[Any, Any, MediaItemT]],
         plex_item: PlexObjectT,
+        media_type: MediaType,
+        id_prefix: str = "",
     ) -> MediaItemT | None:
         """
         Parse a plex object into a media item, or return None if the item must be skipped.
 
         :param parse_coro: The parse method to apply to the given plex object.
         :param plex_item: The plex object to parse.
+        :param media_type: Media type the given plex object is listed as.
+        :param id_prefix: Prefix this provider puts in front of the plex key to build the
+            item id for this media type.
         """
         try:
             return await parse_coro(plex_item)
@@ -1217,14 +1238,19 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             # and we can not tell those apart here, so it has to abort the sync - that is
             # what holds back the deletion pass that would otherwise drop valid items.
             #
-            # read the identifiers from the cached payload, so reporting a failed item
-            # can not trigger a reload that fails all over again
-            attrib = plex_item._data.attrib
-            self.logger.warning(
-                "Skipping Plex item '%s' (key=%s): %s",
-                attrib.get("title", "[unknown]"),
-                attrib.get("key", "[no key]"),
-                err,
+            # the key is the identifier the parsers build the item id from, and one of the
+            # few attributes plexapi never reloads a partial object for, so reporting a
+            # failed item can not trigger a reload that fails all over again
+            plex_key = plex_item.key
+            # the title comes from the cached payload, which keeps the same no-reload
+            # property as the key above
+            self.logger.debug(
+                "Skipping Plex item '%s' (key=%s)",
+                plex_item._data.attrib.get("title", UNKNOWN_NAME),
+                plex_key,
+            )
+            self.report_skipped_sync_item(
+                media_type, f"{id_prefix}{plex_key}" if plex_key else None, err
             )
             return None
 

@@ -85,6 +85,8 @@ from music_assistant.controllers.streams.constants import (
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    SINGLE_ITEM_READRATE,
+    SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
     get_available_buffer_sizes,
 )
@@ -758,6 +760,10 @@ class StreamsController(CoreController):
             )
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
+            elif queue_item.streamdetails.is_realtime:
+                # a realtime source delivers at playback pace, so it has no audio to
+                # spare for an overlap in either direction
+                crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
@@ -902,6 +908,12 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
+                    extra_input_args=[
+                        "-readrate",
+                        SINGLE_ITEM_READRATE,
+                        "-readrate_initial_burst",
+                        SINGLE_ITEM_READRATE_INITIAL_BURST,
+                    ],
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -915,6 +927,15 @@ class StreamsController(CoreController):
                 # the abandoned generator.
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
+                        if pq_data.session_id != session_id:
+                            # playback moved on (or stopped) while this response was open;
+                            # the flow path checks the same thing per chunk
+                            self.logger.debug(
+                                "Ending stream for %s: session %s is no longer current",
+                                queue_item.name,
+                                session_id,
+                            )
+                            break
                         try:
                             await resp.write(chunk)
                             bytes_sent += len(chunk)
@@ -1404,7 +1425,9 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     crossfade_mode=(
                         self.get_crossfade_mode(queue)
+                        # a realtime source is never faded, in either direction
                         if queue_item.media_type == MediaType.TRACK
+                        and not (queue_item.streamdetails and queue_item.streamdetails.is_realtime)
                         else CrossfadeMode.DISABLED
                     ),
                     overlay_enabled=(
@@ -1586,13 +1609,12 @@ class StreamsController(CoreController):
         finally:
             try:
                 await prov.on_source_unselected(source_id, queue_id, stream_session_id)
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "on_source_unselected raised for provider %s source %s queue %s: %s",
+                    "on_source_unselected raised for provider %s source %s queue %s",
                     prov.instance_id,
                     source_id,
                     queue_id,
-                    err,
                 )
 
     def _update_audio_processing_context(
