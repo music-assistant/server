@@ -949,6 +949,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
                 duration=300,
                 buffer=None,
                 seconds_streamed=None,
+                is_realtime=False,
                 audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
             ),
         )
