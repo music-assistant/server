@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
@@ -398,4 +398,130 @@ async def test_declared_unskippable_error_is_not_swallowed() -> None:
         await provider.sync_library(MediaType.ALBUM)
 
     # the run aborted, so nothing was recorded as a completed sync
+    mass.cache.set.assert_not_called()
+
+
+SKIPPED_ID = "album_2"
+
+
+class SkippingAlbumProvider(FailingAlbumProvider):
+    """Provider that drops one album while listing its library."""
+
+    #: item id handed to report_skipped_sync_item, None to report an unidentifiable item
+    reported_item_id: str | None = SKIPPED_ID
+
+    async def get_library_albums(self) -> AsyncGenerator[Any]:
+        """Yield the test albums, dropping the one that cannot be read."""
+        async for album in super().get_library_albums():
+            if album.item_id == SKIPPED_ID:
+                self.report_skipped_sync_item(
+                    MediaType.ALBUM, self.reported_item_id, InvalidDataError("no artist")
+                )
+                continue
+            yield album
+
+
+def _library_holds(mass: MagicMock, known: dict[str, int]) -> None:
+    """Let the deletion pass resolve the given provider item id's to library db id's."""
+
+    async def get_library_item_by_prov_id(item_id: str, provider: str) -> Any:
+        del provider
+        if (db_id := known.get(item_id)) is None:
+            return None
+        return MagicMock(item_id=db_id)
+
+    mass.music.get_controller.return_value.get_library_item_by_prov_id = AsyncMock(
+        side_effect=get_library_item_by_prov_id
+    )
+
+
+async def test_skipped_item_is_reported_on_the_sync_task() -> None:
+    """An item the provider drops while listing is reported instead of vanishing silently."""
+    mass = _build_mass()
+    provider = _build_provider(mass, cls=SkippingAlbumProvider)
+    _library_holds(mass, {})
+
+    with patch("music_assistant.models.music_provider.report_current_task_failure") as reported:
+        await provider.sync_library(MediaType.ALBUM)
+
+    assert SKIPPED_ID in reported.call_args.args[0]
+    # the rest of the library still synced
+    assert _synced_album_ids(mass) == ["album_1", "album_3"]
+
+
+async def test_skipped_item_we_already_hold_survives_the_deletion_pass() -> None:
+    """
+    A skipped item stays in the result set, while the rest of the deletions still run.
+
+    The item is still in the provider's library, so it must not be read as removed - but
+    a permanently unreadable item may not disable the cleanup for everything else either.
+    """
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
+    provider = _build_provider(mass, cls=SkippingAlbumProvider)
+    _library_holds(mass, {SKIPPED_ID: 2})
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    controller = mass.music.get_controller.return_value
+    # only the album that is really gone is processed, the skipped one is left alone
+    controller.get_library_item.assert_awaited_once_with(99)
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
+
+
+async def test_skipped_item_we_do_not_hold_does_not_hold_back_deletions() -> None:
+    """An item that was never imported cannot be deleted, so the cleanup runs as usual."""
+    mass = _build_mass(prev_library_ids=[1, 3, 99])
+    provider = _build_provider(mass, cls=SkippingAlbumProvider)
+    _library_holds(mass, {})
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    mass.music.get_controller.return_value.get_library_item.assert_awaited_once_with(99)
+
+
+class UnidentifiedSkipProvider(SkippingAlbumProvider):
+    """Provider that drops an album it cannot identify."""
+
+    reported_item_id = None
+
+
+async def test_unidentified_skip_holds_back_deletions() -> None:
+    """A provider that cannot say what it dropped holds back the deletions for the whole run."""
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
+    provider = _build_provider(mass, cls=UnidentifiedSkipProvider)
+    _library_holds(mass, {})
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    mass.music.get_controller.return_value.get_library_item.assert_not_called()
+
+
+async def test_skipped_items_are_not_resolved_when_deletions_are_disabled() -> None:
+    """With deletions off there is nothing to protect an item from, so nothing is looked up."""
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
+    provider = _build_provider(mass, cls=SkippingAlbumProvider, sync_deletions=False)
+    _library_holds(mass, {SKIPPED_ID: 2})
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    mass.music.get_controller.return_value.get_library_item_by_prov_id.assert_not_called()
+
+
+class UnskippableSkipProvider(SkippingAlbumProvider):
+    """Provider that declares the error behind its skip unskippable."""
+
+    @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """Return the errors a library sync must not swallow as an item failure."""
+        return (InvalidDataError,)
+
+
+async def test_reported_skip_respects_unskippable_errors() -> None:
+    """Reporting a skip re-raises an error the provider declared unskippable."""
+    mass = _build_mass(prev_library_ids=[1, 2, 3])
+    provider = _build_provider(mass, cls=UnskippableSkipProvider)
+
+    with pytest.raises(InvalidDataError):
+        await provider.sync_library(MediaType.ALBUM)
+
     mass.cache.set.assert_not_called()

@@ -7,7 +7,7 @@ import logging
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
@@ -91,10 +91,13 @@ class SyncRunState:
     :param incomplete: True once the run failed to collect an item, which makes its
         result set an unsafe basis for deleting anything from the library.
     :param failures: Number of item failures reported by the run so far.
+    :param skipped_item_ids: Provider item id's the provider dropped while listing its
+        library, per media type.
     """
 
     incomplete: bool = False
     failures: int = 0
+    skipped_item_ids: dict[MediaType, set[str]] = field(default_factory=dict)
 
 
 # scoped per run rather than per provider: a standalone import_album_tracks() is
@@ -969,6 +972,31 @@ class MusicProvider(Provider):
         finally:
             SYNC_RUN_STATE.reset(token)
 
+    def report_skipped_sync_item(
+        self, media_type: MediaType, item_id: str | None, err: Exception
+    ) -> None:
+        """
+        Report a library item that was dropped while listing this provider's library.
+
+        Call this from a get_library_*() generator whenever it swallows an error instead of
+        yielding the item, so the failure is reported on the sync task rather than the item
+        looking like it was removed at the provider.
+
+        :param media_type: Media type of the skipped item.
+        :param item_id: The provider item id of the skipped item, which keeps that single item
+            out of this sync's deletion pass. Pass None if the item cannot be identified, which
+            holds back the deletion pass for the entire run instead.
+        :param err: The error that made the item unusable.
+        :raises Exception: If this provider declared the error unskippable, so that its own
+            error handling can act on it instead of the item being skipped.
+        """
+        self._handle_sync_item_failure(media_type, item_id, err)
+        state = sync_run_state()
+        if item_id:
+            state.skipped_item_ids.setdefault(media_type, set()).add(item_id)
+        else:
+            state.incomplete = True
+
     async def _run_library_sync(self, media_type: MediaType) -> None:
         """Sync the given media type into the library and process its deletions."""
         # this reference implementation may be overridden
@@ -999,6 +1027,7 @@ class MusicProvider(Provider):
         # process deletions (= no longer in library)
         update_current_task_progress_text("Checking library deletions")
         controller = self.mass.music.get_controller(media_type)
+        await self._keep_skipped_items(media_type, cur_db_ids)
         prev_library_items: list[int] | None
         if sync_state.incomplete:
             # a skipped item is missing from cur_db_ids just like a deleted one, but it is
@@ -1109,6 +1138,22 @@ class MusicProvider(Provider):
         report_current_task_failure(
             f"Failed to sync {media_type.value} {item_ref or '<unknown>'}: {error_detail}"
         )
+
+    async def _keep_skipped_items(self, media_type: MediaType, cur_db_ids: set[int]) -> None:
+        """
+        Add the library id's of the items the provider skipped to this run's result set.
+
+        A skipped item is still in the provider's library, so leaving it out would let the
+        deletion pass read it as removed. Does nothing when that pass is disabled.
+        """
+        if not self.library_sync_deletions_enabled():
+            return
+        controller = self.mass.music.get_controller(media_type)
+        for item_id in sync_run_state().skipped_item_ids.get(media_type, ()):
+            if library_item := await controller.get_library_item_by_prov_id(
+                item_id, self.instance_id
+            ):
+                cur_db_ids.add(int(library_item.item_id))
 
     async def _sync_item_genres(
         self,
