@@ -17,6 +17,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 from weakref import WeakValueDictionary
@@ -3403,7 +3404,7 @@ class StreamsAudio:
         # falls back to trusting the fmt chunk, causing the payload to
         # be treated as raw PCM downstream. Only applies to WAV/AIFF -
         # other containers don't have this ambiguity.
-        if streamdetails.path.lower().rsplit(".", 1)[-1] in ("wav", "aiff", "aif"):
+        if Path(streamdetails.path).suffix.lower() in (".wav", ".aiff", ".aif"):
             # 256 KB probesize is enough to detect embedded DTS-in-WAV while
             # keeping I/O overhead and latency virtually zero. Note: -analyzeduration
             # was tested and found to be a noop here — ffmpeg's demuxer exhausts the
