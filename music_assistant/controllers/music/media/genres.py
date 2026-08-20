@@ -277,6 +277,7 @@ class GenreController(MediaControllerBase[Genre]):
             {self._summary_base_columns()},
             {DB_TABLE_GENRES}.translation_key,
             {DB_TABLE_GENRES}.content_type,
+            {DB_TABLE_GENRES}.genre_aliases,
             {self._provider_mappings_query()} AS provider_mappings
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
@@ -2184,4 +2185,6 @@ class GenreController(MediaControllerBase[Genre]):
             item.translation_key = translation_key
         if content_type := db_row["content_type"]:
             item.content_type = MediaType(content_type)
+        if genre_aliases := db_row["genre_aliases"]:
+            item.genre_aliases = set(json.loads(genre_aliases))
         return item

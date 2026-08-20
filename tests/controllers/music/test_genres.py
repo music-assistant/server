@@ -294,6 +294,17 @@ class TestGenreCRUD:
         names = {g.name for g in items}
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
 
+    async def test_library_items_summary_includes_aliases(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Summary items from library_items carry genre_aliases."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("AliasSummaryGenre"))
+        await genre_ctrl.add_alias(genre.item_id, "Alias Summary Rock")
+        items = await genre_ctrl.library_items(hide_empty=False)
+        item = next(g for g in items if g.name == "AliasSummaryGenre")
+        assert item.genre_aliases is not None
+        assert "Alias Summary Rock" in item.genre_aliases
+
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
         """Search 'country' returns Country genre but not unrelated ones like Metal."""
         await genre_ctrl.add_item_to_library(_make_genre("Metal"))
