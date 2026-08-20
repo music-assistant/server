@@ -39,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -788,6 +789,37 @@ async def test_superseded_cold_stream_teardown_spares_the_newer_owner() -> None:
     newer_stream.stop.assert_not_awaited()
     assert bridge._airplay_stream is newer_stream
     assert bridge.airplay_player.stream is newer_stream
+
+
+# --- Teardown player state reset ---
+
+
+async def test_bridge_teardown_resets_the_players_stream_state() -> None:
+    """A torn-down bridge stream leaves the AirPlay player IDLE at position 0."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = MagicMock()
+    stream.stop = AsyncMock()
+    bridge._airplay_stream = stream
+    bridge.airplay_player.stream = stream
+
+    await bridge._stop_streaming()
+
+    stream.stop.assert_awaited_once_with(force=True)
+    cast("MagicMock", bridge.airplay_player).set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0
+    )
+
+
+async def test_bridge_teardown_spares_a_newer_streams_state() -> None:
+    """Cleanup of a superseded stream never resets state a newer stream owns."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    old_stream = MagicMock()
+    old_stream.stop = AsyncMock()
+    bridge.airplay_player.stream = MagicMock()
+
+    await bridge._cleanup_old_stream(old_stream, None, None)
+
+    cast("MagicMock", bridge.airplay_player).set_state_from_stream.assert_not_called()
 
 
 # --- Anchoring: command an instant the device can hit, then honour the ack ---
