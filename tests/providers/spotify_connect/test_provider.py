@@ -1,5 +1,6 @@
 """Tests for the Spotify Connect provider."""
 
+import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ProviderType
 
+from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.providers.spotify_connect import (
     BACKEND_SOLOIST,
     CONF_API_KEY,
@@ -22,6 +24,7 @@ from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
 from music_assistant.providers.spotify_connect.go_librespot.client import GoLibrespotClient
+from music_assistant.providers.spotify_connect.provider import CONF_LOUDNESS_NORMALIZATION
 from music_assistant.providers.spotify_connect.soloist.backend import (
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
@@ -204,9 +207,73 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
         value=VOLUME_MODE_SYNC_SPOTIFY,
     )
 
+    provider.config.values[CONF_CROSSFADE_DURATION] = ConfigEntry(
+        key=CONF_CROSSFADE_DURATION,
+        type=ConfigEntryType.INTEGER,
+        value=8,
+    )
+    provider.config.values[CONF_LOUDNESS_NORMALIZATION] = ConfigEntry(
+        key=CONF_LOUDNESS_NORMALIZATION,
+        type=ConfigEntryType.BOOLEAN,
+        value=False,
+    )
+
     backend = provider._create_backend()
 
     assert isinstance(backend, SoloistBackend)
     assert backend._api_key == "soloist-api-key-0123456789abcdef"
     assert backend._consent is True
     assert backend._volume_mode == VOLUME_MODE_SYNC_SPOTIFY
+    assert backend._crossfade_ms == 8000
+    assert backend._loudness_normalization is False
+
+
+def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
+    """Without stored values, crossfade is off and normalization enabled."""
+    provider = _provider_with_stored_config({}, tmp_path)
+
+    backend = provider._create_backend()
+
+    assert isinstance(backend, GoLibrespotBackend)
+    assert backend._crossfade_ms == 0
+    assert backend._loudness_normalization is True
+
+
+def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
+    """The configured crossfade seconds (as ms) and normalization reach the backend."""
+    provider = _provider_with_stored_config({}, tmp_path)
+    provider.config.values[CONF_CROSSFADE_DURATION] = ConfigEntry(
+        key=CONF_CROSSFADE_DURATION,
+        type=ConfigEntryType.INTEGER,
+        value=8,
+    )
+    provider.config.values[CONF_LOUDNESS_NORMALIZATION] = ConfigEntry(
+        key=CONF_LOUDNESS_NORMALIZATION,
+        type=ConfigEntryType.BOOLEAN,
+        value=False,
+    )
+
+    backend = provider._create_backend()
+
+    assert isinstance(backend, GoLibrespotBackend)
+    assert backend._crossfade_ms == 8000
+    assert backend._loudness_normalization is False
+
+
+def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
+    """The generated config.yml carries crossfade_duration (ms) and normalisation_disabled."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.logger = MagicMock()
+    backend._publish_name = "Test Speaker"
+    backend._instance_id = "spotify_connect--test"
+    backend._api_port = 38800
+    backend.cache_dir = str(tmp_path)
+    backend._crossfade_ms = 8000
+    backend._loudness_normalization = False
+
+    backend._write_config(None)
+
+    config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
+    assert config["crossfade_duration"] == 8000
+    assert config["normalisation_disabled"] is True

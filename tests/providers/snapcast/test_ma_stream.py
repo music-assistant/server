@@ -130,7 +130,7 @@ def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     stream = _make_stream(provider)
     stream.media.source_id = "queue-1"
-    stream.media.custom_data = {"session_id": "session-1"}
+    stream.media.queue_session_id = "session-1"
     stream.snap_stream = MagicMock(identifier="stream-1")
     group = MagicMock(
         stream="stream-1",

@@ -707,8 +707,9 @@ class AlbumsController(MediaControllerBase[Album]):
         """Search one provider and return the mappings of every confirmed album match."""
         self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
         matches: list[ProviderMapping] = []
-        artist_name = db_album.artists[0].name
-        search_str = f"{artist_name} - {db_album.name}"
+        search_str = (
+            f"{db_album.artists[0].name} - {db_album.name}" if db_album.artists else db_album.name
+        )
         for search_result_item in await self.search(search_str, provider.instance_id):
             if not search_result_item.available:
                 continue
@@ -893,7 +894,19 @@ class AlbumsController(MediaControllerBase[Album]):
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
     ) -> None:
-        """Store Album Artists."""
+        """
+        Store Album Artists.
+
+        An empty set of artists never clears the stored rows: an album that lost its
+        artists disappears from their discography and is skipped by provider matching.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning("Ignoring request to clear all artists of album id %s", db_id)
+            return
         if overwrite:
             # on overwrite, clear the album_artists table first
             await self.mass.music.database.delete(
@@ -902,7 +915,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "album_id": db_id,
                 },
             )
-        for artist in artists:
+        for artist in all_artists:
             await self._set_album_artist(db_id, artist=artist, overwrite=overwrite)
 
     async def _set_album_artist(

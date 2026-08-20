@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -599,11 +598,7 @@ class TracksController(MediaControllerBase[Track]):
         if preview := track.metadata.preview:
             return preview
         # fallback to a preview/sample hosted by our own webserver
-        enc_track_id = urllib.parse.quote(item_id)
-        return (
-            f"{self.mass.webserver.base_url}/preview?"
-            f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
-        )
+        return self.mass.webserver.create_preview_url(provider_instance_id_or_domain, item_id)
 
     async def get_library_track_albums(
         self,
@@ -853,7 +848,19 @@ class TracksController(MediaControllerBase[Track]):
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
     ) -> None:
-        """Store Track Artists."""
+        """
+        Store Track Artists.
+
+        An empty set of artists never clears the stored rows: a track without any
+        artist can not be played or resolved.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning("Ignoring request to clear all artists of track id %s", db_id)
+            return
         if overwrite:
             # on overwrite, clear the track_artists table first
             await self.mass.music.database.delete(
@@ -862,10 +869,8 @@ class TracksController(MediaControllerBase[Track]):
                     "track_id": db_id,
                 },
             )
-        artist_mappings: UniqueList[ItemMapping] = UniqueList()
-        for artist in artists:
-            mapping = await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
-            artist_mappings.append(mapping)
+        for artist in all_artists:
+            await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
 
     async def _set_track_artist(
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
@@ -901,14 +906,19 @@ class TracksController(MediaControllerBase[Track]):
 
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the tracks sync-details query."""
-        # the sync loop needs to know if the track has a (valid) album link
-        # to be able to backfill a missing album on existing library tracks
+        # the sync loop needs to know if the track has (valid) album and artist links
+        # to be able to backfill missing ones on existing library tracks
         extra_columns = """
             , EXISTS (
                 SELECT 1 FROM album_tracks
                 JOIN albums ON albums.item_id = album_tracks.album_id
                 WHERE album_tracks.track_id = tracks.item_id
             ) AS has_album
+            , EXISTS (
+                SELECT 1 FROM track_artists
+                JOIN artists ON artists.item_id = track_artists.artist_id
+                WHERE track_artists.track_id = tracks.item_id
+            ) AS has_artists
         """
         return extra_columns, "", {}
 
@@ -920,6 +930,7 @@ class TracksController(MediaControllerBase[Track]):
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
             has_album=bool(db_row["has_album"]),
+            has_artists=bool(db_row["has_artists"]),
         )
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> TrackSummary:
