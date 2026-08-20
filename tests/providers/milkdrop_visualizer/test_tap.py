@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import struct
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 from music_assistant_models.media_items import AudioFormat, MediaItemPalette
 
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.milkdrop_visualizer.tap import (
     WAVE_SAMPLES,
     Tap,
@@ -16,6 +17,7 @@ from music_assistant.providers.milkdrop_visualizer.tap import (
     ViewerQueue,
     palette_payload,
     pcm_to_mono,
+    server_now_us,
 )
 
 PCM_FORMAT = AudioFormat(sample_rate=44100, bit_depth=16, channels=2)
@@ -182,6 +184,53 @@ def test_align_starts_inside_the_retained_window() -> None:
     item = Mock(queue_item_id="item-1")
     cursor = manager._align(tap, None, item, 5.0, Mock(first_buffered_chunk=90))
     assert cursor.next_chunk == 90
+
+
+def _beats_manager() -> TapManager:
+    """Return a tap manager with the real beat scheduling in place."""
+    provider = Mock()
+    provider.logger.getChild.return_value = Mock()
+    return TapManager(provider)
+
+
+def test_schedule_beats_rebuilds_from_cached_analysis() -> None:
+    """A re-anchor of an item whose analysis is cached reschedules in place, without a task."""
+    manager = _beats_manager()
+    tap = Tap("player-1")
+    tap.beats_analysis = ("item-1", AudioAnalysisData(beats=[1.0, 2.0], downbeats=[1.0]))
+    anchor_us = server_now_us()
+    manager._schedule_beats(tap, Mock(queue_item_id="item-1"), anchor_us)
+    manager.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
+    assert [timestamp_us for timestamp_us, _ in tap.beats] == [
+        anchor_us + 1_000_000,
+        anchor_us + 2_000_000,
+    ]
+    # the downbeat flag survives the rebuild
+    assert tap.beats[0][1][9] == 1
+    assert tap.beats[1][1][9] == 0
+
+
+def test_schedule_beats_does_not_serve_another_item_from_cache() -> None:
+    """A cached analysis belongs to one item; any other item hydrates freshly."""
+    manager = _beats_manager()
+    tap = Tap("player-1")
+    tap.beats_analysis = ("item-1", AudioAnalysisData(beats=[1.0]))
+    manager._schedule_beats(tap, Mock(queue_item_id="item-2"), server_now_us())
+    manager.mass.create_task.assert_called_once()  # type: ignore[attr-defined]
+    assert not tap.beats
+
+
+async def test_hydrate_beats_caches_the_fetched_analysis() -> None:
+    """The fetched analysis is kept on the tap so the next re-anchor skips the query."""
+    manager = _beats_manager()
+    analysis = AudioAnalysisData(beats=[1.0])
+    manager.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(  # type: ignore[method-assign]
+        return_value=analysis
+    )
+    tap = Tap("player-1")
+    await manager._hydrate_beats(tap, Mock(queue_item_id="item-1"), server_now_us())
+    assert tap.beats_analysis == ("item-1", analysis)
+    assert len(tap.beats) == 1
 
 
 def test_palette_payload_maps_every_field() -> None:

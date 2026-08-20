@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+    from music_assistant.models.audio_analysis import AudioAnalysisData
     from music_assistant.models.player import Player
 
     from .provider import MilkdropVisualizerProvider
@@ -219,6 +220,10 @@ class Tap:
         self.ring: deque[bytes] = deque(maxlen=RING_FRAMES)
         # Latest color@v1 fields, replayed to viewers that attach mid-track.
         self.last_color: dict[str, list[int] | None] = {}
+        # Beat analysis already fetched for the current item, so a re-anchor
+        # (a seek) rebuilds the schedule without querying again. Positive only:
+        # a cached miss would suppress analysis that lands late in the track.
+        self.beats_analysis: tuple[str, AudioAnalysisData] | None = None
         self.task: asyncio.Task[None] | None = None
         self.beats_task: asyncio.Task[None] | None = None
 
@@ -471,10 +476,16 @@ class TapManager:
         """
         (Re)build a tap's beat schedule for a track.
 
+        A re-anchor of an item whose analysis is already cached (a seek)
+        rebuilds the schedule in place, without a task or a new query.
+
         :param tap: The tap to fan the beats out to.
         :param item: The queue item now playing.
         :param anchor_us: Clock time of that item's media time zero.
         """
+        if tap.beats_analysis is not None and tap.beats_analysis[0] == item.queue_item_id:
+            self._fan_out_beats(tap, tap.beats_analysis[1], anchor_us)
+            return
         tap.beats_task = self.mass.create_task(
             self._hydrate_beats(tap, item, anchor_us),
             task_id=f"milkdrop_beats_{tap.player_id}",
@@ -503,10 +514,22 @@ class TapManager:
         else:
             self.logger.debug("No beat analysis for %s", streamdetails.uri)
             return
+        tap.beats_analysis = (item.queue_item_id, analysis)
+        self._fan_out_beats(tap, analysis, anchor_us)
+
+    def _fan_out_beats(self, tap: Tap, analysis: AudioAnalysisData, anchor_us: int) -> None:
+        """
+        Schedule the analysis beats that are still ahead and fan them out.
+
+        :param tap: The tap to fan the beats out to.
+        :param analysis: The beat analysis of the item now playing.
+        :param anchor_us: Clock time of that item's media time zero.
+        """
+        beats = analysis.beats or ()
         downbeats = {float(value) for value in analysis.downbeats or ()}
         now_us = server_now_us()
         scheduled = 0
-        for beat in analysis.beats:
+        for beat in beats:
             timestamp_us = anchor_us + int(float(beat) * 1_000_000)
             if timestamp_us <= now_us:
                 continue
@@ -514,6 +537,4 @@ class TapManager:
             tap.beats.append((timestamp_us, frame))
             tap.fan_out(frame)
             scheduled += 1
-        self.logger.debug(
-            "Scheduled %s of %s beat(s) for %s", scheduled, len(analysis.beats), streamdetails.uri
-        )
+        self.logger.debug("Scheduled %s of %s beat(s)", scheduled, len(beats))
