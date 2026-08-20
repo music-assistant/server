@@ -1014,6 +1014,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
         uri="audiobookshelf://book",
         seek_position=0,
         duration=3600,
+        is_realtime=False,
     )
     queue_item = SimpleNamespace(
         queue_item_id="item-1",
@@ -1201,6 +1202,7 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         seek_position=0,
         seconds_streamed=0,
         duration=300,
+        is_realtime=False,
     )
     queue_track = SimpleNamespace(
         queue_id="queue-1",

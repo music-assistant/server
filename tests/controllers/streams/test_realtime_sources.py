@@ -747,6 +747,246 @@ async def test_smartfade_unaligned_chunks_still_crossfade(
     build.assert_awaited_once()
 
 
+async def test_smartfade_short_remainder_still_crossfades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Less audio left than the configured overlap still fades with what is there."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=8000,
+        bit_depth=16,
+        channels=2,
+    )
+    current_details = SimpleNamespace(
+        duration=180,
+        seek_position=146,
+        seconds_streamed=0,
+        uri="test://current",
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        is_realtime=False,
+    )
+    next_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
+        duration=180,
+        seek_position=0,
+        uri="test://next",
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=current_details,
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=next_details,
+        extra_attributes={},
+        available=True,
+    )
+    queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
+    player = SimpleNamespace(player_id="player-1", name="Player")
+    mass = MagicMock()
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
+    mass.player_queues.index_by_id.return_value = 1
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                pre_crossfade_duration=2,
+                crossfade_duration=6,
+                fadein_trimmed_duration=0,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _empty_mix)
+
+    async def _current_stream(
+        queue_item: object, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        if queue_item is not current_item:
+            return
+        # a seek near the end leaves 34s, less than the 45s smart overlap
+        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield bytes(pcm_format.pcm_sample_size * 26)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", player),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+
+    async for _chunk in stream:
+        pass
+
+    build.assert_awaited_once()
+    assert build.await_args is not None
+    fade_out_seconds = len(build.await_args.kwargs["fade_out_data"]) / pcm_format.pcm_sample_size
+    assert fade_out_seconds == pytest.approx(26, abs=1)
+
+
+async def test_smartfade_stub_remainder_does_not_crossfade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remainder too short to overlap with is played out instead of faded."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=8000,
+        bit_depth=16,
+        channels=2,
+    )
+    current_details = SimpleNamespace(
+        duration=180,
+        seek_position=176,
+        seconds_streamed=0,
+        uri="test://current",
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        is_realtime=False,
+    )
+    next_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
+        duration=180,
+        seek_position=0,
+        uri="test://next",
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=current_details,
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=next_details,
+        extra_attributes={},
+        available=True,
+    )
+    queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
+    player = SimpleNamespace(player_id="player-1", name="Player")
+    mass = MagicMock()
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
+    mass.player_queues.index_by_id.return_value = 1
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    build = AsyncMock()
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+
+    async def _current_stream(
+        queue_item: object, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        if queue_item is not current_item:
+            return
+        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield bytes(pcm_format.pcm_sample_size * 2)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", player),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+
+    output = b"".join([chunk async for chunk in stream])
+
+    assert len(output) == pcm_format.pcm_sample_size * 10
+    build.assert_not_awaited()
+
+
+async def test_flow_reports_no_crossfade_for_a_realtime_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audio pipeline shown for a realtime item reports that no crossfade is applied."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=8000,
+        bit_depth=16,
+        channels=2,
+    )
+    realtime_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        fade_in=False,
+        stream_error=False,
+        uri="test://realtime",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=20,
+        is_realtime=True,
+    )
+    realtime_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="Realtime",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=realtime_details,
+        duration=20,
+        extra_attributes={},
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=QueueEmpty)
+    mass.player_queues.get.return_value = queue
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.SMART_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    update_item_context = MagicMock()
+    mass.streams.audio_processing.update_item_context = update_item_context
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+
+    async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        yield bytes(pcm_format.pcm_sample_size * 4)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", realtime_item), pcm_format, session_id="session-1"
+    )
+
+    async for _chunk in stream:
+        pass
+
+    update_item_context.assert_called()
+    reported = update_item_context.call_args.kwargs["queue_processing"]
+    assert reported.crossfade_mode == CrossfadeMode.DISABLED
+
+
 # -- StreamsAudio.get_stream_details --
 
 
