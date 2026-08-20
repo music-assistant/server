@@ -2186,5 +2186,9 @@ class GenreController(MediaControllerBase[Genre]):
         if content_type := db_row["content_type"]:
             item.content_type = MediaType(content_type)
         if genre_aliases := db_row["genre_aliases"]:
-            item.genre_aliases = set(json.loads(genre_aliases))
+            # the genre's own name lives inside genre_aliases but is not a mapped alias
+            own_name = item.name.lower()
+            item.genre_alias_count = sum(
+                1 for x in json.loads(genre_aliases) if x.lower() != own_name
+            )
         return item
