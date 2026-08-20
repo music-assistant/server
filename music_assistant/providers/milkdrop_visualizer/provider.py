@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
+
 from music_assistant.models.plugin import PluginProvider
 
 from .relay import MilkdropRelay
+from .tap import CONF_COLOR_TINT, DEFAULT_COLOR_TINT
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -29,6 +33,18 @@ class MilkdropVisualizerProvider(PluginProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._relay = MilkdropRelay(self)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the (options) config entries for the MilkDrop Visualizer provider."""
+        return (
+            ConfigEntry(
+                key=CONF_COLOR_TINT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_COLOR_TINT,
+                required=False,
+                advanced=True,
+            ),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Register the relay route once fully loaded."""

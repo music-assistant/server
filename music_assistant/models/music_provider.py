@@ -1584,9 +1584,12 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.tracks.add_item_to_library(prov_item)
                         db_id = int(library_item.item_id)
                         favorite = library_item.favorite
-                    elif self._library_item_needs_update(sync_details, prov_item) or (
+                    elif (
+                        self._library_item_needs_update(sync_details, prov_item)
                         # or backfill a missing album(_tracks) link for existing tracks
-                        prov_item.album and not sync_details.has_album
+                        or (prov_item.album and not sync_details.has_album)
+                        # or backfill missing track_artists link(s) for existing tracks
+                        or (prov_item.artists and not sync_details.has_artists)
                     ):
                         library_item = await self.mass.music.tracks.update_item_in_library(
                             sync_details.item_id, prov_item
