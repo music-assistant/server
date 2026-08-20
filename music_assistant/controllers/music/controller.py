@@ -1493,8 +1493,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Mark item as played in playlog.
 
-        :param media_item: The media item to mark as played. A minimized ItemMapping,
-            as handed out by e.g. the recommendation rows, is resolved to its full item.
+        :param media_item: The media item to mark as played.
         :param fully_played: If True, mark the item as fully played.
         :param seconds_played: The number of seconds played.
         :param is_playing: If True, the item is currently playing.
@@ -1518,8 +1517,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_item.media_type != MediaType.PLAYLIST
         ):
             return
-        # the playlog is keyed by the identity the caller referenced, which a minimized item
-        # keeps even when it resolves to the library equivalent of that same item
+        # the playlog is keyed by the identity the caller referenced, not the resolved one
         reference = media_item
         media_item = await self._resolve_playlog_item(media_item)
 
@@ -1659,13 +1657,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Mark item as unplayed in playlog.
 
-        :param media_item: The media item to mark as unplayed. A minimized ItemMapping,
-            as handed out by e.g. the recommendation rows, is resolved to its full item.
+        :param media_item: The media item to mark as unplayed.
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         """
-        # the playlog is keyed by the identity the caller referenced, which a minimized item
-        # keeps even when it resolves to the library equivalent of that same item
+        # the playlog is keyed by the identity the caller referenced, not the resolved one
         reference = media_item
         media_item = await self._resolve_playlog_item(media_item)
         params = {
@@ -2985,9 +2981,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param media_item: The media item to resolve, either full or an ItemMapping.
         """
-        # rows such as 'In progress' and 'Recently played' hand out ItemMapping objects,
-        # which carry no provider mappings, duration or parent item, so the playlog
-        # commands have to look up the real item before they can do their work
         if not isinstance(media_item, ItemMapping):
             return media_item
         resolved = await self.get_item(
