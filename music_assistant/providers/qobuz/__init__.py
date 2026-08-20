@@ -825,8 +825,7 @@ class QobuzProvider(MusicProvider):
                 break
             if not result.get(key) or not result[key].get("items"):
                 break
-            for item in result[key]["items"]:
-                all_items.append(item)
+            all_items.extend(result[key]["items"])
             total = result[key].get("total", 0)
             items_received = len(result[key]["items"])
             if items_received < limit:
