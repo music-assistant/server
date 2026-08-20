@@ -15,7 +15,7 @@ import re
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Iterable
-from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -393,11 +393,10 @@ class _IncomingFadePrefetcher:
         self._target = 0
         if task is not None:
             task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        # an outer cancellation can land on the await above, leaving the collector inside
-        # the generator; closing it from here would be a second concurrent entry
-        if stream is not None and (task is None or task.done()):
+            # gather consumes the collector's own cancellation but still lets a
+            # cancellation of this task through, so a stopped flow really stops
+            await asyncio.gather(task, return_exceptions=True)
+        if stream is not None:
             await stream.aclose()
         self._reset()
 
