@@ -306,12 +306,10 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 ValueError,
                 KeyError,
             ) as err:
-                self.logger.debug(
-                    "%s: Failed to get favorites for network %s: %s",
-                    self.domain,
-                    network_key,
-                    err,
-                )
+                # the try block spans the whole per-network fetch and yield loop, so a
+                # failure partway through leaves an unknown subset of this network's
+                # favourites unreported; item_id=None holds back deletions for the run
+                self.report_skipped_sync_item(MediaType.RADIO, None, err)
                 continue
 
     async def get_radio(self, prov_radio_id: str) -> Radio:

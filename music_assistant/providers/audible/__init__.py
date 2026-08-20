@@ -139,6 +139,7 @@ class Audibleprovider(MusicProvider):
                 client=self._client,
                 provider_instance=self.instance_id,
                 provider_domain=self.domain,
+                provider=self,
                 logger=self.logger,
             )
 

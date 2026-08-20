@@ -196,7 +196,7 @@ class TuneInProvider(MusicProvider):
                         yield self._parse_radio(item)
                     except InvalidDataError as err:
                         # there may be invalid custom urls, ignore those
-                        self.logger.warning(str(err))
+                        self.report_skipped_sync_item(MediaType.RADIO, item["URL"], err)
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):

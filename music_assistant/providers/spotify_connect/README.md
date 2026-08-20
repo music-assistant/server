@@ -73,6 +73,7 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 | Max quality | Lossless up to 24-bit/44.1 kHz (Premium; actual quality opaque) | Ogg Vorbis 320 kbps |
 | Audio delivery | PulseAudio pipe-sink → FIFO (`NAMED_PIPE`) | Daemon stdout pipe (`CUSTOM` stream) |
 | Pause behavior | Pipe delivers silence → provider stops the player | Stream ends cleanly (EOF) |
+| Queue control | Session-side queue verbs (add-to-queue, shuffle, repeat) + queue/options events | Transport only |
 | Volume | Two modes: pin at 100% (default) or sync with compensation | `external_volume`: MA owns volume |
 | Risk profile | Binary downloaded from Spotify's CDN, 90-day build expiry, ToS grey area | May break when Spotify changes the protocol |
 

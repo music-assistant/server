@@ -1178,7 +1178,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         pass
 
     build.assert_awaited_once()
-    assert eager_seek_positions == [32]
+    # a source that hands over nothing is reopened, and both opens see the eager position
+    assert eager_seek_positions == [32, 32]
     assert skipped_streamdetails.seek_position == raw_seek_position
 
 

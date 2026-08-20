@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, SourceControl, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    RepeatMode,
+    SourceControl,
+    StreamType,
+)
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
@@ -501,6 +507,21 @@ async def test_on_volume_change_pushes_deduped_volume_to_backend() -> None:
     # unchanged value: deduped, nothing sent
     await provider.on_volume_change(AUDIO_SOURCE_ID, 60)
     assert backend.calls == [("set_volume", 60)]
+
+
+async def test_queue_control_contract_defaults() -> None:
+    """A backend without queue control reports so and refuses the queue-session verbs."""
+    backend = FakeBackend()
+
+    assert backend.supports_queue_control is False
+    with pytest.raises(NotImplementedError):
+        await backend.add_to_queue("spotify:track:t1")
+    with pytest.raises(NotImplementedError):
+        await backend.set_shuffle(True)
+    with pytest.raises(NotImplementedError):
+        await backend.set_repeat(RepeatMode.OFF)
+    with pytest.raises(NotImplementedError):
+        await backend.request_queue()
 
 
 async def test_source_selected_takes_playback_back_via_backend() -> None:

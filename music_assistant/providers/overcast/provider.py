@@ -151,8 +151,8 @@ class OvercastProvider(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except MediaNotFoundError:
-                self.logger.warning("Was unable to obtain podcast with feed %s", feed_url)
+            except MediaNotFoundError as err:
+                self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                 continue
             applied = await self._apply_playback_states(feed_url, subscription, parsed_podcast)
             if applied is not None:
