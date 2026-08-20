@@ -245,13 +245,17 @@ class PluginProvider(Provider):
         """
         React to a queue dropping this AudioSource from its items.
 
-        Fired when the queue holding this source as its current item is
-        cleared. Unlike ``on_source_unselected`` this is not tied to a stream,
-        so it also fires when the stream was already torn down earlier (a
-        paused source, for example) — the one moment where nothing else tells
-        the plugin that MA is done with the source. Override to release state
-        that must not outlive the queue, such as an upstream session still
-        pointing at MA.
+        Fired when the user clears the queue that has this source as its
+        current item. Unlike ``on_source_unselected`` this is not tied to a
+        stream, so it also fires when the stream was already torn down earlier
+        (a paused source, for example) — the one moment where nothing else
+        tells the plugin that MA is done with the source. Override to release
+        state that must not outlive the queue, such as an upstream session
+        still pointing at MA.
+
+        Replacing the queue's contents or transferring it to another player
+        does NOT fire this: those re-select the same source right after, and
+        the plugin keeps its session across the switch.
 
         May fire while a stream for this source is still being torn down, so
         implementations must guard on their own claim state to avoid releasing

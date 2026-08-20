@@ -110,6 +110,22 @@ def test_clearing_an_empty_queue_notifies_nothing() -> None:
     provider.on_source_removed.assert_not_called()
 
 
+def test_replacing_or_transferring_the_queue_notifies_nothing() -> None:
+    """
+    Only the user clearing their queue releases the source, not the internal clear.
+
+    Playing the same live source again and transferring the queue to another player both drop
+    the queue's items on their way to re-selecting that very source. Releasing it there would
+    end the upstream session and cost the user the position they were paused at.
+    """
+    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    provider = _plugin_provider(ctrl)
+
+    ctrl._clear("q1", skip_stop=True)
+
+    provider.on_source_removed.assert_not_called()
+
+
 def test_clearing_a_queue_whose_plugin_is_gone_still_clears() -> None:
     """An unloaded plugin must not keep the user from clearing their queue."""
     ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
