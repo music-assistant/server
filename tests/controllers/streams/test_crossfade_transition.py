@@ -45,7 +45,7 @@ def _buffer(*, duration_available: float = 45.0, eof: bool = True) -> AudioBuffe
     return audio_buffer
 
 
-def _queue_item(item_id: str, name: str) -> SimpleNamespace:
+def _queue_item(item_id: str, name: str, duration: int = 300) -> SimpleNamespace:
     """Build a flow-streamable track with a prepared buffer."""
     streamdetails = SimpleNamespace(
         audio_format=TEST_PCM_FORMAT,
@@ -59,6 +59,7 @@ def _queue_item(item_id: str, name: str) -> SimpleNamespace:
         is_realtime=False,
         volume_normalization_mode=None,
     )
+    streamdetails.duration = duration
     return SimpleNamespace(
         queue_id="queue-1",
         queue_item_id=item_id,
@@ -66,7 +67,7 @@ def _queue_item(item_id: str, name: str) -> SimpleNamespace:
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=streamdetails,
-        duration=300,
+        duration=duration,
         extra_attributes={},
     )
 
@@ -393,3 +394,28 @@ async def test_flow_drops_a_prefetch_opened_at_another_position(
 
     assert opened == ["item-1", "item-2", "item-2"]
     assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 60
+
+
+async def test_flow_never_prefetches_a_short_track_to_its_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prefetch stops short of the end, so the track is not reported as streamed."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second", duration=20)
+    audio, queue, _mass = _flow_audio(
+        monkeypatch,
+        next_item=second_item,
+        load_next=[second_item, QueueEmpty],
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+    )
+    _opened, _consumed, exhausted_at = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 20}
+    )
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    # the requested 45s window is clamped to half the incoming track
+    assert exhausted_at["item-1"]["item-2"] <= TEST_PCM_FORMAT.pcm_sample_size * 10 + CHUNK_SIZE

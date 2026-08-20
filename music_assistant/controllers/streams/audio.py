@@ -310,11 +310,15 @@ class _IncomingFadePrefetcher:
             or not audio_buffer.is_valid()
         ):
             return
-        overlap = (
+        overlap: float = (
             SMART_CROSSFADE_DURATION
             if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
             else standard_crossfade_duration
         )
+        if streamdetails.duration:
+            # never read a track to its end in the background: that would report it to its
+            # provider as streamed before a single second of it has reached the player
+            overlap = min(overlap, streamdetails.duration / 2)
         if overlap <= 0:
             return
         self._target = int(self._pcm_format.pcm_sample_size * overlap)
@@ -333,7 +337,7 @@ class _IncomingFadePrefetcher:
         )
         self._task = asyncio.create_task(self._collect(self._stream, self._chunks))
         self._audio.logger.debug(
-            "Prefetching %s seconds of %s while the tail of %s is held back",
+            "Prefetching %.0f seconds of %s while the tail of %s is held back",
             overlap,
             next_item.name,
             queue_item.name,
@@ -2431,165 +2435,171 @@ class StreamsAudio:
                         prepared_buffer=incoming_audio_buffer,
                     )
 
-                async for chunk in item_stream:
-                    # if a newer producer has taken over this queue, stop sending
-                    # audio and exit cleanly before the outer-loop end-of-track
-                    # bookkeeping mutates seconds_streamed / duration on the log
-                    if _superseded():
-                        self.logger.debug(
-                            "Flow stream for queue %s superseded - stopping chunk yield",
-                            queue.display_name,
-                        )
-                        return
-                    total_chunks_received += 1
-                    if not first_chunk_received:
-                        first_chunk_received = True
-                        # inform the queue that the track is now loaded in the buffer
-                        # so the next track can be preloaded
-                        self.mass.player_queues.track_loaded_in_buffer(
-                            queue.queue_id, queue_track.queue_item_id
-                        )
+                # closing here releases the decoders on an early exit,
+                # instead of leaving them to the garbage collector
+                async with aclosing(item_stream):
+                    async for chunk in item_stream:
+                        # if a newer producer has taken over this queue, stop sending
+                        # audio and exit cleanly before the outer-loop end-of-track
+                        # bookkeeping mutates seconds_streamed / duration on the log
+                        if _superseded():
+                            self.logger.debug(
+                                "Flow stream for queue %s superseded - stopping chunk yield",
+                                queue.display_name,
+                            )
+                            return
+                        total_chunks_received += 1
+                        if not first_chunk_received:
+                            first_chunk_received = True
+                            # inform the queue that the track is now loaded in the buffer
+                            # so the next track can be preloaded
+                            self.mass.player_queues.track_loaded_in_buffer(
+                                queue.queue_id, queue_track.queue_item_id
+                            )
 
-                    if item_crossfade_mode == CrossfadeMode.DISABLED:
-                        # no cross/smart fade: yield chunks directly without intermediate buffer
-                        yield chunk
-                        bytes_written += len(chunk)
-                        del chunk
-                        continue
-
-                    # Warmup: yield chunks directly until we have streamed WARMUP_DURATION
-                    # worth of audio, so playback starts immediately. Skip warmup when
-                    # crossfade data from the previous track is pending — we need a full
-                    # buffer for the mix.
-                    if warmup_bytes < warmup_size and not last_fadeout_part:
-                        yield chunk
-                        warmup_bytes += len(chunk)
-                        bytes_written += len(chunk)
-                        del chunk
-                        continue
-
-                    if not last_fadeout_part and not holdback_armed:
-                        holdback_armed = self._crossfade_holdback_allowed(
-                            queue_track.streamdetails,
-                            crossfade_buffer_duration,
-                            track_playback_speed,
-                        )
-                        if not holdback_armed:
-                            # holding audio back now would only shrink the player's lead
+                        if item_crossfade_mode == CrossfadeMode.DISABLED:
+                            # no cross/smart fade: yield chunks directly without intermediate buffer
                             yield chunk
                             bytes_written += len(chunk)
                             del chunk
                             continue
 
-                    if not last_fadeout_part:
-                        # the tail is being held back, so the audio the next transition
-                        # blends in can be gathered alongside it instead of after it
-                        incoming_prefetcher.ensure_started(
-                            queue,
-                            queue_track,
-                            item_crossfade_mode,
-                            standard_crossfade_duration,
-                        )
+                        # Warmup: yield chunks directly until we have streamed WARMUP_DURATION
+                        # worth of audio, so playback starts immediately. Skip warmup when
+                        # crossfade data from the previous track is pending — we need a full
+                        # buffer for the mix.
+                        if warmup_bytes < warmup_size and not last_fadeout_part:
+                            yield chunk
+                            warmup_bytes += len(chunk)
+                            bytes_written += len(chunk)
+                            del chunk
+                            continue
 
-                    # smart fades enabled: accumulate chunks in crossfade buffer
-                    crossfade_buffer.extend(chunk)
-                    del chunk
-                    required_buffer_size = (
-                        incoming_crossfade_size if last_fadeout_part else crossfade_buffer_size
-                    )
-                    if len(crossfade_buffer) < required_buffer_size:
-                        await asyncio.sleep(0)
-                        continue
-                    # handle crossfade of previous track and new track
-                    if (
-                        last_fadeout_part
-                        and last_streamdetails
-                        and crossfade_smart_fade is not None
-                        and last_play_log_entry is not None
-                    ):
-                        self.logger.debug(
-                            "Collected %.1fs of incoming audio for the transition into %s in %.1fs"
-                            " (%.1fs was resident when it started)",
-                            len(crossfade_buffer) / pcm_sample_size,
-                            queue_track.name,
-                            asyncio.get_event_loop().time() - collect_started,
-                            collect_resident,
+                        if not last_fadeout_part and not holdback_armed:
+                            holdback_armed = self._crossfade_holdback_allowed(
+                                queue_track.streamdetails,
+                                crossfade_buffer_duration,
+                                track_playback_speed,
+                            )
+                            if not holdback_armed:
+                                # holding audio back now would only shrink the player's lead
+                                yield chunk
+                                bytes_written += len(chunk)
+                                del chunk
+                                continue
+
+                        if not last_fadeout_part:
+                            # the tail is being held back, so the audio the next transition
+                            # blends in can be gathered alongside it instead of after it
+                            incoming_prefetcher.ensure_started(
+                                queue,
+                                queue_track,
+                                item_crossfade_mode,
+                                standard_crossfade_duration,
+                            )
+
+                        # smart fades enabled: accumulate chunks in crossfade buffer
+                        crossfade_buffer.extend(chunk)
+                        del chunk
+                        required_buffer_size = (
+                            incoming_crossfade_size if last_fadeout_part else crossfade_buffer_size
                         )
-                        fadein_part = bytes(crossfade_buffer[:incoming_crossfade_size])
-                        remaining_bytes = bytes(crossfade_buffer[incoming_crossfade_size:])
-                        try:
-                            crossfade_bytes_written = 0
-                            async for mix_chunk in self.smart_fades_mixer.mix(
-                                crossfade_smart_fade,
-                                fade_in_part=fadein_part,
-                                fade_out_part=last_fadeout_part,
-                                pcm_format=pcm_format,
-                            ):
-                                yield mix_chunk
-                                crossfade_bytes_written += len(mix_chunk)
-                        except Exception as mix_err:
-                            if crossfade_bytes_written:
-                                # partial mix already played — concat'd tail would duplicate audio
-                                raise
-                            self.logger.warning(
-                                "Crossfade mixer failed for %s, falling back to simple concat: %s",
+                        if len(crossfade_buffer) < required_buffer_size:
+                            await asyncio.sleep(0)
+                            continue
+                        # handle crossfade of previous track and new track
+                        if (
+                            last_fadeout_part
+                            and last_streamdetails
+                            and crossfade_smart_fade is not None
+                            and last_play_log_entry is not None
+                        ):
+                            self.logger.debug(
+                                "Collected %.1fs of incoming audio for the transition into %s in %.1fs"
+                                " (%.1fs was resident when it started)",
+                                len(crossfade_buffer) / pcm_sample_size,
                                 queue_track.name,
-                                mix_err,
+                                asyncio.get_event_loop().time() - collect_started,
+                                collect_resident,
                             )
-                            for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
-                                yield pcm_slice
-                                await asyncio.sleep(0)
-                            # full tail was pre-counted and is now yielded as-is
-                            crossfade_bytes_written = 0
-                            remaining_bytes = bytes(crossfade_buffer)
-                            # mix failed — undo the eager seek_position
-                            queue_track.streamdetails.seek_position = raw_seek_position
-                        if crossfade_bytes_written:
-                            # the blend really played, so credit both of its sides with it
-                            for faded_item in (queue_track, outgoing_queue_track):
-                                if faded_item is None:
-                                    continue
-                                self._report_crossfade_mode(
-                                    queue.queue_id,
-                                    faded_item,
-                                    pcm_format,
-                                    applied_mode,
-                                    flow_session_id,
-                                    overlay_enabled=overlay_active(queue),
+                            fadein_part = bytes(crossfade_buffer[:incoming_crossfade_size])
+                            remaining_bytes = bytes(crossfade_buffer[incoming_crossfade_size:])
+                            try:
+                                crossfade_bytes_written = 0
+                                async for mix_chunk in self.smart_fades_mixer.mix(
+                                    crossfade_smart_fade,
+                                    fade_in_part=fadein_part,
+                                    fade_out_part=last_fadeout_part,
+                                    pcm_format=pcm_format,
+                                ):
+                                    yield mix_chunk
+                                    crossfade_bytes_written += len(mix_chunk)
+                            except Exception as mix_err:
+                                if crossfade_bytes_written:
+                                    # partial mix already played — concat'd tail would duplicate audio
+                                    raise
+                                self.logger.warning(
+                                    "Crossfade mixer failed for %s, falling back to simple concat: %s",
+                                    queue_track.name,
+                                    mix_err,
                                 )
-                            # Split mix output at end-of-overlap: PRE+CF to A, POST to B.
-                            fadeout_share_seconds = (
-                                timing_info.pre_crossfade_duration + timing_info.crossfade_duration
-                            )
-                            fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
-                            fadeout_share = (fadeout_share // frame_size) * frame_size
-                            fadeout_share = min(fadeout_share, crossfade_bytes_written)
-                            fadein_share = crossfade_bytes_written - fadeout_share
-                            bytes_written += fadein_share
-                            if last_play_log_entry:
-                                assert last_play_log_entry.seconds_streamed is not None
-                                # correct pre-counted full tail to the timing-based share
-                                last_play_log_entry.seconds_streamed += (
-                                    fadeout_share - len(last_fadeout_part)
-                                ) / pcm_sample_size
-                        if remaining_bytes:
-                            for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
-                                yield pcm_slice
-                                await asyncio.sleep(0)
-                            bytes_written += len(remaining_bytes)
-                            del remaining_bytes
-                        last_fadeout_part = b""
-                        last_streamdetails = None
-                        last_queue_track = None
-                        crossfade_buffer = bytearray()
-                        warmup_bytes = 0
+                                for pcm_slice in iter_pcm_slices(
+                                    last_fadeout_part, pcm_format, 1000
+                                ):
+                                    yield pcm_slice
+                                    await asyncio.sleep(0)
+                                # full tail was pre-counted and is now yielded as-is
+                                crossfade_bytes_written = 0
+                                remaining_bytes = bytes(crossfade_buffer)
+                                # mix failed — undo the eager seek_position
+                                queue_track.streamdetails.seek_position = raw_seek_position
+                            if crossfade_bytes_written:
+                                # the blend really played, so credit both of its sides with it
+                                for faded_item in (queue_track, outgoing_queue_track):
+                                    if faded_item is None:
+                                        continue
+                                    self._report_crossfade_mode(
+                                        queue.queue_id,
+                                        faded_item,
+                                        pcm_format,
+                                        applied_mode,
+                                        flow_session_id,
+                                        overlay_enabled=overlay_active(queue),
+                                    )
+                                # Split mix output at end-of-overlap: PRE+CF to A, POST to B.
+                                fadeout_share_seconds = (
+                                    timing_info.pre_crossfade_duration
+                                    + timing_info.crossfade_duration
+                                )
+                                fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
+                                fadeout_share = (fadeout_share // frame_size) * frame_size
+                                fadeout_share = min(fadeout_share, crossfade_bytes_written)
+                                fadein_share = crossfade_bytes_written - fadeout_share
+                                bytes_written += fadein_share
+                                if last_play_log_entry:
+                                    assert last_play_log_entry.seconds_streamed is not None
+                                    # correct pre-counted full tail to the timing-based share
+                                    last_play_log_entry.seconds_streamed += (
+                                        fadeout_share - len(last_fadeout_part)
+                                    ) / pcm_sample_size
+                            if remaining_bytes:
+                                for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
+                                    yield pcm_slice
+                                    await asyncio.sleep(0)
+                                bytes_written += len(remaining_bytes)
+                                del remaining_bytes
+                            last_fadeout_part = b""
+                            last_streamdetails = None
+                            last_queue_track = None
+                            crossfade_buffer = bytearray()
+                            warmup_bytes = 0
 
-                    # yield everything above the crossfade buffer size
-                    while len(crossfade_buffer) > crossfade_buffer_size:
-                        yield bytes(crossfade_buffer[:pcm_sample_size])
-                        bytes_written += pcm_sample_size
-                        del crossfade_buffer[:pcm_sample_size]
-                        await asyncio.sleep(0)
+                        # yield everything above the crossfade buffer size
+                        while len(crossfade_buffer) > crossfade_buffer_size:
+                            yield bytes(crossfade_buffer[:pcm_sample_size])
+                            bytes_written += pcm_sample_size
+                            del crossfade_buffer[:pcm_sample_size]
+                            await asyncio.sleep(0)
 
                 # A source error after partial audio must not look like a completed item.
                 # Progress reporting skips items with stream_error, so the item is not
