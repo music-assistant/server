@@ -75,7 +75,7 @@ class MilkdropRelay:
         await self.taps.close()
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        """Serve one browser connection: tap the target group and stream frames."""
+        """Serve one browser connection: tap the target player's audio and stream frames."""
         ws = web.WebSocketResponse(heartbeat=25)
         await ws.prepare(request)
 

@@ -23,7 +23,7 @@ from collections import deque
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
-from music_assistant_models.enums import PlaybackState, ProviderType
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.media_items import MediaItemPalette
 from orjson import dumps
 
@@ -488,10 +488,7 @@ class TapManager:
             return
         # smart_fades is the only AA provider that produces beats. Without it,
         # no amount of waiting will turn any up.
-        if not any(
-            provider.available and provider.domain == SMART_FADES_ANALYSIS_DOMAIN
-            for provider in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
-        ):
+        if not self.mass.streams.audio_analysis.smart_fades_provider_available:
             return
         for _ in range(BEAT_RETRY_ATTEMPTS):
             analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
