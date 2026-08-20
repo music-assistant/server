@@ -124,7 +124,7 @@ keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and h
 server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
 `sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
 previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
-last-counted-play marker, the shuffle-intent stamp, the flow-buffer-completed session, and the
+last-counted-play marker, the flow-buffer-completed session, and the
 current stream session's id, flow play-log and next-enqueued item id.
 
 `PlayerQueueData` owns the pair's (de)serialization; the wire `PlayerQueue` carries no cache logic of

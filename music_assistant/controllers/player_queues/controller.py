@@ -1835,26 +1835,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param shuffle: The state to put the queue's shuffle in; None to leave it as it is.
         """
         queue = self._queue_data[queue_id].queue
-        if option == QueueOption.REPLACE_NEXT and queue.is_dynamic:
-            # The one staging option that replaces the queue's sources, so the smart mix may be on
+        if queue.is_dynamic and option in (
+            QueueOption.PLAY,
+            QueueOption.REPLACE,
+            QueueOption.REPLACE_NEXT,
+        ):
+            # These are the options that replace the queue's sources, so the smart mix may be on
             # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
-            # locked), so it must not outlive the source that imposed it. Recorded directly, as in
-            # the still-dynamic case below: the state is provisional until the sources are known,
-            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
-            queue.shuffle_enabled = False
+            # locked), so it must not outlive the source that imposed it. Recorded directly
+            # because set_shuffle refuses a queue that is still a smart mix, and the items are
+            # resolved against this flag. The state is provisional until the sources are known:
+            # `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            if option == QueueOption.REPLACE_NEXT:
+                # staging leaves the shuffle the user chose alone, so it never carries a request
+                # of its own to honour here
+                queue.shuffle_enabled = False
+            else:
+                queue.shuffle_enabled = bool(shuffle)
             return
         if shuffle is None or option not in (QueueOption.PLAY, QueueOption.REPLACE):
             # nothing to settle: the media brings no order of its own to protect, or the option
             # only stages items for later and leaves the queue's shuffle state alone
             return
         if queue.shuffle_enabled == shuffle:
-            return
-        if queue.is_dynamic:
-            # set_shuffle refuses a queue that is still a smart mix, but the media being
-            # started may well replace that dynamic source - and the items are resolved
-            # against this flag. Record the requested state directly: should the queue stay
-            # dynamic, `_enter_dynamic_mode` forces shuffle back on further down.
-            queue.shuffle_enabled = shuffle
             return
         # routed through set_shuffle so switching shuffle off also restores the order of
         # the items that stay in the queue: a play keeps them, and a tail left in shuffled

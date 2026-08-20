@@ -788,8 +788,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
                 # The shuffle state has to be settled before the items are resolved below: a
                 # shuffled queue keeps the items preceding a start_item (chosen track pinned
-                # first) instead of dropping them. The first item decides for the whole batch,
-                # because it is the only media type known this early.
+                # first) instead of dropping them. The first item that resolves decides for the
+                # whole batch, because it is the only media type known this early.
                 if not shuffle_settled:
                     shuffle_settled = True
                     await self._apply_shuffle(
@@ -852,6 +852,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
                 self.logger.warning("Skipping %s: %s", item, str(err))
+
+        if not shuffle_settled and option is not None:
+            # nothing resolved, so no media type ever decided - but the sources are replaced
+            # below all the same, and a dynamic queue's imposed shuffle must not survive that
+            await self._apply_shuffle(queue_id, option, shuffle)
 
         # overwrite or append the queue's source items
         replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)

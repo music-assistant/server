@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, QueueOption
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Audiobook,
@@ -301,18 +302,37 @@ async def test_an_unshuffled_queue_stays_unshuffled_for_a_playlist() -> None:
     assert _played_order(ctrl) == ALBUM_TRACKS
 
 
-async def test_the_first_item_of_a_batch_decides_for_the_whole_batch() -> None:
+@pytest.mark.parametrize(
+    ("batch", "expected"),
+    [([_album(), _playlist()], False), ([_playlist(), _album()], True)],
+    ids=["album-first", "playlist-first"],
+)
+async def test_the_first_item_of_a_batch_decides_for_the_whole_batch(
+    batch: list[Any], expected: bool
+) -> None:
     """
     A batch is judged by its first item: it is the only media type known this early.
 
     The shuffle state has to be settled before any of the items are resolved, because a shuffled
-    queue resolves a chosen start item differently.
+    queue resolves a chosen start item differently. Both orderings are checked: an album behind a
+    playlist must not reach back and switch the queue's shuffle off.
     """
     ctrl = _controller(shuffle_enabled=True)
 
-    await ctrl.play_media("q1", [_album(), _playlist()], QueueOption.REPLACE)
+    await ctrl.play_media("q1", batch, QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is expected
+
+
+async def test_an_unresolvable_first_item_leaves_the_decision_to_the_next_one() -> None:
+    """A batch is judged by the first item that resolves, not by one that could not be fetched."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl.mass.music.get_item_by_uri = AsyncMock(side_effect=[MediaNotFoundError("gone"), _album()])
+
+    await ctrl.play_media("q1", ["test://track/gone", "test://album/al1"], QueueOption.REPLACE)
 
     assert _queue(ctrl).shuffle_enabled is False
+    assert _played_order(ctrl) == ALBUM_TRACKS
 
 
 @pytest.mark.parametrize("media_type", ORDERED_MEDIA_TYPES)
@@ -389,6 +409,44 @@ async def test_playing_over_a_dynamic_queue_honours_an_explicit_play_in_order() 
     assert _queue(ctrl).smart_shuffle_active is False
     # the flag alone proves little here: the album itself has to come out in its own order
     assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+@pytest.mark.parametrize("option", START_OPTIONS)
+async def test_taking_over_a_dynamic_queue_drops_the_imposed_shuffle(option: QueueOption) -> None:
+    """
+    Media started over a dynamic queue does not inherit the shuffle that queue was forced into.
+
+    A dynamic queue is an always-on smart mix, so its shuffle is imposed by the source rather than
+    chosen by the user - its toggle is locked. Now that shuffle survives from one play to the next,
+    a shuffle left latched on here would keep reordering everything the user plays afterwards.
+    """
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+
+    await ctrl.play_media("q1", _playlist(), option)
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _queue(ctrl).smart_shuffle_active is False
+
+
+async def test_a_dynamic_queues_shuffle_is_dropped_even_if_nothing_resolves() -> None:
+    """
+    The source is replaced whether or not the media resolves, so its shuffle goes either way.
+
+    The media type is only known once an item resolves, so the shuffle state is settled inside the
+    resolve loop - which a batch that yields nothing never reaches.
+    """
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+    ctrl.mass.music.get_item_by_uri = AsyncMock(side_effect=MediaNotFoundError("gone"))
+
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_media("q1", "test://track/gone", QueueOption.REPLACE_NEXT)
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _queue(ctrl).smart_shuffle_active is False
 
 
 async def test_replace_next_over_a_dynamic_queue_drops_the_imposed_shuffle() -> None:
@@ -483,6 +541,21 @@ async def test_enqueueing_leaves_shuffle_untouched(
     await ctrl.play_media("q1", _album(), option)
 
     assert _queue(ctrl).shuffle_enabled is shuffle_enabled
+
+
+@pytest.mark.parametrize("option", STAGE_OPTIONS)
+async def test_an_explicit_shuffle_is_ignored_by_the_staging_options(option: QueueOption) -> None:
+    """
+    Only the options that start the media right away act on an explicit shuffle request.
+
+    Staging keeps (part of) the existing queue, whose items are already in the order its current
+    shuffle put them, so honouring a request here would leave them contradicting the toggle.
+    """
+    ctrl = _controller(shuffle_enabled=False)
+
+    await ctrl.play_media("q1", _playlist(), option, shuffle=True)
+
+    assert _queue(ctrl).shuffle_enabled is False
 
 
 def test_clear_command_resets_shuffle() -> None:
