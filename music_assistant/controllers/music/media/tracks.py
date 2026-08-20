@@ -38,7 +38,10 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
-from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.helpers import (
+    provider_mappings_for_update,
+    search_name_match_clause,
+)
 from music_assistant.helpers.compare import (
     compare_artists,
     compare_media_item,
@@ -773,10 +776,8 @@ class TracksController(MediaControllerBase[Track]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
+        provider_mappings = provider_mappings_for_update(
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set track artist(s)

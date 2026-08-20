@@ -29,7 +29,11 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
-from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.helpers import (
+    metadata_for_update,
+    provider_mappings_for_update,
+    search_name_match_clause,
+)
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
     AlbumMatchEvidence,
@@ -619,7 +623,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
         else:
@@ -634,7 +638,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "name": name,
                 "sort_name": sort_name,
                 "version": update.version if overwrite else cur_item.version or update.version,
-                "year": update.year if overwrite else cur_item.year or update.year,
+                "year": update.year or cur_item.year,
                 "album_type": album_type.value,
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),
@@ -649,10 +653,8 @@ class AlbumsController(MediaControllerBase[Album]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
+        provider_mappings = provider_mappings_for_update(
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set album artist(s)
