@@ -177,8 +177,8 @@ class QueueSyncMixin:
             else:
                 LOGGER.warning("No valid remaining tracks found in play queue")
 
-        except Exception as e:
-            LOGGER.exception(f"Error loading remaining queue tracks: {e}")
+        except Exception:
+            LOGGER.exception("Error loading remaining queue tracks")
 
     async def _replace_entire_queue(self, player_id: str, playqueue: PlayQueue) -> None:
         """
@@ -399,8 +399,8 @@ class QueueSyncMixin:
                 LOGGER.info(
                     f"Created Plex PlayQueue {self.play_queue_id} with {len(plex_items)} tracks"
                 )
-        except Exception as e:
-            LOGGER.exception(f"Error creating Plex PlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error creating Plex PlayQueue")
 
     async def _sync_initial_queue_to_plex(self) -> None:
         """

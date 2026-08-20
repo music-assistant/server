@@ -341,8 +341,8 @@ class QueueCommandsMixin:
                         )
                     )
 
-                except Exception as e:
-                    LOGGER.exception(f"Error starting playback with first track: {e}")
+                except Exception:
+                    LOGGER.exception("Error starting playback with first track")
                     if starting_key:
                         await self._play_single_track(player_id, starting_key)
             else:
@@ -350,8 +350,8 @@ class QueueCommandsMixin:
                 if starting_key:
                     await self._play_single_track(player_id, starting_key)
 
-        except Exception as e:
-            LOGGER.exception(f"Error playing from queue: {e}")
+        except Exception:
+            LOGGER.exception("Error playing from queue")
             if starting_key:
                 await self._play_single_track(player_id, starting_key)
 
@@ -432,8 +432,8 @@ class QueueCommandsMixin:
             await self._broadcast_timeline()
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling playMedia: {e}")
+        except Exception:
+            LOGGER.exception("Error handling playMedia")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -516,15 +516,15 @@ class QueueCommandsMixin:
                     await self._broadcast_timeline()
                     return web.Response(status=200)
 
-                except Exception as e:
-                    LOGGER.exception(f"Error starting playback with first track: {e}")
+                except Exception:
+                    LOGGER.exception("Error starting playback with first track")
                     return web.Response(status=500, text="Failed to start playback")
             else:
                 LOGGER.error("Failed to create play queue or queue is empty")
                 return web.Response(status=500, text="Failed to create play queue")
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling createPlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error handling createPlayQueue")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -611,8 +611,8 @@ class QueueCommandsMixin:
 
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling refreshPlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error handling refreshPlayQueue")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False

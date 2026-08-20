@@ -178,7 +178,7 @@ class AIRadioRuntimeMixin:
         except Exception as err:
             session.status = "failed"
             session.error = str(err).strip() or err.__class__.__name__
-            self.logger.exception("AI Radio session failed: %s", err)
+            self.logger.exception("AI Radio session failed")
         finally:
             session.ended_at = utc_now_iso()
             # a show session blocks queue DJ replans while it runs, so ending it must

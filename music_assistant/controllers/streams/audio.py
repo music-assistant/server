@@ -1262,15 +1262,14 @@ class StreamsAudio:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception:
             streamdetails.stream_error = True
             if raise_on_error:
                 raise
             logger.exception(
-                "Unexpected error while streaming AudioSource %s (%s): %s",
+                "Unexpected error while streaming AudioSource %s (%s)",
                 queue_item.name,
                 streamdetails.uri,
-                err,
             )
         finally:
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
@@ -1522,15 +1521,14 @@ class StreamsAudio:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception:
             streamdetails.stream_error = True
             if raise_on_error:
                 raise
             logger.exception(
-                "Unexpected error while streaming queue item %s (%s): %s",
+                "Unexpected error while streaming queue item %s (%s)",
                 queue_item.name,
                 streamdetails.uri,
-                err,
             )
         finally:
             seconds_streamed = bytes_received / pcm_format.pcm_sample_size
