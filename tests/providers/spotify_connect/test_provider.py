@@ -188,14 +188,19 @@ async def test_queue_clear_releases_a_paused_spotify_session() -> None:
     deactivate.assert_awaited_once()
 
 
-async def test_queue_clear_leaves_the_release_to_a_live_stream() -> None:
-    """A stream still holding the claim releases the session in its own teardown."""
+async def test_queue_clear_releases_while_the_stream_is_winding_down() -> None:
+    """
+    A clear landing before the paused stream finished tearing down still releases.
+
+    The teardown itself releases nothing for a paused source, so waiting for it to hand the
+    claim back would leave the Spotify app tethered for good.
+    """
     provider, deactivate = _tethered_provider()
     provider._in_use_by_queue = "player1"
 
     await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
 
-    deactivate.assert_not_awaited()
+    deactivate.assert_awaited_once()
 
 
 async def test_clearing_another_queue_leaves_the_session_alone() -> None:

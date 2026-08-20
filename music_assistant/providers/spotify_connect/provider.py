@@ -430,14 +430,11 @@ class SpotifyConnectProvider(PluginProvider):
         """Release the Spotify session when the queue drops this source."""
         if source_id != AUDIO_SOURCE_ID or self._active_player_id != queue_id:
             return
-        if self._in_use_by_queue or not self._spotify_session_active:
-            # a live stream still holds the claim (its teardown does the release),
-            # or we are not the active Spotify device to begin with
+        if not self._spotify_session_active:
             return
-        # Nothing is streaming us anymore (e.g. the source was paused, which
-        # already tore the stream down), so no teardown will follow to release
-        # the session — the Spotify app would stay tethered to a device that no
-        # longer has a queue.
+        # Released whether or not a stream is still winding down: a paused source
+        # already ended its stream, so its teardown released nothing and the
+        # Spotify app would stay tethered to a device that has no queue left.
         try:
             await self._backend.deactivate()
         except Exception as err:

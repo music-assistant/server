@@ -258,8 +258,7 @@ class PluginProvider(Provider):
         the plugin keeps its session across the switch.
 
         May fire while a stream for this source is still being torn down, so
-        implementations must guard on their own claim state to avoid releasing
-        twice.
+        the release has to be safe to run alongside ``on_source_unselected``.
 
         :param source_id: The AudioSource.item_id that was removed.
         :param queue_id: The queue that dropped the source.
