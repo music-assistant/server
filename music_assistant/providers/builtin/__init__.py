@@ -299,7 +299,7 @@ class BuiltinProvider(MusicProvider):
             try:
                 yield await self.get_track(item["item_id"])
             except MediaNotFoundError as err:
-                self.logger.warning("Track %s not found: %s", item, err)
+                self.report_skipped_sync_item(MediaType.TRACK, item["item_id"], err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
@@ -310,8 +310,8 @@ class BuiltinProvider(MusicProvider):
             playlist_id = filename[:-4]  # strip .m3u extension
             try:
                 yield await self.get_playlist(playlist_id)
-            except MediaNotFoundError:
-                self.logger.warning("Playlist file %s not found", filename)
+            except MediaNotFoundError as err:
+                self.report_skipped_sync_item(MediaType.PLAYLIST, playlist_id, err)
         # return builtin playlists
         for item_id in BUILTIN_PLAYLISTS:
             if self.config.get_value(item_id) is False:
