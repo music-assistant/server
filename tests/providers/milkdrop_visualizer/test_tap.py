@@ -15,6 +15,7 @@ from music_assistant.providers.milkdrop_visualizer.tap import (
     TapManager,
     TrackCursor,
     ViewerQueue,
+    pack_wave_frame,
     palette_payload,
     pcm_to_mono,
     server_now_us,
@@ -231,6 +232,37 @@ async def test_hydrate_beats_caches_the_fetched_analysis() -> None:
     await manager._hydrate_beats(tap, Mock(queue_item_id="item-1"), server_now_us())
     assert tap.beats_analysis == ("item-1", analysis)
     assert len(tap.beats) == 1
+
+
+def test_ring_with_only_future_frames_is_reported_stale() -> None:
+    """A ring whose oldest frame is ahead of now has nothing a fresh viewer can draw."""
+    tap = Tap("player-1")
+    assert not tap.has_only_future_frames()
+    tap.ring.append(pack_wave_frame(server_now_us() - 1_000_000, b"\x80" * WAVE_SAMPLES))
+    assert not tap.has_only_future_frames()
+    tap.ring.clear()
+    tap.ring.append(pack_wave_frame(server_now_us() + 60_000_000, b"\x80" * WAVE_SAMPLES))
+    assert tap.has_only_future_frames()
+
+
+async def test_read_once_realigns_when_requested() -> None:
+    """A requested realign drops a pinned-ahead cursor and restarts at the playhead."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    queue = Mock(corrected_elapsed_time=100.0)
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0, pcm_format=PCM_FORMAT)
+    buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
+    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
+    # a cursor pinned at the eviction edge but otherwise in sync with the queue
+    pinned = _cursor(next_chunk=200, anchor_us=server_now_us() - 100_000_000)
+    tap.realign_requested = True
+    cursor = await manager._read_once(tap, pinned)
+    assert cursor is not None
+    assert cursor is not pinned
+    assert cursor.next_chunk == 101
+    assert not tap.realign_requested
 
 
 def test_palette_payload_maps_every_field() -> None:

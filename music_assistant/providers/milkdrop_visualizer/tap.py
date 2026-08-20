@@ -64,11 +64,15 @@ IDLE_POLL_SECONDS = 0.5
 BEAT_RETRY_SECONDS = 3.0
 BEAT_RETRY_ATTEMPTS = 30
 # Frames a tap keeps to replay to a viewer that attaches mid-track, and the
-# ceiling on one viewer's outbound queue. A frame is ~1KB and they come at
-# ~43/s, so these are ~0.5MB and ~1MB per tap at worst: the tap never reads
-# more than LEAD_SECONDS ahead, so holding more than the lead buys nothing,
-# and a small install (a Pi with a couple of viewers) pays little for it.
-RING_FRAMES = 512
+# ceiling on one viewer's outbound queue. The ring must span far more than
+# LEAD_SECONDS: on a track longer than the buffer's retained window, eviction
+# follows the player's stream pull (readrate 2x for HTTP players, ~30s commit
+# lead for Sendspin), so the tap is forced to read - and stamp - audio well
+# ahead of the audible playhead. The ring bridges that gap for attaching
+# viewers: ~95s at ~43 frames/s of ~1KB each (~4MB per tap). Beyond it the
+# audio is already evicted server-side, so no ring size can help; long tracks
+# spend their pinned phase there and that is an accepted limitation.
+RING_FRAMES = 4096
 VIEWER_QUEUE_FRAMES = 1024
 
 # Wire tags, matching the format documented in relay.py.
@@ -224,6 +228,9 @@ class Tap:
         # (a seek) rebuilds the schedule without querying again. Positive only:
         # a cached miss would suppress analysis that lands late in the track.
         self.beats_analysis: tuple[str, AudioAnalysisData] | None = None
+        # Set by the relay when a viewer attaches and finds only future-stamped
+        # frames; the reader consumes it by re-anchoring at the playhead.
+        self.realign_requested = False
         self.task: asyncio.Task[None] | None = None
         self.beats_task: asyncio.Task[None] | None = None
 
@@ -236,6 +243,20 @@ class Tap:
         """Cache a color@v1 payload and fan it out."""
         self.last_color = payload
         self.fan_out(dumps({"type": "color", "payload": payload}).decode())
+
+    def has_only_future_frames(self) -> bool:
+        """
+        Return whether every buffered waveform frame is stamped ahead of now.
+
+        True when production is pinned at the buffer's eviction edge, ahead of
+        the audible playhead: the ring then holds nothing a fresh viewer could
+        draw yet, and re-anchoring at the playhead serves it better than a
+        replay would.
+        """
+        if not self.ring:
+            return False
+        timestamp_us: int = struct.unpack_from(">q", self.ring[0], 1)[0]
+        return timestamp_us > server_now_us()
 
     def reset(self, message: str) -> None:
         """Drop everything scheduled from a timeline that no longer applies."""
@@ -354,6 +375,12 @@ class TapManager:
             return None
         queue, item, buffer = source
         self._sync_color(tap)
+        if tap.realign_requested:
+            # a viewer found only future-stamped frames; drop the cursor so the
+            # re-anchor below restarts at the playhead (or the closest retained
+            # chunk) instead of the pinned eviction edge
+            tap.realign_requested = False
+            cursor = None
         cursor = self._align(tap, cursor, item, queue.corrected_elapsed_time, buffer)
         # Stay ahead of the listener, but never behind the buffer's retained
         # window: a rolling (radio) buffer discards as playback consumes it, and

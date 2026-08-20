@@ -116,7 +116,15 @@ class MilkdropRelay:
                     }
                 ).decode()
             )
-            replayed_waves = list(tap.ring)
+            if tap.has_only_future_frames():
+                # Production is pinned at the buffer's eviction edge, ahead of
+                # what is audible; nothing buffered is drawable yet. Ask the tap
+                # to re-anchor at the playhead instead of replaying frames the
+                # viewer could only sit on.
+                tap.realign_requested = True
+                replayed_waves = []
+            else:
+                replayed_waves = list(tap.ring)
             replayed_beats = self.taps.pending_beat_frames(tap)
             for frame in replayed_waves + replayed_beats:
                 await ws.send_bytes(frame)
