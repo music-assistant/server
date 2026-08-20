@@ -320,19 +320,21 @@ class _IncomingFadePrefetcher:
         )
         # never read a track to its end in the background: that would report it to its
         # provider as streamed before a single second of it has reached the player.
-        # A track always plays at its own pace, so its duration is also its stream length.
-        overlap = min(overlap, streamdetails.duration / 2)
+        # A track always plays at its own pace, so what is left of it after the seek is
+        # also what is left of the stream.
+        seek_position = int(streamdetails.seek_position)
+        overlap = min(overlap, (streamdetails.duration - seek_position) / 2)
         if overlap <= 0:
             return
         self._target = int(self._pcm_format.pcm_sample_size * overlap)
         self._queue_item_id = next_item.queue_item_id
         self._streamdetails = streamdetails
-        self._seek_position = int(streamdetails.seek_position)
+        self._seek_position = seek_position
         self._chunks = deque()
         self._stream = self._audio.get_queue_item_stream(
             next_item,
             pcm_format=self._pcm_format,
-            seek_position=self._seek_position,
+            seek_position=seek_position,
             playback_speed=cast("float", next_item.extra_attributes.get("playback_speed", 1.0)),
             raise_on_error=False,
             session_id=self._session_id,
@@ -421,7 +423,10 @@ class _IncomingFadePrefetcher:
                 collected += len(chunk)
                 # re-read the target every chunk: it drops to zero on handover
                 if collected >= self._target:
-                    break
+                    return
+            # the target is kept clear of the track's end, so running out here means the
+            # source gave up early and the flow stream is better off opening it again
+            self._failed = True
         except Exception as err:
             # the flow stream opens the track itself rather than inheriting a dead stream
             self._failed = True

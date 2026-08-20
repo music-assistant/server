@@ -443,3 +443,64 @@ async def test_flow_skips_the_prefetch_without_a_known_duration(
     # opened once, at the transition, with nothing read while the tail was held back
     assert opened == ["item-1", "item-2"]
     assert exhausted_at["item-1"]["item-2"] == 0
+
+
+async def test_flow_reopens_a_track_whose_prefetch_ran_out_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that stops short of the clamp is not trusted to serve the track."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, _mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    opened: list[str] = []
+
+    async def _item_stream(
+        queue_item: SimpleNamespace, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        opened.append(queue_item.queue_item_id)
+        # the incoming source ends cleanly long before the prefetch target
+        seconds = 2 if queue_item is second_item and opened.count("item-2") == 1 else 40
+        total = TEST_PCM_FORMAT.pcm_sample_size * seconds
+        sent = 0
+        while sent < total:
+            size = min(CHUNK_SIZE, total - sent)
+            sent += size
+            yield bytes(size)
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    emitted = await _drain(stream)
+
+    assert opened == ["item-1", "item-2", "item-2"]
+    # the truncated prefetch is discarded rather than played as the whole track
+    assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 80
+
+
+async def test_flow_keeps_the_prefetch_clear_of_the_end_after_a_seek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clamp follows the seek position, so a near-the-end start is not read to EOF."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    # resuming with only 10 seconds of the track left
+    second_item.streamdetails.seek_position = 290
+    audio, queue, _mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    opened, _consumed, exhausted_at = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 10}
+    )
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    # half of the 10s that remain, so the source is never read to its end in the background
+    assert exhausted_at["item-1"]["item-2"] <= TEST_PCM_FORMAT.pcm_sample_size * 5 + CHUNK_SIZE
+    assert opened.count("item-2") == 1
