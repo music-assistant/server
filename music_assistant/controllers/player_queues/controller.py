@@ -1658,8 +1658,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             stream_duration=stream_duration,
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
+            queue_session_id=queue_data.session_id,
             custom_data={
-                "session_id": queue_data.session_id,
                 "original_uri": queue_item.uri,
             },
         )

@@ -154,6 +154,16 @@ class AudioBuffer:
         return self._producer_task is not None and not self._producer_task.done()
 
     @property
+    def eof(self) -> bool:
+        """
+        Return whether the source stopped producing.
+
+        A source that failed after delivering audio also ends here, so pair this with
+        ``has_error`` when a clean finish is what matters.
+        """
+        return self._eof_received
+
+    @property
     def first_buffered_chunk(self) -> int:
         """Return the chunk number of the oldest chunk still retained in the buffer."""
         return self._discarded_chunks
@@ -460,8 +470,10 @@ class AudioBuffer:
         # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
         seek_seconds = seek_position_ms // 1000
 
-        # for large seeks without existing buffer, start at seek position
-        buffer_seek_seconds = seek_seconds if seek_seconds > 60 else 0
+        # for large seeks without existing buffer, start at seek position.
+        # A realtime source can not produce the skipped audio any faster than playback,
+        # so it always seeks at the source instead of buffering up to the seek point.
+        buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
 
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
@@ -478,9 +490,16 @@ class AudioBuffer:
         crossfade_enabled = bool(
             queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
         )
-        if crossfade_enabled:
+        dynamic_normalization = (
+            streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
+        )
+        if streamdetails.is_realtime:
+            # a realtime source fills the buffer at playback pace, so every second of
+            # audio asked for here is a second of extra startup delay
+            ready_threshold = 2 if crossfade_enabled or dynamic_normalization else 1
+        elif crossfade_enabled:
             ready_threshold = 8
-        elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
+        elif dynamic_normalization:
             # radio streams are continuous so the normalization will converge quickly,
             # use a lower threshold to reduce startup latency
             ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5

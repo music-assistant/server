@@ -29,6 +29,18 @@ from music_assistant.mass import MusicAssistant
 
 _REPORT_FAILURE = "music_assistant.controllers.metadata.controller.report_current_task_failure"
 _CONTROLLER_TIME = "music_assistant.controllers.metadata.controller.time"
+# every way a provider may spell out the retail suffix on one and the same album
+_RETAIL_SUFFIX_NAMES = [
+    "Stargazing - EP",
+    "Stargazing -EP",
+    "Stargazing (EP)",
+    "Stargazing [EP]",
+    "Stargazing - Single",
+    "Stargazing -Single",
+    "Stargazing (Single)",
+    "Stargazing [Single]",
+    "Stargazing (single)",
+]
 
 
 def _controller() -> MetaDataController:
@@ -286,10 +298,11 @@ async def test_reconcile_duplicate_albums_selects_symbol_only_titles_spelled_the
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
 
 
+@pytest.mark.parametrize("suffixed_name", _RETAIL_SUFFIX_NAMES)
 async def test_reconcile_duplicate_albums_selects_spelled_out_retail_suffix_sibling(
-    mass: MusicAssistant,
+    mass: MusicAssistant, suffixed_name: str
 ) -> None:
-    """A leftover 'X - EP' row is paired with its plain-title sibling, which now stores it."""
+    """A leftover row naming the format is paired with its plain-title sibling, which stores it."""
     artist = await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
@@ -305,7 +318,7 @@ async def test_reconcile_duplicate_albums_selects_spelled_out_retail_suffix_sibl
     plain = await _add_album(mass, "Stargazing", artist, provider_instance="spotify_1")
     suffixed = await _add_album(
         mass,
-        "Stargazing - EP",
+        suffixed_name,
         artist,
         album_type=AlbumType.SINGLE,
         provider_instance="apple_music_1",

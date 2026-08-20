@@ -641,6 +641,7 @@ class SendspinProvider(PlayerProvider):
         # (hidden). Restore protocol semantics so UI links it under its native peer.
         player.is_web_player = False
         player._attr_hidden_by_default = False
+        player._attr_private = False
         player._attr_expose_to_ha_by_default = True
         player._attr_type = PlayerType.PROTOCOL
         self.logger.info(

@@ -85,6 +85,8 @@ from music_assistant.controllers.streams.constants import (
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    SINGLE_ITEM_READRATE,
+    SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
     get_available_buffer_sizes,
 )
@@ -453,7 +455,11 @@ class StreamsController(CoreController):
                     "/single/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}",
                     self.serve_queue_item_stream,
                 ),
-                ("*", "/command/{queue_id}/{command}.mp3", self.serve_command_request),
+                (
+                    "*",
+                    "/command/{session_id}/{queue_id}/{command}.mp3",
+                    self.serve_command_request,
+                ),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
                 (
                     "GET",
@@ -528,8 +534,7 @@ class StreamsController(CoreController):
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
-        extra_data = media.custom_data or {}
-        session_id = extra_data.get("session_id")
+        session_id = media.queue_session_id
         queue_item_id = media.queue_item_id
         if not session_id or not queue_item_id:
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
@@ -755,6 +760,10 @@ class StreamsController(CoreController):
             )
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
+            elif queue_item.streamdetails.is_realtime:
+                # a realtime source delivers at playback pace, so it has no audio to
+                # spare for an overlap in either direction
+                crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
@@ -899,6 +908,12 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
+                    extra_input_args=[
+                        "-readrate",
+                        SINGLE_ITEM_READRATE,
+                        "-readrate_initial_burst",
+                        SINGLE_ITEM_READRATE_INITIAL_BURST,
+                    ],
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -912,6 +927,15 @@ class StreamsController(CoreController):
                 # the abandoned generator.
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
+                        if pq_data.session_id != session_id:
+                            # playback moved on (or stopped) while this response was open;
+                            # the flow path checks the same thing per chunk
+                            self.logger.debug(
+                                "Ending stream for %s: session %s is no longer current",
+                                queue_item.name,
+                                session_id,
+                            )
+                            break
                         try:
                             await resp.write(chunk)
                             bytes_sent += len(chunk)
@@ -1171,6 +1195,10 @@ class StreamsController(CoreController):
         """Handle special 'command' request for a player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
+        session_id = request.match_info["session_id"]
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        if queue_data is None or queue_data.session_id != session_id:
+            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         command = request.match_info["command"]
         if command == "next":
             self.mass.create_task(self.mass.player_queues.next(queue_id))
@@ -1253,9 +1281,17 @@ class StreamsController(CoreController):
 
         return resp
 
-    def get_command_url(self, player_or_queue_id: str, command: str) -> str:
-        """Get the url for the special command stream."""
-        return f"{self.base_url}/command/{player_or_queue_id}/{command}.mp3"
+    def get_command_url(self, player_or_queue_id: str, command: str) -> str | None:
+        """
+        Get the url for the special command stream, or None if the queue is not playing.
+
+        :param player_or_queue_id: Queue to send the command to.
+        :param command: Command the url triggers when fetched.
+        """
+        queue_data = self.mass.player_queues.queue_data_or_none(player_or_queue_id)
+        if queue_data is None or (session_id := queue_data.session_id) is None:
+            return None
+        return f"{self.base_url}/command/{session_id}/{player_or_queue_id}/{command}.mp3"
 
     def get_announcement_url(
         self,
@@ -1323,10 +1359,7 @@ class StreamsController(CoreController):
             protocol_player = self.mass.players.get_player(player_id) if player_id else None
             queue_id = media.source_id
             queue = self.mass.player_queues.get(queue_id)
-            queue_session_id = cast(
-                "str | None",
-                (media.custom_data or {}).get("session_id"),
-            )
+            queue_session_id = media.queue_session_id
             crossfade_needs_flow_mode = (
                 # crossfade only applies to tracks; if the queue has it enabled but the
                 # player(protocol) does not support gapless playback, we need to enforce flow mode
@@ -1392,7 +1425,9 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     crossfade_mode=(
                         self.get_crossfade_mode(queue)
+                        # a realtime source is never faded, in either direction
                         if queue_item.media_type == MediaType.TRACK
+                        and not (queue_item.streamdetails and queue_item.streamdetails.is_realtime)
                         else CrossfadeMode.DISABLED
                     ),
                     overlay_enabled=(
