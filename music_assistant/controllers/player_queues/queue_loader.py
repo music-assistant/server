@@ -49,6 +49,7 @@ from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
     MANAGED_POOL_MAX,
+    ORDERED_MEDIA_TYPES,
     PROBED_DURATION_MEDIA_TYPES,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -717,12 +718,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Clear the 'enqueued media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue_data.enqueued_media_items.clear()
-        # The shuffle state has to be settled before the items are resolved below: a shuffled queue
-        # keeps the items preceding a start_item (chosen track pinned first) instead of dropping
-        # them. When the option still has to be derived, this runs as soon as it is known.
-        if option is not None:
-            await self._apply_shuffle_intent(queue_id, option, shuffle)
-
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -731,6 +726,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         media_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
+        shuffle_settled = False
         # resolve all media items
         for item in media_list:
             try:
@@ -789,7 +785,22 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     option = QueueOption(config_value)
                     if option == QueueOption.REPLACE:
                         self._clear(queue_id, skip_stop=True)
-                    await self._apply_shuffle_intent(queue_id, option, shuffle)
+
+                # The shuffle state has to be settled before the items are resolved below: a
+                # shuffled queue keeps the items preceding a start_item (chosen track pinned
+                # first) instead of dropping them. The first item decides for the whole batch,
+                # because it is the only media type known this early.
+                if not shuffle_settled:
+                    shuffle_settled = True
+                    await self._apply_shuffle(
+                        queue_id,
+                        option,
+                        # an explicit request always wins; only an unset one defers to the
+                        # media's own order
+                        False
+                        if shuffle is None and media_item.media_type in ORDERED_MEDIA_TYPES
+                        else shuffle,
+                    )
 
                 # collect media_items to play
                 if is_dynamic_source(media_item):

@@ -83,11 +83,17 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
-# How long a user's shuffle toggle stays "fresh" enough to carry over into the next media the user
-# starts. Turning shuffle on and then pressing play is a deliberate "shuffle this" gesture and must
-# be honoured; a shuffle left on by an earlier listening session must not silently reorder the album
-# the user just picked. Only bridges the gap between the two clicks, so it is deliberately short.
-SHUFFLE_INTENT_WINDOW = 300
+# Media types whose own running order is part of the content: an album is sequenced by its artist,
+# and a podcast or audiobook only makes sense front to back. Starting one of these plays it in its
+# own order, switching the queue's shuffle off with it, unless the caller asks for shuffle
+# explicitly. Every other type (playlist, artist, genre, ...) keeps whatever the queue is set to.
+ORDERED_MEDIA_TYPES = (
+    MediaType.ALBUM,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIO_SOURCE,
+)
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1

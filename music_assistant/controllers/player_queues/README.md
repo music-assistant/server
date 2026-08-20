@@ -102,17 +102,20 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
 - **Media-time vs stream-time.** The queue's elapsed time is stored in media-time (usable directly
   as a resume position), whereas the player reports stream-time (post-atempo). The two are bridged
   by scaling with the current item's playback speed.
-- **Shuffle does not outlive the media it was set for.** The options that start playing right away
-  (*play* and *replace*) begin a new listening session and play their media in order, unless the
-  caller asks for shuffle explicitly or the user switched shuffle on moments earlier — tracked by
-  the runtime-only `shuffle_set_at` stamp, which is never restored from cache and is consumed by the
-  play command that reads it. Switching shuffle off goes through `set_shuffle`, so the items that
-  stay in the queue are restored to their original order rather than left shuffled behind a queue
-  that now reads unshuffled. The options that only stage items for later (*add* / *next* /
-  *replace next*) leave the shuffle state alone. A dynamic queue is exempt: it is an always-on
-  smart mix and forces shuffle on. *Replace next* is the only staging option that can take that
-  dynamic source away, so it is the one exception: it switches the imposed shuffle back off, which
-  `_enter_dynamic_mode` restores if the new media leaves the queue dynamic.
+- **Shuffle is a queue setting; only the media's own order overrides it.** Shuffle stays as the
+  user left it across everything they play, except when the media carries an order of its own:
+  starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
+  with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
+  pool of tracks. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  a batch decides for the whole batch — it is the only media type known before the items are
+  resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
+  are restored to their original order rather than left shuffled behind a queue that now reads
+  unshuffled. The options that only stage items for later (*add* / *next* / *replace next*) leave
+  the shuffle state alone, and clearing the queue switches shuffle off with it. A dynamic queue is
+  exempt: it is an always-on smart mix and forces shuffle on. *Replace next* is the only staging
+  option that can take that dynamic source away, so it is the one exception: it switches the
+  imposed shuffle back off, which `_enter_dynamic_mode` restores if the new media leaves the queue
+  dynamic.
 
 ## State and Persistence
 

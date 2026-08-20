@@ -1,19 +1,18 @@
 """
 Tests for the shuffle state a newly started media item ends up with.
 
-A shuffle left switched on by an earlier listening session must not silently reorder the album the
-user just picked, while a shuffle the user switched on moments before pressing play is a deliberate
-"shuffle this" gesture and has to be honoured. Only the options that start the media right away
-(play and replace) begin such a new listening session; the options that stage items onto the queue
-keep its shuffle state. These drive the real ``play_media`` path against a bare controller instance,
-mirroring ``test_user_initiated_plays`` and ``test_enqueue_options``: resolution and playback are
-stubbed, but the enqueue/load path runs for real so the resulting item order is verified
-end-to-end.
+Shuffle is a queue setting the user owns: it survives everything they play, except media that
+carries an order of its own. Starting an album, podcast, episode, audiobook or audio source plays
+it in that order and switches shuffle off with it, while a playlist or artist keeps whatever the
+queue is set to. An explicit ``shuffle`` argument always wins, and the options that only stage
+items leave the state alone. These drive the real ``play_media`` path against a bare controller
+instance, mirroring ``test_user_initiated_plays`` and ``test_enqueue_options``: resolution and
+playback are stubbed, but the enqueue/load path runs for real so the resulting item order is
+verified end-to-end.
 """
 
 from __future__ import annotations
 
-import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -21,8 +20,12 @@ import pytest
 from music_assistant_models.enums import MediaType, QueueOption
 from music_assistant_models.media_items import (
     Album,
+    Audiobook,
+    AudioSource,
     ItemMapping,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Track,
 )
@@ -31,7 +34,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.constants import SHUFFLE_INTENT_WINDOW
+from music_assistant.controllers.player_queues.constants import ORDERED_MEDIA_TYPES
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 # the album the user starts, in its own track order
@@ -76,6 +79,41 @@ def _album() -> Album:
             ProviderMapping(item_id="al1", provider_domain="test", provider_instance="test")
         },
     )
+
+
+def _playlist() -> Playlist:
+    """Build a plain playlist: a pool of tracks with no running order of its own to protect."""
+    return Playlist(
+        item_id="pl1",
+        provider="test",
+        name="Playlist pl1",
+        provider_mappings={
+            ProviderMapping(item_id="pl1", provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _ordered_item(media_type: MediaType) -> Any:
+    """Build a media item of one of the types that carry an order of their own."""
+    cls = {
+        MediaType.ALBUM: Album,
+        MediaType.AUDIOBOOK: Audiobook,
+        MediaType.PODCAST: Podcast,
+        MediaType.PODCAST_EPISODE: PodcastEpisode,
+        MediaType.AUDIO_SOURCE: AudioSource,
+    }[media_type]
+    kwargs: dict[str, Any] = {
+        "item_id": "o1",
+        "provider": "test",
+        "name": f"Ordered {media_type.value}",
+        "provider_mappings": {
+            ProviderMapping(item_id="o1", provider_domain="test", provider_instance="test")
+        },
+    }
+    if media_type == MediaType.PODCAST_EPISODE:
+        kwargs["position"] = 1
+        kwargs["podcast"] = _ordered_item(MediaType.PODCAST)
+    return cls(**kwargs)
 
 
 def _dynamic_playlist() -> Playlist:
@@ -168,24 +206,63 @@ def _load_dynamic_pool(ctrl: Any) -> None:
 
 
 @pytest.mark.parametrize("option", START_OPTIONS)
-async def test_shuffle_left_on_by_previous_session_is_reset(option: QueueOption) -> None:
-    """An album started on a queue that still had shuffle on plays in its own track order."""
+async def test_playing_a_playlist_keeps_the_queue_shuffle(option: QueueOption) -> None:
+    """A playlist is a pool of tracks, so it plays the way the queue's shuffle is set."""
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True)
 
-    await ctrl.play_media("q1", _album(), option)
+    await ctrl.play_media("q1", _playlist(), option)
+
+    assert _queue(ctrl).shuffle_enabled is True
+    assert _queue(ctrl).smart_shuffle_active is True
+    # the (reversed) shuffle order rather than the order the resolver handed them over in
+    assert _played_order(ctrl) == ALBUM_TRACKS[::-1]
+    # shuffle was settled before the items were resolved: a shuffled queue asks the resolver to
+    # keep the items preceding a chosen track, an in-order one does not
+    resolve_call = ctrl._media_resolver._resolve_media_items.call_args
+    assert resolve_call.kwargs["keep_preceding_items"] is True
+
+
+@pytest.mark.parametrize("option", START_OPTIONS)
+async def test_the_queue_shuffle_survives_repeated_plays(option: QueueOption) -> None:
+    """
+    Shuffle belongs to the queue, so every playlist the user starts after it is shuffled too.
+
+    The shuffle toggle is a setting the user owns, not a one-shot gesture attached to a single
+    play: switching it on once has to keep shuffling whatever they pick next, however many things
+    they play, or the toggle would silently switch itself off behind their back.
+    """
+    ctrl = _controller()
+    await ctrl.set_shuffle("q1", True)
+    await ctrl.play_media("q1", _playlist(), option)
+
+    await ctrl.play_media("q1", _playlist(), option)
+
+    assert _queue(ctrl).shuffle_enabled is True
+    # still in effect when the second batch is resolved, not just left set on the queue
+    resolve_call = ctrl._media_resolver._resolve_media_items.call_args
+    assert resolve_call.kwargs["keep_preceding_items"] is True
+    assert _played_order(ctrl) != ALBUM_TRACKS
+
+
+@pytest.mark.parametrize("media_type", ORDERED_MEDIA_TYPES)
+@pytest.mark.parametrize("option", START_OPTIONS)
+async def test_starting_ordered_media_switches_shuffle_off(
+    option: QueueOption, media_type: MediaType
+) -> None:
+    """Media sequenced by its author plays in that order, and takes the queue's shuffle with it."""
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True)
+
+    await ctrl.play_media("q1", _ordered_item(media_type), option)
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _queue(ctrl).smart_shuffle_active is False
-    # the album is played front to back, not in the (reversed) shuffle order
     assert _played_order(ctrl) == ALBUM_TRACKS
-    # shuffle was settled before the items were resolved: a shuffled queue asks the resolver to
-    # keep the items preceding a chosen track, an in-order one does not
     resolve_call = ctrl._media_resolver._resolve_media_items.call_args
     assert resolve_call.kwargs["keep_preceding_items"] is False
 
 
-async def test_shuffle_left_on_is_reset_for_a_derived_enqueue_option() -> None:
-    """The reset also applies when the enqueue option comes from the media type's config default."""
+async def test_an_album_switches_shuffle_off_for_a_derived_enqueue_option() -> None:
+    """The album rule also applies when the enqueue option comes from its config default."""
     ctrl = _controller(shuffle_enabled=True)
 
     await ctrl.play_media("q1", _album())
@@ -196,13 +273,13 @@ async def test_shuffle_left_on_is_reset_for_a_derived_enqueue_option() -> None:
     assert _played_order(ctrl) == ALBUM_TRACKS
 
 
-async def test_the_reset_restores_the_order_of_the_items_that_stay_in_the_queue() -> None:
+async def test_an_album_restores_the_order_of_the_items_that_stay_in_the_queue() -> None:
     """
-    Media played onto a shuffled queue puts the items it keeps back in their original order.
+    An album played onto a shuffled queue puts the items it keeps back in their original order.
 
-    Unlike a replace, a play keeps the tail behind the current item, so the reset has to un-shuffle
-    that tail as well: items left in shuffled order behind a queue that now reads "shuffle off"
-    would contradict its own flag.
+    Unlike a replace, a play keeps the tail behind the current item, so switching shuffle off has
+    to un-shuffle that tail as well: items left in shuffled order behind a queue that now reads
+    "shuffle off" would contradict its own flag.
     """
     ctrl = _controller(shuffle_enabled=True, current_index=0)
     _load_shuffled_queue(ctrl)
@@ -214,73 +291,52 @@ async def test_the_reset_restores_the_order_of_the_items_that_stay_in_the_queue(
     assert _played_order(ctrl) == ["e1", *ALBUM_TRACKS, "e2", "e3", "e4", "e5"]
 
 
-async def test_shuffle_just_switched_on_by_the_user_is_honoured() -> None:
-    """Switching shuffle on and then pressing play shuffles the album the user picked."""
-    ctrl = _controller()
-    await ctrl.set_shuffle("q1", True)
+async def test_an_unshuffled_queue_stays_unshuffled_for_a_playlist() -> None:
+    """A playlist follows the queue's shuffle in both directions, so an off queue stays off."""
+    ctrl = _controller(shuffle_enabled=False)
 
-    await ctrl.play_media("q1", _album(), QueueOption.REPLACE)
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
 
-    assert _queue(ctrl).shuffle_enabled is True
-    assert _played_order(ctrl) == ALBUM_TRACKS[::-1]
-
-
-@pytest.mark.parametrize("option", START_OPTIONS)
-async def test_shuffle_intent_is_only_good_for_one_play(option: QueueOption) -> None:
-    """The toggle carries into the album the user starts next, but not into the one after it."""
-    ctrl = _controller()
-    await ctrl.set_shuffle("q1", True)
-    await ctrl.play_media("q1", _album(), option)
-
-    await ctrl.play_media("q1", _album(), option)
-
-    assert ctrl._queue_data["q1"].shuffle_set_at is None
     assert _queue(ctrl).shuffle_enabled is False
     assert _played_order(ctrl) == ALBUM_TRACKS
 
 
-async def test_switching_shuffle_off_drops_the_intent() -> None:
-    """Turning shuffle back off leaves no intent behind for the next play to pick up."""
-    ctrl = _controller()
-    await ctrl.set_shuffle("q1", True)
-    await ctrl.set_shuffle("q1", False)
+async def test_the_first_item_of_a_batch_decides_for_the_whole_batch() -> None:
+    """
+    A batch is judged by its first item: it is the only media type known this early.
 
-    await ctrl.play_media("q1", _album(), QueueOption.REPLACE)
-
-    assert ctrl._queue_data["q1"].shuffle_set_at is None
-    assert _queue(ctrl).shuffle_enabled is False
-    assert _played_order(ctrl) == ALBUM_TRACKS
-
-
-@pytest.mark.parametrize("option", START_OPTIONS)
-async def test_stale_shuffle_intent_is_not_honoured(option: QueueOption) -> None:
-    """A toggle from well before the play command is a leftover, not intent for this album."""
+    The shuffle state has to be settled before any of the items are resolved, because a shuffled
+    queue resolves a chosen start item differently.
+    """
     ctrl = _controller(shuffle_enabled=True)
-    ctrl._queue_data["q1"].shuffle_set_at = time.monotonic() - SHUFFLE_INTENT_WINDOW - 100
 
-    await ctrl.play_media("q1", _album(), option)
+    await ctrl.play_media("q1", [_album(), _playlist()], QueueOption.REPLACE)
 
     assert _queue(ctrl).shuffle_enabled is False
-    assert _played_order(ctrl) == ALBUM_TRACKS
 
 
-async def test_explicit_shuffle_request_shuffles_an_unshuffled_queue() -> None:
-    """A caller asking for a shuffled play gets one, without having to toggle shuffle first."""
+@pytest.mark.parametrize("media_type", ORDERED_MEDIA_TYPES)
+async def test_explicit_shuffle_wins_over_the_medias_own_order(media_type: MediaType) -> None:
+    """
+    A caller asking for a shuffled play gets one, even for media with an order of its own.
+
+    This is the "play shuffled" action every client offers: it has to be honoured whatever the
+    queue's toggle says and whatever is being started, or the action would silently do nothing.
+    """
     ctrl = _controller()
 
-    await ctrl.play_media("q1", _album(), QueueOption.REPLACE, shuffle=True)
+    await ctrl.play_media("q1", _ordered_item(media_type), QueueOption.REPLACE, shuffle=True)
 
     assert _queue(ctrl).shuffle_enabled is True
     assert _played_order(ctrl) == ALBUM_TRACKS[::-1]
 
 
 @pytest.mark.parametrize("option", START_OPTIONS)
-async def test_explicit_no_shuffle_wins_over_a_fresh_intent(option: QueueOption) -> None:
-    """An explicit "play in order" beats the shuffle the user switched on moments earlier."""
-    ctrl = _controller()
-    await ctrl.set_shuffle("q1", True)
+async def test_explicit_no_shuffle_wins_over_the_queue_shuffle(option: QueueOption) -> None:
+    """An explicit "play in order" beats the shuffle the queue is set to."""
+    ctrl = _controller(shuffle_enabled=True)
 
-    await ctrl.play_media("q1", _album(), option, shuffle=False)
+    await ctrl.play_media("q1", _playlist(), option, shuffle=False)
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _played_order(ctrl) == ALBUM_TRACKS
@@ -359,28 +415,6 @@ async def test_replace_next_over_a_dynamic_queue_drops_the_imposed_shuffle() -> 
     assert resolve_call.kwargs["keep_preceding_items"] is False
 
 
-async def test_replace_next_over_a_dynamic_queue_drops_the_shuffle_intent_with_it() -> None:
-    """
-    The shuffle dropped here takes its intent along, so a later play does not resurrect it.
-
-    Staging a dynamic source keeps an intent the user left on the queue moments earlier. Once
-    replace next switches the imposed shuffle off, that stamp would otherwise still be fresh enough
-    for the next play to act on - shuffling media on a queue whose toggle now reads off.
-    """
-    ctrl = _controller()
-    await ctrl.set_shuffle("q1", True)
-    await ctrl.play_media("q1", _dynamic_playlist(), QueueOption.ADD)
-    assert ctrl._queue_data["q1"].shuffle_set_at is not None
-
-    await ctrl.play_media("q1", _album(), QueueOption.REPLACE_NEXT)
-
-    assert _queue(ctrl).shuffle_enabled is False
-    assert ctrl._queue_data["q1"].shuffle_set_at is None
-    # the next media the user starts plays in order, matching what the queue's toggle now says
-    await ctrl.play_media("q1", _album(), QueueOption.REPLACE)
-    assert _played_order(ctrl) == ALBUM_TRACKS
-
-
 async def test_replace_next_that_leaves_the_queue_dynamic_keeps_the_smart_mix() -> None:
     """Staging another dynamic source keeps the queue an always-on smart mix, shuffle included."""
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
@@ -393,14 +427,24 @@ async def test_replace_next_that_leaves_the_queue_dynamic_keeps_the_smart_mix() 
     assert _queue(ctrl).smart_shuffle_active is True
 
 
-async def test_playing_media_on_an_ended_queue_resets_shuffle() -> None:
-    """A finished queue is started over by a play, so the shuffle goes with the old session."""
+async def test_playing_an_album_on_an_ended_queue_switches_shuffle_off() -> None:
+    """A finished queue is started over by a play, and an album starts it over in its own order."""
     ctrl = _controller(shuffle_enabled=True, ended=True)
 
     await ctrl.play_media("q1", _album(), QueueOption.PLAY)
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+async def test_playing_a_playlist_on_an_ended_queue_keeps_shuffle() -> None:
+    """Restarting a finished queue is still not a reason to change a setting the user owns."""
+    ctrl = _controller(shuffle_enabled=True, ended=True)
+
+    await ctrl.play_media("q1", _playlist(), QueueOption.PLAY)
+
+    assert _queue(ctrl).shuffle_enabled is True
+    assert _played_order(ctrl) == ALBUM_TRACKS[::-1]
 
 
 @pytest.mark.parametrize("option", STAGE_OPTIONS)
@@ -413,13 +457,10 @@ async def test_staging_media_onto_an_ended_queue_keeps_shuffle(option: QueueOpti
     what "queue this up" means, so it must not change the shuffle state either.
     """
     ctrl = _controller(shuffle_enabled=True, ended=True)
-    # a marker rather than a realistic timestamp: it only has to show the intent was left alone
-    ctrl._queue_data["q1"].shuffle_set_at = 12345.0
 
     await ctrl.play_media("q1", _album(), option)
 
     assert _queue(ctrl).shuffle_enabled is True
-    assert ctrl._queue_data["q1"].shuffle_set_at == 12345.0
     # the batch landed in shuffle order instead of the album's own track order
     assert sorted(_played_order(ctrl)) == sorted(ALBUM_TRACKS)
     assert _played_order(ctrl) != ALBUM_TRACKS
@@ -438,14 +479,10 @@ async def test_enqueueing_leaves_shuffle_untouched(
     """
     # a running queue, as opposed to the finished one the staging options start over from
     ctrl = _controller(shuffle_enabled=shuffle_enabled, ended=False)
-    # a marker rather than a realistic timestamp: it only has to show the intent was left alone
-    ctrl._queue_data["q1"].shuffle_set_at = 12345.0
 
     await ctrl.play_media("q1", _album(), option)
 
     assert _queue(ctrl).shuffle_enabled is shuffle_enabled
-    # the intent is not consumed either: it still belongs to the next media the user starts
-    assert ctrl._queue_data["q1"].shuffle_set_at == 12345.0
 
 
 def test_clear_command_resets_shuffle() -> None:
@@ -459,7 +496,6 @@ def test_clear_command_resets_shuffle() -> None:
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _queue(ctrl).smart_shuffle_active is False
-    assert ctrl._queue_data["q1"].shuffle_set_at is None
 
 
 def test_empty_queue_reaching_its_end_keeps_shuffle() -> None:
