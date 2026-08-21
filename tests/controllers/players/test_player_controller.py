@@ -65,7 +65,7 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
-from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS
+from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS, TTSLanguageNotSupportedError
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.universal_player.player import UniversalPlayer
@@ -4542,7 +4542,9 @@ class TestPlayAnnouncementMessage:
         engine = self._make_engine()
         engine.provider.get_tts_message = AsyncMock(
             side_effect=[
-                RuntimeError("unsupported language"),
+                TTSLanguageNotSupportedError(
+                    "TTS engine 'voice' does not support language 'en-US'"
+                ),
                 SimpleNamespace(path="http://speech/spoken.mp3"),
             ]
         )
