@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature, QueueOption
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -24,9 +24,11 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    AudioSource,
     BrowseFolder,
     ItemMapping,
     MediaItemType,
+    PlayableMediaItemType,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -674,6 +676,56 @@ class MusicProvider(Provider):
         Will only be called when the stream_type is set to CUSTOM.
         """
         yield b""
+        raise NotImplementedError
+
+    @property
+    def playback_requires_delegate(self) -> bool:
+        """
+        Whether this provider can only play its items through a playback delegate.
+
+        When True the provider does not stream audio itself: items that end up
+        without a delegate (see ``get_playback_delegate``) are unplayable rather
+        than falling back to direct streaming.
+        """
+        return False
+
+    async def get_playback_delegate(self, target_player_id: str) -> AudioSource | None:
+        """
+        Return the live external session that should play this provider's items, if any.
+
+        Called at enqueue time for playback of this provider's items on the given
+        player. A returned AudioSource (a queue-capable live session, e.g. a Spotify
+        Connect bridge) redirects the play request into that session via
+        ``play_on_delegate``; None plays the items through the normal path.
+
+        :param target_player_id: The player (queue) the play request targets.
+        """
+        return None
+
+    async def play_on_delegate(
+        self,
+        delegate: AudioSource,
+        media_items: list[PlayableMediaItemType],
+        option: QueueOption,
+        target_player_id: str,
+        context: MediaItemType | None = None,
+        start_item: PlayableMediaItemType | str | None = None,
+    ) -> None:
+        """
+        Play or enqueue the given items on the delegate session.
+
+        Only called with a delegate this provider returned from
+        ``get_playback_delegate``. PLAY/REPLACE start the items on the session;
+        ADD/NEXT/REPLACE_NEXT enqueue them onto the session's already active queue.
+
+        :param delegate: The session AudioSource returned by ``get_playback_delegate``.
+        :param media_items: The resolved playable items of the play request.
+        :param option: The enqueue option of the play request.
+        :param target_player_id: The player (queue) the play request targets.
+        :param context: The single original container item (album/playlist/artist)
+            the request expanded from, when there was exactly one.
+        :param start_item: Optional item (or uri) within the context to start at.
+        """
         raise NotImplementedError
 
     async def on_streamed(

@@ -67,13 +67,18 @@
       "title": "Create your Soloist API key",
       "description": "Soloist needs a personal API key, created with a Spotify **Premium** account:\n\n1. Open the [Soloist API key page](https://developer.spotify.com/dashboard/soloist) and sign in with your Spotify account.\n2. Accept Spotify's terms if you are asked to.\n3. Choose **Generate API Key**.\n4. Copy the key and paste it below.\n\nMusic Assistant stores the key encrypted and only shares it with the Soloist app. Your Spotify username and password are never asked for."
     },
-    "user": {
-      "title": "Configure Spotify Connect",
-      "description": "Choose the player that receives Spotify audio and the device name shown in the Spotify app."
+    "player": {
+      "title": "Choose a player",
+      "description": "Choose the Music Assistant player that receives the Spotify audio.\n\nPick a specific player to give it its own entry in the Spotify app's device picker. Choose 'Auto' for a system-wide device that follows playback to whichever player is used."
+    },
+    "device_name": {
+      "title": "Name the Spotify Connect device",
+      "description": "This is the name shown in the Spotify app's device picker."
     }
   },
   "errors": {
     "not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again.",
+    "setup_pending": "This Spotify Connect instance was created by the Spotify music provider and still needs to be set up. Open its settings and run the setup to start using it.",
     "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose go-librespot (community) instead.",
     "soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
     "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose go-librespot (community) instead.",

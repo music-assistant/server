@@ -41,6 +41,19 @@
     },
     "use_developer_key": {
       "label": "Use my own Spotify developer key (advanced, optional)"
+    },
+    "playback_backend": {
+      "label": "How should Music Assistant play Spotify audio?",
+      "options": {
+        "spotify_connect": "Spotify Connect (official)",
+        "librespot": "librespot (community)"
+      }
+    },
+    "connect_setup_needed": {
+      "label": "A Spotify Connect instance has been prepared for you. After finishing this setup, open it from the providers page and complete its setup (playback engine and pairing) to enable playback."
+    },
+    "connect_ready": {
+      "label": "A Spotify Connect instance is already running, so playback works right away. Playback requests target the Connect device paired to this Spotify account."
     }
   },
   "setup_flow": {
@@ -55,6 +68,14 @@
     "authenticate_dev": {
       "title": "Authorize your Spotify app",
       "description": "A browser window will open to authorize Music Assistant against your own Spotify app."
+    },
+    "playback_backend": {
+      "title": "Choose how Spotify audio is played",
+      "description": "Music Assistant can play Spotify audio in two ways:\n\n**Spotify Connect (official)** — playback is handed to a Spotify Connect session that Music Assistant hosts through the Spotify Connect provider. Spotify's own engine plays the music (with its native crossfade, normalization and autoplay), the Spotify app stays a valid remote, and it works with every account. Some Music Assistant queue features are handled by Spotify instead, and podcasts and audiobooks cannot be played in this mode.\n\n**librespot (community)** — Music Assistant streams every track itself, with the full Music Assistant queue experience. It relies on reverse-engineered Spotify internals, primarily works for accounts created before December 2024, and may stop working whenever Spotify changes things on their end."
+    },
+    "connect_mode": {
+      "title": "Playback through Spotify Connect",
+      "description": "In this mode, playing Spotify content sends it to a Spotify Connect device hosted by Music Assistant, which then plays on the player you selected."
     },
     "playback_auth": {
       "title": "Allow Music Assistant to play Spotify audio",
@@ -107,7 +128,9 @@
     "playback_auth_required": "Spotify needs you to approve audio playback again. Open the Spotify provider settings and run through the setup once more to restore playback.",
     "playback_not_completed": "Playback wasn't approved in time. Open the link again and paste the address of the page your browser ends up on.",
     "playback_auth_failed": "Approving playback didn't work. Please try again.",
-    "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here."
+    "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here.",
+    "connect_no_session": "No Spotify Connect session is available for this Spotify account. Complete (or re-pair) the Spotify Connect setup, or switch the Spotify provider back to librespot playback.",
+    "connect_no_session_for_enqueue": "There is no active Spotify Connect session on this player to add to. Start Spotify playback on it first."
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."

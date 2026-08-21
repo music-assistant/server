@@ -15,7 +15,7 @@ import os
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items import AudioFormat
@@ -218,6 +218,15 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         """
         assert self._client is not None
         await self._client.play(uri, skip_to_uri=skip_to_uri)
+
+    async def get_account_id(self) -> str | None:
+        """Return the Spotify account (username/user id) of the paired session, when known."""
+        if self._client is None:
+            return None
+        status = await self._client.get_status()
+        if not status:
+            return None
+        return cast("str | None", status.get("username")) or None
 
     async def resume(self) -> None:
         """Resume playback on the active session."""

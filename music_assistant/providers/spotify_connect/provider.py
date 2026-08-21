@@ -23,7 +23,12 @@ from music_assistant_models.enums import (
     RepeatMode,
     SourceControl,
 )
-from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    LoginFailed,
+    MediaNotFoundError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     AudioSource,
     ProviderMapping,
@@ -84,6 +89,13 @@ AUDIO_QUALITY_OPTIONS: Final = [
 ]
 AUDIO_QUALITY_VALUES: Final = {option.value for option in AUDIO_QUALITY_OPTIONS}
 
+# Markers set by the Spotify music provider when it provisions the system-wide
+# instance for its Connect playback mode: setup_pending keeps the instance in
+# setup-required state until this plugin's own flow has run; system_managed
+# tags the instance as one whose existence the music provider guarantees.
+CONF_SETUP_PENDING = "setup_pending"
+CONF_SYSTEM_MANAGED = "system_managed"
+
 # The selectable volume modes (labels resolve from strings.json), shared
 # between the runtime option and the setup flow.
 VOLUME_MODE_OPTIONS: Final = [
@@ -115,6 +127,15 @@ PLAY_MEDIA_DEBOUNCE_S = 0.5
 # Ignore Spotify volume events for this long after a session becomes active, so
 # the player's own volume wins over the backend's initial value on (re)connect.
 INITIAL_VOLUME_GRACE_S = 3.0
+
+# Grace window after an MA-initiated redirect (prepare_redirect) during which the
+# session's playback start is expected: the not-active refusals and the
+# external-trigger play_media kick are suppressed while it is open.
+REDIRECT_GRACE_S = 15.0
+
+# Seconds to wait for the backend to start playing redirected content (a cold
+# session fetching a fresh context can take a few seconds).
+REDIRECT_START_TIMEOUT_S = 10.0
 
 # User-facing message for the "not the active Spotify device" failure.
 # {0} is the Spotify Connect device's published name (see _not_active_error).
@@ -191,6 +212,10 @@ class SpotifyConnectProvider(PluginProvider):
         # the queue claim exists — and pushed to the queue once claimed in
         # on_source_selected. Cleared when the session ends.
         self._last_playback_options: BackendPlaybackOptions | None = None
+        # deadline (loop time) until which an MA-initiated redirect is pending:
+        # new content was commanded on the session and its playback start (plus
+        # the accompanying stream request) is expected any moment.
+        self._redirect_deadline: float = 0.0
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -257,6 +282,14 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        if self.get_setup_value(CONF_SETUP_PENDING):
+            # instance provisioned by the Spotify music provider (Connect playback
+            # mode); it stays setup-required until this plugin's own flow has run
+            raise SetupFailedError(
+                "Finish the Spotify Connect setup to start using this instance",
+                translation_key="setup_pending",
+                translation_owner=self.translation_owner,
+            )
         await self._backend.start()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -292,8 +325,14 @@ class SpotifyConnectProvider(PluginProvider):
             raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         # Only refuse when we can neither resume nor take playback back. If a last
         # context is known we let the stream proceed; on_source_selected then takes
-        # playback back (makes us the active device) before audio is pulled.
-        if not self._playing and not self._spotify_session_active and not self._last_context_uri:
+        # playback back (makes us the active device) before audio is pulled. During
+        # a pending redirect the content was just commanded, so the stream proceeds.
+        if (
+            not self._playing
+            and not self._spotify_session_active
+            and not self._last_context_uri
+            and not self._redirect_pending
+        ):
             raise self._not_active_error()
         # The backend describes how its audio is consumed: CUSTOM (the core pulls
         # PCM from get_audio_stream) or a named pipe read directly by ffmpeg.
@@ -416,8 +455,13 @@ class SpotifyConnectProvider(PluginProvider):
         # Externally triggered: the backend is already playing → nothing to do.
         # Otherwise acquire playback, then confirm it actually started.
         if not self._playing:
+            redirect_pending = self._redirect_pending
             try:
-                if self._spotify_session_active:
+                if redirect_pending:
+                    # an MA-initiated redirect already commanded the content on the
+                    # session; only its playback start still has to arrive (below)
+                    pass
+                elif self._spotify_session_active:
                     # Still the active Spotify device (just paused) → resume.
                     await self._backend.resume()
                 elif self._last_context_uri:
@@ -436,7 +480,10 @@ class SpotifyConnectProvider(PluginProvider):
                 raise
             except Exception as err:
                 raise AudioError(f"Failed to acquire Spotify Connect: {err}") from err
-            if not await self._wait_for_playing():
+            # a redirected session may still be fetching a fresh context (cold
+            # start), so it gets a more generous startup window
+            timeout = REDIRECT_START_TIMEOUT_S if redirect_pending else PLAYBACK_START_TIMEOUT_S
+            if not await self._wait_for_playing(timeout):
                 raise self._not_active_error()
 
         # The backend reports 100% volume until told otherwise; push the player's
@@ -555,6 +602,121 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.warning("Failed to send volume command to backend: %s", err)
             raise
 
+    @property
+    def audio_source(self) -> AudioSource:
+        """Return the single AudioSource this plugin exposes."""
+        return self._audio_source
+
+    @property
+    def publish_name(self) -> str:
+        """Return the device name advertised to the Spotify apps."""
+        return self._publish_name
+
+    @property
+    def configured_player_id(self) -> str | None:
+        """Return the configured bound player id, or None for automatic selection."""
+        return None if self._default_player_id == PLAYER_ID_AUTO else self._default_player_id
+
+    @property
+    def session_active(self) -> bool:
+        """Return whether this device is currently the active Spotify Connect device."""
+        return self._spotify_session_active
+
+    @property
+    def verified_account_id(self) -> str | None:
+        """Return the Spotify account the paired session was verified to belong to, if known."""
+        return self._audio_source.account_id
+
+    def set_verified_account_id(self, account_id: str | None) -> None:
+        """
+        Record (or clear) the verified Spotify account of the paired session.
+
+        Kept in memory only: a provider reload re-verifies, which also covers a
+        session that was re-paired to a different account in the meantime.
+
+        :param account_id: The verified Spotify user id, or None to force re-verification.
+        """
+        self._audio_source.account_id = account_id
+
+    async def get_backend_account_id(self) -> str | None:
+        """Return the paired session's account as reported by the backend itself, if it can."""
+        try:
+            return await self._backend.get_account_id()
+        except Exception as err:
+            self.logger.debug("Failed to read the session account from the backend: %s", err)
+            return None
+
+    async def activate_session(self) -> None:
+        """Claim active Spotify Connect device status for this session."""
+        await self._backend.activate()
+
+    async def prepare_redirect(self, target_player_id: str) -> None:
+        """
+        Prepare the session for an MA-initiated playback redirect to the given player.
+
+        Claims active device status (best-effort) and opens a short grace window in
+        which the redirected content's playback start and stream request are
+        expected — suppressing the not-active refusals and the external-trigger
+        play_media kick that would otherwise fight the redirect.
+
+        :param target_player_id: The player (queue) the redirected playback targets.
+        """
+        self._cancel_pending_play_media()
+        # only pre-target an idle session: an already-active player must keep its
+        # claim so on_source_selected still kicks it when the redirect lands on
+        # another player
+        if self._active_player_id is None:
+            self._active_player_id = target_player_id
+        self._redirect_deadline = self.mass.loop.time() + REDIRECT_GRACE_S
+        try:
+            await self._backend.activate()
+        except Exception as err:
+            # tolerated: the play command that follows claims the device itself
+            self.logger.debug("Failed to pre-activate the Spotify session: %s", err)
+
+    async def play_media_on_source(
+        self, uris: list[str], *, context_uri: str | None = None, start_uri: str | None = None
+    ) -> None:
+        """
+        Start the given Spotify content on the session (session control plane).
+
+        :param uris: Track uris to play when no context is given; the first one
+            plays and the rest is enqueued where the backend supports it.
+        :param context_uri: Optional context (album/playlist/artist) to play instead.
+        :param start_uri: Track within the context to start at (honored where the
+            backend supports it; otherwise the context starts from the beginning).
+        """
+        if context_uri:
+            await self._backend.play(context_uri, skip_to_uri=start_uri)
+            return
+        if not uris:
+            raise AudioError("Nothing to play on the Spotify session")
+        await self._backend.play(uris[0])
+        if not (remainder := uris[1:]):
+            return
+        if not self._backend.supports_queue_control:
+            self.logger.warning(
+                "This Spotify Connect device cannot enqueue; only the first of %d tracks plays",
+                len(uris),
+            )
+            return
+        for uri in remainder:
+            await self._backend.add_to_queue(uri)
+
+    async def enqueue_on_source(self, uris: list[str]) -> None:
+        """
+        Add the given track uris to the active session's play queue.
+
+        :param uris: Spotify track uris to queue, in order.
+        :raises AudioError: When the session is not active or cannot enqueue.
+        """
+        if not self._spotify_session_active:
+            raise self._not_active_error()
+        if not self._backend.supports_queue_control:
+            raise AudioError(f"'{self._publish_name}' cannot add tracks to the Spotify queue")
+        for uri in uris:
+            await self._backend.add_to_queue(uri)
+
     def _create_backend(self) -> SpotifyConnectBackend:
         """Construct the configured Spotify Connect backend implementation."""
         # The backend choice and soloist secrets are collected by the setup flow
@@ -628,20 +790,26 @@ class SpotifyConnectProvider(PluginProvider):
         Backends provide a full control surface, so play / pause / seek /
         next / previous are always available while a session is active — the
         capability flags are static (no dependency on the Spotify Web API).
-        Backends implementing the queue-session verbs additionally declare
-        queue capabilities, so the queue controller delegates queue commands
-        to this plugin while the source is playing.
+        The queue capabilities declare per backend what the session can do:
+        every backend can start Spotify content via play() (which makes the
+        source a playback-redirect target for the Spotify music provider),
+        while shuffle/repeat and enqueue-to-session additionally need the
+        queue-session verbs. The queue-view mirror and the native_* flags
+        arrive with the queue-item mirroring phase.
         """
-        queue_capabilities: SourceQueueCapabilities | None = None
+        queue_capabilities = SourceQueueCapabilities(
+            provider_domain="spotify",
+            playable_media_types=[
+                MediaType.TRACK,
+                MediaType.ALBUM,
+                MediaType.PLAYLIST,
+                MediaType.ARTIST,
+            ],
+        )
         if self._backend.supports_queue_control:
-            # only what is consumed today is declared; the remaining declarations
-            # (queue view, enqueue/play media types, native_* flags) arrive with
-            # the queue-view mirror and the play-redirect
-            queue_capabilities = SourceQueueCapabilities(
-                provider_domain="spotify",
-                can_shuffle=True,
-                can_repeat=True,
-            )
+            queue_capabilities.can_shuffle = True
+            queue_capabilities.can_repeat = True
+            queue_capabilities.enqueueable_media_types = [MediaType.TRACK]
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
@@ -700,6 +868,11 @@ class SpotifyConnectProvider(PluginProvider):
             "Configured default player '%s' no longer exists", self._default_player_id
         )
         return None
+
+    @property
+    def _redirect_pending(self) -> bool:
+        """Whether an MA-initiated redirect is currently awaiting its playback start."""
+        return self.mass.loop.time() < self._redirect_deadline
 
     async def _wait_for_playing(self, timeout: float = PLAYBACK_START_TIMEOUT_S) -> bool:
         """
@@ -778,6 +951,10 @@ class SpotifyConnectProvider(PluginProvider):
         except asyncio.CancelledError:
             return
         if not self._playing or self._in_use_by_queue:
+            return
+        if self._redirect_pending:
+            # an MA-initiated redirect drives this playback start and issues its
+            # own play_media; firing another here would race it
             return
         target_player_id = self._get_target_player_id()
         if not target_player_id:
@@ -877,25 +1054,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._schedule_pause_stop(prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:
-            self._playing = True
-            # A resume can arrive while the pause-stop is still in flight on a
-            # slow player; cancel it so it doesn't kill the restarted stream.
-            # (a stop that already completed is fine: play_media below restarts)
-            self._cancel_pending_pause_stop()
-            # Externally triggered playback: kick a play_media on the target MA
-            # player so the audio reaches a speaker. Deferred so a rapid
-            # playing/active burst from a reconnecting session can cancel it.
-            # Only while the session is active: a daemon playing without being
-            # the active Connect device (e.g. right after a deactivate) must
-            # not grab MA players in a loop.
-            if (
-                not self._in_use_by_queue
-                and self._spotify_session_active
-                and (self._pending_play_media_task is None or self._pending_play_media_task.done())
-            ):
-                self._pending_play_media_task = self.mass.create_task(
-                    self._deferred_play_media_fire()
-                )
+            self._handle_playing_event()
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
             was_playing = self._playing
             self._playing = False
@@ -933,6 +1092,32 @@ class SpotifyConnectProvider(PluginProvider):
                 self.instance_id,
                 self._stream_metadata,
             )
+
+    def _handle_playing_event(self) -> None:
+        """Apply a 'playing' report: confirm a pending start and kick external playback."""
+        self._playing = True
+        # the playback start a pending redirect was waiting for has arrived; the
+        # redirect issues its own play_media, so it must not also fire the
+        # external-trigger kick below
+        redirect_start = self._redirect_pending
+        self._redirect_deadline = 0.0
+        # A resume can arrive while the pause-stop is still in flight on a
+        # slow player; cancel it so it doesn't kill the restarted stream.
+        # (a stop that already completed is fine: play_media below restarts)
+        self._cancel_pending_pause_stop()
+        # Externally triggered playback: kick a play_media on the target MA
+        # player so the audio reaches a speaker. Deferred so a rapid
+        # playing/active burst from a reconnecting session can cancel it.
+        # Only while the session is active: a daemon playing without being
+        # the active Connect device (e.g. right after a deactivate) must
+        # not grab MA players in a loop.
+        if (
+            not redirect_start
+            and not self._in_use_by_queue
+            and self._spotify_session_active
+            and (self._pending_play_media_task is None or self._pending_play_media_task.done())
+        ):
+            self._pending_play_media_task = self.mass.create_task(self._deferred_play_media_fire())
 
     def _remember_context_uris(self, event: BackendEvent) -> None:
         """

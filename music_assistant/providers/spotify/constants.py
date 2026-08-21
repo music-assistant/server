@@ -11,6 +11,11 @@ CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
 
+# Playback mode selection; configs predating the choice run librespot
+CONF_PLAYBACK_BACKEND = "playback_backend"
+BACKEND_LIBRESPOT = "librespot"
+BACKEND_CONNECT = "spotify_connect"
+
 # Librespot playback authorization
 #
 # Spotify's login5 endpoint only accepts a stored credential that was minted with the same

@@ -17,6 +17,12 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.providers.spotify_connect import (
+    CONF_MASS_PLAYER_ID,
+    CONF_SETUP_PENDING,
+    CONF_SYSTEM_MANAGED,
+    PLAYER_ID_AUTO,
+)
 
 from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
 
@@ -33,6 +39,43 @@ LOOPBACK_RESPONSE_HTML = """
 
 if TYPE_CHECKING:
     import aiohttp
+
+    from music_assistant.mass import MusicAssistant
+
+
+async def has_system_wide_connect_config(mass: MusicAssistant) -> bool:
+    """Return whether a system-wide (auto-player) Spotify Connect instance is configured."""
+    for config in await mass.config.get_provider_configs(provider_domain="spotify_connect"):
+        bound_player = mass.config.get_provider_setup_value(config.instance_id, CONF_MASS_PLAYER_ID)
+        if bound_player in (None, PLAYER_ID_AUTO):
+            return True
+    return False
+
+
+async def ensure_connect_instance(mass: MusicAssistant) -> bool:
+    """
+    Ensure a system-wide Spotify Connect instance exists for Connect playback mode.
+
+    When missing (never created, or deleted since), a new instance is created in
+    setup-required state, to be completed through the plugin's own setup flow. The
+    created instance is system-managed: its existence is guaranteed by the Spotify
+    provider, but it is a normal, visible, user-editable instance that is not
+    removed together with the Spotify provider.
+
+    :param mass: The MusicAssistant instance.
+    :return: True when a new instance was created, False when one already existed.
+    """
+    if await has_system_wide_connect_config(mass):
+        return False
+    await mass.config.create_pending_provider_config(
+        "spotify_connect",
+        {
+            CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
+            CONF_SETUP_PENDING: True,
+            CONF_SYSTEM_MANAGED: True,
+        },
+    )
+    return True
 
 
 async def get_librespot_binary() -> str:

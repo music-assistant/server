@@ -4,7 +4,8 @@ Setup flow for the Spotify Connect plugin.
 The flow starts with an explicit backend choice: Spotify Soloist (Spotify's
 official headless client, guarded by a ToS warning/consent step and a personal
 API key) or the community go-librespot daemon. Both branches end with the shared
-target-player / device-name step. Reconfigure preselects the stored backend and
+target-player and device-name steps (a new instance bound to a player is named
+after that player by default). Reconfigure preselects the stored backend and
 re-runs the branch steps; switching away from soloist clears the soloist
 secrets, but only once the new setup finishes successfully.
 """
@@ -27,6 +28,7 @@ from . import (
     CONF_BACKEND,
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
+    CONF_SETUP_PENDING,
     CONF_SOLOIST_CONSENT,
     DEFAULT_PUBLISH_NAME,
     PLAYER_ID_AUTO,
@@ -187,23 +189,41 @@ async def _ask_api_key(session: SetupSession, collected: dict[str, Any]) -> None
 
 async def _finish_with_player_and_name(session: SetupSession, collected: dict[str, Any]) -> None:
     """
-    Run the shared target-player / device-name step and finish the flow.
+    Run the target-player and device-name steps and finish the flow.
 
     :param session: The setup session driving the flow.
     :param collected: The values collected by the earlier steps.
     """
+    # completing this flow lifts the setup-pending marker a provisioned instance
+    # (created by the Spotify music provider's Connect mode) was created with
+    collected[CONF_SETUP_PENDING] = False
+    prefill: dict[str, Any] = {**session.context.values, **collected}
+    player_values = await session.form(
+        [
+            create_player_selector(
+                session.mass,
+                CONF_MASS_PLAYER_ID,
+                prefill.get(CONF_MASS_PLAYER_ID),
+                PLAYER_ID_AUTO,
+            ),
+        ],
+        step_id="player",
+    )
+    collected.update(player_values)
+    player_id = str(player_values.get(CONF_MASS_PLAYER_ID) or PLAYER_ID_AUTO)
+    # a stored name always wins (reconfigure); a new instance bound to a player is
+    # named after that player so the Spotify app shows the session under the
+    # player's own name, leaving "Music Assistant" to the system-wide instance
+    publish_name = str(prefill.get(CONF_PUBLISH_NAME) or "")
+    if not publish_name:
+        bound_player = (
+            session.mass.players.get_player(player_id) if player_id != PLAYER_ID_AUTO else None
+        )
+        publish_name = bound_player.display_name if bound_player else DEFAULT_PUBLISH_NAME
     errors: dict[str, str] | None = None
     while True:
-        prefill: dict[str, Any] = {**session.context.values, **collected}
-        publish_name = str(prefill.get(CONF_PUBLISH_NAME) or DEFAULT_PUBLISH_NAME)
         values = await session.form(
             [
-                create_player_selector(
-                    session.mass,
-                    CONF_MASS_PLAYER_ID,
-                    prefill.get(CONF_MASS_PLAYER_ID),
-                    PLAYER_ID_AUTO,
-                ),
                 ConfigEntry(
                     key=CONF_PUBLISH_NAME,
                     type=ConfigEntryType.STRING,
@@ -212,7 +232,7 @@ async def _finish_with_player_and_name(session: SetupSession, collected: dict[st
                     value=publish_name,
                 ),
             ],
-            step_id="user",
+            step_id="device_name",
             errors=errors,
             last_step=True,
         )

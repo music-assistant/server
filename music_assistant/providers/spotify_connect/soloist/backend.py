@@ -394,6 +394,11 @@ class SoloistBackend(SpotifyConnectBackend):
                 "skip_to_uri is not supported by soloist; starting %s from the beginning", uri
             )
 
+    async def activate(self) -> None:
+        """Claim active Spotify Connect device status without starting playback."""
+        assert self._client is not None
+        await self._client.activate(await_result=True)
+
     async def resume(self) -> None:
         """Resume playback on the active session."""
         assert self._client is not None

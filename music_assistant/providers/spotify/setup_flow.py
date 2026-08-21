@@ -23,8 +23,11 @@ from music_assistant.helpers.oauth import (
 from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
 
 from .constants import (
+    BACKEND_CONNECT,
+    BACKEND_LIBRESPOT,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
+    CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
     KEYMASTER_CLIENT_ID,
@@ -39,6 +42,7 @@ from .constants import (
 )
 from .helpers import (
     await_loopback_authorization,
+    ensure_connect_instance,
     get_librespot_binary,
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
@@ -99,8 +103,9 @@ async def run_setup(session: SetupSession) -> None:
     setup_data[CONF_REFRESH_TOKEN_GLOBAL] = await _pkce_authenticate(
         session, app_var("spotify_client_id"), step_id="authenticate"
     )
-    # playback needs its own credential, minted with Spotify's keymaster client id
-    setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session)
+    # playback authorization is separate from the Web API tokens and depends on
+    # the explicitly chosen playback mode
+    await _setup_playback(session, setup_data)
     # everything needed is collected by now; the developer key is a purely optional extra,
     # so it is offered as an opt-in rather than a field the user has to reason about
     client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
@@ -163,6 +168,90 @@ async def _authorize_developer_key(
     except SetupFlowError as err:
         return client_id, {"base": err.translation_key or str(err)}
     return client_id, None
+
+
+async def _setup_playback(session: SetupSession, setup_data: dict[str, Any]) -> None:
+    """
+    Choose the playback mode and run its branch.
+
+    :param session: The setup session driving the flow.
+    :param setup_data: The setup data collected so far, updated in place.
+    """
+    stored_backend = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "")
+    if stored_backend:
+        preselect = stored_backend
+    elif session.context.instance_id:
+        # an instance predating the mode choice runs librespot; a routine
+        # reconfigure must not silently change the playback path
+        preselect = BACKEND_LIBRESPOT
+    else:
+        # fresh setup: prefer Connect when a Spotify Connect instance already runs
+        preselect = (
+            BACKEND_CONNECT
+            if session.mass.get_provider("spotify_connect") is not None
+            else BACKEND_LIBRESPOT
+        )
+    selected = await _choose_playback_backend(session, preselect)
+    if selected == BACKEND_CONNECT:
+        await _steer_to_connect_setup(session)
+        # the librespot credential is of no further use; it only reaches the
+        # stored setup_data when finish() succeeds, so an aborted or failed
+        # switch keeps it intact
+        setup_data[CONF_LIBRESPOT_CREDENTIALS] = None
+    else:
+        setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session)
+    setup_data[CONF_PLAYBACK_BACKEND] = selected
+
+
+async def _choose_playback_backend(session: SetupSession, preselect: str) -> str:
+    """
+    Show the playback mode choice step and return the selected mode.
+
+    :param session: The setup session driving the flow.
+    :param preselect: Mode to preselect (the stored or default one).
+    """
+    values = await session.form(
+        [
+            ConfigEntry(
+                key=CONF_PLAYBACK_BACKEND,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=BACKEND_LIBRESPOT,
+                value=preselect,
+                options=[
+                    ConfigValueOption(BACKEND_CONNECT),
+                    ConfigValueOption(BACKEND_LIBRESPOT),
+                ],
+            ),
+        ],
+        step_id="playback_backend",
+    )
+    return str(values[CONF_PLAYBACK_BACKEND])
+
+
+async def _steer_to_connect_setup(session: SetupSession) -> None:
+    """
+    Ensure the system-wide Spotify Connect instance exists and steer the user to it.
+
+    The plugin owns its whole setup (engine choice, consent, pairing), so this flow
+    never embeds those steps: a missing instance is created in setup-required state
+    and the user is pointed at the plugin's own setup flow.
+
+    :param session: The setup session driving the flow.
+    """
+    created = await ensure_connect_instance(session.mass)
+    # a running plugin instance means Connect playback works right away; anything
+    # else (just created, or existing but not set up yet) still needs the user
+    ready = not created and session.mass.get_provider("spotify_connect") is not None
+    await session.form(
+        [
+            ConfigEntry(
+                key="connect_ready" if ready else "connect_setup_needed",
+                type=ConfigEntryType.LABEL,
+            ),
+        ],
+        step_id="connect_mode",
+    )
 
 
 async def _authorize_playback(session: SetupSession) -> str:

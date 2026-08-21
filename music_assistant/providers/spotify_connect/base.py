@@ -114,6 +114,25 @@ class SpotifyConnectBackend(ABC):
     async def pause(self) -> None:
         """Pause playback on the active session."""
 
+    async def activate(self) -> None:  # noqa: B027 - optional hook, no-op by default
+        """
+        Claim active Spotify Connect device status without starting playback.
+
+        Used ahead of an externally issued play command (e.g. a Web API call
+        targeting this device) so it lands on a live session. Backends without
+        an explicit activation keep this a no-op: their play command claims the
+        device itself.
+        """
+
+    async def get_account_id(self) -> str | None:
+        """
+        Return the Spotify account (user id) of the paired session, when known.
+
+        Backends whose API does not expose the account identity return None;
+        account verification then falls back to the Web API device-list check.
+        """
+        return None
+
     @abstractmethod
     async def deactivate(self) -> None:
         """

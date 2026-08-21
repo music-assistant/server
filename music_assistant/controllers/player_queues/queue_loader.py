@@ -68,6 +68,7 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.queue_item import QueueItem
 
@@ -731,6 +732,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         media_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
+        # the resolved originals of the expansion path, to hand a single container
+        # (album/playlist/artist) as playback context to a delegated play request
+        resolved_parents: list[MediaItemType | BrowseFolder] = []
         shuffle_settled = False
         # resolve all media items
         for item in media_list:
@@ -833,6 +837,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         MediaType.ARTIST,
                     ):
                         source_items.append(media_item)
+                    resolved_parents.append(media_item)
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
                     if isinstance(start_item, str):
@@ -879,6 +884,24 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # from the buffer position, so the queue stays a fixed-size mix instead of growing by
             # each added source's own batch.
             await self._enter_dynamic_mode(queue_id, option)
+            return
+
+        # a provider may redirect playback of its items into a live external session it
+        # controls (e.g. a Spotify Connect bridge) instead of streaming them itself
+        single_context = (
+            resolved_parents[0]
+            if len(resolved_parents) == 1
+            and not isinstance(resolved_parents[0], BrowseFolder)
+            and resolved_parents[0].media_type
+            in (MediaType.ALBUM, MediaType.PLAYLIST, MediaType.ARTIST)
+            else None
+        )
+        had_media_items = bool(media_items)
+        media_items = await self._apply_playback_delegation(
+            queue_id, media_items, option, single_context, start_item
+        )
+        if had_media_items and not media_items:
+            # fully handled session-side (enqueued onto the delegate's active session)
             return
 
         # only add valid/available items
@@ -968,6 +991,128 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 self._ensure_current_index(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+
+    async def _apply_playback_delegation(
+        self,
+        queue_id: str,
+        media_items: list[MediaItemType],
+        option: QueueOption | None,
+        context: MediaItemType | BrowseFolder | None,
+        start_item: PlayableMediaItemType | str | None,
+    ) -> list[MediaItemType]:
+        """
+        Redirect the play request into an external session when a provider delegates it.
+
+        Returns the media items the normal enqueue should continue with: the delegate
+        AudioSource when the whole batch was redirected into one session, an empty list
+        when the request was handled entirely session-side (enqueue onto the already
+        active session), or the (possibly reduced) original items.
+
+        :param queue_id: The queue the play request targets.
+        :param media_items: The resolved playable items of the play request.
+        :param option: The (settled) enqueue option of the play request.
+        :param context: The single original container the request expanded from, if any.
+        :param start_item: Optional item (or uri) within the context to start at.
+        """
+        if not media_items or option is None:
+            return media_items
+        add_family = option in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
+        delegate_cache: dict[str, tuple[AudioSource, MusicProvider] | None] = {}
+        item_delegates = [
+            await self._get_item_delegate(queue_id, item, add_family, delegate_cache)
+            for item in media_items
+        ]
+        if all(delegated is not None for delegated in item_delegates) and (
+            len({delegated[0].uri for delegated in item_delegates if delegated is not None}) == 1
+        ):
+            delegate, provider = cast(
+                "tuple[AudioSource, MusicProvider]",
+                item_delegates[0],
+            )
+            self.logger.info(
+                "Redirecting playback of %d item(s) into external session %s",
+                len(media_items),
+                delegate.name,
+            )
+            await provider.play_on_delegate(
+                delegate,
+                cast("list[PlayableMediaItemType]", media_items),
+                option,
+                queue_id,
+                context=None if isinstance(context, BrowseFolder) else context,
+                start_item=start_item,
+            )
+            if add_family:
+                # the items live in the session's own queue; nothing to load into the
+                # MA queue (the session's AudioSource is already its current item)
+                return []
+            # the session plays the items; the MA queue plays the session
+            return [delegate]
+        # mixed batch (or conflicting delegates): items whose provider streams normally
+        # keep playing through the regular path, delegate-only items are dropped
+        kept: list[MediaItemType] = []
+        dropped: list[MediaItemType] = []
+        for item, delegated in zip(media_items, item_delegates, strict=True):
+            if delegated is not None and delegated[1].playback_requires_delegate:
+                dropped.append(item)
+            else:
+                kept.append(item)
+        if dropped:
+            self.logger.warning(
+                "Skipping %d item(s) (%s): mixing session-redirected items with other content "
+                "in one queue is not supported yet - play them separately",
+                len(dropped),
+                ", ".join(item.name for item in dropped[:5]),
+            )
+            if not kept:
+                raise MediaNotFoundError(
+                    "No playable items found", translation_key="no_playable_items"
+                )
+        return kept
+
+    async def _get_item_delegate(
+        self,
+        queue_id: str,
+        item: MediaItemType,
+        add_family: bool,
+        delegate_cache: dict[str, tuple[AudioSource, MusicProvider] | None],
+    ) -> tuple[AudioSource, MusicProvider] | None:
+        """
+        Return the external session (and owning music provider) that should play the item.
+
+        :param queue_id: The queue the play request targets.
+        :param item: The resolved media item to find a playback delegate for.
+        :param add_family: Whether the request enqueues onto the session (ADD/NEXT family)
+            rather than starting playback, which gates on the enqueueable media types.
+        :param delegate_cache: Per-request cache of each provider's delegate answer.
+        """
+        for mapping in item.provider_mappings:
+            if not mapping.available:
+                continue
+            if mapping.provider_instance not in delegate_cache:
+                provider = self.mass.get_provider(mapping.provider_instance)
+                if not isinstance(provider, MusicProvider):
+                    delegate_cache[mapping.provider_instance] = None
+                    continue
+                try:
+                    delegate = await provider.get_playback_delegate(queue_id)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error resolving playback delegate from %s: %s", provider.name, err
+                    )
+                    delegate = None
+                delegate_cache[mapping.provider_instance] = (
+                    (delegate, provider) if delegate is not None else None
+                )
+            if (delegated := delegate_cache[mapping.provider_instance]) is None:
+                continue
+            caps = delegated[0].queue_capabilities
+            if caps is None:
+                continue
+            allowed = caps.enqueueable_media_types if add_family else caps.playable_media_types
+            if item.media_type in allowed:
+                return delegated
+        return None
 
     async def _get_similar_tracks(
         self,

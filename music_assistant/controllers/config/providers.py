@@ -399,6 +399,60 @@ class ProviderConfigMixin:
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set_default(conf_key, default_config.to_raw())
 
+    async def create_pending_provider_config(
+        self, provider_domain: str, setup_data: dict[str, Any]
+    ) -> ProviderConfig:
+        """
+        Create and persist a new provider instance whose setup flow still has to run.
+
+        Unlike setup-flow creation, a failing load keeps the config (with the failure
+        recorded as its last_error) so the user can complete the setup later. Used by
+        providers that provision a companion instance (e.g. the Spotify music provider
+        ensuring a Spotify Connect instance exists for its Connect playback mode).
+
+        :param provider_domain: Domain of the provider to create an instance of.
+        :param setup_data: Setup data to seed the new instance with.
+        """
+        for prov in self.mass.get_provider_manifests():
+            if prov.domain == provider_domain:
+                manifest = prov
+                break
+        else:
+            msg = f"Unknown provider domain: {provider_domain}"
+            raise KeyError(msg)
+        existing = await self.get_provider_configs(provider_domain=provider_domain)
+        if existing and not manifest.multi_instance:
+            msg = f"Provider {manifest.name} does not support multiple instances"
+            raise ValueError(msg)
+        if manifest.multi_instance:
+            instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
+        else:
+            instance_id = manifest.domain
+        config = cast(
+            "ProviderConfig",
+            ProviderConfig.parse(
+                DEFAULT_PROVIDER_CONFIG_ENTRIES,
+                {
+                    "type": manifest.type.value,
+                    "domain": manifest.domain,
+                    "instance_id": instance_id,
+                    "default_name": manifest.name,
+                    "values": {},
+                    "setup_data": setup_data,
+                },
+            ),
+        )
+        self.set(f"{CONF_PROVIDERS}/{instance_id}", config.to_raw())
+        # the load is expected to fail (setup still required); load_provider_config
+        # records that failure on the config, which is the state the UI surfaces
+        try:
+            await self.mass.load_provider_config(config)
+        except Exception as err:
+            LOGGER.debug(
+                "Provisioned provider instance %s awaits its setup flow: %s", instance_id, err
+            )
+        return config
+
     if TYPE_CHECKING:
         # Overload for when default is provided - return type matches default type
         @overload
