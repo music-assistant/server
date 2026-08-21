@@ -45,8 +45,8 @@
     "playback_backend": {
       "label": "How should Music Assistant play Spotify audio?",
       "options": {
-        "spotify_connect": "Spotify Connect",
-        "librespot": "librespot (community)"
+        "spotify_connect": "Spotify Connect (powered by Spotify Soloist)",
+        "librespot": "librespot (community-driven Spotify client)"
       }
     },
     "connect_ready": {
@@ -80,7 +80,7 @@
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
-      "description": "Music Assistant can play Spotify audio in two ways:\n\n**librespot (community)** — Music Assistant streams the audio itself, with all Music Assistant features available. Based on a community-built client, it only works for Spotify accounts created before December 2024.\n\n**Spotify Connect** — playback is handed to a Spotify Connect session hosted through the Spotify Connect provider, so the music plays just like it does in the Spotify apps and the Spotify app can be used as a remote. Some queue features are handled by Spotify instead of Music Assistant."
+      "description": "Music Assistant can play Spotify audio in two ways:\n\n**librespot (community-driven Spotify client)** — Music Assistant streams the audio itself, with all Music Assistant features available. Use this if you primarily want to use Music Assistant to enqueue and control your music. It only works for Spotify accounts created before December 2024.\n\n**Spotify Connect (powered by Spotify Soloist)** — playback is handed to a Spotify Connect session, so the music plays just like it does in the Spotify apps and the Spotify app stays usable as a remote. Recommended if your account was created after December 2024, and/or you also like to control playback from the Spotify app. Some queue features are handled by Spotify instead of Music Assistant."
     },
     "connect_mode": {
       "title": "Playback through Spotify Connect",
