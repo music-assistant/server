@@ -89,7 +89,7 @@ async def query_tts_engine_with_language_fallback(
     try:
         return await query_tts_engine(engine, message, language, timeout, options)
     except TTSLanguageNotSupportedError as err:
-        if language is None:
+        if not language:
             raise
         # the error message carries the classifier's certainty, so it is logged as-is
         (logger or LOGGER).warning("%s, retrying with the engine's default voice", err)
