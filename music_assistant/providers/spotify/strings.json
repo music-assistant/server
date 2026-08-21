@@ -50,14 +50,10 @@
       }
     },
     "connect_ready": {
-      "label": "A Spotify Connect instance is already running, so playback works right away. Playback requests target the Connect device paired to this Spotify account."
+      "label": "A Spotify Connect instance is already running and paired to this Spotify account, so playback works right away."
     },
-    "backend": {
-      "label": "Playback engine",
-      "options": {
-        "soloist": "Spotify Soloist (official, recommended)",
-        "go_librespot": "go-librespot (community)"
-      }
+    "connect_pairing_retry": {
+      "label": "The Music Assistant device was not selected in the Spotify app yet. Press Next to try again — and make sure you select it with the same Spotify account you just signed in with."
     },
     "soloist_download_consent": {
       "label": "I understand the above, and I allow Music Assistant to download, run, keep and automatically update Spotify Soloist from Spotify's servers"
@@ -90,9 +86,12 @@
       "title": "Playback through Spotify Connect",
       "description": "In this mode, playing Spotify content sends it to a Spotify Connect device hosted by Music Assistant, which then plays on the player you selected."
     },
-    "connect_engine": {
-      "title": "Choose a playback engine",
-      "description": "The Spotify Connect device needs a playback engine:\n\n**Spotify Soloist (official, recommended)** — Spotify's own playback engine. Works with every account; setting it up requires a Spotify Premium account once, to create a personal API key.\n\n**go-librespot (community)** — a community-built engine. No API key needed, but intended for accounts created before December 2024.\n\nThis creates a system-wide Spotify Connect instance; you can adjust it (or add per-player instances) later from the providers page."
+    "connect_pairing": {
+      "title": "Select Music Assistant in your Spotify app",
+      "progress_text": "Waiting for you to select the Music Assistant device in the Spotify app.\n\n1. Open the Spotify app on your phone, tablet or computer, signed in with the same account you just used.\n2. Start playing any song, so the player bar appears at the bottom.\n3. Tap the speaker icon in the player bar (Connect to a device).\n4. Choose \"Music Assistant\" from the list of devices.\n\nThis logs the device in to your account; you can switch back to your usual speaker right after. This screen continues by itself once you have done it.\n\nNot seeing it? Make sure the device running Spotify is on the same network as Music Assistant."
+    },
+    "connect_pairing_retry": {
+      "title": "Device not selected yet"
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",
@@ -155,9 +154,10 @@
     "playback_auth_failed": "Approving playback didn't work. Please try again.",
     "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here.",
     "connect_no_session": "No Spotify Connect session is available for this Spotify account. Complete (or re-pair) the Spotify Connect setup, or switch the Spotify provider back to librespot playback.",
-    "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose go-librespot (community) instead.",
+    "soloist_consent_required": "Spotify Connect playback runs on Spotify Soloist, which can only be used after you allow the download. Choose Spotify Connect again to review that step, or use librespot playback instead.",
     "soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
-    "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose go-librespot (community) instead.",
+    "soloist_unsupported_platform": "Spotify Connect playback is not available for this system (its Soloist engine cannot run here). Use librespot playback instead.",
+    "connect_pairing_not_completed": "The Music Assistant device wasn't selected in the Spotify app in time. Make sure to select it with the same Spotify account, and that the device running Spotify is on the same network as Music Assistant.",
     "connect_media_unsupported": "Podcasts and audiobooks cannot be played in the Spotify Connect playback mode. Switch the Spotify provider to librespot playback to play them.",
     "connect_no_session_for_enqueue": "There is no active Spotify Connect session on this player to add to. Start Spotify playback on it first."
   },
