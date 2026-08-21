@@ -232,6 +232,39 @@ async def test_queue_clear_survives_a_failing_release() -> None:
     deactivate.assert_awaited_once()
 
 
+async def test_a_transferred_source_follows_its_new_queue() -> None:
+    """A paused source moved to another player is tracked on the queue that took it over."""
+    provider, _ = _tethered_provider()
+
+    await provider.on_source_transferred(AUDIO_SOURCE_ID, "player1", "player2")
+
+    assert provider._active_player_id == "player2"
+
+
+async def test_a_transfer_of_another_queue_is_ignored() -> None:
+    """A transfer that does not involve the tethered queue leaves the tracking alone."""
+    provider, _ = _tethered_provider()
+
+    await provider.on_source_transferred(AUDIO_SOURCE_ID, "player3", "player2")
+
+    assert provider._active_player_id == "player1"
+
+
+async def test_clearing_a_transferred_queue_releases_the_session() -> None:
+    """
+    The queue a paused source was transferred to can release it.
+
+    Transferring a paused source never re-selects it on the target, so without the handover
+    the plugin would still be pointed at the queue it left and the release would not fire.
+    """
+    provider, deactivate = _tethered_provider()
+
+    await provider.on_source_transferred(AUDIO_SOURCE_ID, "player1", "player2")
+    await provider.on_source_removed(AUDIO_SOURCE_ID, "player2")
+
+    deactivate.assert_awaited_once()
+
+
 def _provider_with_stored_config(
     setup_data: dict[str, Any], tmp_path: Path
 ) -> SpotifyConnectProvider:

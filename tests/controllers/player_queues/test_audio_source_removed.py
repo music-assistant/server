@@ -1,16 +1,19 @@
 """
-Tests for the notification a plugin gets when a queue drops its live AudioSource.
+Tests for the notifications a plugin gets when a queue drops or hands over its AudioSource.
 
 Clearing the queue is the one moment the owning plugin has no other signal to go on: the
 stream serving the source may have been torn down long before (a paused source ends its
-stream), so without this notification the plugin never learns that MA is done with it.
+stream), so without this notification the plugin never learns that MA is done with it. A
+transfer of a paused source is the same blind spot - it moves to another queue without a
+stream request, so the plugin has to be told which queue holds it now.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.media_items import AudioSource, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -50,7 +53,7 @@ def _track() -> Track:
 
 def _controller(current_item: QueueItem | None) -> Any:
     """
-    Build a bare controller holding a single queue "q1" playing the given item.
+    Build a bare controller holding a queue "q1" playing the given item, plus an empty "q2".
 
     Tasks created along the way are closed instead of scheduled, so the notification can be
     asserted on the plugin mock without a running loop.
@@ -66,7 +69,8 @@ def _controller(current_item: QueueItem | None) -> Any:
     ctrl._smart_shuffle = Mock()
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     queue.current_item = current_item
-    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    target = PlayerQueue(queue_id="q2", active=True, display_name="Q2", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue), "q2": PlayerQueueData(queue=target)}
     if current_item is not None:
         ctrl._queue_data["q1"].items = [current_item]
         queue.items = 1
@@ -134,3 +138,56 @@ def test_clearing_a_queue_whose_plugin_is_gone_still_clears() -> None:
     ctrl.clear("q1")
 
     assert ctrl._queue_data["q1"].items == []
+
+
+def _ready_for_transfer(ctrl: Any) -> None:
+    """Stub out the playback side of transfer_queue, leaving the handover itself real."""
+    ctrl.stop = AsyncMock()
+    ctrl.load = AsyncMock()
+    ctrl.update_items = Mock()
+    ctrl._queue_data["q1"].queue.state = PlaybackState.PAUSED
+    target_player = MagicMock()
+    target_player.state.active_group = None
+    target_player.state.synced_to = None
+    ctrl.mass.players.get_player.return_value = target_player
+
+
+async def test_transferring_a_paused_source_notifies_the_plugin() -> None:
+    """
+    The plugin is told which queue holds its source now.
+
+    A paused source is moved without a stream request, so nothing else would tell the plugin
+    it changed hands - and every later callback would arrive for the queue it left behind.
+    """
+    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    provider = _plugin_provider(ctrl)
+    _ready_for_transfer(ctrl)
+
+    await ctrl.transfer_queue("q1", "q2")
+
+    provider.on_source_transferred.assert_awaited_once_with("main", "q1", "q2")
+
+
+async def test_transferring_a_queue_of_tracks_notifies_nothing() -> None:
+    """A queue without a live source has no plugin to hand anything over to."""
+    ctrl = _controller(QueueItem.from_media_item("q1", _track()))
+    provider = _plugin_provider(ctrl)
+    _ready_for_transfer(ctrl)
+
+    await ctrl.transfer_queue("q1", "q2")
+
+    provider.on_source_transferred.assert_not_awaited()
+
+
+async def test_a_plugin_raising_does_not_break_the_transfer() -> None:
+    """A buggy plugin must not strand the queue halfway through a transfer."""
+    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    provider = _plugin_provider(ctrl)
+    provider.on_source_transferred.side_effect = RuntimeError("plugin is broken")
+    _ready_for_transfer(ctrl)
+
+    await ctrl.transfer_queue("q1", "q2")
+
+    # reaching this at all means the raise was contained; the queue still changed hands
+    provider.on_source_transferred.assert_awaited_once()
+    assert ctrl._queue_data["q2"].queue.current_item is not None

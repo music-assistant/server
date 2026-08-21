@@ -1168,6 +1168,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for item in source_items:
             item.queue_id = target_queue_id
         self.update_items(target_queue_id, source_items)
+        await self._notify_audio_source_transferred(
+            source_current_item, source_queue_id, target_queue_id
+        )
         if auto_play:
             await self.resume(target_queue_id)
 
@@ -1827,18 +1830,52 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
 
+    def _audio_source_plugin(
+        self, queue_item: QueueItem | None
+    ) -> tuple[PluginProvider, str] | None:
+        """Return the plugin owning this item's live AudioSource, with the source id it exposes."""
+        if queue_item is None or (media_item := queue_item.media_item) is None:
+            return None
+        if media_item.media_type != MediaType.AUDIO_SOURCE:
+            return None
+        if not isinstance(prov := self.mass.get_provider(media_item.provider), PluginProvider):
+            return None
+        return prov, media_item.item_id
+
     def _notify_audio_source_removed(self, queue_id: str) -> None:
         """Tell the owning plugin that its AudioSource is dropped as this queue's current item."""
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
-        current_item = queue_data.queue.current_item
-        if current_item is None or (media_item := current_item.media_item) is None:
+        if (owner := self._audio_source_plugin(queue_data.queue.current_item)) is None:
             return
-        if media_item.media_type != MediaType.AUDIO_SOURCE:
+        prov, source_id = owner
+        self.mass.create_task(prov.on_source_removed(source_id, queue_id))
+
+    async def _notify_audio_source_transferred(
+        self, transferred_item: QueueItem | None, from_queue_id: str, to_queue_id: str
+    ) -> None:
+        """
+        Tell the owning plugin that its AudioSource moved to another queue.
+
+        Awaited rather than dispatched: the plugin has to know the source changed hands before
+        the target queue resumes it. A plugin that raises must not break the transfer.
+
+        :param transferred_item: The current item the source queue handed over.
+        :param from_queue_id: The queue that gave the source up.
+        :param to_queue_id: The queue that took it over.
+        """
+        if (owner := self._audio_source_plugin(transferred_item)) is None:
             return
-        if not isinstance(prov := self.mass.get_provider(media_item.provider), PluginProvider):
-            return
-        self.mass.create_task(prov.on_source_removed(media_item.item_id, queue_id))
+        prov, source_id = owner
+        try:
+            await prov.on_source_transferred(source_id, from_queue_id, to_queue_id)
+        except Exception:
+            self.logger.warning(
+                "on_source_transferred raised for provider %s source %s",
+                prov.instance_id,
+                source_id,
+                exc_info=True,
+            )
 
     def _reset_shuffle(self, queue_id: str) -> None:
         """Switch shuffle off."""

@@ -440,6 +440,17 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.debug("Failed to release Spotify session on queue clear: %s", err)
 
+    async def on_source_transferred(
+        self, source_id: str, from_queue_id: str, to_queue_id: str
+    ) -> None:
+        """Follow this AudioSource to the queue it was handed over to."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != from_queue_id:
+            return
+        # A transfer while playing re-selects the source on the target and re-claims it there,
+        # but a paused one moves without a stream request: without this the plugin would stay
+        # pointed at the queue it left behind.
+        self._active_player_id = to_queue_id
+
     async def on_source_control(
         self,
         source_id: str,

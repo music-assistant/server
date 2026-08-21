@@ -264,6 +264,24 @@ class PluginProvider(Provider):
         :param queue_id: The queue that dropped the source.
         """
 
+    async def on_source_transferred(
+        self, source_id: str, from_queue_id: str, to_queue_id: str
+    ) -> None:
+        """
+        React to this AudioSource being handed over to another queue.
+
+        Fired when the user transfers a queue that has this source as its
+        current item. A transfer of a *playing* source re-selects it on the
+        target by itself, but a paused one is moved without a stream request,
+        so this is the only signal that the source changed hands. Override to
+        re-point any queue the plugin tracked, so later callbacks (this hook's
+        ``on_source_removed`` sibling included) arrive for the right queue.
+
+        :param source_id: The AudioSource.item_id that was transferred.
+        :param from_queue_id: The queue that gave the source up.
+        :param to_queue_id: The queue that took it over.
+        """
+
     async def on_volume_change(self, source_id: str, volume: int) -> None:
         """
         React to a volume change on the player streaming this AudioSource.
