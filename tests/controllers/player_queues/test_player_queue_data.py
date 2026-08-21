@@ -227,6 +227,13 @@ def test_from_cache_reads_legacy_flat_layout() -> None:
     assert restored.userid == "user-1"
 
 
+def test_to_cache_drops_the_queue_owner() -> None:
+    """A cached queue never restores a queue_owner: the session it points at is gone."""
+    data = PlayerQueueData(queue=_queue(queue_owner="audiosource://spotify_connect--x/main"))
+
+    assert "queue_owner" not in data.to_cache()["queue"]
+
+
 def test_cache_significant_ignores_playback_progress() -> None:
     """Change detection ignores volatile playback-progress fields but catches real changes."""
     data = _data_with_dynamic_source()

@@ -32,7 +32,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -326,7 +326,7 @@ class AriaCastReceiver(PluginProvider):
             self._in_use_by_queue = None
 
     async def on_source_control(
-        self, source_id: str, action: SourceControl, value: int | None = None
+        self, source_id: str, action: SourceControl, value: SourceControlValue = None
     ) -> None:
         """Handle playback control actions forwarded from the queue."""
         if source_id != AUDIO_SOURCE_ID:
