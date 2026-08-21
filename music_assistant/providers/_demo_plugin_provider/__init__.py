@@ -59,7 +59,7 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.enums import SourceControl
+    from music_assistant_models.enums import RepeatMode, SourceControl
     from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
         BrowseFolder,
@@ -297,7 +297,7 @@ class MyDemoPluginprovider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: int | bool | RepeatMode | None = None,
     ) -> None:
         """Handle a playback control command for the active AudioSource."""
         # OPTIONAL

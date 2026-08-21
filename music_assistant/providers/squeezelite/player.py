@@ -614,7 +614,7 @@ class SqueezelitePlayer(Player):
                 repeat_mode = RepeatMode.ALL
             else:
                 repeat_mode = RepeatMode.OFF
-            self.mass.player_queues.set_repeat(queue.queue_id, repeat_mode)
+            await self.mass.player_queues.set_repeat(queue.queue_id, repeat_mode)
             self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.client.signal_update()
         elif event.data == "button shuffle":

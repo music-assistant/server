@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     ProviderFeature,
     ProviderType,
+    RepeatMode,
     SourceControl,
     StreamType,
 )
@@ -436,7 +437,7 @@ class YandexYnisonProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: int | bool | RepeatMode | None = None,
     ) -> None:
         """Proxy playback control commands to Yandex via the linked Yandex Music provider."""
         if source_id != AUDIO_SOURCE_ID:
@@ -449,7 +450,7 @@ class YandexYnisonProvider(PluginProvider):
             await self._on_next()
         elif action == SourceControl.PREVIOUS:
             await self._on_previous()
-        elif action == SourceControl.SEEK and value is not None:
+        elif action == SourceControl.SEEK and isinstance(value, int):
             await self._on_seek(value)
 
     async def get_audio_stream(  # noqa: PLR0915

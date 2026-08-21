@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     ProviderFeature,
+    RepeatMode,
     SourceControl,
     StreamType,
 )
@@ -248,7 +249,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: int | bool | RepeatMode | None = None,
     ) -> None:
         """
         Handle source control commands (no-op: AirPlay receiver is passive).

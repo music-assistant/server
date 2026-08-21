@@ -50,7 +50,7 @@ def _decliner() -> object:
 
 async def test_clear_queue_runs_when_user_accepts(mock_mass: MagicMock) -> None:
     """User accepts the elicitation prompt → clear_queue dispatches to MA."""
-    mock_mass.player_queues.clear = MagicMock()
+    mock_mass.player_queues.clear = AsyncMock()
     mcp = _server(mock_mass, require_confirmation=True)
 
     async with Client(mcp, elicitation_handler=_accepter()) as client:
@@ -60,7 +60,7 @@ async def test_clear_queue_runs_when_user_accepts(mock_mass: MagicMock) -> None:
 
 async def test_clear_queue_blocked_when_user_declines(mock_mass: MagicMock) -> None:
     """User declines → tool raises ToolError, no MA call is made."""
-    mock_mass.player_queues.clear = MagicMock()
+    mock_mass.player_queues.clear = AsyncMock()
     mcp = _server(mock_mass, require_confirmation=True)
 
     async with Client(mcp, elicitation_handler=_decliner()) as client:
@@ -101,7 +101,7 @@ async def test_remove_item_blocked_when_user_declines(mock_mass: MagicMock) -> N
 
 async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
     """With require_confirmation=False, elicitation is skipped entirely."""
-    mock_mass.player_queues.clear = MagicMock()
+    mock_mass.player_queues.clear = AsyncMock()
     mcp = _server(mock_mass, require_confirmation=False)
 
     elicit_called = False

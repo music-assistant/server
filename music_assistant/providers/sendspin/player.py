@@ -1708,11 +1708,11 @@ class SendspinPlayer(SendspinBasePlayer):
             case ControllerRepeatEvent(mode=mode) if queue:
                 match mode:
                     case SendspinRepeatMode.OFF:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
                     case SendspinRepeatMode.ONE:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
                     case SendspinRepeatMode.ALL:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
             case ControllerSeekEvent(position_ms=position_ms) if (

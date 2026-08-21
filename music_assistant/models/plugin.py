@@ -13,7 +13,7 @@ from .provider import Provider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
 
-    from music_assistant_models.enums import MediaType, SourceControl
+    from music_assistant_models.enums import MediaType, RepeatMode, SourceControl
     from music_assistant_models.media_items import (
         AudioSource,
         BrowseFolder,
@@ -161,7 +161,7 @@ class PluginProvider(Provider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: int | bool | RepeatMode | None = None,
     ) -> None:
         """
         Handle a playback control command for an active AudioSource.
@@ -169,12 +169,14 @@ class PluginProvider(Provider):
         Called by the player controller when the user (or an automation) issues
         a control command and the active queue item is an AudioSource whose
         capability flag for the action is True (e.g. ``can_next_previous`` for
-        NEXT/PREVIOUS).
+        NEXT/PREVIOUS), and by the queue controller when the queue's current
+        item is an AudioSource declaring ``queue_capabilities`` (SHUFFLE/REPEAT).
 
         :param source_id: The AudioSource.item_id the command applies to.
         :param action: The control action to perform.
-        :param value: Optional numeric value: seek position in seconds for SEEK,
-            volume level 0-100 for VOLUME, ignored for other actions.
+        :param value: Optional payload for the action: seek position in seconds
+            for SEEK, volume level 0-100 for VOLUME, the enabled state (bool)
+            for SHUFFLE, the RepeatMode for REPEAT; None for other actions.
         """
         raise NotImplementedError
 

@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     ProviderFeature,
+    RepeatMode,
     SourceControl,
     StreamType,
 )
@@ -326,7 +327,7 @@ class AriaCastReceiver(PluginProvider):
             self._in_use_by_queue = None
 
     async def on_source_control(
-        self, source_id: str, action: SourceControl, value: int | None = None
+        self, source_id: str, action: SourceControl, value: int | bool | RepeatMode | None = None
     ) -> None:
         """Handle playback control actions forwarded from the queue."""
         if source_id != AUDIO_SOURCE_ID:

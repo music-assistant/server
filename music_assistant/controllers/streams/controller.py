@@ -28,6 +28,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
     ProviderType,
+    RepeatMode,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -625,6 +626,73 @@ class StreamsController(CoreController):
         sd.stream_metadata = stream_metadata
         sd.stream_metadata_last_updated = time.time()
         self.mass.player_queues.signal_update(queue_id)
+
+    def update_source_queue_options(
+        self,
+        queue_id: str,
+        source_id: str,
+        provider: PluginProvider,
+        *,
+        shuffle_enabled: bool | None,
+        repeat_mode: RepeatMode | None,
+    ) -> None:
+        """
+        Mirror a live session's shuffle/repeat state onto the consuming queue.
+
+        Used by plugin providers whose AudioSource declares queue capabilities
+        (e.g. Spotify Connect) to reflect session-side option changes into the
+        normal PlayerQueue view. A None value (and RepeatMode.UNKNOWN) leaves
+        that option untouched.
+
+        The update is rejected silently unless the queue's current item is an
+        AudioSource owned by ``provider`` with ``item_id == source_id`` — the
+        same guard as ``update_stream_metadata``, preventing a late callback
+        from stamping session state over an unrelated item.
+
+        :param queue_id: The queue whose options should receive the update.
+        :param source_id: The AudioSource.item_id emitting this update.
+        :param provider: The plugin provider emitting this update.
+        :param shuffle_enabled: The session's shuffle state, or None to skip.
+        :param repeat_mode: The session's repeat mode, or None to skip.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        current_item = queue.current_item
+        if current_item is None or current_item.streamdetails is None:
+            return
+        sd = current_item.streamdetails
+        if (
+            sd.media_type != MediaType.AUDIO_SOURCE
+            or sd.provider != provider.instance_id
+            or sd.item_id != source_id
+        ):
+            self.logger.debug(
+                "Rejected queue options update for queue %s from provider %s source %s "
+                "(current item: %s)",
+                queue_id,
+                provider.instance_id,
+                source_id,
+                sd.uri if sd else "none",
+            )
+            return
+        # Re-check identity *after* preparing the write so a queue advance that
+        # races with this callback can't slip in between the guard above and
+        # the mutation below (plugins fire these from arbitrary tasks).
+        if queue.current_item is not current_item or current_item.streamdetails is not sd:
+            return
+        if repeat_mode == RepeatMode.UNKNOWN:
+            # an unknown mode is not a report
+            repeat_mode = None
+        changed = False
+        if shuffle_enabled is not None and queue.shuffle_enabled != shuffle_enabled:
+            queue.shuffle_enabled = shuffle_enabled
+            changed = True
+        if repeat_mode is not None and queue.repeat_mode != repeat_mode:
+            queue.repeat_mode = repeat_mode
+            changed = True
+        if changed:
+            self.mass.player_queues.signal_update(queue_id)
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream single queueitem audio to a player."""

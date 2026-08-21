@@ -80,7 +80,7 @@ class PlaybackMixin:
         self._updating_from_plex = True
         try:
             if self._ma_player_id:
-                self.provider.mass.player_queues.clear(self._ma_player_id)
+                await self.provider.mass.player_queues.clear(self._ma_player_id)
                 self.play_queue_id = None
                 self.play_queue_item_ids = {}
             await self._broadcast_timeline()
@@ -234,11 +234,17 @@ class PlaybackMixin:
             if "repeat" in request.query:
                 repeat_value = int(request.query["repeat"])
                 if repeat_value == 0:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.OFF)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.OFF
+                    )
                 elif repeat_value == 1:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.ONE)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.ONE
+                    )
                 elif repeat_value == 2:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.ALL)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.ALL
+                    )
 
             await self._broadcast_timeline()
         finally:

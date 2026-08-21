@@ -20,10 +20,15 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     ProviderFeature,
+    RepeatMode,
     SourceControl,
 )
 from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
-from music_assistant_models.media_items import AudioSource, ProviderMapping
+from music_assistant_models.media_items import (
+    AudioSource,
+    ProviderMapping,
+    SourceQueueCapabilities,
+)
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
@@ -430,7 +435,7 @@ class SpotifyConnectProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: int | bool | RepeatMode | None = None,
     ) -> None:
         """Proxy playback control commands to the backend."""
         if source_id != AUDIO_SOURCE_ID:
@@ -446,8 +451,12 @@ class SpotifyConnectProvider(PluginProvider):
                 await self._backend.next()
             elif action == SourceControl.PREVIOUS:
                 await self._backend.previous()
-            elif action == SourceControl.SEEK and value is not None:
+            elif action == SourceControl.SEEK and isinstance(value, int):
                 await self._backend.seek(value * 1000)
+            elif action == SourceControl.SHUFFLE:
+                await self._backend.set_shuffle(bool(value))
+            elif action == SourceControl.REPEAT and isinstance(value, RepeatMode):
+                await self._backend.set_repeat(value)
         except Exception as err:
             self.logger.warning("Failed to send %s command to backend: %s", action, err)
             raise
@@ -532,7 +541,25 @@ class SpotifyConnectProvider(PluginProvider):
         Backends provide a full control surface, so play / pause / seek /
         next / previous are always available while a session is active — the
         capability flags are static (no dependency on the Spotify Web API).
+        Backends implementing the queue-session verbs additionally declare
+        queue capabilities, so the queue controller delegates queue commands
+        to this plugin while the source is playing.
         """
+        queue_capabilities: SourceQueueCapabilities | None = None
+        if self._backend.supports_queue_control:
+            queue_capabilities = SourceQueueCapabilities(
+                provider_domain="spotify",
+                # playable_media_types stays empty until the play-redirect lands
+                enqueueable_media_types=[MediaType.TRACK],
+                can_shuffle=True,
+                can_repeat=True,
+                provides_queue_view=True,
+                # provided by the Spotify engine itself: MA's own equivalents
+                # are inert while this source owns the queue
+                native_autoplay=True,
+                native_crossfade=True,
+                native_volume_normalization=True,
+            )
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
@@ -554,6 +581,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Spotify context (claiming active device status). Without any
             # prior context a localized error points the user to the app.
             can_initiate=True,
+            queue_capabilities=queue_capabilities,
         )
 
     def _get_target_player_id(self) -> str | None:
@@ -734,6 +762,11 @@ class SpotifyConnectProvider(PluginProvider):
         if event.track_uri:
             self._last_track_uri = event.track_uri
 
+        if event.type in (BackendEventType.OPTIONS_CHANGED, BackendEventType.QUEUE_CHANGED):
+            # neither is a reason to re-push the (unchanged) stream metadata below
+            self._handle_queue_session_event(event)
+            return
+
         if event.type is BackendEventType.SESSION_ACTIVE:
             self._spotify_session_active = True
             self._last_session_active_time = time.time()
@@ -831,6 +864,25 @@ class SpotifyConnectProvider(PluginProvider):
                 translation_key="soloist_auth_required",
                 translation_owner=self.translation_owner,
             )
+        )
+
+    def _handle_queue_session_event(self, event: BackendEvent) -> None:
+        """
+        Handle a queue-session event: mirror playback options onto the consuming queue.
+
+        :param event: The OPTIONS_CHANGED or QUEUE_CHANGED event to handle.
+        """
+        if event.type is not BackendEventType.OPTIONS_CHANGED:
+            # queue snapshots are not consumed yet (full queue-item mirroring comes later)
+            return
+        if not self._in_use_by_queue or event.options is None:
+            return
+        self.mass.streams.update_source_queue_options(
+            self._in_use_by_queue,
+            AUDIO_SOURCE_ID,
+            self,
+            shuffle_enabled=event.options.shuffle,
+            repeat_mode=event.options.repeat,
         )
 
     def _apply_metadata(self, metadata: BackendTrackMetadata) -> None:
