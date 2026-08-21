@@ -147,7 +147,10 @@ class TidalLibraryManager:
                 ) is None:
                     continue
                 _set_date_added(track, item)
-                self.provider.note_replaced_track(item)
+                try:
+                    self.provider.note_replaced_track(item)
+                except SKIPPABLE_ITEM_ERRORS as err:
+                    self.provider.report_skipped_sync_item(MediaType.TRACK, sync_item_id, err)
                 yield track
 
     async def get_playlists(self) -> AsyncGenerator[Playlist]:

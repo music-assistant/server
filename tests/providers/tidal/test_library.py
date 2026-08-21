@@ -227,6 +227,35 @@ async def test_library_tracks_hold_cleanup_for_unparsable_replacement(
     assert isinstance(err, (AttributeError, KeyError, TypeError, ValueError))
 
 
+async def test_library_tracks_hold_cleanup_for_invalid_replacement_metadata(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test invalid replacement metadata cannot abort a track listing."""
+    raw = _load_raw("lib_tracks.json")
+    raw["data"][0]["meta"]["replacement"] = {
+        "status": "REPLACED",
+        "original": "invalid",
+    }
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+    provider_mock.note_replaced_track.side_effect = [
+        AttributeError("invalid replacement"),
+        *([None] * 19),
+    ]
+
+    tracks = [track async for track in library_manager.get_tracks()]
+
+    assert len(tracks) == 20
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == MediaType.TRACK
+    assert skipped_id is None
+    assert isinstance(err, AttributeError)
+
+
 @pytest.mark.parametrize(
     ("method_name", "fixture_name", "media_type", "expected_count", "protect_exact_id"),
     [
