@@ -1120,6 +1120,9 @@ async def test_daemon_runner_does_not_wait_for_the_log_reader(
     backend, _events = _runner_backend()
     proc = _StuckReaderProc(on_close=lambda: setattr(backend, "_stop_called", True))
     _patch_spawn(monkeypatch, [proc])
+    # a short drain leaves the outer deadline real headroom, so the assertion is
+    # about the runner returning rather than about which timeout fires first
+    monkeypatch.setattr(soloist_backend, "DAEMON_LOG_DRAIN_TIMEOUT_S", 0.1)
 
     # the supervisor must return on its own; a hang here is the regression
     async with asyncio.timeout(5):

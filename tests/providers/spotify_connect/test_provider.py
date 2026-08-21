@@ -31,6 +31,7 @@ from music_assistant.providers.spotify_connect.go_librespot.client import GoLibr
 from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
 from music_assistant.providers.spotify_connect.provider import (
     AUDIO_SOURCE_ID,
+    CONF_AUDIO_QUALITY,
     CONF_LOUDNESS_NORMALIZATION,
 )
 from music_assistant.providers.spotify_connect.soloist.backend import (
@@ -362,6 +363,11 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
         type=ConfigEntryType.BOOLEAN,
         value=False,
     )
+    provider.config.values[CONF_AUDIO_QUALITY] = ConfigEntry(
+        key=CONF_AUDIO_QUALITY,
+        type=ConfigEntryType.STRING,
+        value=AUDIO_QUALITY_HIGH,
+    )
 
     backend = provider._create_backend()
 
@@ -382,6 +388,7 @@ def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
     assert isinstance(backend, GoLibrespotBackend)
     assert backend._crossfade_ms == 0
     assert backend._loudness_normalization is True
+    assert backend._audio_quality == AUDIO_QUALITY_LOSSLESS
 
 
 def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
@@ -397,12 +404,18 @@ def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
         type=ConfigEntryType.BOOLEAN,
         value=False,
     )
+    provider.config.values[CONF_AUDIO_QUALITY] = ConfigEntry(
+        key=CONF_AUDIO_QUALITY,
+        type=ConfigEntryType.STRING,
+        value=AUDIO_QUALITY_HIGH,
+    )
 
     backend = provider._create_backend()
 
     assert isinstance(backend, GoLibrespotBackend)
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
+    assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
 def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:

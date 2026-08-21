@@ -699,15 +699,15 @@ class SoloistBackend(SpotifyConnectBackend):
                 log_task = asyncio.create_task(self._log_daemon_output(proc))
                 try:
                     await proc.wait()
-                finally:
                     # an exited daemon still has its last (often most telling)
-                    # lines in the stream buffer, so give the reader a moment
-                    # to drain them before dropping it
-                    with suppress(TimeoutError, asyncio.CancelledError):
+                    # lines in the stream buffer; the shield keeps the reader
+                    # alive across the timeout so it can drain them
+                    with suppress(TimeoutError):
                         await asyncio.wait_for(asyncio.shield(log_task), DAEMON_LOG_DRAIN_TIMEOUT_S)
+                finally:
+                    # a reader locked out by a close() from another supervisor
+                    # never ends on its own
                     log_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await log_task
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -755,21 +755,11 @@ class SoloistBackend(SpotifyConnectBackend):
 
         :param proc: The running daemon process.
         """
-        try:
-            async for line in proc.iter_stdout():
-                # the third-party binary's own output may echo argv (which carries
-                # the api key), so redact it before logging
-                text = line.replace(self._api_key, "<redacted>") if self._api_key else line
-                self.logger.debug("[%s] %s", self.name, text)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # The daemon writes into a pipe that only this reader drains, and a
-            # full pipe blocks it forever. Close it so the supervisor respawns
-            # rather than waiting on a daemon that can no longer make progress.
-            self.logger.exception("Error while reading the soloist daemon log [%s]", self.name)
-            with suppress(Exception):
-                await proc.close()
+        async for line in proc.iter_stdout():
+            # the third-party binary's own output may echo argv (which carries
+            # the api key), so redact it before logging
+            text = line.replace(self._api_key, "<redacted>") if self._api_key else line
+            self.logger.debug("[%s] %s", self.name, text)
 
     async def _reset_volume_state(self, sink: PipeSink) -> None:
         """
