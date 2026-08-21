@@ -604,9 +604,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue, switching shuffle off with them."""
-        # Only the explicit clear notifies the plugin, never `_clear` itself: a replace or a
+        # Only the explicit clear notifies from here, never `_clear` itself: a replace or a
         # transfer clears as a first step and may re-select the very same source right after,
-        # where releasing it would cost the user their playback position.
+        # where releasing it would cost the user their playback position. Those two decide for
+        # themselves, in `play_media` and `transfer_queue`.
         self._notify_audio_source_removed(queue_id)
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
