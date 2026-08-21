@@ -199,10 +199,16 @@ class TrackCursor:
     # Samples left over from the previous chunk, and the media time they start at.
     carry: np.ndarray
     carry_media: float
+    # Media seconds per wall-clock second (atempo, audiobooks/podcasts).
+    speed: float = 1.0
 
     def playhead(self) -> float:
         """Return where the anchor says the audible playhead is now, in media seconds."""
-        return (server_now_us() - self.anchor_us) / 1_000_000
+        return (server_now_us() - self.anchor_us) / 1_000_000 * self.speed
+
+    def media_to_clock_us(self, media_seconds: float) -> int:
+        """Return the clock time at which a media position becomes audible."""
+        return self.anchor_us + int(media_seconds / self.speed * 1_000_000)
 
 
 class Tap:
@@ -260,6 +266,10 @@ class Tap:
 
     def reset(self, message: str) -> None:
         """Drop everything scheduled from a timeline that no longer applies."""
+        # a hydration still in flight would land beats for that dead timeline
+        if self.beats_task is not None:
+            self.beats_task.cancel()
+            self.beats_task = None
         self.ring.clear()
         self.beats.clear()
         self.fan_out(message)
@@ -382,7 +392,9 @@ class TapManager:
             tap.realign_requested = False
             if queue.corrected_elapsed_time >= buffer.first_buffered_chunk:
                 cursor = None
-        cursor = self._align(tap, cursor, item, queue.corrected_elapsed_time, buffer)
+        cursor = self._align(
+            tap, cursor, item, queue.corrected_elapsed_time, buffer, queue.playback_speed
+        )
         # Stay ahead of the listener, but never behind the buffer's retained
         # window: a rolling (radio) buffer discards as playback consumes it, and
         # what it is about to drop is the last chance to read that audio.
@@ -429,23 +441,27 @@ class TapManager:
         item: QueueItem,
         playhead: float,
         buffer: AudioBuffer,
+        speed: float = 1.0,
     ) -> TrackCursor:
         """
         Return a cursor whose timeline still matches what the player is playing.
 
-        A new track, a seek, or a resume re-anchors the media timeline to the
-        relay clock; so does falling behind the buffer's retained window.
+        A new track, a seek, a resume or a speed change re-anchors the media
+        timeline to the relay clock; so does falling behind the buffer's
+        retained window.
 
         :param tap: The tap being fed.
         :param cursor: The cursor in use, if the tap already has one.
         :param item: The queue item now playing.
         :param playhead: Media position the queue reports for it, in seconds.
         :param buffer: The item's PCM buffer.
+        :param speed: Playback speed the queue plays the item at.
         """
         oldest = buffer.first_buffered_chunk
         if (
             cursor is not None
             and cursor.item_id == item.queue_item_id
+            and cursor.speed == speed
             and cursor.next_chunk >= oldest
             and abs(cursor.playhead() - playhead) <= RESYNC_THRESHOLD_SECONDS
         ):
@@ -453,13 +469,14 @@ class TapManager:
         start_chunk = max(int(max(0.0, playhead)), oldest)
         cursor = TrackCursor(
             item_id=item.queue_item_id,
-            anchor_us=server_now_us() - int(playhead * 1_000_000),
+            anchor_us=server_now_us() - int(playhead / speed * 1_000_000),
             next_chunk=start_chunk,
             carry=np.zeros(0, dtype=np.float32),
             carry_media=float(start_chunk),
+            speed=speed,
         )
         tap.reset('{"type": "stream/clear"}')
-        self._schedule_beats(tap, item, cursor.anchor_us)
+        self._schedule_beats(tap, item, cursor.anchor_us, speed)
         return cursor
 
     def _emit_chunk(
@@ -481,9 +498,7 @@ class TapManager:
             quantized = np.rint(np.clip(window, -1.0, 1.0) * 127.0 + 128.0).astype(np.uint8)
             # stamped at the end of the window, the instant it finishes sounding
             end_media = cursor.carry_media + offset / sample_rate
-            frame = pack_wave_frame(
-                cursor.anchor_us + int(end_media * 1_000_000), quantized.tobytes()
-            )
+            frame = pack_wave_frame(cursor.media_to_clock_us(end_media), quantized.tobytes())
             tap.ring.append(frame)
             tap.fan_out(frame)
         cursor.carry = mono[offset:].copy()
@@ -500,7 +515,9 @@ class TapManager:
         if payload != tap.last_color:
             tap.apply_color(payload)
 
-    def _schedule_beats(self, tap: Tap, item: QueueItem, anchor_us: int) -> None:
+    def _schedule_beats(
+        self, tap: Tap, item: QueueItem, anchor_us: int, speed: float = 1.0
+    ) -> None:
         """
         (Re)build a tap's beat schedule for a track.
 
@@ -510,17 +527,20 @@ class TapManager:
         :param tap: The tap to fan the beats out to.
         :param item: The queue item now playing.
         :param anchor_us: Clock time of that item's media time zero.
+        :param speed: Playback speed the queue plays the item at.
         """
         if tap.beats_analysis is not None and tap.beats_analysis[0] == item.queue_item_id:
-            self._fan_out_beats(tap, tap.beats_analysis[1], anchor_us)
+            self._fan_out_beats(tap, tap.beats_analysis[1], anchor_us, speed)
             return
         tap.beats_task = self.mass.create_task(
-            self._hydrate_beats(tap, item, anchor_us),
+            self._hydrate_beats(tap, item, anchor_us, speed),
             task_id=f"milkdrop_beats_{tap.player_id}",
             abort_existing=True,
         )
 
-    async def _hydrate_beats(self, tap: Tap, item: QueueItem, anchor_us: int) -> None:
+    async def _hydrate_beats(
+        self, tap: Tap, item: QueueItem, anchor_us: int, speed: float = 1.0
+    ) -> None:
         """Wait for a track's beat analysis and schedule the beats that are still ahead."""
         streamdetails = item.streamdetails
         if streamdetails is None:
@@ -543,22 +563,25 @@ class TapManager:
             self.logger.debug("No beat analysis for %s", streamdetails.uri)
             return
         tap.beats_analysis = (item.queue_item_id, analysis)
-        self._fan_out_beats(tap, analysis, anchor_us)
+        self._fan_out_beats(tap, analysis, anchor_us, speed)
 
-    def _fan_out_beats(self, tap: Tap, analysis: AudioAnalysisData, anchor_us: int) -> None:
+    def _fan_out_beats(
+        self, tap: Tap, analysis: AudioAnalysisData, anchor_us: int, speed: float = 1.0
+    ) -> None:
         """
         Schedule the analysis beats that are still ahead and fan them out.
 
         :param tap: The tap to fan the beats out to.
         :param analysis: The beat analysis of the item now playing.
         :param anchor_us: Clock time of that item's media time zero.
+        :param speed: Playback speed the queue plays the item at.
         """
         beats = analysis.beats or ()
         downbeats = {float(value) for value in analysis.downbeats or ()}
         now_us = server_now_us()
         scheduled = 0
         for beat in beats:
-            timestamp_us = anchor_us + int(float(beat) * 1_000_000)
+            timestamp_us = anchor_us + int(float(beat) / speed * 1_000_000)
             if timestamp_us <= now_us:
                 continue
             frame = pack_beat_frame(timestamp_us, float(beat) in downbeats)
