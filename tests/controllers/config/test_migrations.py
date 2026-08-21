@@ -444,6 +444,66 @@ def test_migrate_provider_setup_data_encrypts_restored_strings() -> None:
     assert data["providers"]["filesystem_local"]["setup_data"]["path"] == ENCRYPT_SUFFIX + "/media"
 
 
+def test_migrate_provider_setup_data_restores_lastfm_network() -> None:
+    """
+    A Last.fm scrobbler that never stored its network choice gets it back.
+
+    Regression: `_provider` defaulted to 'lastfm' so it was never persisted, and the
+    None read back from setup_data made get_network raise on _NetworkType('None').
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "lastfm_scrobble": {
+                "domain": "lastfm_scrobble",
+                "values": {"_api_session_key": "abc123"},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    setup_data = data["providers"]["lastfm_scrobble"]["setup_data"]
+    assert setup_data["_provider"] == ENCRYPT_SUFFIX + "lastfm"
+    # an explicit librefm choice differed from the default and was persisted, so it
+    # arrives via the move and is never overwritten by the fallback
+    data = {
+        "providers": {
+            "lastfm_scrobble": {
+                "domain": "lastfm_scrobble",
+                "values": {"_provider": "librefm"},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert (
+        data["providers"]["lastfm_scrobble"]["setup_data"]["_provider"]
+        == ENCRYPT_SUFFIX + "librefm"
+    )
+
+
+def test_migrate_provider_setup_data_restores_smb_version() -> None:
+    """
+    An SMB share left on the default protocol version keeps its 3.0 pin.
+
+    Regression: the dropped default made both mount paths read '' and skip the
+    vers=3.0 mount option, silently changing protocol negotiation.
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_smb": {"domain": "filesystem_smb", "values": {}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    setup_data = data["providers"]["filesystem_smb"]["setup_data"]
+    assert setup_data["smb_version"] == ENCRYPT_SUFFIX + "3.0"
+    # an explicit '' (auto-negotiate) choice was persisted and must win over the pin
+    data = {
+        "providers": {
+            "filesystem_smb": {"domain": "filesystem_smb", "values": {"smb_version": ""}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["filesystem_smb"]["setup_data"]["smb_version"] == ENCRYPT_SUFFIX
+
+
 def test_migrate_receiver_and_connect_setup_values() -> None:
     """New setup-flow fields move to setup_data without losing typed values."""
     data: dict[str, Any] = {

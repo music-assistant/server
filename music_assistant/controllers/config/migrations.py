@@ -459,14 +459,17 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
 # default had nothing in `values` for the migration below to move and now reads back as
 # None. These are the defaults those keys carried as config entries before the setup
 # flows landed. Only keys whose read site has no fallback of its own are listed; the
-# others already resolve their default at runtime.
+# others already resolve their default at runtime. This runs on every startup, so only
+# keys their setup flow persists unconditionally belong here - a key a flow may
+# legitimately omit would be re-injected forever.
 # TODO: remove after 2.13 release
 PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
     "alexa": {"url": "amazon.com", "api_url": "http://localhost:5000"},
     "audiobookshelf": {"verify_ssl": True},
     "filesystem_local": {"path": "/media"},
-    "filesystem_smb": {"subfolder": ""},
+    "filesystem_smb": {"subfolder": "", "smb_version": "3.0"},
     "jellyfin": {"verify_ssl": True},
+    "lastfm_scrobble": {"_provider": "lastfm"},
     "plex": {
         "local_server_port": 32400,
         "local_server_ssl": False,
